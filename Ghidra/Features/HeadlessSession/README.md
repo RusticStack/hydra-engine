@@ -188,7 +188,7 @@ One JSON object per line, UTF-8, `\n`-terminated, at most 64 MiB per line.
 Request:
 
 ```json
-{"id": 7, "cmd": "decompile", "program": "p1:/Cyberpunk2077.exe", "address": "rva:0x5d53a0", "wait": 10000}
+{"id": 7, "cmd": "decompile", "program": "p1:/game.exe", "address": "rva:0x5d53a0", "wait": 10000}
 ```
 
 - `id`: any JSON value; the response echoes it. Unique among this client's unanswered requests.

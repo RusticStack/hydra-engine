@@ -186,9 +186,9 @@ def t_two_projects(c: Ctx):
         x.call("open_program", path=pathlib.Path(c.a.exe).name)
         pb = y.call("projects")["activeProject"]
         check(pa["id"] != pb, "one project id for two projects")
-        nct = None
+        analysed = None
         if c.a.project:
-            nct = x.call("open_project", path=c.a.project)
+            analysed = x.call("open_project", path=c.a.project)
             progs = x.call("list", programsOnly=True)["entries"]
             check(progs, "the read-only project lists no program")
             t = time.perf_counter()
@@ -219,7 +219,7 @@ def t_two_projects(c: Ctx):
             (time.perf_counter() - t) * 1000)
         st = x.call("status")
         open_ids = {p["id"] for p in st["projects"]}
-        want = 3 if nct else 2
+        want = 3 if analysed else 2
         check(len(open_ids) >= want, f"expected {want} projects open, status shows {open_ids}")
     d.stop()
     return f"{want} projects open in one daemon; parallel decompiles in two of them"
