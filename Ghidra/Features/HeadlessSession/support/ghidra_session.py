@@ -466,6 +466,25 @@ class Launch:
                 h.update(f"|{p}|-".encode())
         return h.hexdigest()[:16]
 
+    def heap(self) -> str:
+        return self.cfg.get("maxHeap") or default_max_heap()
+
+    def aot_flavor(self, base_vm: list[str]) -> str:
+        """The JVM options an AOT cache must have been recorded with: the JVM refuses a cache made
+        with another garbage collector, object header layout or compressed-pointer mode, and then
+        silently runs without it. So each set of options gets its own cache file."""
+        heap = self.heap().lower()
+        units = {"k": 1 << 10, "m": 1 << 20, "g": 1 << 30, "t": 1 << 40}
+        try:
+            size = int(heap[:-1]) * units[heap[-1]] if heap[-1] in units else int(heap)
+        except ValueError:
+            size = 0
+        shaping = re.compile(r"-XX:[+-]?(Use\w*GC|UseCompactObjectHeaders|UseCompressed\w+|"
+                             r"ObjectAlignmentInBytes=\S+)$")
+        opts = [a for a in [*base_vm, *self.gc_args(), *(self.cfg.get("vmargs") or [])]
+                if shaping.match(a)] + [f"coops={size < 32 << 30}"]
+        return hashlib.sha256("|".join(opts).encode()).hexdigest()[:8]
+
     def command(self, app_args: list[str], *, aot_output: Path | None = None,
                 use_aot: bool = True) -> tuple[list[str], dict]:
         """(argv, info). Fast mode passes the classpath through an @argfile in the state dir."""
@@ -493,7 +512,8 @@ class Launch:
             info["classpathEntries"] = len(cp)
             head = [f"@{argfile}"]
             main = [FAST_MAIN_CLASS]
-            aot_file = self.state / "aot" / f"{key}.aot"
+            info["aotKey"] = aot_key = f"{key}-{self.aot_flavor(vm)}"
+            aot_file = self.state / "aot" / f"{aot_key}.aot"
             if aot_output is not None:
                 vm.append(f"-XX:AOTCacheOutput={aot_output}")
                 info["aot"] = "training"
@@ -508,7 +528,7 @@ class Launch:
             head = ["-cp", str(self.install.utility_jar)]
             main = ["ghidra.Ghidra", MAIN_CLASS]
             info["aot"] = None
-        heap = self.cfg.get("maxHeap") or default_max_heap()
+        heap = self.heap()
         vm += [f"-Xmx{heap}", f"-Xms{self.cfg.get('minHeap') or '512m'}"]
         vm += self.gc_args()
         # stdout is the protocol channel; the JVM's own log (an AOT cache that does not match,
@@ -713,6 +733,22 @@ class SocketSession(_Base):
         self.sock.close()
 
 
+def _first_event(stdout, stderr) -> dict:
+    """The first protocol line. The JVM itself may print to stdout before the session claims it
+    (for example ``-XX:StartFlightRecording`` announces the recording there): such lines are not
+    JSON objects, so they are passed to stderr (when it is a file) and skipped."""
+    while True:
+        line = stdout.readline()
+        if not line:
+            return {"event": "fatal"}
+        if line.lstrip().startswith("{"):
+            return json.loads(line)
+        if stderr not in (None, subprocess.DEVNULL):
+            with contextlib.suppress(Exception):
+                stderr.write(line.encode("utf-8", "replace"))
+                stderr.flush()
+
+
 class StdioSession(_Base):
     """A private session JVM driven over its stdin/stdout (no daemon, no socket)."""
 
@@ -728,7 +764,7 @@ class StdioSession(_Base):
         self.proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=self._stderr, env=launch.env, text=True,
                                      encoding="utf-8", bufsize=1)
-        first = json.loads(self.proc.stdout.readline() or '{"event":"fatal"}')
+        first = _first_event(self.proc.stdout, self._stderr)
         self.startup_wall = time.perf_counter() - t0
         if first.get("event") != "ready":
             err = first.get("error", {})
@@ -971,7 +1007,7 @@ def build_aot(ghidra: str | None, state: str | None, project: str | None,
     cfg = load_config(st, dict(cfg_overrides, mode="fast"))
     launch = Launch(Install.locate(ghidra), cfg, st)
     argv, info = launch.command([], use_aot=False)
-    key = info["key"]
+    key = info["aotKey"]
     out = st / "aot" / f"{key}.aot"
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".building")
@@ -993,7 +1029,7 @@ def build_aot(ghidra: str | None, state: str | None, project: str | None,
             def close(self):
                 pass
 
-        first = json.loads(proc.stdout.readline() or '{"event":"fatal"}')
+        first = _first_event(proc.stdout, ef)
         if first.get("event") != "ready":
             proc.kill()
             raise LaunchError(f"training session did not start; see {errlog}")
