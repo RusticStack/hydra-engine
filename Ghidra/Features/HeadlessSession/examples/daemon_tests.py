@@ -87,8 +87,10 @@ class Ctx:
         self.scripts.mkdir(parents=True, exist_ok=True)
         (self.scripts / "TestMakeProject.java").write_text(MAKE_PROJECT)
         (self.scripts / "TestSleep.java").write_text(SLEEP)
-        (self.state / "config.json").write_text(json.dumps(
-            {"tmpdir": a.tmpdir or str(self.work / "tmp"), "scriptPath": [str(self.scripts)]}))
+        cfg = {"tmpdir": a.tmpdir or str(self.work / "tmp"), "scriptPath": [str(self.scripts)]}
+        if a.tmpdir == "default":
+            del cfg["tmpdir"]  # leave java.io.tmpdir to the JVM
+        (self.state / "config.json").write_text(json.dumps(cfg))
         self.daemons = []
         self.timings = {}
 
@@ -569,7 +571,8 @@ def main():
                     help="a project saved by an older Ghidra, for upgrade_cache (only copied)")
     ap.add_argument("--legacy-program", dest="legacy_program",
                     help="the program in it to open (default: the first one)")
-    ap.add_argument("--tmpdir")
+    ap.add_argument("--tmpdir", help="java.io.tmpdir for the daemons (default: <work>/tmp; "
+                    "'default': leave it to the JVM)")
     ap.add_argument("--only")
     a = ap.parse_args()
     sys.path.insert(0, str(pathlib.Path(a.ghidra) / "Ghidra" / "Features" / "HeadlessSession" /

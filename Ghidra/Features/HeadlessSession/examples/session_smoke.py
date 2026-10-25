@@ -94,7 +94,8 @@ def main():
     ap.add_argument("--ghidra", required=True)
     ap.add_argument("--work", required=True)
     ap.add_argument("--binary", action="append", required=True)
-    ap.add_argument("--tmpdir", help="java.io.tmpdir for the daemon (default: <work>/tmp)")
+    ap.add_argument("--tmpdir", help="java.io.tmpdir for the daemon (default: <work>/tmp; "
+                    "'default': leave it to the JVM)")
     a = ap.parse_args()
     if len(a.binary) != 2:
         ap.error("give --binary twice")
@@ -106,9 +107,10 @@ def main():
     state.mkdir(parents=True, exist_ok=True)
     (scripts / "SmokeTryWrite.java").write_text(TRY_WRITE)
     (scripts / "SmokeMakeProject.java").write_text(MAKE_PROJECT)
-    (state / "config.json").write_text(json.dumps({
-        "tmpdir": a.tmpdir or str(work / "tmp"), "scriptPath": [str(scripts)],
-        "keepWarm": 600}))
+    cfg = {"tmpdir": a.tmpdir or str(work / "tmp"), "scriptPath": [str(scripts)], "keepWarm": 600}
+    if a.tmpdir == "default":
+        del cfg["tmpdir"]
+    (state / "config.json").write_text(json.dumps(cfg))
     proj = work / "Smoke.gpr"
     names = [pathlib.Path(b).name for b in a.binary]
     daemon = gs.Daemon(a.ghidra, str(state), "smoke")
