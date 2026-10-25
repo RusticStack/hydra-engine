@@ -25,6 +25,7 @@ Linux/support/buildGhidraJar||GHIDRA||||END|
 Linux/support/convertStorage||GHIDRA||||END|
 Linux/support/ghidraClean||GHIDRA||||END|
 Linux/support/ghidraDebug||GHIDRA||||END|
+Linux/support/headlessSession||GHIDRA||||END|
 Linux/support/jshellRun||GHIDRA||||END|
 Linux/support/pyghidraRun||GHIDRA||||END|
 Linux/support/sleigh||GHIDRA||||END|
