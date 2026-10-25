@@ -50,7 +50,8 @@ import ghidra.util.classfinder.ClassSearcher;
 final class SessionApplicationConfiguration extends HeadlessGhidraApplicationConfiguration {
 
 	static final String CACHE_PROPERTY = "ghidra.session.classCache";
-	private static final int CACHE_FORMAT = 1;
+	/** 2: each class also stores its module ({@link ClassFileInfo#module()}). */
+	private static final int CACHE_FORMAT = 2;
 
 	/** "hit", "miss", "off" or "error: ...", for status. */
 	static volatile String classCacheState = "off";
@@ -124,7 +125,7 @@ final class SessionApplicationConfiguration extends HeadlessGhidraApplicationCon
 			JsonArray c = el.getAsJsonArray();
 			ClassFileInfo info =
 				new ClassFileInfo(c.get(0).getAsString(), c.get(1).getAsString(),
-					c.get(2).getAsString());
+					c.get(2).getAsString(), c.get(3).isJsonNull() ? null : c.get(3).getAsString());
 			map.computeIfAbsent(info.suffix(), k -> new HashSet<>()).add(info);
 		}
 		if (map.isEmpty()) {
@@ -148,6 +149,7 @@ final class SessionApplicationConfiguration extends HeadlessGhidraApplicationCon
 			c.add(i.path());
 			c.add(i.name());
 			c.add(i.suffix());
+			c.add(i.module());
 			classes.add(c);
 		}));
 		JsonObject o = new JsonObject();
