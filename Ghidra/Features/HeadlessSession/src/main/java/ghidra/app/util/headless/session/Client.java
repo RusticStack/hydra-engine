@@ -1,0 +1,83 @@
+/* ###
+ * IP: GHIDRA
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package ghidra.app.util.headless.session;
+
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Consumer;
+
+import com.google.gson.JsonObject;
+
+/**
+ * One connected caller. Like a tool window, each client has its own <i>active program</i>: the
+ * program commands act on when they do not name one. The programs themselves are shared by the
+ * session: two clients that open the same program use the same instance.
+ */
+final class Client {
+
+	final int id;
+	/** {@code stdio} or {@code socket}. */
+	final String transport;
+	/** The stdio client is the process that launched the session; it may always shut it down. */
+	final boolean launcher;
+	final long connectedAt = System.currentTimeMillis();
+
+	volatile String name = "";
+	volatile String harness = "";
+	volatile boolean authenticated;
+	/** Set when its connection reached end of input; its cleanup may still be running. */
+	volatile boolean leaving;
+
+	/** Project paths of the programs this client has open, in open order. */
+	final Set<String> programs = Collections.synchronizedSet(new LinkedHashSet<>());
+	volatile String active;
+
+	/** Requests of this client that are running now, by request id, for {@code cancel}. */
+	final Map<String, RequestMonitor> running = new ConcurrentHashMap<>();
+
+	/** Sends an unsolicited line (progress events) to this client. */
+	final Consumer<JsonObject> events;
+
+	Client(int id, String transport, boolean launcher, Consumer<JsonObject> events) {
+		this.id = id;
+		this.transport = transport;
+		this.launcher = launcher;
+		this.events = events;
+	}
+
+	String label() {
+		StringBuilder sb = new StringBuilder("client ").append(id);
+		if (!name.isEmpty() || !harness.isEmpty()) {
+			sb.append(" (").append(name);
+			if (!harness.isEmpty()) {
+				sb.append(name.isEmpty() ? "" : ", ").append(harness);
+			}
+			sb.append(')');
+		}
+		return sb.toString();
+	}
+
+	JsonObject describe() {
+		JsonObject o = Json.of("id", id, "name", name, "harness", harness, "transport", transport,
+			"launcher", launcher, "active", active, "connectedMs",
+			System.currentTimeMillis() - connectedAt);
+		synchronized (programs) {
+			Json.put(o, "programs", new ArrayList<>(programs));
+		}
+		Json.put(o, "running", new ArrayList<>(running.keySet()));
+		return o;
+	}
+}
