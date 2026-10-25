@@ -860,6 +860,7 @@ public class LocalBufferFile implements BufferFile {
 			else {
 				commit = flush();
 			}
+			discardTemporaryContent();
 			raf.close();
 		}
 		finally {
@@ -886,6 +887,7 @@ public class LocalBufferFile implements BufferFile {
 		boolean success = false;
 		try {
 			try {
+				discardTemporaryContent();
 				raf.close();
 			}
 			catch (IOException e) {
@@ -897,6 +899,24 @@ public class LocalBufferFile implements BufferFile {
 			success = file.delete();
 		}
 		return success;
+	}
+
+	/**
+	 * A temporary file is about to be closed and deleted, so its content is never read again.
+	 * Truncating it first drops its unwritten pages: some file systems (ReFS, as on a Windows Dev
+	 * Drive) write every dirty page of a file back to disk when its last handle closes, even when
+	 * the file is deleted right after, which made closing a large program take minutes.
+	 */
+	private void discardTemporaryContent() {
+		if (!temporary || readOnly || raf == null) {
+			return;
+		}
+		try {
+			raf.setLength(0);
+		}
+		catch (IOException e) {
+			// the close and delete that follow still run
+		}
 	}
 
 	/**
