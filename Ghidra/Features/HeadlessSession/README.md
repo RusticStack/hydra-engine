@@ -64,7 +64,9 @@ three extra JVMs `LaunchSupport` costs on every start:
 - **Classpath**, two modes:
   - `fast` (default): the classpath that `GhidraLauncher` would build, rebuilt from the module
     layout (patch dir, every module's `lib/` jars ordered by module type and name, extensions
-    last, fat jars at the end; identical, entry for entry, to what `GhidraLauncher` computes),
+    last, fat jars at the end; identical, entry for entry, to what `GhidraLauncher` computes,
+    except that a `patch` directory holding only its README is left out because an AOT cache
+    refuses a non-empty directory on the classpath; 158 entries on master),
     passed in a Java `@argfile` (a full classpath can exceed Windows' command-line limit), with
     the JVM's default class loader and the entry point `SessionMain`. Without a custom system
     class loader the JVM can use an **AOT cache** for Ghidra's classes, which
@@ -208,7 +210,7 @@ Events carry no `ok`. On stdio the first line is `ready` (or `fatal`, and the pr
 code 2). Long commands send throttled `progress` events with the request's `id`:
 
 ```json
-{"event": "ready", "protocol": 2, "ghidra": "12.1.4", "pid": 1234, "launch": {...}, "startupMs": 700}
+{"event": "ready", "protocol": 2, "ghidra": "12.3", "pid": 1234, "launch": {...}, "startupMs": 700}
 {"event": "progress", "id": 9, "message": "Analyzing...", "progress": 120, "maximum": 400}
 ```
 
@@ -335,6 +337,32 @@ create structure from usage, and version tracking from another program in the pr
 
 ## Performance
 
+### Ghidra master (12.3 DEV) against 12.1.4, same machine, same day
+
+Windows 11, JDK 25.0.4, 16-core i7-13700KF, 64 GB, Dev Drive (ReFS); fast mode, AOT cache and
+class search cache on; the same 66.7 MB x64 executable with 243,855 functions, opened read-only,
+each build from a project in its own database format. Medians of 7 runs (35 for warm decompiles);
+the ranges are min-max.
+
+| | 12.1.4 | master |
+|---|---|---|
+| Launch until `ready` | 389 ms (378-585) | 482 ms (469-503) |
+| `open_program` (243,855 functions) | 784 ms (752-1402) | 1445 ms (1114-1902) |
+| First `decompile` | 254 ms | 250 ms |
+| **Launch until the first answer** | **1502 ms** (1448-2117) | **2279 ms** (1918-2692) |
+| Daemon: start it and connect | 493 ms (466-554) | 596 ms (552-726) |
+| Daemon: first client's `open_program` | 763 ms (741-803) | 1201 ms (1036-1858) |
+| Another client: connect + `hello`, join the project, `open_program` (already open), `decompile` | 16 ms, 0.9 ms, 0.5 ms, 5.5 ms | 11 ms, 0.9 ms, 0.5 ms, 5.5 ms |
+| Warm `decompile` | 6.3-6.5 ms | 6.5-6.6 ms |
+
+A project saved by 12.1.4 opens read-only on master without being changed, but every read-only
+open upgrades the program in memory first: `open_program` then took 21-24 s for this program
+instead of about 1.4 s. Opening it writable is refused until the request passes `"upgrade": true`
+(the upgrade is one-way; older Ghidra versions cannot open the result). Use a copy of an older
+project, upgrade it once, and open that.
+
+### Ghidra 12.1.4 (the first measurements)
+
 Measured on Windows 11, JDK 25.0.4, Ghidra 12.1.4, 16-core i7-13700KF, 64 GB, Dev Drive (ReFS);
 the program is a 66.7 MB x64 executable with 243,855 functions in a 1.49 GB analysed project,
 opened read-only. Medians of 5 runs (3 for the daemon start); the machine was also running other
@@ -404,14 +432,14 @@ Both use their own state dir and daemon instance, so they never touch the user's
 The module needs nothing private from Ghidra beyond the two reflective touches named above
 (`HeadlessScript.setHeadlessInstance`, `ClassSearcher`'s search result), each optional.
 
-## What is already scriptable (Ghidra 12.1.4)
+## What is already scriptable (Ghidra master, 12.3 DEV)
 
 | Window feature | API, headless | Verdict |
 |---|---|---|
-| Version tracking | `VTSessionDB.createVTSession` (`Features/VersionTracking/.../api/db/VTSessionDB.java:114`), `VTProgramCorrelatorFactory.createCorrelator` (`.../api/main/VTProgramCorrelatorFactory.java:68`), `AutoVersionTrackingTask(VTSession, ToolOptions)` (`.../gui/actions/AutoVersionTrackingTask.java:96`; runs with default options and needs no tool); `ghidra_scripts/AutoVersionTrackingScript.java` already branches on `isRunningHeadless()` | Script. What headless lacks is two programs open in one long-lived process; the session supplies that. |
-| Bulk types | `CParserUtils.parseHeaderFiles` (`Features/Base/.../cparser/C/CParserUtils.java:273`), `FileDataTypeManager.createFileArchive` / `openFileArchive` (`Framework/SoftwareModeling/.../data/FileDataTypeManager.java:97,194`), `DataTypeManager.addDataType` / `addDataTypes` (`.../data/DataTypeManager.java:123,137`); `EnumDataType`, `UnionDataType`, `TypedefDataType`, `FunctionDefinitionDataType` | Script. |
+| Version tracking | `VTSessionDB.createVTSession` (`Features/VersionTracking/.../api/db/VTSessionDB.java:116`), `VTProgramCorrelatorFactory.createCorrelator` (`.../api/main/VTProgramCorrelatorFactory.java:68`), `AutoVersionTrackingTask(VTSession, ToolOptions)` (`.../gui/actions/AutoVersionTrackingTask.java:96`; runs with default options and needs no tool); `ghidra_scripts/AutoVersionTrackingScript.java` already branches on `isRunningHeadless()` | Script. What headless lacks is two programs open in one long-lived process; the session supplies that. |
+| Bulk types | `CParserUtils.parseHeaderFiles` (`Features/Base/.../cparser/C/CParserUtils.java:402`, returning a `FileDataTypeArchive`; the `FileDataTypeManager` variants are deprecated since 12.3), `DataTypeArchiveFactory.createFileArchive` / `openReadOnly` / `openForUpdate` (`Framework/SoftwareModeling/.../database/dtarchive/DataTypeArchiveFactory.java:49,121,160`), `DataTypeManager.addDataType` / `addDataTypes` (`.../data/DataTypeManager.java:133,147`); `EnumDataType`, `UnionDataType`, `TypedefDataType`, `FunctionDefinitionDataType` | Script. |
 | Auto create structure | `FillOutStructureCmd(ProgramLocation, DecompileOptions)` (`Features/Decompiler/.../util/FillOutStructureCmd.java:56`) takes a `VariableLocation` or `FunctionParameterFieldLocation`, not only a decompiler click; `FillOutStructureHelper.processStructure` (`FillOutStructureHelper.java:106`) | Script. |
-| Re-analysis | `AutoAnalysisManager.getAnalysisManager`, `reAnalyzeAll(AddressSetView)`, `startAnalysis(TaskMonitor)` (`Features/Base/.../analysis/AutoAnalysisManager.java:949,324,603`; it runs in the calling thread when there is no tool) | API, and the `analyze` command. |
+| Re-analysis | `AutoAnalysisManager.getAnalysisManager`, `reAnalyzeAll(AddressSetView)`, `startAnalysis(TaskMonitor)` (`Features/Base/.../analysis/AutoAnalysisManager.java:948,325,604`; it runs in the calling thread when there is no tool) | API, and the `analyze` command. |
 | Data labels, global renames, bookmarks | `SymbolTable.createLabel`, `Symbol.setName` / `setNameAndNamespace`, `DataUtilities.createData`, `BookmarkManager.setBookmark` | API, and the `rename` command. |
 | Several programs and projects, switching, checkout, save | `Project`, `ProjectData.getFile`, `DomainFolder.getFiles`, `DomainFile.getDomainObject` / `getReadOnlyDomainObject` / `checkout` / `save` | The API exists. `analyzeHeadless` exposes one program per run and always takes the project lock. **This is the part that needed new code: this module.** |
 
@@ -422,5 +450,10 @@ The module needs nothing private from Ghidra beyond the two reflective touches n
 - The AOT cache needs JDK 25 or later (`-XX:AOTCacheOutput`); older JDKs run without it.
 - A read-only view does not pick up changes saved to the project by another process after it was
   opened (see above).
+- On master, with `tmpdir` on a ReFS Dev Drive, shutting the daemon down after a large program
+  was opened from an older project took 60-150 s: Ghidra's `ProgramDB.close` waits in
+  `File.delete` of its buffer cache file. With the default temporary directory it took 0.6 s.
+  The cause is not isolated yet; until it is, leave `tmpdir` at its default on such a drive, or
+  give `stop` a longer timeout.
 - Imports run one at a time across the daemon: Ghidra's loaders find libraries through one global
   "active project".
