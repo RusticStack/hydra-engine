@@ -209,6 +209,9 @@ if (headlessRequested) {
 				patterns.any { it.matcher(path).matches() }) {
 				fcd.exclude()
 			}
+			else {
+				HEADLESS_COPIED << path
+			}
 		}
 	}
 	// The software bill of materials (bom.json) opens every jar of the install, one after another,
@@ -220,26 +223,22 @@ if (headlessRequested) {
 		}
 	}
 	assembleDistribution.doFirst {
-		// Start from an empty install, but never empty a directory that is not one.
+		// The install is updated in place (deleting and rewriting thousands of files costs more
+		// than the copy on slow disks); assembleHeadless then removes what this build did not
+		// write. Never write into a directory that is not an install.
 		def dir = headlessInstallDir()
 		if (dir.exists()) {
 			def entries = dir.list() as List
 			if (!entries.isEmpty() && !new File(dir, 'Ghidra/application.properties').isFile()) {
-				throw new GradleException("headlessInstallDir ${dir} is not empty and is not a Ghidra install; refusing to replace it")
+				throw new GradleException("headlessInstallDir ${dir} is not empty and is not a Ghidra install; refusing to write into it")
 			}
-			project.delete(dir)
 		}
 	}
 	tasks.named(currentPlatformCopy) { mustRunAfter assembleDistribution }
-	// extension zips are written into the install; only after it was emptied
-	gradle.projectsEvaluated {
-		rootProject.subprojects.each { p ->
-			p.tasks.matching { it.name == 'zipExtensions' }.configureEach {
-				mustRunAfter rootProject.tasks.assembleDistribution
-			}
-		}
-	}
 }
+
+// Install paths written by this build's copies (filled in while they run).
+ext.HEADLESS_COPIED = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
 task assembleHeadless {
 	group = 'Hydra'
@@ -260,11 +259,24 @@ task assembleHeadless {
 	}
 	doLast {
 		def dir = headlessInstallDir()
-		// the copies leave the excluded modules' (now empty) directories behind
-		(excludedProjects().collect { rootProject.getZipPath(it) } + ['docs']).each { rel ->
-			def m = new File(dir, rel)
-			if (m.isDirectory() && project.fileTree(m).files.isEmpty()) {
+		// Remove what an earlier build left and this one did not write (the extension zips and
+		// bom.json are written outside the copies), then the directories that became empty.
+		def root = dir.toPath()
+		def emptied = [] as Set
+		project.fileTree(dir) {
+			exclude 'Extensions/**', 'Ghidra/Extensions/**', 'bom.json'
+		}.visit { d ->
+			if (!d.directory && !(d.relativePath.pathString in HEADLESS_COPIED)) {
+				d.file.delete()
+				emptied << d.file.parentFile
+			}
+		}
+		(emptied + (excludedProjects().collect { new File(dir, rootProject.getZipPath(it)) }) +
+			[new File(dir, 'docs')]).each { File m ->
+			while (m != null && m.toPath().startsWith(root) && m.toPath() != root && m.isDirectory() &&
+				project.fileTree(m).files.isEmpty()) {
 				project.delete(m)
+				m = m.parentFile
 			}
 		}
 		new File(dir, 'Ghidra/Extensions').mkdirs()
@@ -272,6 +284,7 @@ task assembleHeadless {
 		// along when the install is written elsewhere.
 		def built = file("${DISTRIBUTION_DIR}/${ZIP_DIR_PREFIX}/Extensions")
 		if (built.isDirectory() && built.canonicalPath != new File(dir, 'Extensions').canonicalPath) {
+			project.delete(project.fileTree(new File(dir, 'Extensions')) { include '**/*.zip' })
 			project.copy {
 				from built
 				into new File(dir, 'Extensions')
