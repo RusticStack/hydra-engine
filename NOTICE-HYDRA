@@ -1,0 +1,26 @@
+Hydra Engine
+
+Copyright 2026 RusticStack and contributors.
+
+Hydra Engine is derived from Ghidra (https://github.com/NationalSecurityAgency/ghidra), the
+software reverse engineering framework developed by the National Security Agency, and is
+distributed under the same license, the Apache License, Version 2.0 (see LICENSE). Ghidra's own
+notice is in NOTICE, and the licenses of the third-party components Ghidra uses are in the
+licenses/ and GPL/ directories; all of them apply to Hydra Engine unchanged.
+
+What Hydra Engine adds to Ghidra:
+  - the HeadlessSession module (Ghidra/Features/HeadlessSession): a shared headless session
+    daemon, its Python launcher and client, and their tests;
+  - a headless-only build (gradle/hydra/headless.gradle, the buildHeadless task);
+  - the repository's own documentation, assets and CI (README.md, NOTICE-HYDRA,
+    CHANGELOG.md and the files in .github/).
+Everything else is Ghidra as published by its authors. Ghidra's original README is
+README-GHIDRA.md.
+
+Hydra Engine is an independent project. It is not affiliated with, sponsored by or endorsed by
+the National Security Agency, the United States Government or the Ghidra project. "Ghidra" is
+used only to describe where the code comes from.
+
+Hydra Engine is named after the many-headed serpent of Greek myth. It is not affiliated with,
+sponsored by or endorsed by Marvel or The Walt Disney Company, and it uses none of their
+characters, logos or other marks.

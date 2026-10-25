@@ -1,20 +1,23 @@
 ---
 name: Feature request
-about: Suggest an idea for this project
+about: Propose a command, option or behaviour for the session daemon or the build
 title: ''
 labels: enhancement
 assignees: ''
 
 ---
 
-**Is your feature request related to a problem? Please describe.**
-A clear and concise description of what the problem is. Ex. I'm always frustrated when [...]
+**What you are trying to do**
+The task, from the client's side: what an agent, tool or script needs to get done, and where
+the current commands fall short.
 
-**Describe the solution you'd like**
-A clear and concise description of what you want to happen.
+**What you propose**
+A new command, a field on an existing one, a launcher option, a build change. If it is a
+protocol change, sketch the request and the response.
 
-**Describe alternatives you've considered**
-A clear and concise description of any alternative solutions or features you've considered.
+**What you can do today**
+The workaround, if there is one: a GhidraScript through `script`, several calls, a separate
+`analyzeHeadless` run.
 
-**Additional context**
-Add any other context or screenshots about the feature request here.
+**Anything else**
+Upstream Ghidra issues or APIs that matter, numbers you measured, links.

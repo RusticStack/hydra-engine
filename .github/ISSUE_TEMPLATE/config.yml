@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/RusticStack/hydra-engine/security/advisories/new
+    about: Report security problems privately, never in a public issue.
+  - name: A problem in Ghidra itself
+    url: https://github.com/NationalSecurityAgency/ghidra/issues
+    about: If it also happens with upstream Ghidra, it belongs to the Ghidra project.
