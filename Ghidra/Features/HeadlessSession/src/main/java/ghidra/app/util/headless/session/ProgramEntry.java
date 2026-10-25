@@ -35,6 +35,9 @@ import ghidra.program.model.listing.Program;
  * analyse or save. Other clients may keep reading a writable program and then see the owner's
  * unsaved changes, as a second tool window would.
  * <p>
+ * <b>Warm.</b> A read-only entry whose last user left stays open for the session's
+ * {@code keepWarm} time, so the next client opens it at no cost and finds its decompilers warm.
+ * <p>
  * <b>Lock.</b> Every command on the program holds {@link #lock}: reads share it, edits, analysis,
  * saves and mode changes hold it exclusively. A request that cannot get it within its
  * {@code wait} fails with {@code busy} and the current holder, instead of queueing forever.
@@ -49,8 +52,13 @@ final class ProgramEntry {
 		}
 	}
 
+	final ProjectEntry project;
 	final String path;
+	/** {@code <project id>:<path>}: unique across the session's projects. */
+	final String key;
 	final ReentrantReadWriteLock lock = new ReentrantReadWriteLock(true);
+	/** When the last request on it finished, for warm retention. */
+	volatile long lastUsed = System.currentTimeMillis();
 
 	// guarded by lock.writeLock() for writes; read under the read lock
 	DomainFile file;
@@ -69,8 +77,10 @@ final class ProgramEntry {
 	/** Decompilers bound to {@link #program}, reused across requests. Guarded by itself. */
 	private final Deque<DecompInterface> decompilers = new ArrayDeque<>();
 
-	ProgramEntry(String path) {
+	ProgramEntry(ProjectEntry project, String path) {
+		this.project = project;
 		this.path = path;
+		this.key = project.id + ":" + path;
 	}
 
 	Lock acquire(boolean exclusive, long waitMs, Client c, String cmd) {
@@ -110,6 +120,7 @@ final class ProgramEntry {
 		if (l == lock.writeLock()) {
 			exclusiveHolder = null;
 		}
+		lastUsed = System.currentTimeMillis();
 		l.unlock();
 	}
 
@@ -163,8 +174,9 @@ final class ProgramEntry {
 	}
 
 	JsonObject describeUse() {
-		JsonObject o = Json.of("mode", mode == null ? null : mode.json(), "owner",
-			owner == null ? null : owner.id);
+		JsonObject o = Json.of("project", project.id, "path", path, "mode",
+			mode == null ? null : mode.json(), "owner", owner == null ? null : owner.id,
+			"idleMs", System.currentTimeMillis() - lastUsed);
 		synchronized (users) {
 			List<Integer> ids = new ArrayList<>();
 			users.forEach(u -> ids.add(u.id));

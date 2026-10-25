@@ -22,9 +22,9 @@ import java.util.function.Consumer;
 import com.google.gson.JsonObject;
 
 /**
- * One connected caller. Like a tool window, each client has its own <i>active program</i>: the
- * program commands act on when they do not name one. The programs themselves are shared by the
- * session: two clients that open the same program use the same instance.
+ * One connected caller. Like a tool window, each client has an <i>active project</i> and an
+ * <i>active program</i>: what commands act on when they name neither. Projects and programs
+ * themselves are shared by the session: two clients that open the same one use the same instance.
  */
 final class Client {
 
@@ -41,11 +41,16 @@ final class Client {
 	/** Set when its connection reached end of input; its cleanup may still be running. */
 	volatile boolean leaving;
 
-	/** Project paths of the programs this client has open, in open order. */
+	/** Ids of the projects this client has joined, in join order. */
+	final Set<String> projects = Collections.synchronizedSet(new LinkedHashSet<>());
+	volatile String activeProject;
+
+	/** Keys ({@link ProgramEntry#key}) of the programs this client has open, in open order. */
 	final Set<String> programs = Collections.synchronizedSet(new LinkedHashSet<>());
+	/** Key of the active program. */
 	volatile String active;
 
-	/** Requests of this client that are running now, by request id, for {@code cancel}. */
+	/** Requests of this client not yet answered (queued or running), by request id. */
 	final Map<String, RequestMonitor> running = new ConcurrentHashMap<>();
 
 	/** Sends an unsolicited line (progress events) to this client. */
@@ -72,8 +77,11 @@ final class Client {
 
 	JsonObject describe() {
 		JsonObject o = Json.of("id", id, "name", name, "harness", harness, "transport", transport,
-			"launcher", launcher, "active", active, "connectedMs",
-			System.currentTimeMillis() - connectedAt);
+			"launcher", launcher, "activeProject", activeProject, "active", active,
+			"connectedMs", System.currentTimeMillis() - connectedAt);
+		synchronized (projects) {
+			Json.put(o, "projects", new ArrayList<>(projects));
+		}
 		synchronized (programs) {
 			Json.put(o, "programs", new ArrayList<>(programs));
 		}

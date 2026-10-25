@@ -22,7 +22,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Consumer;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
@@ -40,6 +39,7 @@ import ghidra.app.util.importer.MessageLog;
 import ghidra.app.util.importer.ProgramLoader;
 import ghidra.app.util.opinion.LoadResults;
 import ghidra.framework.Application;
+import ghidra.framework.main.AppInfo;
 import ghidra.framework.model.*;
 import ghidra.framework.options.OptionType;
 import ghidra.framework.options.Options;
@@ -54,31 +54,50 @@ import ghidra.util.NotOwnerException;
 import ghidra.util.exception.*;
 
 /**
- * The state of a headless session and its commands. Thread-safe: each client's requests run on
- * that client's own thread, so clients run concurrently.
+ * The state of a headless session and its commands: any number of projects, each with any number
+ * of programs, shared by any number of clients. Thread-safe: each client's requests run on that
+ * client's own threads, so clients run concurrently, admitted by the {@link Scheduler}.
  * <p>
- * Lock order, always: {@link #projectLock}, then one {@link ProgramEntry#lock}. The registry maps
- * are concurrent and never held across a wait.
+ * Lock order, always: a scheduler slot, then {@link #registry} (only to open, upgrade or close a
+ * project), then one {@link ProjectEntry#lock}, then one {@link ProgramEntry#lock}. The maps are
+ * concurrent and never held across a wait.
  */
 final class Session {
 
-	static final int PROTOCOL_VERSION = 1;
+	static final int PROTOCOL_VERSION = 2;
 
 	static final long DEFAULT_WAIT_MS = 10_000;
 	private static final long CLEANUP_WAIT_MS = 600_000;
 	private static final int DEFAULT_TEXT_CAP = 200_000;
 	private static final int MAX_TEXT_CAP = 16_000_000;
 	private static final Object SCRIPT_COMPILE = new Object();
+	/**
+	 * Loaders find libraries through {@code AppInfo.getActiveProject()}, one global, so imports
+	 * set it to their own project and run one at a time.
+	 */
+	private static final Object IMPORT = new Object();
+	private static final Pattern PROGRAM_KEY = Pattern.compile("(p\\d+):(/.*)");
 
 	private final long startedAt = System.currentTimeMillis();
-	private final ReentrantReadWriteLock projectLock = new ReentrantReadWriteLock(true);
-	private volatile SessionProject project;
-	private volatile ProjectResolver.Resolved resolved;
-	private final Map<String, ProgramEntry> entries = new ConcurrentHashMap<>();
+	/** Guards opening, upgrading and closing projects, and the two project maps. */
+	private final Object registry = new Object();
+	private final Map<String, ProjectEntry> projects = new ConcurrentHashMap<>();
+	private final Map<String, ProjectEntry> projectsById = new ConcurrentHashMap<>();
+	private final AtomicInteger nextProject = new AtomicInteger(1);
 	private final Map<Integer, Client> clients = new ConcurrentHashMap<>();
 	private final AtomicInteger nextClient = new AtomicInteger(1);
 	private volatile boolean shuttingDown;
+	final Scheduler scheduler;
+	/** How long an unused read-only program or project stays open; 0: close at once. */
+	final long keepWarmMs;
 	volatile JsonObject listenInfo;
+	/** How this JVM was started (mode, AOT, class cache, start-up time), for status. */
+	volatile JsonObject launchInfo;
+
+	Session(Scheduler scheduler, long keepWarmSeconds) {
+		this.scheduler = scheduler;
+		this.keepWarmMs = Math.max(0, keepWarmSeconds) * 1000;
+	}
 
 	// ---- clients ---------------------------------------------------------------------------
 
@@ -88,50 +107,30 @@ final class Session {
 		return c;
 	}
 
-	/** Releases everything a client still holds. Unsaved changes it owned are discarded. */
+	/**
+	 * Releases everything a client still holds: its requests are cancelled, its unsaved changes
+	 * discarded (and logged), and it leaves every project it joined.
+	 */
 	void disconnect(Client c) {
 		c.running.values().forEach(RequestMonitor::cancel);
-		Lock pl = projectLock.readLock();
-		boolean locked = false;
-		try {
-			locked = pl.tryLock(CLEANUP_WAIT_MS, TimeUnit.MILLISECONDS);
+		List<String> joined;
+		synchronized (c.projects) {
+			joined = new ArrayList<>(c.projects);
 		}
-		catch (InterruptedException e) {
-			Thread.currentThread().interrupt();
-		}
-		try {
-			releaseAll(c);
-		}
-		finally {
-			if (locked) {
-				pl.unlock();
+		for (String id : joined) {
+			ProjectEntry p = projectsById.get(id);
+			if (p == null) {
+				continue;
+			}
+			try {
+				leaveProject(c, p, true, CLEANUP_WAIT_MS);
+			}
+			catch (RuntimeException ex) {
+				Msg.error(this, c.label() + " disconnect: could not leave project " + id, ex);
 			}
 		}
 		clients.remove(c.id);
 		Msg.info(this, c.label() + " disconnected");
-	}
-
-	private void releaseAll(Client c) {
-		List<String> held;
-		synchronized (c.programs) {
-			held = new ArrayList<>(c.programs);
-		}
-		for (String path : held) {
-			ProgramEntry e = entries.get(path);
-			if (e == null) {
-				continue;
-			}
-			try {
-				boolean discarded = releaseUse(c, e, true, CLEANUP_WAIT_MS);
-				if (discarded) {
-					Msg.warn(this, c.label() + " disconnected: discarded unsaved changes in " +
-						path);
-				}
-			}
-			catch (RuntimeException ex) {
-				Msg.error(this, c.label() + " disconnect: could not release " + path, ex);
-			}
-		}
 	}
 
 	int clientCount() {
@@ -143,36 +142,73 @@ final class Session {
 	}
 
 	/** Closes everything. Unsaved changes are discarded and logged. Idempotent. */
-	synchronized void close() {
-		if (shuttingDown && project == null) {
+	void close() {
+		synchronized (registry) {
+			if (shuttingDown && projectsById.isEmpty()) {
+				return;
+			}
+			shuttingDown = true;
+			clients.values().forEach(c -> c.running.values().forEach(RequestMonitor::cancel));
+			for (ProjectEntry p : new ArrayList<>(projectsById.values())) {
+				try {
+					closeProjectEntry(p, 30_000, true);
+				}
+				catch (RuntimeException e) {
+					Msg.error(this, "shutdown: could not close project " + p.id, e);
+				}
+			}
+		}
+	}
+
+	/**
+	 * Closes read-only programs and projects that nobody has used for {@link #keepWarmMs}. Never
+	 * waits: anything in use is left for the next round.
+	 */
+	void reap() {
+		long now = System.currentTimeMillis();
+		for (ProjectEntry p : projectsById.values()) {
+			for (ProgramEntry e : p.programs.values()) {
+				if (e.userCount() == 0 && now - e.lastUsed >= keepWarmMs) {
+					closeIdleProgram(p, e);
+				}
+			}
+			if (p.userCount() == 0 && p.programs.isEmpty() && now - p.lastUsed >= keepWarmMs) {
+				synchronized (registry) {
+					if (p.userCount() == 0 && p.programs.isEmpty() && !p.closed) {
+						try {
+							closeProjectEntry(p, 0, true);
+							Msg.info(this, "closed idle project " + p.id + " " + p.canonical);
+						}
+						catch (SessionException e) {
+							// in use after all; next round
+						}
+					}
+				}
+			}
+		}
+	}
+
+	private void closeIdleProgram(ProjectEntry p, ProgramEntry e) {
+		Lock pl = p.lock.readLock();
+		if (!pl.tryLock()) {
 			return;
 		}
-		shuttingDown = true;
-		clients.values().forEach(c -> c.running.values().forEach(RequestMonitor::cancel));
-		boolean locked = false;
 		try {
-			locked = projectLock.writeLock().tryLock(30, TimeUnit.SECONDS);
-		}
-		catch (InterruptedException e) {
-			Thread.currentThread().interrupt();
-		}
-		try {
-			for (ProgramEntry e : new ArrayList<>(entries.values())) {
-				if (e.program != null && e.program.isChanged()) {
-					Msg.warn(this, "shutdown: discarding unsaved changes in " + e.path);
-				}
-				closeEntry(e);
+			if (!e.lock.writeLock().tryLock()) {
+				return;
 			}
-			if (project != null) {
-				project.close();
-				project = null;
-				resolved = null;
+			try {
+				if (e.userCount() == 0 && p.programs.get(e.path) == e) {
+					disposeProgram(e);
+					Msg.info(this, "closed idle program " + e.key);
+				}
+			}
+			finally {
+				e.lock.writeLock().unlock();
 			}
 		}
 		finally {
-			if (locked) {
-				projectLock.writeLock().unlock();
-			}
+			pl.unlock();
 		}
 	}
 
@@ -198,26 +234,24 @@ final class Session {
 				return cancel(c, req);
 			case "shutdown":
 				return shutdownCheck(c, req);
-			case "open_project":
-			case "close_project": {
-				Lock l = lockProject(true, req, cmd);
-				try {
-					return cmd.equals("open_project") ? openProject(c, req, m) : closeProject(c, req);
-				}
-				finally {
-					l.unlock();
-				}
-			}
+			case "projects":
+				return projectsCmd(c);
+			case "programs":
+				return programs(c);
 			default:
 				break;
 		}
-		Lock l = lockProject(false, req, cmd);
+		Scheduler.Ticket slot = scheduler.admit(c, cmd, m, waitMs(req));
 		try {
 			return switch (cmd) {
-				case "project" -> projectInfo();
-				case "list" -> list(req);
+				case "open_project" -> openProject(c, req);
+				case "close_project" -> closeProject(c, req);
+				case "project" -> inProject(projectFor(c, req), req, cmd, ProjectEntry::info);
+				case "list" -> {
+					ProjectEntry p = projectFor(c, req);
+					yield inProject(p, req, cmd, x -> list(x, req));
+				}
 				case "open_program", "switch" -> openProgram(c, req, m);
-				case "programs" -> programs(c);
 				case "info" -> withProgram(c, req, cmd, false, false, e -> programInfo(e, c));
 				case "close_program" -> closeProgram(c, req);
 				case "save" -> withProgram(c, req, cmd, true, true, e -> save(e, req, m));
@@ -234,25 +268,10 @@ final class Session {
 			};
 		}
 		finally {
-			l.unlock();
-		}
-	}
-
-	private Lock lockProject(boolean exclusive, JsonObject req, String cmd) {
-		Lock l = exclusive ? projectLock.writeLock() : projectLock.readLock();
-		long wait = waitMs(req);
-		try {
-			if (l.tryLock(wait, TimeUnit.MILLISECONDS)) {
-				return l;
+			if (slot != null) {
+				slot.close();
 			}
 		}
-		catch (InterruptedException e) {
-			Thread.currentThread().interrupt();
-		}
-		throw new SessionException(SessionException.BUSY,
-			exclusive ? cmd + " needs the project to itself and other requests are running"
-					: "the project is being opened or closed",
-			Json.of("waitedMs", wait));
 	}
 
 	private static long waitMs(JsonObject req) {
@@ -270,29 +289,31 @@ final class Session {
 	}
 
 	JsonObject info() {
-		return Json.of("protocol", PROTOCOL_VERSION, "ghidra",
-			Application.getApplicationVersion(), "pid", ProcessHandle.current().pid(), "uptimeMs",
-			System.currentTimeMillis() - startedAt, "project", projectInfoOrNull(), "listen",
-			listenInfo);
-	}
-
-	private JsonObject projectInfoOrNull() {
-		try {
-			return project == null ? null : projectInfo();
+		Runtime rt = Runtime.getRuntime();
+		JsonObject o = Json.of("protocol", PROTOCOL_VERSION, "ghidra",
+			Application.getApplicationVersion(), "install",
+			Application.getInstallationDirectory().getAbsolutePath(), "java",
+			System.getProperty("java.version"), "pid", ProcessHandle.current().pid(), "uptimeMs",
+			System.currentTimeMillis() - startedAt, "listen", listenInfo, "launch", launchInfo,
+			"keepWarmS", keepWarmMs / 1000, "memory",
+			Json.of("usedMb", (rt.totalMemory() - rt.freeMemory()) >> 20, "committedMb",
+				rt.totalMemory() >> 20, "maxMb", rt.maxMemory() >> 20));
+		JsonArray ps = new JsonArray();
+		for (ProjectEntry p : projectsById.values()) {
+			ps.add(p.info());
 		}
-		catch (RuntimeException e) {
-			return null; // closed while we looked
-		}
+		o.add("projects", ps);
+		return o;
 	}
 
 	private JsonElement status(Client c) {
 		JsonObject o = info();
 		Json.put(o, "you", c.id);
 		JsonArray ps = new JsonArray();
-		for (ProgramEntry e : entries.values()) {
-			JsonObject j = e.describeUse();
-			Json.put(j, "path", e.path);
-			ps.add(j);
+		for (ProjectEntry p : projectsById.values()) {
+			for (ProgramEntry e : p.programs.values()) {
+				ps.add(e.describeUse());
+			}
 		}
 		o.add("programs", ps);
 		JsonArray cs = new JsonArray();
@@ -300,13 +321,25 @@ final class Session {
 			cs.add(x.describe());
 		}
 		o.add("clients", cs);
+		o.add("scheduler", scheduler.describe());
 		return o;
 	}
 
 	private JsonElement cancel(Client c, JsonObject req) {
+		if (Json.bool(req, "all", false)) {
+			int n = 0;
+			for (Map.Entry<String, RequestMonitor> e : c.running.entrySet()) {
+				if (req.has("id") && req.get("id").toString().equals(e.getKey())) {
+					continue; // not this cancel itself
+				}
+				e.getValue().cancel();
+				n++;
+			}
+			return Json.of("cancelled", n);
+		}
 		if (!req.has("target")) {
 			throw new SessionException(SessionException.BAD_REQUEST,
-				"missing field: target (the id of your running request)");
+				"missing field: target (the id of your request), or \"all\":true");
 		}
 		RequestMonitor m = c.running.get(req.get("target").toString());
 		if (m != null) {
@@ -325,47 +358,158 @@ final class Session {
 		return Json.of("stopping", true);
 	}
 
-	// ---- project ---------------------------------------------------------------------------
-
-	private JsonObject projectInfo() {
-		SessionProject p = project;
-		ProjectResolver.Resolved r = resolved;
-		if (p == null || r == null) {
-			throw new SessionException(SessionException.NO_PROJECT,
-				"no project is open; send open_project");
+	private JsonElement projectsCmd(Client c) {
+		JsonArray a = new JsonArray();
+		for (ProjectEntry p : projectsById.values()) {
+			JsonObject j = p.info();
+			Json.put(j, "joined", c.projects.contains(p.id));
+			Json.put(j, "active", p.id.equals(c.activeProject));
+			a.add(j);
 		}
-		return Json.of("name", r.name(), "dir", r.dir().getPath(), "gpr", r.gpr().getPath(),
-			"writable", p.isWritable(), "files", p.getProjectData().getFileCount());
+		return Json.of("activeProject", c.activeProject, "projects", a);
 	}
 
-	private ProjectData data() {
-		SessionProject p = project;
-		if (p == null) {
-			throw new SessionException(SessionException.NO_PROJECT,
-				"no project is open; send open_project");
+	// ---- projects --------------------------------------------------------------------------
+
+	/**
+	 * The project a command acts on: {@code "project"} (an id like {@code p1}, or a path to the
+	 * project), else the project of {@code "program"} when that is a program key, else the
+	 * client's active project. The client must have joined it.
+	 */
+	private ProjectEntry projectFor(Client c, JsonObject req) {
+		String key = Json.str(req, "project", null);
+		if (key == null && Json.has(req, "program")) {
+			java.util.regex.Matcher mk = PROGRAM_KEY.matcher(Json.str(req, "program"));
+			if (mk.matches()) {
+				key = mk.group(1);
+			}
 		}
-		return p.getProjectData();
+		if (key == null) {
+			key = c.activeProject;
+		}
+		if (key == null) {
+			throw new SessionException(SessionException.NO_PROJECT,
+				"no project selected; send open_project first");
+		}
+		ProjectEntry p = projectsById.get(key);
+		if (p == null && !key.matches("p\\d+")) {
+			try {
+				ProjectResolver.Resolved r = ProjectResolver.resolve(key);
+				p = projects.get(r.gpr().getCanonicalPath());
+			}
+			catch (IOException e) {
+				throw new SessionException(SessionException.NOT_FOUND, e.getMessage());
+			}
+		}
+		if (p == null || p.closed) {
+			throw new SessionException(SessionException.NO_PROJECT,
+				"project " + key + " is not open; send open_project", Json.of("project", key));
+		}
+		if (!c.projects.contains(p.id)) {
+			throw new SessionException(SessionException.NO_PROJECT,
+				"this client has not joined project " + p.id + "; send open_project",
+				Json.of("project", p.id));
+		}
+		return p;
 	}
 
-	/** Held: the project write lock. */
-	private JsonElement openProject(Client c, JsonObject req, RequestMonitor m) {
+	private interface ProjectWork<T> {
+		T run(ProjectEntry p);
+	}
+
+	private <T> T inProject(ProjectEntry p, JsonObject req, String cmd, ProjectWork<T> work) {
+		Lock l = lockProject(p, false, waitMs(req), cmd);
+		try {
+			return work.run(p);
+		}
+		finally {
+			p.lastUsed = System.currentTimeMillis();
+			l.unlock();
+		}
+	}
+
+	private static Lock lockProject(ProjectEntry p, boolean exclusive, long wait, String cmd) {
+		Lock l = exclusive ? p.lock.writeLock() : p.lock.readLock();
+		boolean got = false;
+		try {
+			got = l.tryLock(wait, TimeUnit.MILLISECONDS);
+		}
+		catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+		}
+		if (!got) {
+			throw new SessionException(SessionException.BUSY,
+				exclusive ? cmd + " needs project " + p.id + " to itself and requests are running"
+						: "project " + p.id + " is being opened or closed",
+				Json.of("project", p.id, "waitedMs", wait));
+		}
+		if (p.closed) {
+			l.unlock();
+			throw new SessionException(SessionException.NO_PROJECT,
+				"project " + p.id + " was closed", Json.of("project", p.id));
+		}
+		return l;
+	}
+
+	/**
+	 * Joins a project, opening it if no client has it open. A project open read-only is upgraded
+	 * to writable only when no other client uses it (and, unless {@code discard}, nothing of this
+	 * client's is unsaved). A read-only request on a writable project joins it.
+	 */
+	private JsonElement openProject(Client c, JsonObject req) {
 		ProjectResolver.Resolved r;
+		String canonical;
 		try {
 			r = ProjectResolver.resolve(Json.str(req, "path"));
+			canonical = r.gpr().getCanonicalPath();
 		}
 		catch (IOException e) {
 			throw new SessionException(SessionException.NOT_FOUND, e.getMessage());
 		}
 		boolean writable = Json.bool(req, "writable", false);
-		if (project != null) {
-			if (sameProject(r) && (project.isWritable() || !writable)) {
-				return projectInfo();
+		boolean discard = Json.bool(req, "discard", false);
+		long wait = waitMs(req);
+		ProjectEntry p;
+		boolean opened = false;
+		synchronized (registry) {
+			if (shuttingDown) {
+				throw new SessionException(SessionException.CONFLICT, "the session is shutting down");
 			}
-			closeOnlyMine(c, Json.bool(req, "discard", false), "open another project");
-			project.close();
-			project = null;
-			resolved = null;
+			p = projects.get(canonical);
+			if (p != null && writable && !p.writable()) {
+				List<String> others = new ArrayList<>();
+				synchronized (p.users) {
+					p.users.stream().filter(u -> u != c).forEach(u -> others.add(u.label()));
+				}
+				if (!others.isEmpty()) {
+					throw new SessionException(SessionException.CONFLICT,
+						"project " + p.id + " is open read-only and used by " +
+							String.join(", ", others) + "; it can be reopened writable only " +
+							"when no other client uses it",
+						Json.of("project", p.id));
+				}
+				closeProjectEntry(p, wait, discard);
+				p = null;
+			}
+			if (p == null) {
+				p = openProjectEntry(c, r, canonical, writable);
+				opened = true;
+			}
+			synchronized (p.users) {
+				p.users.add(c);
+			}
+			c.projects.add(p.id);
+			c.activeProject = p.id;
+			p.lastUsed = System.currentTimeMillis();
 		}
+		JsonObject info = p.info();
+		Json.put(info, "opened", opened);
+		return info;
+	}
+
+	/** Held: {@link #registry}. */
+	private ProjectEntry openProjectEntry(Client c, ProjectResolver.Resolved r, String canonical,
+			boolean writable) {
 		ProjectLocator locator;
 		try {
 			locator = new ProjectLocator(r.dir().getPath(), r.name());
@@ -374,9 +518,10 @@ final class Session {
 			throw new SessionException(SessionException.BAD_REQUEST,
 				"Ghidra cannot open this path: " + e.getMessage());
 		}
+		long t0 = System.nanoTime();
+		SessionProject sp;
 		try {
-			project = SessionProject.open(locator, writable);
-			resolved = r;
+			sp = SessionProject.open(locator, writable);
 		}
 		catch (LockException e) {
 			throw new SessionException(SessionException.CONFLICT,
@@ -390,115 +535,136 @@ final class Session {
 		catch (NotFoundException | IOException e) {
 			throw new SessionException(SessionException.NOT_FOUND, e.getMessage(), null, e);
 		}
-		Msg.info(this, c.label() + " opened project " + r.gpr() +
-			(writable ? " (writable)" : " (read-only view)"));
-		return projectInfo();
-	}
-
-	private boolean sameProject(ProjectResolver.Resolved r) {
-		try {
-			return resolved != null &&
-				resolved.gpr().getCanonicalFile().equals(r.gpr().getCanonicalFile());
-		}
-		catch (IOException e) {
-			return false;
-		}
-	}
-
-	/** Held: the project write lock. */
-	private JsonElement closeProject(Client c, JsonObject req) {
-		if (project == null) {
-			return Json.of("closed", false);
-		}
-		closeOnlyMine(c, Json.bool(req, "discard", false), "close the project");
-		project.close();
-		project = null;
-		resolved = null;
-		return Json.of("closed", true);
+		String id = "p" + nextProject.getAndIncrement();
+		ProjectEntry p = new ProjectEntry(id, r, canonical, sp, (System.nanoTime() - t0) / 1_000_000);
+		projects.put(canonical, p);
+		projectsById.put(id, p);
+		Msg.info(this, c.label() + " opened project " + id + " " + r.gpr() +
+			(writable ? " (writable)" : " (read-only view)") + " in " + p.openMs + " ms");
+		return p;
 	}
 
 	/**
-	 * Like the window, which closes its programs when it switches projects: allowed only when no
-	 * other client uses a program, and nothing unsaved would be lost unless {@code discard}.
+	 * Closes a project for everyone. Held: {@link #registry}. Refused while a program has unsaved
+	 * changes, unless {@code discard}.
 	 */
-	private void closeOnlyMine(Client c, boolean discard, String what) {
-		for (ProgramEntry e : entries.values()) {
-			synchronized (e.users) {
-				for (Client u : e.users) {
-					if (u != c) {
-						throw new SessionException(SessionException.CONFLICT,
-							"cannot " + what + ": " + u.label() + " uses " + e.path,
-							Json.of("program", e.path, "client", u.id));
-					}
+	private void closeProjectEntry(ProjectEntry p, long wait, boolean discard) {
+		if (!discard) {
+			for (ProgramEntry e : p.programs.values()) {
+				if (e.program != null && e.program.isChanged()) {
+					throw new SessionException(SessionException.UNSAVED_CHANGES,
+						"cannot close project " + p.id + ": " + e.path +
+							" has unsaved changes; save, or pass \"discard\":true",
+						Json.of("program", e.key));
 				}
 			}
-			if (!discard && e.program != null && e.program.isChanged()) {
-				throw new SessionException(SessionException.UNSAVED_CHANGES,
-					"cannot " + what + ": " + e.path +
-						" has unsaved changes; save, or pass \"discard\":true",
-					Json.of("program", e.path));
-			}
 		}
-		for (ProgramEntry e : new ArrayList<>(entries.values())) {
-			closeEntry(e);
-		}
-		c.programs.clear();
-		c.active = null;
-	}
-
-	/** Held: the project write lock, so only a disconnect can still hold a program lock. */
-	private void closeEntry(ProgramEntry e) {
-		boolean got = false;
+		Lock l = lockProject(p, true, wait, "close_project");
 		try {
-			got = e.lock.writeLock().tryLock(CLEANUP_WAIT_MS, TimeUnit.MILLISECONDS);
-		}
-		catch (InterruptedException ex) {
-			Thread.currentThread().interrupt();
-		}
-		if (!got) {
-			Msg.error(this, "could not close " + e.path + ": a request still holds it (" +
-				e.exclusiveHolder + ")");
-			return;
-		}
-		try {
-			e.disposeDecompilers();
-			if (e.program != null) {
-				e.program.release(e);
-				e.program = null;
-			}
-			synchronized (e.users) {
-				for (Client u : e.users) {
-					u.programs.remove(e.path);
-					if (e.path.equals(u.active)) {
-						u.active = null;
-					}
+			for (ProgramEntry e : new ArrayList<>(p.programs.values())) {
+				if (e.program != null && e.program.isChanged()) {
+					Msg.warn(this, "closing project " + p.id + ": discarding unsaved changes in " +
+						e.path);
 				}
-				e.users.clear();
+				closeEntry(e);
 			}
-			e.mode = null;
-			e.owner = null;
-			entries.remove(e.path, e);
+			p.closed = true;
+			p.project.close();
 		}
 		finally {
-			e.lock.writeLock().unlock();
+			l.unlock();
+			projects.remove(p.canonical, p);
+			projectsById.remove(p.id, p);
+			List<Client> users;
+			synchronized (p.users) {
+				users = new ArrayList<>(p.users);
+				p.users.clear();
+			}
+			for (Client u : users) {
+				u.projects.remove(p.id);
+				if (p.id.equals(u.activeProject)) {
+					u.activeProject = firstOf(u.projects);
+				}
+			}
 		}
 	}
 
-	private JsonElement list(JsonObject req) {
+	private static String firstOf(Set<String> set) {
+		synchronized (set) {
+			return set.isEmpty() ? null : set.iterator().next();
+		}
+	}
+
+	private JsonElement closeProject(Client c, JsonObject req) {
+		ProjectEntry p = projectFor(c, req);
+		boolean closed = leaveProject(c, p, Json.bool(req, "discard", false), waitMs(req));
+		return Json.of("project", p.id, "left", true, "closed", closed, "activeProject",
+			c.activeProject);
+	}
+
+	/**
+	 * This client stops using a project: it closes its programs there (see
+	 * {@link #releaseUse}), and the project closes when nobody uses it any more, at once when it
+	 * is writable (its lock is released for other processes), after {@link #keepWarmMs} when it
+	 * is a read-only view. Returns true when the project was closed.
+	 */
+	private boolean leaveProject(Client c, ProjectEntry p, boolean discard, long wait) {
+		List<String> mine;
+		synchronized (c.programs) {
+			mine = c.programs.stream().filter(k -> k.startsWith(p.id + ":")).toList();
+		}
+		for (String key : mine) {
+			ProgramEntry e = p.programs.get(key.substring(p.id.length() + 1));
+			if (e == null) {
+				c.programs.remove(key);
+				continue;
+			}
+			Lock pl = lockProject(p, false, wait, "close_project");
+			try {
+				boolean discarded = releaseUse(c, e, discard, wait);
+				if (discarded) {
+					Msg.warn(this, c.label() + " left " + p.id + ": discarded unsaved changes in " +
+						e.path);
+				}
+			}
+			finally {
+				pl.unlock();
+			}
+		}
+		synchronized (registry) {
+			synchronized (p.users) {
+				p.users.remove(c);
+			}
+			c.projects.remove(p.id);
+			if (p.id.equals(c.activeProject)) {
+				c.activeProject = firstOf(c.projects);
+			}
+			p.lastUsed = System.currentTimeMillis();
+			if (!p.closed && p.userCount() == 0 && (p.writable() || keepWarmMs == 0)) {
+				closeProjectEntry(p, wait, true);
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private JsonElement list(ProjectEntry p, JsonObject req) {
 		String path = Json.str(req, "folder", "/");
 		boolean recursive = Json.bool(req, "recursive", true);
 		boolean programsOnly = Json.bool(req, "programsOnly", false);
 		boolean metadata = Json.bool(req, "metadata", true);
+		String sha = Json.str(req, "sha256", null);
 		Page page = new Page((int) Json.num(req, "offset", 0, 0, Integer.MAX_VALUE),
 			(int) Json.num(req, "limit", 1000, 1, 100_000));
-		ProjectData d = data();
+		ProjectData d = p.data();
 		DomainFolder folder = path.equals("/") ? d.getRootFolder() : d.getFolder(path);
 		if (folder == null) {
 			throw new SessionException(SessionException.NOT_FOUND, "no such folder: " + path);
 		}
-		walk(folder, recursive, programsOnly, metadata, page);
-		return Json.of("folder", folder.getPathname(), "entries", page.out, "offset",
-			page.offset, "returned", page.out.size(), "truncated", page.more);
+		walk(p, folder, recursive, programsOnly || sha != null, metadata || sha != null, sha,
+			page);
+		return Json.of("project", p.id, "folder", folder.getPathname(), "entries", page.out,
+			"offset", page.offset, "returned", page.out.size(), "truncated", page.more);
 	}
 
 	/** One page of a listing: skips {@code offset} items, keeps {@code limit}, notes the rest. */
@@ -529,14 +695,14 @@ final class Session {
 	}
 
 	/** Returns true when the page is full and the walk should stop. */
-	private boolean walk(DomainFolder folder, boolean recursive, boolean programsOnly,
-			boolean metadata, Page page) {
+	private boolean walk(ProjectEntry p, DomainFolder folder, boolean recursive,
+			boolean programsOnly, boolean metadata, String sha, Page page) {
 		for (DomainFolder sub : folder.getFolders()) {
 			if (!programsOnly &&
 				page.offer(() -> Json.of("path", sub.getPathname(), "kind", "folder"))) {
 				return true;
 			}
-			if (recursive && walk(sub, true, programsOnly, metadata, page)) {
+			if (recursive && walk(p, sub, true, programsOnly, metadata, sha, page)) {
 				return true;
 			}
 		}
@@ -545,17 +711,22 @@ final class Session {
 			if (programsOnly && !isProgram) {
 				continue;
 			}
-			if (page.offer(() -> describeFile(f, isProgram, metadata))) {
+			if (sha != null && !sha.equalsIgnoreCase(f.getMetadata().get("Executable SHA256"))) {
+				continue;
+			}
+			if (page.offer(() -> describeFile(p, f, isProgram, metadata))) {
 				return true;
 			}
 		}
 		return false;
 	}
 
-	private JsonObject describeFile(DomainFile f, boolean isProgram, boolean metadata) {
-		JsonObject e = Json.of("path", f.getPathname(), "kind", "file", "name", f.getName(),
-			"contentType", f.getContentType(), "program", isProgram, "versioned",
-			f.isVersioned(), "readOnly", f.isReadOnly() || !f.isInWritableProject());
+	private JsonObject describeFile(ProjectEntry p, DomainFile f, boolean isProgram,
+			boolean metadata) {
+		JsonObject e = Json.of("path", f.getPathname(), "key", p.id + ":" + f.getPathname(),
+			"kind", "file", "name", f.getName(), "contentType", f.getContentType(), "program",
+			isProgram, "versioned", f.isVersioned(), "readOnly",
+			f.isReadOnly() || !f.isInWritableProject());
 		try {
 			Json.put(e, "bytes", f.length());
 		}
@@ -566,9 +737,10 @@ final class Session {
 			Map<String, String> md = f.getMetadata();
 			Json.put(e, "sha256", md.get("Executable SHA256"));
 			Json.put(e, "language", md.get("Language ID"));
+			Json.put(e, "format", md.get("Executable Format"));
 			Json.put(e, "executable", md.get("Executable Location"));
 		}
-		ProgramEntry pe = entries.get(f.getPathname());
+		ProgramEntry pe = p.programs.get(f.getPathname());
 		Json.put(e, "open", pe == null ? null : pe.describeUse());
 		return e;
 	}
@@ -577,13 +749,13 @@ final class Session {
 	 * Finds a file by project path, or by bare name when it is unique in the project (the way
 	 * {@code -process name} is used).
 	 */
-	private DomainFile findFile(String path) {
-		ProjectData d = data();
+	private static DomainFile findFile(ProjectEntry p, String path) {
+		ProjectData d = p.data();
 		if (path.startsWith("/")) {
 			DomainFile f = d.getFile(path);
 			if (f == null) {
 				throw new SessionException(SessionException.NOT_FOUND,
-					"no such file in the project: " + path);
+					"no such file in project " + p.id + ": " + path);
 			}
 			return f;
 		}
@@ -594,7 +766,7 @@ final class Session {
 		}
 		if (found.isEmpty()) {
 			throw new SessionException(SessionException.NOT_FOUND,
-				"no file named " + path + " in the project");
+				"no file named " + path + " in project " + p.id);
 		}
 		List<String> paths = new ArrayList<>();
 		found.forEach(f -> paths.add(f.getPathname()));
@@ -617,29 +789,61 @@ final class Session {
 	// ---- programs --------------------------------------------------------------------------
 
 	private JsonElement openProgram(Client c, JsonObject req, RequestMonitor m) {
-		boolean writable = Json.bool(req, "writable", false);
-		if (writable && !project().isWritable()) {
-			throw new SessionException(SessionException.READ_ONLY,
-				"the project is open read-only; send open_project with \"writable\":true first " +
-					"(this takes the project lock)");
+		String path = Json.str(req, "path");
+		JsonObject scoped = req;
+		java.util.regex.Matcher mk = PROGRAM_KEY.matcher(path);
+		if (mk.matches()) {
+			scoped = req.deepCopy();
+			scoped.addProperty("project", mk.group(1));
+			path = mk.group(2);
 		}
-		DomainFile df = findFile(Json.str(req, "path"));
+		ProjectEntry p = projectFor(c, scoped);
+		String target = path;
+		return inProject(p, req, "open_program", x -> openProgramIn(c, x, target, req, m));
+	}
+
+	/** Held: the project's shared lock. */
+	private JsonObject openProgramIn(Client c, ProjectEntry p, String name, JsonObject req,
+			RequestMonitor m) {
+		boolean writable = Json.bool(req, "writable", false);
+		if (writable && !p.writable()) {
+			throw new SessionException(SessionException.READ_ONLY,
+				"project " + p.id + " is open read-only; send open_project with " +
+					"\"writable\":true first (this takes the project lock)");
+		}
+		DomainFile df = findFile(p, name);
 		if (!Program.class.isAssignableFrom(df.getDomainObjectClass())) {
 			throw new SessionException(SessionException.BAD_REQUEST,
 				df.getPathname() + " is not a program (" + df.getContentType() + ")");
 		}
 		String path = df.getPathname();
 		long wait = waitMs(req);
-		JsonObject joined = joinOpen(c, path, writable, wait);
+		JsonObject joined = joinOpen(c, p, path, writable, wait);
 		if (joined != null) {
 			return joined;
 		}
+		long deadline = System.currentTimeMillis() + wait;
 		while (true) {
-			ProgramEntry e = entries.computeIfAbsent(path, ProgramEntry::new);
-			Lock l = e.acquire(true, wait, c, "open_program");
+			ProgramEntry e = p.programs.computeIfAbsent(path, x -> new ProgramEntry(p, x));
+			Lock l = e.acquire(true, Math.max(0, deadline - System.currentTimeMillis()), c,
+				"open_program");
+			boolean retry = false;
 			try {
-				if (entries.get(path) != e) {
+				if (p.programs.get(path) != e) {
 					continue; // closed while we waited; open a fresh one
+				}
+				if (writable && e.mode == ProgramEntry.Mode.WRITABLE && e.owner != c &&
+					e.owner.leaving) {
+					// Its owner disconnected and its cleanup (cancel, discard) is still running:
+					// that is a lock being released, so wait for it like one.
+					if (System.currentTimeMillis() >= deadline) {
+						throw new SessionException(SessionException.BUSY,
+							path + " is being released by " + e.owner.label() +
+								", which disconnected; retry, or pass a longer \"wait\"",
+							Json.of("program", e.key, "holder", e.owner.label() + " (leaving)"));
+					}
+					retry = true;
+					continue;
 				}
 				long t0 = System.nanoTime();
 				try {
@@ -653,7 +857,7 @@ final class Session {
 					else if (writable && e.mode == ProgramEntry.Mode.WRITABLE && e.owner != c) {
 						throw new SessionException(SessionException.NOT_OWNER,
 							path + " is open writable by " + e.owner.label(),
-							Json.of("program", path, "owner", e.owner.id));
+							Json.of("program", e.key, "owner", e.owner.id));
 					}
 					else if (writable && e.mode == ProgramEntry.Mode.READ_ONLY) {
 						Program np = openWritable(e, df, req, m);
@@ -667,49 +871,61 @@ final class Session {
 				}
 				catch (RuntimeException ex) {
 					if (e.program == null) {
-						entries.remove(path, e);
+						p.programs.remove(path, e);
 					}
 					throw ex;
 				}
-				synchronized (e.users) {
-					e.users.add(c);
-				}
-				c.programs.add(path);
-				c.active = path;
-				JsonObject info = programInfo(e, c);
-				Json.put(info, "openMs", e.openMs);
-				return info;
+				return useProgram(c, e, e.openMs);
 			}
 			finally {
 				e.release(l);
+				if (retry) {
+					sleepQuietly(50);
+				}
 			}
 		}
 	}
 
+	private static void sleepQuietly(long ms) {
+		try {
+			Thread.sleep(ms);
+		}
+		catch (InterruptedException ex) {
+			Thread.currentThread().interrupt();
+		}
+	}
+
+	/** Records that {@code c} uses {@code e} and makes it its active program. */
+	private JsonObject useProgram(Client c, ProgramEntry e, long openMs) {
+		synchronized (e.users) {
+			e.users.add(c);
+		}
+		c.programs.add(e.key);
+		c.active = e.key;
+		c.activeProject = e.project.id;
+		JsonObject info = programInfo(e, c);
+		Json.put(info, "openMs", openMs);
+		return info;
+	}
+
 	/**
-	 * Joins a program that is already open in a mode that fits, under the shared lock, so that a
-	 * client can start using a program while others run long reads or contained scripts on it.
-	 * Returns null when the exclusive path (open, upgrade) is needed.
+	 * Joins a program that is already open (also a warm one nobody uses) in a mode that fits,
+	 * under the shared lock, so that a client can start using a program while others run long
+	 * reads on it. Returns null when the exclusive path (open, upgrade) is needed.
 	 */
-	private JsonObject joinOpen(Client c, String path, boolean writable, long wait) {
-		ProgramEntry e = entries.get(path);
+	private JsonObject joinOpen(Client c, ProjectEntry p, String path, boolean writable,
+			long wait) {
+		ProgramEntry e = p.programs.get(path);
 		if (e == null) {
 			return null;
 		}
 		Lock l = e.acquire(false, wait, c, "open_program");
 		try {
-			if (entries.get(path) != e || e.program == null ||
+			if (p.programs.get(path) != e || e.program == null ||
 				(writable && !(e.mode == ProgramEntry.Mode.WRITABLE && e.owner == c))) {
 				return null;
 			}
-			synchronized (e.users) {
-				e.users.add(c);
-			}
-			c.programs.add(path);
-			c.active = path;
-			JsonObject info = programInfo(e, c);
-			Json.put(info, "openMs", 0);
-			return info;
+			return useProgram(c, e, 0);
 		}
 		finally {
 			e.release(l);
@@ -765,40 +981,53 @@ final class Session {
 		}
 	}
 
-	private SessionProject project() {
-		SessionProject p = project;
-		if (p == null) {
-			throw new SessionException(SessionException.NO_PROJECT,
-				"no project is open; send open_project");
-		}
-		return p;
-	}
-
 	private JsonElement programs(Client c) {
 		JsonArray a = new JsonArray();
 		List<String> mine;
 		synchronized (c.programs) {
 			mine = new ArrayList<>(c.programs);
 		}
-		for (String path : mine) {
-			ProgramEntry e = entries.get(path);
+		for (String key : mine) {
+			ProgramEntry e = entryByKey(key);
 			if (e != null && e.program != null) {
-				a.add(programInfo(e, c));
+				try {
+					a.add(programInfo(e, c));
+				}
+				catch (RuntimeException ex) {
+					// closed while we looked
+				}
 			}
 		}
-		return Json.of("active", c.active, "programs", a);
+		return Json.of("activeProject", c.activeProject, "active", c.active, "programs", a);
+	}
+
+	private ProgramEntry entryByKey(String key) {
+		java.util.regex.Matcher mk = PROGRAM_KEY.matcher(key);
+		if (!mk.matches()) {
+			return null;
+		}
+		ProjectEntry p = projectsById.get(mk.group(1));
+		return p == null ? null : p.programs.get(mk.group(2));
 	}
 
 	private JsonElement closeProgram(Client c, JsonObject req) {
 		ProgramEntry e = selected(c, req);
-		boolean discarded = releaseUse(c, e, Json.bool(req, "discard", false), waitMs(req));
-		return Json.of("closed", e.path, "discarded", discarded, "active", c.active);
+		ProjectEntry p = e.project;
+		Lock pl = lockProject(p, false, waitMs(req), "close_program");
+		try {
+			boolean discarded = releaseUse(c, e, Json.bool(req, "discard", false), waitMs(req));
+			return Json.of("closed", e.key, "discarded", discarded, "active", c.active);
+		}
+		finally {
+			pl.unlock();
+		}
 	}
 
 	/**
 	 * Drops one client's use of a program. When it owned the writable program, the program goes
 	 * back to read-only for the other users, and unsaved changes are discarded only if
-	 * {@code discard}. Returns true when changes were discarded.
+	 * {@code discard}. A read-only program nobody uses any more stays open (warm) for
+	 * {@link #keepWarmMs}. Returns true when changes were discarded. Held: the project's lock.
 	 */
 	private boolean releaseUse(Client c, ProgramEntry e, boolean discard, long wait) {
 		Lock l = e.acquire(true, wait, c, "close_program");
@@ -814,7 +1043,7 @@ final class Session {
 						throw new SessionException(SessionException.UNSAVED_CHANGES,
 							e.path + " has unsaved changes; send save, or close with " +
 								"\"discard\":true",
-							Json.of("program", e.path));
+							Json.of("program", e.key));
 					}
 					discarded = true;
 				}
@@ -822,16 +1051,17 @@ final class Session {
 				e.program.release(e); // releasing a changed program discards its changes
 				e.program = null;
 				e.owner = null;
+				e.mode = null;
 				if (others) {
 					try {
 						e.program = openReadOnly(e, e.file, new RequestMonitor(null, null));
 						e.mode = ProgramEntry.Mode.READ_ONLY;
 					}
 					catch (RuntimeException ex) {
-						Msg.error(this, "could not reopen " + e.path + " read-only for its " +
+						Msg.error(this, "could not reopen " + e.key + " read-only for its " +
 							"other users; closing it for everyone", ex);
 						closeEntry(e);
-						c.programs.remove(e.path);
+						c.programs.remove(e.key);
 						return discarded;
 					}
 				}
@@ -840,20 +1070,13 @@ final class Session {
 				e.users.remove(c);
 				others = !e.users.isEmpty();
 			}
-			if (!others) {
-				e.disposeDecompilers();
-				if (e.program != null) {
-					e.program.release(e);
-					e.program = null;
-				}
-				e.mode = null;
-				entries.remove(e.path, e);
+			if (!others && (e.program == null || e.mode != ProgramEntry.Mode.READ_ONLY ||
+				keepWarmMs == 0 || e.project.closed)) {
+				disposeProgram(e);
 			}
-			c.programs.remove(e.path);
-			if (e.path.equals(c.active)) {
-				synchronized (c.programs) {
-					c.active = c.programs.isEmpty() ? null : c.programs.iterator().next();
-				}
+			c.programs.remove(e.key);
+			if (e.key.equals(c.active)) {
+				c.active = firstOf(c.programs);
 			}
 			return discarded;
 		}
@@ -862,20 +1085,82 @@ final class Session {
 		}
 	}
 
+	/** Releases a program nobody uses. Held: its exclusive lock. */
+	private void disposeProgram(ProgramEntry e) {
+		e.disposeDecompilers();
+		if (e.program != null) {
+			e.program.release(e);
+			e.program = null;
+		}
+		e.mode = null;
+		e.owner = null;
+		e.project.programs.remove(e.path, e);
+	}
+
+	/** Closes a program for everyone. Held: its project's exclusive lock. */
+	private void closeEntry(ProgramEntry e) {
+		boolean got = false;
+		try {
+			got = e.lock.writeLock().tryLock(CLEANUP_WAIT_MS, TimeUnit.MILLISECONDS);
+		}
+		catch (InterruptedException ex) {
+			Thread.currentThread().interrupt();
+		}
+		if (!got) {
+			Msg.error(this, "could not close " + e.key + ": a request still holds it (" +
+				e.exclusiveHolder + ")");
+			return;
+		}
+		try {
+			synchronized (e.users) {
+				for (Client u : e.users) {
+					u.programs.remove(e.key);
+					if (e.key.equals(u.active)) {
+						u.active = null;
+					}
+				}
+				e.users.clear();
+			}
+			disposeProgram(e);
+		}
+		finally {
+			e.lock.writeLock().unlock();
+		}
+	}
+
+	/**
+	 * The program a command acts on: {@code "program"} (a key {@code p1:/path}, or a path or
+	 * unique name in {@code "project"} or the active project), else the client's active program.
+	 */
 	private ProgramEntry selected(Client c, JsonObject req) {
-		String path = Json.str(req, "program", c.active);
-		if (path == null) {
-			throw new SessionException(SessionException.NO_PROGRAM,
-				"no active program; send open_program first");
+		if (!Json.has(req, "program")) {
+			String key = c.active;
+			if (key == null) {
+				throw new SessionException(SessionException.NO_PROGRAM,
+					"no active program; send open_program first");
+			}
+			ProgramEntry e = entryByKey(key);
+			if (e == null) {
+				throw new SessionException(SessionException.NO_PROGRAM,
+					key + " was closed; send open_program");
+			}
+			return e;
+		}
+		String path = Json.str(req, "program");
+		ProjectEntry p = projectFor(c, req);
+		java.util.regex.Matcher mk = PROGRAM_KEY.matcher(path);
+		if (mk.matches()) {
+			path = mk.group(2);
 		}
 		if (!path.startsWith("/")) {
-			path = findFile(path).getPathname();
+			path = findFile(p, path).getPathname();
 		}
-		ProgramEntry e = entries.get(path);
-		if (e == null || !c.programs.contains(path)) {
+		ProgramEntry e = p.programs.get(path);
+		String key = p.id + ":" + path;
+		if (e == null || !c.programs.contains(key)) {
 			throw new SessionException(SessionException.NO_PROGRAM,
-				path + " is not open for this client; send open_program first",
-				Json.of("program", path));
+				key + " is not open for this client; send open_program first",
+				Json.of("program", key));
 		}
 		return e;
 	}
@@ -887,50 +1172,59 @@ final class Session {
 	private JsonElement withProgram(Client c, JsonObject req, String cmd, boolean exclusive,
 			boolean needOwner, ProgramWork work) {
 		ProgramEntry e = selected(c, req);
-		Lock l = e.acquire(exclusive, waitMs(req), c, cmd);
+		ProjectEntry p = e.project;
+		Lock pl = lockProject(p, false, waitMs(req), cmd);
 		try {
-			if (e.program == null) {
-				throw new SessionException(SessionException.NO_PROGRAM, e.path + " was closed");
+			Lock l = e.acquire(exclusive, waitMs(req), c, cmd);
+			try {
+				if (e.program == null) {
+					throw new SessionException(SessionException.NO_PROGRAM, e.key + " was closed");
+				}
+				if (needOwner) {
+					requireOwner(c, e, cmd);
+				}
+				return work.run(e);
 			}
-			if (needOwner) {
-				requireOwner(c, e, cmd);
+			catch (SessionException ex) {
+				throw ex;
 			}
-			return work.run(e);
-		}
-		catch (SessionException ex) {
-			throw ex;
-		}
-		catch (CancelledException ex) {
-			throw new SessionException(SessionException.CANCELLED, cmd + " was cancelled");
-		}
-		catch (Exception ex) {
-			throw new SessionException(SessionException.FAILED,
-				ex.getClass().getSimpleName() + ": " + ex.getMessage(), null, ex);
+			catch (CancelledException ex) {
+				throw new SessionException(SessionException.CANCELLED, cmd + " was cancelled");
+			}
+			catch (Exception ex) {
+				throw new SessionException(SessionException.FAILED,
+					ex.getClass().getSimpleName() + ": " + ex.getMessage(), null, ex);
+			}
+			finally {
+				e.release(l);
+			}
 		}
 		finally {
-			e.release(l);
+			p.lastUsed = System.currentTimeMillis();
+			pl.unlock();
 		}
 	}
 
 	private static void requireOwner(Client c, ProgramEntry e, String cmd) {
 		if (e.mode != ProgramEntry.Mode.WRITABLE) {
 			throw new SessionException(SessionException.READ_ONLY,
-				e.path + " is open read-only; " + cmd + " needs open_program with " +
+				e.key + " is open read-only; " + cmd + " needs open_program with " +
 					"\"writable\":true",
-				Json.of("program", e.path));
+				Json.of("program", e.key));
 		}
 		if (e.owner != c) {
 			throw new SessionException(SessionException.NOT_OWNER,
-				e.path + " is owned by " + e.owner.label() + "; only the owner may " + cmd,
-				Json.of("program", e.path, "owner", e.owner.id));
+				e.key + " is owned by " + e.owner.label() + "; only the owner may " + cmd,
+				Json.of("program", e.key, "owner", e.owner.id));
 		}
 	}
 
 	private JsonObject programInfo(ProgramEntry e, Client c) {
 		Program p = e.program;
-		JsonObject j = Json.of("path", e.path, "name", p.getName(), "mode", e.mode.json(),
-			"owner", e.owner == null ? null : e.owner.id, "mine", e.owner == c, "active",
-			e.path.equals(c.active), "language", p.getLanguageID().getIdAsString(), "compiler",
+		JsonObject j = Json.of("key", e.key, "project", e.project.id, "path", e.path, "name",
+			p.getName(), "mode", e.mode.json(), "owner", e.owner == null ? null : e.owner.id,
+			"mine", e.owner == c, "active", e.key.equals(c.active), "language",
+			p.getLanguageID().getIdAsString(), "compiler",
 			p.getCompilerSpec().getCompilerSpecID().getIdAsString(), "imageBase",
 			hex(p.getImageBase()), "format", p.getExecutableFormat(), "executable",
 			p.getExecutablePath(), "sha256", p.getExecutableSHA256(), "md5",
@@ -950,7 +1244,7 @@ final class Session {
 		if (changed) {
 			e.program.save(Json.str(req, "comment", "headless session"), m);
 		}
-		return Json.of("path", e.path, "saved", changed);
+		return Json.of("program", e.key, "saved", changed);
 	}
 
 	// ---- queries ---------------------------------------------------------------------------
@@ -1206,9 +1500,9 @@ final class Session {
 			throw new SessionException(SessionException.CANCELLED,
 				"analysis stopped " + (m.timedOut() ? "at its timeout" : "on cancel") +
 					"; what ran so far is kept in memory (unsaved)",
-				Json.of("program", e.path));
+				Json.of("program", e.key));
 		}
-		return Json.of("program", e.path, "analyzed", true, "seconds",
+		return Json.of("program", e.key, "analyzed", true, "seconds",
 			(System.nanoTime() - t0) / 1e9, "functions", p.getFunctionManager().getFunctionCount(),
 			"changed", p.isChanged());
 	}
@@ -1245,14 +1539,16 @@ final class Session {
 	// ---- import ----------------------------------------------------------------------------
 
 	/**
-	 * Imports a file into the open (writable) project and opens it writable for the caller. A
-	 * file whose SHA-256 is already in the project is not imported again unless
-	 * {@code "duplicate":true}.
+	 * Imports a file (any format a Ghidra loader accepts: PE EXE or DLL, ELF, Mach-O, raw, ...)
+	 * into a writable project and opens it writable for the caller. A file whose SHA-256 is
+	 * already in that project is not imported again unless {@code "duplicate":true}.
 	 */
 	private JsonElement importProgram(Client c, JsonObject req, RequestMonitor m) {
-		if (!project().isWritable()) {
+		ProjectEntry p = projectFor(c, req);
+		if (!p.writable()) {
 			throw new SessionException(SessionException.READ_ONLY,
-				"import needs the project open writable (open_project \"writable\":true)");
+				"import needs project " + p.id +
+					" open writable (open_project \"writable\":true)");
 		}
 		File file = new File(Json.str(req, "file")).getAbsoluteFile();
 		if (!file.isFile()) {
@@ -1267,61 +1563,70 @@ final class Session {
 		catch (IOException ex) {
 			throw new SessionException(SessionException.FAILED, ex.getMessage(), null, ex);
 		}
-		if (!Json.bool(req, "duplicate", false)) {
-			List<String> same = new ArrayList<>();
-			findBySha(data().getRootFolder(), sha, same);
-			if (!same.isEmpty()) {
-				JsonObject r = Json.of("imported", false, "sha256", sha);
-				Json.put(r, "existing", same);
-				Json.put(r, "note", "already in the project; open_program it, or pass " +
-					"\"duplicate\":true to import again");
-				return r;
-			}
-		}
 		String saved;
-		MessageLog log = new MessageLog();
+		Lock pl = lockProject(p, false, waitMs(req), "import");
 		try {
-			DomainFolder dest =
-				ProjectDataUtils.createDomainFolderPath(data().getRootFolder(), folder);
-			ProgramLoader.Builder b = ProgramLoader.builder()
-					.source(file)
-					.project(project())
-					.projectFolderPath(dest.getPathname())
-					.log(log)
-					.monitor(m);
-			if (Json.has(req, "name")) {
-				b.name(Json.str(req, "name"));
+			if (!Json.bool(req, "duplicate", false)) {
+				List<String> same = new ArrayList<>();
+				findBySha(p.data().getRootFolder(), sha, same);
+				if (!same.isEmpty()) {
+					JsonObject r = Json.of("imported", false, "project", p.id, "sha256", sha);
+					Json.put(r, "existing", same);
+					Json.put(r, "note", "already in the project; open_program it, or pass " +
+						"\"duplicate\":true to import again");
+					return r;
+				}
 			}
-			if (Json.has(req, "language")) {
-				b.language(Json.str(req, "language"));
+			MessageLog log = new MessageLog();
+			try {
+				DomainFolder dest =
+					ProjectDataUtils.createDomainFolderPath(p.data().getRootFolder(), folder);
+				ProgramLoader.Builder b = ProgramLoader.builder()
+						.source(file)
+						.project(p.project)
+						.projectFolderPath(dest.getPathname())
+						.log(log)
+						.monitor(m);
+				if (Json.has(req, "name")) {
+					b.name(Json.str(req, "name"));
+				}
+				if (Json.has(req, "language")) {
+					b.language(Json.str(req, "language"));
+				}
+				if (Json.has(req, "compiler")) {
+					b.compiler(Json.str(req, "compiler"));
+				}
+				synchronized (IMPORT) {
+					AppInfo.setActiveProject(p.project);
+					try (LoadResults<Program> results = b.load()) {
+						saved = results.getPrimary().save(m).getPathname();
+					}
+				}
 			}
-			if (Json.has(req, "compiler")) {
-				b.compiler(Json.str(req, "compiler"));
+			catch (CancelledException ex) {
+				throw cancelled(m);
 			}
-			try (LoadResults<Program> results = b.load()) {
-				saved = results.getPrimary().save(m).getPathname();
+			catch (SessionException ex) {
+				throw ex;
+			}
+			catch (Exception ex) {
+				throw new SessionException(SessionException.FAILED,
+					"import failed: " + ex.getMessage(), Json.of("log", log.toString()), ex);
 			}
 		}
-		catch (CancelledException ex) {
-			throw cancelled(m);
-		}
-		catch (SessionException ex) {
-			throw ex;
-		}
-		catch (Exception ex) {
-			throw new SessionException(SessionException.FAILED,
-				"import failed: " + ex.getMessage(), Json.of("log", log.toString()), ex);
+		finally {
+			pl.unlock();
 		}
 		double importS = (System.nanoTime() - t0) / 1e9;
-		JsonObject openReq = Json.of("path", saved, "writable", true);
+		JsonObject openReq = Json.of("path", saved, "writable", true, "project", p.id);
 		if (req.has("wait")) {
 			openReq.add("wait", req.get("wait"));
 		}
 		JsonObject info = (JsonObject) openProgram(c, openReq, m);
-		JsonObject r = Json.of("imported", true, "path", saved, "sha256", sha, "importSeconds",
-			importS, "program", info);
+		JsonObject r = Json.of("imported", true, "project", p.id, "path", saved, "key",
+			p.id + ":" + saved, "sha256", sha, "importSeconds", importS, "program", info);
 		if (Json.bool(req, "analyze", false)) {
-			JsonObject areq = Json.of("program", saved);
+			JsonObject areq = Json.of("program", p.id + ":" + saved);
 			if (req.has("timeout")) {
 				areq.add("timeout", req.get("timeout"));
 			}
@@ -1356,8 +1661,8 @@ final class Session {
 	 * <li>Otherwise <i>contained</i>: the script runs inside an outer transaction that is always
 	 * rolled back, so it cannot change what other clients see or what is saved. Contained scripts
 	 * share the program lock and run concurrently unless {@code "exclusive":true}.</li>
-	 * <li>With {@code "program":null} (or no program open) it runs with no current program, only
-	 * the project.</li>
+	 * <li>With {@code "program":null} (or no program open) it runs with no current program, with
+	 * the client's active project (if any) as its project.</li>
 	 * </ul>
 	 * This is not a sandbox: a script is Java with the session's rights.
 	 */
@@ -1369,31 +1674,48 @@ final class Session {
 				: selected(c, req);
 		m.deadline(Json.num(req, "timeout", 0, 0, 7 * 86_400));
 		if (e == null) {
-			return runScript(src, req, null, null, "none", m);
+			ProjectEntry p = null;
+			if (Json.has(req, "project") || c.activeProject != null) {
+				p = projectFor(c, req);
+			}
+			if (p == null) {
+				return runScript(src, req, null, null, null, "none", m);
+			}
+			ProjectEntry pp = p;
+			return inProject(p, req, "script",
+				x -> runScript(src, req, pp.project, null, null, "none", m));
 		}
-		boolean owner = e.mode == ProgramEntry.Mode.WRITABLE && e.owner == c;
-		boolean exclusive = owner || Json.bool(req, "exclusive", false);
-		Lock l = e.acquire(exclusive, waitMs(req), c, "script " + name);
+		ProjectEntry p = e.project;
+		Lock pl = lockProject(p, false, waitMs(req), "script");
 		try {
-			if (e.program == null) {
-				throw new SessionException(SessionException.NO_PROGRAM, e.path + " was closed");
+			boolean owner = e.mode == ProgramEntry.Mode.WRITABLE && e.owner == c;
+			boolean exclusive = owner || Json.bool(req, "exclusive", false);
+			Lock l = e.acquire(exclusive, waitMs(req), c, "script " + name);
+			try {
+				if (e.program == null) {
+					throw new SessionException(SessionException.NO_PROGRAM, e.key + " was closed");
+				}
+				owner = e.mode == ProgramEntry.Mode.WRITABLE && e.owner == c;
+				JsonObject r = runScript(src, req, p.project, e.program, e,
+					owner ? "owner" : "contained", m);
+				if (owner && Json.bool(req, "save", false) && e.program.isChanged()) {
+					e.program.save("script " + name, m);
+					Json.put(r, "saved", true);
+				}
+				return r;
 			}
-			owner = e.mode == ProgramEntry.Mode.WRITABLE && e.owner == c;
-			JsonObject r = runScript(src, req, e.program, e, owner ? "owner" : "contained", m);
-			if (owner && Json.bool(req, "save", false) && e.program.isChanged()) {
-				e.program.save("script " + name, m);
-				Json.put(r, "saved", true);
+			catch (CancelledException | IOException ex) {
+				throw new SessionException(
+					ex instanceof CancelledException ? SessionException.CANCELLED
+							: SessionException.FAILED,
+					ex.getMessage());
 			}
-			return r;
-		}
-		catch (CancelledException | IOException ex) {
-			throw new SessionException(
-				ex instanceof CancelledException ? SessionException.CANCELLED
-						: SessionException.FAILED,
-				ex.getMessage());
+			finally {
+				e.release(l);
+			}
 		}
 		finally {
-			e.release(l);
+			pl.unlock();
 		}
 	}
 
@@ -1409,8 +1731,8 @@ final class Session {
 		return src;
 	}
 
-	private JsonObject runScript(ResourceFile src, JsonObject req, Program p, ProgramEntry e,
-			String mode, RequestMonitor m) {
+	private JsonObject runScript(ResourceFile src, JsonObject req, Project project, Program p,
+			ProgramEntry e, String mode, RequestMonitor m) {
 		int cap = (int) Json.num(req, "maxChars", DEFAULT_TEXT_CAP, 1, MAX_TEXT_CAP);
 		StringWriter sw = new StringWriter();
 		PrintWriter pw = new PrintWriter(sw, true);
@@ -1458,9 +1780,10 @@ final class Session {
 			pw.flush();
 		}
 		String out = sw.toString();
-		JsonObject r = Json.of("script", src.getAbsolutePath(), "mode", mode, "seconds",
-			(System.nanoTime() - t0) / 1e9, "chars", out.length(), "truncated", out.length() > cap,
-			"output", out.length() > cap ? out.substring(0, cap) : out, "changed",
+		JsonObject r = Json.of("script", src.getAbsolutePath(), "mode", mode, "program",
+			e == null ? null : e.key, "seconds", (System.nanoTime() - t0) / 1e9, "chars",
+			out.length(), "truncated", out.length() > cap, "output",
+			out.length() > cap ? out.substring(0, cap) : out, "changed",
 			p != null && p.isChanged());
 		if (failure != null) {
 			if (m.isCancelled() || failure instanceof CancelledException) {
