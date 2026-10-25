@@ -57,11 +57,14 @@ jobs:
           path: dependencies
           key: deps-${{ runner.os }}-${{ hashFiles('gradle/support/fetchDependencies.gradle') }}
 
+      # PowerShell runs gradlew.bat (Ghidra's POSIX gradlew does not find its wrapper under Git Bash)
       - name: Fetch dependencies
+        shell: pwsh
         run: ./gradlew -I gradle/support/fetchDependencies.gradle -DhideDownloadProgress -DnoEclipse
 
       - name: Build the headless install
-        run: ./gradlew buildHeadless --parallel "-PheadlessInstallDir=$GHIDRA_INSTALL"
+        shell: pwsh
+        run: ./gradlew buildHeadless --parallel "-PheadlessInstallDir=$env:GHIDRA_INSTALL"
 
       - name: Install summary
         run: |
