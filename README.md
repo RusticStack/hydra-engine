@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/logo-dark.svg">
-    <img src=".github/assets/logo-light.svg" width="128" alt="Hydra Engine logo: a green many-headed serpent; the middle head's face is a terminal prompt, one neck is cut short and a new dashed head is arriving">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/RusticStack/hydra-engine/main/.github/assets/logo-dark.svg">
+    <img src="https://raw.githubusercontent.com/RusticStack/hydra-engine/main/.github/assets/logo-light.svg" width="128" alt="Hydra Engine logo: a green many-headed serpent; the middle head's face is a terminal prompt, one neck is cut short and a new dashed head is arriving">
   </picture>
 </p>
 
@@ -27,8 +27,8 @@ A shared daemon serves many projects, programs and clients at once. Warm decompi
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/architecture-dark.svg">
-    <img src=".github/assets/architecture-light.svg" width="860" alt="Diagram: on the left, clients (Claude Code, Codex, OpenCode, QoderCLI, RusticRE as an MCP server, a script) connect to one Hydra Engine daemon in the middle, which has a quick lane and a long lane; one client is cut off and its locks are freed. On the right, the daemon serves three projects opened in place, with their programs">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/RusticStack/hydra-engine/main/.github/assets/architecture-dark.svg">
+    <img src="https://raw.githubusercontent.com/RusticStack/hydra-engine/main/.github/assets/architecture-light.svg" width="860" alt="Diagram: on the left, clients (Claude Code, Codex, OpenCode, QoderCLI, RusticRE as an MCP server, a script) connect to one Hydra Engine daemon in the middle, which has a quick lane and a long lane; one client is cut off and its locks are freed. On the right, the daemon serves three projects opened in place, with their programs">
   </picture>
 </p>
 
@@ -116,8 +116,8 @@ python $GS status                                   # projects, programs, client
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/session-dark.svg">
-    <img src=".github/assets/session-light.svg" width="860" alt="A recorded Python session: connect starts the daemon, a project is opened writable, a small test program is imported and analysed, a second import of the same file is refused because its SHA-256 is already there, and a function is decompiled to C">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/RusticStack/hydra-engine/main/.github/assets/session-dark.svg">
+    <img src="https://raw.githubusercontent.com/RusticStack/hydra-engine/main/.github/assets/session-light.svg" width="860" alt="A recorded Python session: connect starts the daemon, a project is opened writable, a small test program is imported and analysed, a second import of the same file is refused because its SHA-256 is already there, and a function is decompiled to C">
   </picture>
 </p>
 
