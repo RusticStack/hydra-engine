@@ -131,13 +131,14 @@ public class SleighLanguageFile {
 			return new SleighLanguageFile(slaRFile, slaSpecRFile, null);
 		}
 		
-		// try to create lock file.  Will fail in directories that the user doesn't have perms for
-		// and will be the same as single jar mode (no locking / compiling possible)
-		File lockFile = tryCreateLockFile(
-			new ResourceFile(slaRFile.getParentFile(), slaRFile.getName() + ".lock")
-					.getFile(false));
+		// The lock file is created when it is first needed (see getLockFile()): creating one for
+		// every language description up front costs a file create/close per language, about 300.
+		// Creating it fails in directories that the user doesn't have perms for, which is then
+		// the same as single jar mode (no locking / compiling possible).
+		File lockFile =
+			new ResourceFile(slaRFile.getParentFile(), slaRFile.getName() + ".lock").getFile(false);
 
-		return new SleighLanguageFile(slaRFile, slaSpecRFile, lockFile);
+		return new SleighLanguageFile(slaRFile, slaSpecRFile, lockFile, true);
 	}
 
 	/**
@@ -190,12 +191,20 @@ public class SleighLanguageFile {
 
 	private final ResourceFile slaFile;
 	private final ResourceFile slaSpecFile;
-	private final File lockFile;
+	private File lockFile;
+	/** True until {@link #lockFile} (a candidate) has been checked by creating it. */
+	private boolean lockFileUnchecked;
 
 	private SleighLanguageFile(ResourceFile slaFile, ResourceFile slaSpecFile, File lockFile) {
+		this(slaFile, slaSpecFile, lockFile, false);
+	}
+
+	private SleighLanguageFile(ResourceFile slaFile, ResourceFile slaSpecFile, File lockFile,
+			boolean checkLockFileLater) {
 		this.slaFile = slaFile;
 		this.slaSpecFile = slaSpecFile;
 		this.lockFile = lockFile;
+		this.lockFileUnchecked = checkLockFileLater && lockFile != null;
 	}
 
 	/**
@@ -228,10 +237,14 @@ public class SleighLanguageFile {
 	 * @return true if this language's files can be locked
 	 */
 	public boolean canLock() {
-		return lockFile != null;
+		return getLockFile() != null;
 	}
 
-	public File getLockFile() {
+	public synchronized File getLockFile() {
+		if (lockFileUnchecked) {
+			lockFileUnchecked = false;
+			lockFile = tryCreateLockFile(lockFile);
+		}
 		return lockFile;
 	}
 
@@ -250,6 +263,7 @@ public class SleighLanguageFile {
 	<E extends Throwable> void withLock(Duration timeout, TaskMonitor monitor,
 			CheckedRunnable<E> r) throws E, IOException, TimeoutException {
 
+		File lockFile = getLockFile();
 		if (lockFile == null) {
 			throw new IOException("Unable to lock language, missing lock file");
 		}
