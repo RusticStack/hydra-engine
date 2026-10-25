@@ -23,9 +23,10 @@ long-lived JVM, driven by JSON lines over an authenticated loopback socket (or s
   dies;
 - stays up (or stops after an idle time you choose).
 
-It is one new module. No existing Ghidra class or launcher is changed, and there are no `.bat`,
-`.sh` or PowerShell launchers: `support/ghidra_session.py` (Python 3.10+, standard library only,
-any OS) starts the JVM itself.
+It is one new module, plus two small fixes to Ghidra classes that the session's measurements
+found (see "Changes outside this module"). No launcher is changed, and there are no `.bat`, `.sh`
+or PowerShell launchers: `support/ghidra_session.py` (Python 3.10+, standard library only, any
+OS) starts the JVM itself.
 
 ## Quick start
 
@@ -80,7 +81,15 @@ three extra JVMs `LaunchSupport` costs on every start:
 - **AOT cache** (JDK 25+): `ghidra_session.py aot [--project <a small project>]` runs a training
   session (start-up, a project, a program, a few decompiles) with `-XX:AOTCacheOutput`; fast-mode
   starts then use it automatically. It is keyed by the JDK, the install and every classpath jar's
-  size and time, so an update or another JDK just runs without it until you rebuild it.
+  size and time, so an update or another JDK just runs without it until you rebuild it, and by the
+  JVM options a cache must match (the garbage collector, compact object headers, compressed
+  pointers, which a heap of 32 GiB or more turns off): the JVM refuses a cache recorded with other
+  ones and silently runs without it, so each set gets its own file.
+- **Deferred start-up:** what no query needs is started on a background thread once the session
+  is ready: the language service (every program open needs it), the default TLS context (master
+  loads every trusted CA certificate of the OS and of Java for it) and the OSGi framework that
+  compiles scripts. `script`, `import` and `analyze` wait for it first.
+- **Upgrade cache:** see "Programs saved by an older Ghidra" below.
 
 | Command | Does |
 |---|---|
@@ -119,6 +128,8 @@ Lowest to highest: defaults, `<state>/config.json`, environment, command-line op
 | `maxLong` | | CPU / 4 (at least 2) | Concurrent long requests (analyze, import, script, save). |
 | `scriptPath` | | `[]` | Extra GhidraScript directories. |
 | `log` | | `<state>/<instance>.log` | The daemon's log (Ghidra's log and stderr). |
+| `upgradeCache` | `GHIDRA_SESSION_UPGRADE_CACHE` (`off`, `false`, `0`: off) | `true` | Serve read-only opens of programs saved in an older database format from an upgraded copy (below). |
+| `upgradeCacheDir` | `GHIDRA_SESSION_UPGRADE_CACHE_DIR` | `<state>/upgrade-cache` | Where those copies live; best on the same volume as the projects (a block clone there costs nothing). |
 
 The state dir is `--state`, else `GHIDRA_SESSION_HOME`, else per user:
 `%LOCALAPPDATA%\GhidraSession` (Windows), `~/Library/Application Support/GhidraSession` (macOS),
@@ -180,6 +191,36 @@ Only one process can hold it; a second writable open gets `conflict` with the lo
 
 A read-only view does not see changes another process saves to the project after it was opened.
 Reopen it (all clients leave it, or wait for `keepWarm`) to see them.
+
+### Programs saved by an older Ghidra
+
+Opened read-only, a program in an older database format is upgraded in memory on every open,
+which for a large program takes many times longer than the open itself (a 66.7 MB executable with
+243,855 functions saved by 12.1.4: 21-24 s on master instead of about 1 s). The **upgrade cache**
+does that work once:
+
+1. Before opening, the session reads the program's stored database version and language version
+   from its database (a few milliseconds, without opening the program). A current program opens
+   as usual.
+2. An older one is served from `<upgradeCacheDir>/<key>/project`: on the first such open the
+   session copies the project there (with the platform's copy, which block-clones on ReFS and
+   other file systems that can), opens the program in the copy writable, upgrades and saves it,
+   and opens it read-only from the copy. Later opens find the copy and skip all of that.
+3. `open_program` and `info` report it: `"cachedUpgrade": true` and `"upgradeCache": {"built":
+   ..., "key": ..., "dir": ..., "reason": "program database version 32, this Ghidra 33"}`.
+
+The key is the source's identity: the canonical path of its `.gpr`, this Ghidra's version, build
+date and program database version, and every file of the `.gpr` and `.rep` with its size and
+modification time, plus the SHA-256 of every file up to 1 MiB (the `.gpr`, property and index
+files). Ghidra writes its large database files whole, as new versions, never in place, so their
+size and time identify them; hashing them on every open would cost more than the open. Any change
+makes a new key, and the copies of older keys of the same source are removed once no daemon uses
+them (a shared OS lock on `<key>.use` marks a copy in use; a copy is built under `<key>.lock`, so
+several daemons can share the directory). The source is only ever read.
+
+The first open costs a copy and a writable upgrade and save instead of an in-memory upgrade; on
+the machine below that was 117 s with Ghidra's temporary directory on the NVMe system drive (51 s
+upgrade, 65 s save), once. Turn it off with `"upgradeCache": false`.
 
 ## Protocol (version 2)
 
@@ -337,29 +378,42 @@ create structure from usage, and version tracking from another program in the pr
 
 ## Performance
 
-### Ghidra master (12.3 DEV) against 12.1.4, same machine, same day
+### Ghidra master (12.3 DEV) against 12.1.4, same machine, same hour
 
-Windows 11, JDK 25.0.4, 16-core i7-13700KF, 64 GB, Dev Drive (ReFS); fast mode, AOT cache and
-class search cache on; the same 66.7 MB x64 executable with 243,855 functions, opened read-only,
-each build from a project in its own database format. Medians of 7 runs (35 for warm decompiles);
-the ranges are min-max.
+Windows 11, JDK 25.0.4, 24 threads, 64 GB; the installs and projects on a USB NVMe Dev Drive
+(ReFS); fast mode, AOT cache (trained on the program below) and class search cache on, 8 GiB
+heap; the same 66.7 MB x64 executable with 243,855 functions, opened read-only, each build from a
+project in its own database format. Each round runs every column once, in alternating order,
+after one discarded warm-up round, so the columns share the machine's state; medians of 9 rounds,
+ranges min-max. "master" is the module on master before the changes in "Changes outside this
+module" and "Deferred start-up"; "this branch" is with them.
 
-| | 12.1.4 | master |
-|---|---|---|
-| Launch until `ready` | 389 ms (378-585) | 482 ms (469-503) |
-| `open_program` (243,855 functions) | 784 ms (752-1402) | 1445 ms (1114-1902) |
-| First `decompile` | 254 ms | 250 ms |
-| **Launch until the first answer** | **1502 ms** (1448-2117) | **2279 ms** (1918-2692) |
-| Daemon: start it and connect | 493 ms (466-554) | 596 ms (552-726) |
-| Daemon: first client's `open_program` | 763 ms (741-803) | 1201 ms (1036-1858) |
-| Another client: connect + `hello`, join the project, `open_program` (already open), `decompile` | 16 ms, 0.9 ms, 0.5 ms, 5.5 ms | 11 ms, 0.9 ms, 0.5 ms, 5.5 ms |
-| Warm `decompile` | 6.3-6.5 ms | 6.5-6.6 ms |
+| | 12.1.4 | master | this branch |
+|---|---|---|---|
+| Launch until `ready` | 394 ms (386-704) | 504 ms (493-770) | **348 ms** (339-603) |
+| `open_program` (243,855 functions) | 817 ms (794-1393) | 4126 ms (3730-6705) | **847 ms** (826-1144) |
+| First `decompile` | 253 ms | 258 ms | 256 ms |
+| **Launch until the first answer** | 1526 ms (1503-2176) | 4975 ms (4545-7836) | **1521 ms** (1482-2113) |
+| Daemon: start it and connect | 578 ms (532-1077) | 685 ms (623-720) | **533 ms** (472-572) |
+| Daemon: first client's `open_program` | 803 ms (782-979) | 4111 ms (3898-6478) | **832 ms** (754-869) |
+| Daemon: start until the first answer | 1684 ms (1624-2392) | 5049 ms (4892-7491) | **1637 ms** (1589-1765) |
+| Warm `decompile` | 7.0-7.3 ms | 7.1 ms | 6.7-7.1 ms |
+
+Master's `open_program` cost depends on the volume the install is on: it is the language service
+opening a lock file per language (see "Changes outside this module"), which measured 1.1-1.9 s
+earlier the same day and 3.7-6.9 s here, on the same drive.
+
+Tried and not kept (same method, paired against this branch, 8 rounds): `-XX:TieredStopAtLevel=1`
+starts 48 ms sooner but lists all 243,855 functions in 43-50 s instead of 18-36 s, too slow for a
+long-lived daemon; the parallel collector (+34 ms to the first answer), no compact object headers
+(+25 ms) and `-Xms2g` (+104 ms) gained nothing. The decompiler is a native process, so a JVM
+class data cache cannot help its start.
 
 A project saved by 12.1.4 opens read-only on master without being changed, but every read-only
 open upgrades the program in memory first: `open_program` then took 21-24 s for this program
-instead of about 1.4 s. Opening it writable is refused until the request passes `"upgrade": true`
-(the upgrade is one-way; older Ghidra versions cannot open the result). Use a copy of an older
-project, upgrade it once, and open that.
+instead of about 1.4 s. The upgrade cache (above) now does that once. Opening it writable is
+refused until the request passes `"upgrade": true` (the upgrade is one-way; older Ghidra versions
+cannot open the result).
 
 ### Ghidra 12.1.4 (the first measurements)
 
@@ -409,11 +463,14 @@ took 7.0-7.8 s per question and needed a copy of the project.
 - `examples/daemon_tests.py`: two harness processes starting the daemon at once, several
   projects in one daemon, a DLL import, a client killed while it owns a program and analyses it,
   the daemon killed and restarted, fair scheduling, `cancel all`, idle shutdown, warm programs,
-  and a private stdio session.
+  a private stdio session, and the upgrade cache (a current program does not use it; with
+  `--legacy-project`, a project saved by an older Ghidra, which the test copies first: the first
+  open builds the cache, the next one reuses it and is faster, the source stays byte-identical, a
+  changed source rebuilds it and the old copy is removed, and an opted-out daemon does not use it).
 
 ```
 python examples/session_smoke.py --ghidra <install> --work <empty dir> --binary A.exe --binary B.exe
-python examples/daemon_tests.py --ghidra <install> --work <empty dir> --exe A.exe --dll B.dll [--project <analysed project>]
+python examples/daemon_tests.py --ghidra <install> --work <empty dir> --exe A.exe --dll B.dll [--project <analysed project>] [--legacy-project <older project> [--legacy-program <path>]]
 ```
 
 Both use their own state dir and daemon instance, so they never touch the user's daemon.
@@ -429,8 +486,22 @@ Both use their own state dir and daemon instance, so they never touch the user's
 | Launcher, daemon manager, client | `support/ghidra_session.py` in this module | Platform-agnostic, no shell. The distribution copies a module's `support/` into the install, so it ships with the module. |
 | Anything specific to one client (an MCP server's tools, its stores and checks) | That client | The session is a generic Ghidra front end. Clients call it; they do not contain it. |
 
-The module needs nothing private from Ghidra beyond the two reflective touches named above
-(`HeadlessScript.setHeadlessInstance`, `ClassSearcher`'s search result), each optional.
+The module needs nothing private from Ghidra beyond three reflective touches
+(`HeadlessScript.setHeadlessInstance`, `ClassSearcher`'s search result, and `ProgramDB`'s
+`DB_VERSION` for the upgrade cache), each optional: without it that feature turns itself off.
+
+## Changes outside this module
+
+Two fixes in Ghidra itself, both found by this module's measurements, each a few lines and each
+useful to any Ghidra process:
+
+| Where | Before | After |
+|---|---|---|
+| `Framework/DB`, `LocalBufferFile.close`/`delete` | A temporary buffer file (a program's database cache) is closed, then deleted. On ReFS (a Windows Dev Drive) the last close of a file writes all its dirty cached pages back to disk first, even when the file is deleted right after: closing a large program, or shutting a session down with one open, took 22-41 s with `java.io.tmpdir` there (up to 150 s seen), against 0.05 s on NTFS. | A temporary file is truncated to 0 bytes before it is closed, which drops its unwritten pages: 0.25-0.76 s on the same drive. Nothing reads it again, so nothing else changes. |
+| `Framework/SoftwareModeling`, `SleighLanguageFile` | On master, the language service opens a `<language>.sla.lock` file read-write for every language definition (about 300) when it starts, only to learn whether it could lock it. Each open and close of a file on the install's volume costs milliseconds, more on a volume with an antivirus filter: the first `open_program` of a session took 1.4-6.9 s instead of about 0.8 s. | The lock file is created the first time a language actually needs it (`canLock`, `withLock`): one or two per session. Same results, same rules for a directory the user cannot write. |
+
+The distribution also leaves out `__pycache__` folders and `.pyc` files that running a module's
+`support/` scripts from the source tree leaves behind (`gradle/distributableGhidraModule.gradle`).
 
 ## What is already scriptable (Ghidra master, 12.3 DEV)
 
@@ -450,10 +521,9 @@ The module needs nothing private from Ghidra beyond the two reflective touches n
 - The AOT cache needs JDK 25 or later (`-XX:AOTCacheOutput`); older JDKs run without it.
 - A read-only view does not pick up changes saved to the project by another process after it was
   opened (see above).
-- On master, with `tmpdir` on a ReFS Dev Drive, shutting the daemon down after a large program
-  was opened from an older project took 60-150 s: Ghidra's `ProgramDB.close` waits in
-  `File.delete` of its buffer cache file. With the default temporary directory it took 0.6 s.
-  The cause is not isolated yet; until it is, leave `tmpdir` at its default on such a drive, or
-  give `stop` a longer timeout.
+- With `tmpdir` on a ReFS volume (a Windows Dev Drive), writing Ghidra's buffer cache is slower
+  than on NTFS (ReFS writes a file's dirty pages back when its last handle closes), so an
+  in-memory upgrade or a large analysis is slower there. Closing is fixed (see "Changes outside
+  this module"); put `tmpdir` on a fast NTFS or ext4 disk with room if you can.
 - Imports run one at a time across the daemon: Ghidra's loaders find libraries through one global
   "active project".
