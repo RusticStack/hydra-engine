@@ -1,0 +1,313 @@
+/* ###
+ * IP: Apache License 2.0
+ */
+/*****************************************************************************************
+ * Hydra Engine: the headless-only build.
+ *
+ *   gradle buildHeadless [-PheadlessInstallDir=<dir>]
+ *
+ * Builds an unzipped install for the current platform that holds what headless analysis needs:
+ * the frameworks, every processor, the loaders and analyzers, the decompiler, scripting
+ * (Java, PyGhidra), the Ghidra server and the HeadlessSession module. It leaves out:
+ *
+ *   - GUI-only modules (EXCLUDED_MODULES below): no module that stays depends on them, and
+ *     they hold only window plugins, or debugger back ends that only the Debugger window
+ *     launches;
+ *   - the GUI example extensions (EXCLUDED_EXTENSIONS);
+ *   - help (indexing, building, and the help pages inside the module jars), javadoc,
+ *     JSON docs, Python type stubs, the markdown-to-HTML pass, the source zips and the
+ *     user documentation in docs/;
+ *   - ghidraRun, ghidraRun.bat and the GhidraGo launchers;
+ *   - the zips (the install is a directory; zipHeadless zips it) and the other platforms'
+ *     natives: only the current platform's are copied;
+ *   - the software bill of materials, bom.json (-PheadlessSbom=true writes it);
+ *   - on Windows, the DIA-based PDB helper pdb.exe (-PwithPdbHelper builds it).
+ *
+ * The Python type stubs (docs/ghidra_stubs, the ghidra-stubs wheel) are for editors and type
+ * checkers only; PyGhidra and headless Python scripts run without them.
+ *
+ * Mixed modules (window code and analysis code in one module, such as Base, Docking,
+ * VersionTracking or Debugger, which SystemEmulation needs) stay. Nothing is deleted from the
+ * source tree, and upstream's build files are untouched apart from one 'apply from' line in
+ * the root build.gradle, so syncing with upstream stays a plain merge.
+ *
+ * checkHeadlessModules (run by buildHeadless) fails the build if a module that stays depends
+ * on an excluded one, so an upstream change that moves code cannot break the headless install
+ * silently.
+ *
+ * The full Ghidra build, with the window, is unchanged: gradle buildGhidra.
+ *****************************************************************************************/
+
+// Worked out from the module graph (Module.manifest, build.gradle project dependencies, and the
+// extension points each module's classes implement); see CONTRIBUTING.md, "The headless build".
+ext.HEADLESS_EXCLUDED_MODULES = [
+	// window-only features
+	'BSimFeatureVisualizer',            // BSim feature graph window
+	'DebugUtils',                       // DbViewer window (EXCLUDE FROM GHIDRA JAR)
+	'FunctionGraphDecompilerExtension', // decompiler view inside the function graph window
+	'GhidraGo',                         // ghidra:// URL handler that drives a running window
+	'GraphFunctionCalls',               // call graph window
+	'ProgramDiff',                      // program diff window
+	'ProgramGraph',                     // program graph window
+	'SourceCodeLookup',                 // jump from the listing to an IDE
+	// debugger back ends: launched only from the Debugger window's launchers
+	'Debugger-agent-dbgeng',
+	'Debugger-agent-drgn',
+	'Debugger-agent-gdb',
+	'Debugger-agent-lldb',
+	'Debugger-agent-x64dbg',
+	'Debugger-dap',
+	'Debugger-jpda',
+]
+
+ext.HEADLESS_EXCLUDED_EXTENSIONS = [
+	'SampleTablePlugin',
+	'sample',
+	'bundle_examples',
+]
+
+// Tasks that only produce documentation. Root tasks by name; module tasks by name in every module.
+def HEADLESS_SKIPPED_ROOT_TASKS = [
+	'zipJavadocs', 'createJavadocs', 'createJsondocs', 'createPythonTypeStubs',
+	'createGhidraStubsWheel', 'assembleMarkdownToHtml', 'assembleSource',
+]
+def HEADLESS_SKIPPED_MODULE_TASKS = [
+	'indexHelp', 'buildHelpFiles', 'buildModuleHelp', 'buildGlobalMarkdown',
+]
+
+// Files of the full install that a headless install does not ship (paths in the install).
+// docs/ is the user documentation: the Ghidra class, cheat sheet, language manuals, javadoc and
+// Python stubs.
+def HEADLESS_SKIPPED_FILES = [
+	'ghidraRun', 'ghidraRun.bat', 'support/GhidraGo/**', 'docs/**', 'GettingStarted.*',
+]
+
+boolean headlessRequested = gradle.startParameter.taskNames.any { n ->
+	def t = n.tokenize(':') ? n.tokenize(':').last() : n
+	t in ['buildHeadless', 'assembleHeadless', 'zipHeadless']
+}
+ext.HEADLESS_BUILD = headlessRequested
+
+def excludedProjects = {
+	rootProject.subprojects.findAll {
+		it.name in HEADLESS_EXCLUDED_MODULES || it.name in HEADLESS_EXCLUDED_EXTENSIONS
+	}
+}
+
+if (headlessRequested) {
+	// Leave the documentation tasks and every task of an excluded module out of the task graph
+	// (as -x does), so neither they nor what only they need are built.
+	gradle.projectsEvaluated {
+		def names = gradle.startParameter.excludedTaskNames as List
+		HEADLESS_SKIPPED_ROOT_TASKS.each { names << ":$it".toString() }
+		rootProject.subprojects.each { p ->
+			HEADLESS_SKIPPED_MODULE_TASKS.each { t ->
+				if (p.tasks.findByName(t) != null) {
+					names << "${p.path}:${t}".toString()
+				}
+			}
+		}
+		excludedProjects().each { p ->
+			p.tasks.names.each { t -> names << "${p.path}:${t}".toString() }
+		}
+		// pdb.exe (Windows): the PDB helper built against Microsoft's DIA SDK. It only works
+		// where the DIA SDK is registered, and Ghidra's default PDB reader ("PDB Universal",
+		// pure Java) does not use it. -PwithPdbHelper builds it (needs Visual Studio's ATL).
+		if (!(project.findProperty('withPdbHelper')?.toString() in ['', 'true'])) {
+			def pdb = rootProject.subprojects.find { it.name == 'PDB' }
+			pdb?.tasks?.names?.findAll { it.endsWith('PDBMake') }?.each { t ->
+				names << "${pdb.path}:${t}".toString()
+			}
+		}
+		gradle.startParameter.excludedTaskNames = names.unique()
+	}
+
+	// Module jars without their help pages: help/topics (src/main/help, which helpProject.gradle
+	// also adds as a resource dir) and the generated index (build/help/main).
+	// src/main/resources/help (the shared style sheets, the dummy help set) stays.
+	subprojects { p ->
+		p.tasks.withType(Jar).configureEach { j ->
+			if (j.name == 'jar') {
+				j.exclude 'help/topics/**'
+				j.exclude { el ->
+					def path = el.file.path.replace('\\', '/')
+					path.contains('/src/main/help/') || path.contains('/build/help/main/')
+				}
+			}
+		}
+	}
+}
+
+/*****************************************************************************************
+ * checkHeadlessModules: no module that stays may depend on an excluded one.
+ *****************************************************************************************/
+task checkHeadlessModules {
+	group = 'Hydra'
+	description = 'Fails if a module of the headless install depends on a module it leaves out. [gradle/hydra/headless.gradle]'
+	doLast {
+		def excluded = excludedProjects().collect { it.path } as Set
+		def problems = []
+		rootProject.subprojects.each { p ->
+			// test-only projects (Ghidra/Test) are not part of any install
+			if (p.path in excluded || p.projectDir.parentFile.name == 'Test') {
+				return
+			}
+			p.configurations.each { c ->
+				if (c.name.toLowerCase().contains('test')) {
+					return
+				}
+				c.dependencies.withType(ProjectDependency).each { d ->
+					if (d.path in excluded) {
+						problems << "${p.path} (${c.name}) -> ${d.path}"
+					}
+				}
+			}
+		}
+		if (problems) {
+			throw new GradleException("Modules of the headless install depend on excluded modules:\n  " +
+				problems.unique().join("\n  ") +
+				"\nMove the excluded module back in (gradle/hydra/headless.gradle) or fix the dependency.")
+		}
+		logger.lifecycle("checkHeadlessModules: ${excluded.size()} modules left out, none needed by the others")
+	}
+}
+
+/*****************************************************************************************
+ * assembleHeadless: the unzipped install.
+ *
+ * It reuses assembleDistribution and assembleDistribution_<platform> (where every module adds
+ * its files), filters out what a headless install does not ship, and writes the install to
+ * build/dist/<ZIP_DIR_PREFIX>, or to -PheadlessInstallDir=<dir>.
+ *****************************************************************************************/
+def headlessInstallDir = {
+	project.hasProperty('headlessInstallDir') ?
+		file(project.property('headlessInstallDir')) :
+		file("${DISTRIBUTION_DIR}/${ZIP_DIR_PREFIX}")
+}
+
+def currentPlatformCopy = "assembleDistribution_${rootProject.getCurrentPlatformName()}"
+
+if (headlessRequested) {
+	def skippedModulePaths = []
+	gradle.projectsEvaluated {
+		// getZipPath uses the OS separator; install paths use '/'
+		excludedProjects().each { p ->
+			skippedModulePaths << rootProject.getZipPath(p).replace('\\', '/') + '/'
+		}
+	}
+	// '**' any path, '*' within one path element
+	def patterns = HEADLESS_SKIPPED_FILES.collect { glob ->
+		java.util.regex.Pattern.compile(glob.split(/\*\*/, -1).collect { part ->
+			part.split(/\*/, -1).collect { java.util.regex.Pattern.quote(it) }.join('[^/]*')
+		}.join('.*'))
+	}
+	[assembleDistribution, tasks.named(currentPlatformCopy).get()].each { t ->
+		t.destinationDir = headlessInstallDir()
+		t.eachFile { fcd ->
+			def path = fcd.relativePath.pathString
+			if (skippedModulePaths.any { path.startsWith(it) } ||
+				patterns.any { it.matcher(path).matches() }) {
+				fcd.exclude()
+			}
+		}
+	}
+	// The software bill of materials (bom.json) opens every jar of the install, one after another,
+	// and was most of assembleDistribution's time. A headless install skips it unless asked:
+	// -PheadlessSbom=true.
+	if (!(project.findProperty('headlessSbom')?.toString()?.toBoolean())) {
+		ext.writeSoftwareBillOfMaterials = { distroDir, sbomFile ->
+			logger.lifecycle('Headless install: bom.json skipped (-PheadlessSbom=true writes it)')
+		}
+	}
+	assembleDistribution.doFirst {
+		// Start from an empty install, but never empty a directory that is not one.
+		def dir = headlessInstallDir()
+		if (dir.exists()) {
+			def entries = dir.list() as List
+			if (!entries.isEmpty() && !new File(dir, 'Ghidra/application.properties').isFile()) {
+				throw new GradleException("headlessInstallDir ${dir} is not empty and is not a Ghidra install; refusing to replace it")
+			}
+			project.delete(dir)
+		}
+	}
+	tasks.named(currentPlatformCopy) { mustRunAfter assembleDistribution }
+	// extension zips are written into the install; only after it was emptied
+	gradle.projectsEvaluated {
+		rootProject.subprojects.each { p ->
+			p.tasks.matching { it.name == 'zipExtensions' }.configureEach {
+				mustRunAfter rootProject.tasks.assembleDistribution
+			}
+		}
+	}
+}
+
+task assembleHeadless {
+	group = 'Hydra'
+	description = 'Assembles the headless install for the current platform (unzipped). [gradle/hydra/headless.gradle]'
+	dependsOn checkHeadlessModules
+	dependsOn assembleDistribution
+	dependsOn currentPlatformCopy
+	gradle.projectsEvaluated {
+		// extensions (zips in Extensions/) other than the excluded ones
+		rootProject.subprojects.each { p ->
+			if (!(p.name in HEADLESS_EXCLUDED_EXTENSIONS) && !(p.name in HEADLESS_EXCLUDED_MODULES)) {
+				def z = p.tasks.findByName('zipExtensions')
+				if (z != null) {
+					assembleHeadless.dependsOn z
+				}
+			}
+		}
+	}
+	doLast {
+		def dir = headlessInstallDir()
+		// the copies leave the excluded modules' (now empty) directories behind
+		(excludedProjects().collect { rootProject.getZipPath(it) } + ['docs']).each { rel ->
+			def m = new File(dir, rel)
+			if (m.isDirectory() && project.fileTree(m).files.isEmpty()) {
+				project.delete(m)
+			}
+		}
+		new File(dir, 'Ghidra/Extensions').mkdirs()
+		// The extension zips go to <DISTRIBUTION_DIR>/<ZIP_DIR_PREFIX>/Extensions; bring them
+		// along when the install is written elsewhere.
+		def built = file("${DISTRIBUTION_DIR}/${ZIP_DIR_PREFIX}/Extensions")
+		if (built.isDirectory() && built.canonicalPath != new File(dir, 'Extensions').canonicalPath) {
+			project.copy {
+				from built
+				into new File(dir, 'Extensions')
+				HEADLESS_EXCLUDED_EXTENSIONS.each { e -> exclude "**/*_${e}.zip" }
+			}
+		}
+		else if (built.isDirectory()) {
+			HEADLESS_EXCLUDED_EXTENSIONS.each { e ->
+				project.delete(project.fileTree(built) { include "**/*_${e}.zip" })
+			}
+		}
+		// As assembleAll does: .sla files newer than their .slaspec, so Ghidra does not
+		// recompile the processors on its first start.
+		long later = System.currentTimeMillis() + 2 * 60 * 1000
+		project.fileTree(dir) { include '**/*.sla' }.each { it.setLastModified(later) }
+		logger.lifecycle("Headless install: ${dir}")
+	}
+}
+
+/*****************************************************************************************
+ * zipHeadless / buildHeadless
+ *****************************************************************************************/
+task zipHeadless(type: Zip) {
+	group = 'Hydra'
+	description = 'Zips the headless install to build/dist/<name>_headless.zip. [gradle/hydra/headless.gradle]'
+	dependsOn assembleHeadless
+	archiveFileName = "${ZIP_NAME_PREFIX}_headless.zip"
+	destinationDirectory = DISTRIBUTION_DIR
+	duplicatesStrategy = 'exclude'
+	from(headlessInstallDir()) {
+		into ZIP_DIR_PREFIX
+	}
+}
+
+task buildHeadless {
+	group = 'Hydra'
+	description = 'Builds the headless install for the current platform (no window, help or javadoc). The full build is buildGhidra. [gradle/hydra/headless.gradle]'
+	dependsOn assembleHeadless
+}
