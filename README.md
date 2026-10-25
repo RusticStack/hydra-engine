@@ -1,12 +1,13 @@
 <img src="Ghidra/Features/Base/src/main/resources/images/GHIDRA_3.png" width="400">
 
 > **This fork (RusticStack/ghidra, branch `headless-session`)** is Ghidra 12.1.4 plus one new
-> module, [`Ghidra/Features/HeadlessSession`](Ghidra/Features/HeadlessSession/README.md), and its
-> launchers `support/headlessSession` and `support/headlessSession.bat`. It is a long-lived headless
-> process that works the way the window does (open a project, list it, open and switch programs
-> without importing, analyse, run scripts, save, serve several clients) instead of
-> `analyzeHeadless`'s one run per program file. No existing Ghidra class is changed, and the
-> default branch tracks upstream unchanged.
+> module, [`Ghidra/Features/HeadlessSession`](Ghidra/Features/HeadlessSession/README.md): a shared,
+> long-lived headless Ghidra service that works the way the window does (open projects in place,
+> list them, open and switch programs without importing, import, analyse, run scripts, save) for
+> many projects and many clients at once, instead of `analyzeHeadless`'s one run per program file.
+> It is started by `support/ghidra_session.py` in the module (Python, any OS, no shell scripts).
+> No existing Ghidra class or launcher is changed, and the default branch tracks upstream
+> unchanged.
 
 # Ghidra Software Reverse Engineering Framework
 Ghidra is a software reverse engineering (SRE) framework created and maintained by the 
