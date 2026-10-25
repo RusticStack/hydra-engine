@@ -84,8 +84,7 @@ public class HeadlessSession implements GhidraLaunchable {
 		System.setOut(new PrintStream(new FileOutputStream(FileDescriptor.err), true,
 			StandardCharsets.UTF_8));
 
-		HeadlessGhidraApplicationConfiguration config =
-			new HeadlessGhidraApplicationConfiguration();
+		HeadlessGhidraApplicationConfiguration config = new SessionApplicationConfiguration();
 		if (o.log != null) {
 			config.setApplicationLogFile(new File(o.log));
 		}
