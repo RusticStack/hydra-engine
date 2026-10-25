@@ -36,6 +36,8 @@ rootProject.assembleDistribution {
 
 	from ("${p.projectDir}/support") {
 		into  { "${zipPath}/support" }
+		exclude '**/__pycache__/**' // made by running a support script from the source tree
+		exclude '**/*.pyc'
 	}
 
 	from ("${p.projectDir}/data") {
