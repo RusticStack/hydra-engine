@@ -28,6 +28,8 @@ import generic.jar.ResourceFile;
 import ghidra.GhidraClassLoader;
 import ghidra.framework.Application;
 import ghidra.framework.HeadlessGhidraApplicationConfiguration;
+import ghidra.net.DefaultSSLContextInitializer;
+import ghidra.program.util.DefaultLanguageService;
 import ghidra.util.Msg;
 import ghidra.util.classfinder.ClassFileInfo;
 import ghidra.util.classfinder.ClassSearcher;
@@ -56,6 +58,15 @@ final class SessionApplicationConfiguration extends HeadlessGhidraApplicationCon
 	/** "hit", "miss", "off" or "error: ...", for status. */
 	static volatile String classCacheState = "off";
 
+	/**
+	 * The module initializer that sets up the default TLS context. It loads every trusted CA
+	 * certificate from the OS and from Java (on master, about 180 on Windows), which no session
+	 * start-up needs: on a cache hit it is left out of the initializers that run before the session
+	 * is ready, and run by {@link DeferredInit} instead.
+	 */
+	static final String SSL_INITIALIZER = "ghidra.net.DefaultSSLContextInitializer";
+	private static boolean sslDeferred;
+
 	@Override
 	protected void initializeApplication() {
 		String file = System.getProperty(CACHE_PROPERTY);
@@ -72,6 +83,13 @@ final class SessionApplicationConfiguration extends HeadlessGhidraApplicationCon
 			}
 		}
 		super.initializeApplication();
+		if (!"false".equals(System.getProperty("ghidra.session.prewarm"))) {
+			// Every program open needs it; reading every language definition takes ~100 ms
+			DeferredInit.add("language service", DefaultLanguageService::getLanguageService);
+		}
+		if (seeded && sslDeferred) {
+			DeferredInit.add("SSL context", DefaultSSLContextInitializer::initialize);
+		}
 		if (file != null && !file.isBlank() && !seeded && inputs != null) {
 			try {
 				store(Path.of(file), inputs);
@@ -130,6 +148,9 @@ final class SessionApplicationConfiguration extends HeadlessGhidraApplicationCon
 		}
 		if (map.isEmpty()) {
 			return false;
+		}
+		for (Set<ClassFileInfo> set : map.values()) {
+			sslDeferred |= set.removeIf(i -> i.name().equals(SSL_INITIALIZER));
 		}
 		field("extensionPointSuffixToInfoMap").set(null, map);
 		field("hasSearched").set(null, true);

@@ -118,9 +118,12 @@ public class HeadlessSession implements GhidraLaunchable {
 			config.setApplicationLogFile(new File(o.log));
 		}
 		Application.initializeApplication(layout, config);
-		GhidraScriptUtil.acquireBundleHostReference()
-				.add(o.scriptDirs.stream().map(d -> new ResourceFile(new File(d))).toList(), true,
-					true);
+		// The OSGi framework that compiles scripts starts after the session is ready; the
+		// commands that run scripts wait for it (DeferredInit.await).
+		List<ResourceFile> scriptDirs =
+			o.scriptDirs.stream().map(d -> new ResourceFile(new File(d))).toList();
+		DeferredInit.add("script bundles",
+			() -> GhidraScriptUtil.acquireBundleHostReference().add(scriptDirs, true, true));
 
 		int cpus = Runtime.getRuntime().availableProcessors();
 		session = new Session(
@@ -183,10 +186,12 @@ public class HeadlessSession implements GhidraLaunchable {
 		startReaper();
 		if (stdio != null) {
 			stdio.send(ready);
+			DeferredInit.start();
 			stdio.run(); // returns at end of stdin: the launcher is gone
 			exit();
 			return;
 		}
+		DeferredInit.start();
 		idleLoop(o.idleTimeoutSeconds);
 	}
 

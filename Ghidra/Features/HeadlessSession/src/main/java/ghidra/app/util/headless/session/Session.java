@@ -247,6 +247,9 @@ final class Session {
 		}
 		Scheduler.Ticket slot = scheduler.admit(c, cmd, m, waitMs(req));
 		try {
+			if (cmd.equals("script") || cmd.equals("import") || cmd.equals("analyze")) {
+				DeferredInit.await(); // the TLS context and the script framework
+			}
 			return switch (cmd) {
 				case "open_project" -> openProject(c, req);
 				case "close_project" -> closeProject(c, req);
@@ -327,6 +330,7 @@ final class Session {
 		o.add("clients", cs);
 		o.add("scheduler", scheduler.describe());
 		o.add("upgradeCache", upgradeCache.describe());
+		Json.put(o, "deferredInitMs", DeferredInit.doneMs());
 		return o;
 	}
 
