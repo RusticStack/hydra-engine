@@ -1,0 +1,124 @@
+name: CI
+
+# The default build is headless (gradle buildHeadless): no window modules, help or javadoc.
+# The full Ghidra build with the window (gradle buildGhidra) runs weekly and on demand.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      full:
+        description: 'Also run the full Ghidra build (buildGhidra)'
+        type: boolean
+        default: false
+  schedule:
+    - cron: '17 4 * * 1'   # Mondays: the full build too
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  headless:
+    name: headless build + session tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      GHIDRA_INSTALL: ${{ github.workspace }}/build/dist/headless
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Read the JDK version
+        run: echo "JDK_VER=$(awk -F'=' '$1=="application.java.min" {print $2}' Ghidra/application.properties | tr -d '\r')" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ env.JDK_VER }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Cache fetched dependencies
+        uses: actions/cache@v5
+        with:
+          path: dependencies
+          key: deps-${{ runner.os }}-${{ hashFiles('gradle/support/fetchDependencies.gradle') }}
+
+      - name: Fetch dependencies
+        run: ./gradlew -I gradle/support/fetchDependencies.gradle -DhideDownloadProgress -DnoEclipse
+
+      - name: Build the headless install
+        run: ./gradlew buildHeadless --parallel "-PheadlessInstallDir=$GHIDRA_INSTALL"
+
+      - name: Install summary
+        run: |
+          python - <<'EOF'
+          import os, pathlib
+          root = pathlib.Path(os.environ["GHIDRA_INSTALL"])
+          files = [p for p in root.rglob("*") if p.is_file()]
+          jars = [p for p in files if p.suffix == ".jar" and "/lib/" in p.as_posix()]
+          print(f"{len(files)} files, {sum(p.stat().st_size for p in files) / 2**20:.1f} MiB, {len(jars)} module jars")
+          EOF
+
+      - name: Pick test binaries
+        run: |
+          echo "BIN_A=C:/Windows/System32/choice.exe" >> "$GITHUB_ENV"
+          echo "BIN_B=C:/Windows/System32/whoami.exe" >> "$GITHUB_ENV"
+          echo "BIN_DLL=C:/Windows/System32/version.dll" >> "$GITHUB_ENV"
+
+      - name: session_smoke.py
+        run: >
+          python Ghidra/Features/HeadlessSession/examples/session_smoke.py
+          --ghidra "$GHIDRA_INSTALL" --work "$RUNNER_TEMP/smoke"
+          --binary "$BIN_A" --binary "$BIN_B"
+
+      - name: daemon_tests.py
+        run: >
+          python Ghidra/Features/HeadlessSession/examples/daemon_tests.py
+          --ghidra "$GHIDRA_INSTALL" --work "$RUNNER_TEMP/daemon"
+          --exe "$BIN_A" --dll "$BIN_DLL"
+
+      - name: Upload the daemon logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: session-logs-${{ matrix.os }}
+          path: |
+            ${{ runner.temp }}/smoke/**/*.log
+            ${{ runner.temp }}/daemon/**/*.log
+          if-no-files-found: ignore
+
+  full:
+    name: full Ghidra build (buildGhidra)
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Read the JDK version
+        run: echo "JDK_VER=$(awk -F'=' '$1=="application.java.min" {print $2}' Ghidra/application.properties)" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ env.JDK_VER }}
+
+      - name: Fetch dependencies
+        run: ./gradlew -I gradle/support/fetchDependencies.gradle -DhideDownloadProgress -DnoEclipse
+
+      - name: Build Ghidra
+        run: ./gradlew buildGhidra --parallel
