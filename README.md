@@ -1,5 +1,10 @@
 <img src="Ghidra/Features/Base/src/main/resources/images/GHIDRA_3.png" width="400">
 
+> **Legacy branch (`legacy/headless-session-12.1.4`).** This is the 12.1.4-based version of the
+> `headless-session` work, kept only to open and compare projects that were analysed with Ghidra
+> 12.1.4 (a newer Ghidra may upgrade a project, and that upgrade is one-way). It receives no new
+> work; current development is on `headless-session`, which tracks upstream `master`.
+>
 > **This fork (RusticStack/ghidra, branch `headless-session`)** is Ghidra 12.1.4 plus one new
 > module, [`Ghidra/Features/HeadlessSession`](Ghidra/Features/HeadlessSession/README.md): a shared,
 > long-lived headless Ghidra service that works the way the window does (open projects in place,
