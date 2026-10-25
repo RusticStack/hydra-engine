@@ -16,17 +16,21 @@
 """Tests of the shared session daemon. Standard library only; any OS.
 
     python daemon_tests.py --ghidra <install> --work <empty dir> --exe A.exe --dll B.dll
-                           [--project <an analysed project, opened read-only>] [--only a,b]
+                           [--project <an analysed project, opened read-only>]
+                           [--legacy-project <a project saved by an older Ghidra>
+                            [--legacy-program <path in it>]] [--only a,b]
 
 Each test starts its own daemon instance in <work>/state and stops it, so the user's daemon is
 never touched. --project (optional) adds an existing analysed project, which is only ever opened
-read-only, to the multi-project test.
+read-only, to the multi-project test. --legacy-project (optional) is copied into <work> for the
+older-format part of upgrade_cache; the original is only read.
 
 Tests: two_harnesses, two_projects, dll_import, client_kill, daemon_restart, fairness, cancel_all,
-idle_shutdown, keep_warm, stdio.
+idle_shutdown, keep_warm, stdio, upgrade_cache.
 """
 import argparse
 import json
+import os
 import pathlib
 import shutil
 import subprocess
@@ -443,8 +447,115 @@ def t_stdio(c: Ctx):
     return f"ready in {ready:.0f} ms ({st['launch']['mode']} mode)"
 
 
+def clone_tree(src: pathlib.Path, dst: pathlib.Path):
+    """Copies a project folder; on Windows through CopyFileW, which block-clones on ReFS."""
+    if dst.exists():
+        shutil.rmtree(dst)
+    copy = shutil.copy2
+    if sys.platform == "win32":
+        import ctypes
+
+        def copy(a, b):
+            if not ctypes.windll.kernel32.CopyFileW(str(a), str(b), False):
+                raise OSError(f"CopyFileW {a} -> {b} failed: {ctypes.GetLastError()}")
+    shutil.copytree(src, dst, copy_function=copy)
+
+
+def tree_state(root: pathlib.Path) -> list:
+    """Every file under root with size, time and, up to 1 MiB, content: proves nothing wrote."""
+    out = []
+    for p in sorted(root.rglob("*")):
+        if p.is_file():
+            st = p.stat()
+            out.append((str(p.relative_to(root)), st.st_size, st.st_mtime_ns,
+                        p.read_bytes() if st.st_size <= 1 << 20 else None))
+    return out
+
+
+def t_upgrade_cache(c: Ctx):
+    """Read-only opens of a program saved in an older database format are served from an
+    upgraded copy: built once, reused, invalidated when the source changes, never writing the
+    source; current-format programs and an opted-out daemon do not use it. The older-format part
+    needs --legacy-project (a project saved by an older Ghidra; this test works on a copy)."""
+    cache = c.work / "upgrade-cache"
+    if cache.exists():
+        shutil.rmtree(cache)
+    exe = pathlib.Path(c.a.exe).name
+    cur = c.copy_fixture("projCurrent")
+    d = c.daemon("upgrade", keepWarm=0, upgradeCacheDir=str(cache))
+    notes = []
+    with d.connect("cur", "tests") as s:
+        st = s.call("status")["upgradeCache"]
+        check(st["enabled"] and pathlib.Path(st["dir"]) == cache, f"cache not enabled: {st}")
+        s.call("open_project", path=str(cur))
+        r = s.call("open_program", path=exe)
+        check(r["cachedUpgrade"] is False, f"a current-format program used the cache: {r}")
+        check(not cache.exists() or not any(p.is_dir() for p in cache.iterdir()),
+              "a current-format program made a cache entry")
+    notes.append("current format: not cached")
+    if not c.a.legacy_project:
+        d.stop()
+        return "; ".join(notes + ["older format: skipped (no --legacy-project)"])
+
+    src = pathlib.Path(c.a.legacy_project)
+    src = src.parent if src.suffix == ".gpr" else src
+    legacy = c.work / "legacy"
+    clone_tree(src, legacy)
+    before = tree_state(legacy)
+    with d.connect("old", "tests") as s:
+        s.call("open_project", path=str(legacy))
+        prog = c.a.legacy_program or s.call("list", programsOnly=True)["entries"][0]["path"]
+        t = time.perf_counter()
+        first = s.call("open_program", path=prog, wait=1800000)
+        first_ms = (time.perf_counter() - t) * 1000
+        check(first["cachedUpgrade"] and first["upgradeCache"]["built"],
+              f"first open did not build the cache: {first.get('upgradeCache')}")
+        check(first["changed"] is False, "the cached program is still changed (upgraded again)")
+        key1 = first["upgradeCache"]["key"]
+        s.call("close_program")
+        t = time.perf_counter()
+        second = s.call("open_program", path=prog, wait=600000)
+        second_ms = (time.perf_counter() - t) * 1000
+        check(second["cachedUpgrade"] and not second["upgradeCache"]["built"] and
+              second["upgradeCache"]["key"] == key1, f"second open: {second.get('upgradeCache')}")
+        check(second_ms < first_ms / 3, f"second open not faster: {second_ms:.0f} ms vs "
+              f"{first_ms:.0f} ms")
+        fn = next(f for f in s.call("functions", limit=50)["functions"] if not f["external"])
+        dec = s.call("decompile", address=fn["address"])
+        check(dec.get("c"), "no decompilation from the cached program")
+        s.call("close_project")
+    check(tree_state(legacy) == before, "the source project was written")
+    notes.append(f"older format: built {first_ms / 1000:.1f} s, reused {second_ms:.0f} ms, "
+                 f"source unchanged")
+    # a changed source makes a new key; the old entry is pruned
+    gpr = next(legacy.glob("*.gpr"))
+    os.utime(gpr, (time.time(), time.time() + 5))
+    with d.connect("changed", "tests") as s:
+        s.call("open_project", path=str(legacy))
+        third = s.call("open_program", path=prog, wait=1800000)
+        check(third["cachedUpgrade"] and third["upgradeCache"]["built"] and
+              third["upgradeCache"]["key"] != key1,
+              f"a changed source did not rebuild: {third.get('upgradeCache')}")
+        s.call("close_project")
+    entries = [p.name for p in cache.iterdir() if p.is_dir()]
+    check(entries == [third["upgradeCache"]["key"]], f"old entry not pruned: {entries}")
+    notes.append("changed source rebuilt, old entry pruned")
+    d.stop()
+    # opted out: the program is upgraded in memory, as without the cache
+    off = c.daemon("upgrade-off", keepWarm=0, upgradeCache=False)
+    with off.connect("off", "tests") as s:
+        check(not s.call("status")["upgradeCache"]["enabled"], "opt-out ignored")
+        s.call("open_project", path=str(legacy))
+        r = s.call("open_program", path=prog, wait=1800000)
+        check(r["cachedUpgrade"] is False, f"opted out, yet: {r.get('upgradeCache')}")
+    off.stop()
+    notes.append("opt-out upgrades in memory")
+    c.timings["upgrade cache: build / reuse ms"] = [round(first_ms), round(second_ms)]
+    return "; ".join(notes)
+
+
 TESTS = ["two_harnesses", "two_projects", "dll_import", "client_kill", "daemon_restart",
-         "fairness", "cancel_all", "idle_shutdown", "keep_warm", "stdio"]
+         "fairness", "cancel_all", "idle_shutdown", "keep_warm", "stdio", "upgrade_cache"]
 
 
 def main():
@@ -454,6 +565,10 @@ def main():
     ap.add_argument("--exe", required=True)
     ap.add_argument("--dll", required=True)
     ap.add_argument("--project", help="an analysed project to open read-only (never written)")
+    ap.add_argument("--legacy-project", dest="legacy_project",
+                    help="a project saved by an older Ghidra, for upgrade_cache (only copied)")
+    ap.add_argument("--legacy-program", dest="legacy_program",
+                    help="the program in it to open (default: the first one)")
     ap.add_argument("--tmpdir")
     ap.add_argument("--only")
     a = ap.parse_args()

@@ -378,6 +378,8 @@ DEFAULTS = {
     "maxLong": 0,            # concurrent long requests (analyze, import, script); 0: CPU/4
     "scriptPath": [],        # extra GhidraScript directories
     "log": None,             # daemon log; None: <state>/<instance>.log
+    "upgradeCache": True,    # serve read-only opens of older-format programs from an upgraded copy
+    "upgradeCacheDir": None,  # where those copies live; None: <state>/upgrade-cache
 }
 
 ENV_MAP = {
@@ -389,6 +391,9 @@ ENV_MAP = {
     "GHIDRA_SESSION_AOT": ("aot", str),
     "GHIDRA_SESSION_IDLE_TIMEOUT": ("idleTimeout", int),
     "GHIDRA_SESSION_KEEP_WARM": ("keepWarm", int),
+    "GHIDRA_SESSION_UPGRADE_CACHE": ("upgradeCache", lambda v: v.strip().lower() not in
+                                     ("0", "false", "off", "no")),
+    "GHIDRA_SESSION_UPGRADE_CACHE_DIR": ("upgradeCacheDir", str),
 }
 
 
@@ -514,6 +519,10 @@ class Launch:
             vm.append(f"-Djava.io.tmpdir={self.cfg['tmpdir']}")
         vm += list(self.cfg.get("vmargs") or [])
         info["maxHeap"] = heap
+        app_args = list(app_args)
+        if self.cfg.get("upgradeCache", True):
+            app_args += ["-upgradeCache",
+                         str(self.cfg.get("upgradeCacheDir") or self.state / "upgrade-cache")]
         argv = [str(self.java), *vm, *head, *main, *app_args]
         return argv, info
 

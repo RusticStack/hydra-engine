@@ -94,9 +94,13 @@ final class Session {
 	/** How this JVM was started (mode, AOT, class cache, start-up time), for status. */
 	volatile JsonObject launchInfo;
 
-	Session(Scheduler scheduler, long keepWarmSeconds) {
+	/** Serves read-only opens of older-format programs from an upgraded copy. */
+	final UpgradeCache upgradeCache;
+
+	Session(Scheduler scheduler, long keepWarmSeconds, UpgradeCache upgradeCache) {
 		this.scheduler = scheduler;
 		this.keepWarmMs = Math.max(0, keepWarmSeconds) * 1000;
+		this.upgradeCache = upgradeCache;
 	}
 
 	// ---- clients ---------------------------------------------------------------------------
@@ -322,6 +326,7 @@ final class Session {
 		}
 		o.add("clients", cs);
 		o.add("scheduler", scheduler.describe());
+		o.add("upgradeCache", upgradeCache.describe());
 		return o;
 	}
 
@@ -862,7 +867,7 @@ final class Session {
 					else if (writable && e.mode == ProgramEntry.Mode.READ_ONLY) {
 						Program np = openWritable(e, df, req, m);
 						e.disposeDecompilers();
-						e.program.release(e);
+						releaseProgramObject(e);
 						e.program = np;
 						e.mode = ProgramEntry.Mode.WRITABLE;
 						e.owner = c;
@@ -932,8 +937,27 @@ final class Session {
 		}
 	}
 
+	/**
+	 * Opens a program read-only: from the upgrade cache when it is saved in an older database
+	 * format (see {@link UpgradeCache}), else from the project. Held: its exclusive lock.
+	 */
 	private Program openReadOnly(ProgramEntry e, DomainFile df, RequestMonitor m) {
 		try {
+			UpgradeCache.Opened c = null;
+			try {
+				c = upgradeCache.open(e.project, df, e, m);
+			}
+			catch (IOException | VersionException ex) {
+				Msg.warn(this, "upgrade cache: could not serve " + e.key + ", opening the source " +
+					"(upgraded in memory): " + ex.getMessage(), ex);
+			}
+			if (c != null) {
+				e.cacheView = c.view();
+				e.cacheKey = c.key();
+				e.cacheInfo = c.info();
+				Msg.info(this, "opened " + e.key + " from the upgrade cache " + c.info());
+				return c.program();
+			}
 			return (Program) df.getReadOnlyDomainObject(e, DomainFile.DEFAULT_VERSION, m);
 		}
 		catch (VersionException ex) {
@@ -1048,8 +1072,7 @@ final class Session {
 					discarded = true;
 				}
 				e.disposeDecompilers();
-				e.program.release(e); // releasing a changed program discards its changes
-				e.program = null;
+				releaseProgramObject(e); // releasing a changed program discards its changes
 				e.owner = null;
 				e.mode = null;
 				if (others) {
@@ -1088,13 +1111,39 @@ final class Session {
 	/** Releases a program nobody uses. Held: its exclusive lock. */
 	private void disposeProgram(ProgramEntry e) {
 		e.disposeDecompilers();
-		if (e.program != null) {
-			e.program.release(e);
-			e.program = null;
-		}
+		releaseProgramObject(e);
 		e.mode = null;
 		e.owner = null;
 		e.project.programs.remove(e.path, e);
+	}
+
+	/**
+	 * Releases {@link ProgramEntry#program} and, when it came from the upgrade cache, closes the
+	 * view of the copy it came from. Held: its exclusive lock.
+	 */
+	private void releaseProgramObject(ProgramEntry e) {
+		try {
+			if (e.program != null) {
+				e.program.release(e);
+			}
+		}
+		finally {
+			e.program = null;
+			SessionProject view = e.cacheView;
+			String key = e.cacheKey;
+			e.cacheView = null;
+			e.cacheKey = null;
+			e.cacheInfo = null;
+			if (view != null) {
+				try {
+					view.close();
+				}
+				catch (RuntimeException ex) {
+					Msg.warn(this, "could not close the upgrade cache view of " + e.key, ex);
+				}
+				upgradeCache.release(key);
+			}
+		}
 	}
 
 	/** Closes a program for everyone. Held: its project's exclusive lock. */
@@ -1229,7 +1278,9 @@ final class Session {
 			hex(p.getImageBase()), "format", p.getExecutableFormat(), "executable",
 			p.getExecutablePath(), "sha256", p.getExecutableSHA256(), "md5",
 			p.getExecutableMD5(), "functions", p.getFunctionManager().getFunctionCount(),
-			"analyzed", GhidraProgramUtilities.isAnalyzed(p), "changed", p.isChanged());
+			"analyzed", GhidraProgramUtilities.isAnalyzed(p), "changed", p.isChanged(),
+			"cachedUpgrade", e.cacheInfo != null, "upgradeCache",
+			e.cacheInfo == null ? null : e.cacheInfo.deepCopy());
 		synchronized (e.users) {
 			List<Integer> ids = new ArrayList<>();
 			e.users.forEach(u -> ids.add(u.id));

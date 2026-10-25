@@ -66,6 +66,13 @@ final class ProgramEntry {
 	Mode mode;
 	Client owner;
 	long openMs;
+	/**
+	 * When {@link #program} was opened from the upgrade cache: the read-only view of the copy
+	 * that holds it (closed with the program), its key, and what the cache did.
+	 */
+	SessionProject cacheView;
+	String cacheKey;
+	JsonObject cacheInfo;
 
 	/** Clients using this program. Guarded by itself. */
 	final Set<Client> users = new LinkedHashSet<>();
@@ -183,6 +190,7 @@ final class ProgramEntry {
 			Json.put(o, "users", ids);
 		}
 		Json.put(o, "busy", exclusiveHolder);
+		Json.put(o, "cachedUpgrade", cacheInfo != null);
 		return o;
 	}
 }

@@ -63,6 +63,7 @@ public class HeadlessSession implements GhidraLaunchable {
 		                       [-daemon -stateDir <dir> [-instance <name>]]
 		                       [-idleTimeout <seconds>] [-keepWarm <seconds>]
 		                       [-maxQuick <n>] [-maxLong <n>] [-scriptPath <dir>]... [-log <file>]
+		                       [-upgradeCache <dir>]
 		  (normally started by Ghidra/Features/HeadlessSession/support/ghidra_session.py)
 		  -project      open this project at start (a .gpr, its folder, or a parent with one)
 		  -writable     open it writable (takes the project lock); default: read-only view
@@ -78,6 +79,8 @@ public class HeadlessSession implements GhidraLaunchable {
 		  -scriptPath   an extra GhidraScript directory; repeat it, or give a list separated by
 		                the platform's path separator
 		  -log          Ghidra application log file
+		  -upgradeCache serve read-only opens of programs in an older database format from an
+		                upgraded copy of their project kept in this directory (default: none)
 		""";
 
 	private final Object exitLock = new Object();
@@ -123,7 +126,8 @@ public class HeadlessSession implements GhidraLaunchable {
 		session = new Session(
 			new Scheduler(o.maxQuick > 0 ? o.maxQuick : cpus,
 				o.maxLong > 0 ? o.maxLong : Math.max(2, cpus / 4)),
-			o.keepWarmSeconds);
+			o.keepWarmSeconds,
+			new UpgradeCache(o.upgradeCache == null ? null : new File(o.upgradeCache)));
 		Runtime.getRuntime().addShutdownHook(new Thread(this::removeEndpoint, "session-exit"));
 
 		Connection stdio = null;
@@ -384,6 +388,7 @@ public class HeadlessSession implements GhidraLaunchable {
 		int maxLong;
 		List<String> scriptDirs = new ArrayList<>();
 		String log;
+		String upgradeCache;
 
 		static Options parse(String[] args) {
 			Options o = new Options();
@@ -410,6 +415,7 @@ public class HeadlessSession implements GhidraLaunchable {
 						}
 					}
 					case "-log" -> o.log = value(args, ++i, a);
+					case "-upgradeCache" -> o.upgradeCache = value(args, ++i, a);
 					default -> throw new IllegalArgumentException("unknown option: " + a);
 				}
 			}
