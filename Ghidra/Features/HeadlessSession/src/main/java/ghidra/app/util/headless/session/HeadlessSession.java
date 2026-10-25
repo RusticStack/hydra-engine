@@ -17,16 +17,22 @@ package ghidra.app.util.headless.session;
 
 import java.io.*;
 import java.net.*;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.channels.OverlappingFileLockException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.security.SecureRandom;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.*;
 
 import com.google.gson.JsonObject;
 
 import generic.jar.ResourceFile;
 import ghidra.GhidraApplicationLayout;
+import ghidra.GhidraClassLoader;
 import ghidra.GhidraLaunchable;
 import ghidra.app.script.GhidraScriptUtil;
 import ghidra.framework.Application;
@@ -34,12 +40,17 @@ import ghidra.framework.HeadlessGhidraApplicationConfiguration;
 import ghidra.util.Msg;
 
 /**
- * A long-lived headless Ghidra process that works like the window does: open a project, list
- * it, open and switch programs, query, edit, analyse, run scripts, save, and stay up for the next
- * command. {@code analyzeHeadless} is one command about one program file; this is a session.
+ * A long-lived headless Ghidra process that works like the window does: open projects, list
+ * them, open and switch programs, query, edit, analyse, run scripts, save, and stay up for the
+ * next command. {@code analyzeHeadless} is one command about one program file; this is a session.
  * <p>
  * Callers speak JSON lines (one request object per line, one response per line) on stdio and/or
  * on an authenticated loopback socket. See {@code Ghidra/Features/HeadlessSession/README.md}.
+ * <p>
+ * With {@code -daemon} it is the shared per-user service: one JVM that serves any number of
+ * projects and clients, found through {@code <stateDir>/<instance>.json} and kept unique by an
+ * exclusive lock on {@code <stateDir>/<instance>.lock} for its whole life.
+ * {@code support/ghidra_session.py} starts it when absent and connects to it otherwise.
  * <p>
  * stdout is the protocol channel of the stdio client: it is claimed before Ghidra starts and
  * everything else (Ghidra's log, scripts' {@code System.out}) is sent to stderr.
@@ -47,23 +58,33 @@ import ghidra.util.Msg;
 public class HeadlessSession implements GhidraLaunchable {
 
 	private static final String USAGE = """
-		usage: headlessSession [-project <file.gpr | dir>] [-writable]
+		usage: HeadlessSession [-project <file.gpr | dir>] [-writable]
 		                       [-listen [127.0.0.1:]<port>] [-endpoint <file>] [-noStdio]
-		                       [-idleTimeout <seconds>] [-scriptPath <dir>]...
-		                       [-log <file>]
+		                       [-daemon -stateDir <dir> [-instance <name>]]
+		                       [-idleTimeout <seconds>] [-keepWarm <seconds>]
+		                       [-maxQuick <n>] [-maxLong <n>] [-scriptPath <dir>]... [-log <file>]
+		  (normally started by Ghidra/Features/HeadlessSession/support/ghidra_session.py)
 		  -project      open this project at start (a .gpr, its folder, or a parent with one)
 		  -writable     open it writable (takes the project lock); default: read-only view
 		  -listen       also serve clients on a loopback TCP port (0 picks one)
 		  -endpoint     write {port, token, pid, ...} for socket clients to this file
-		  -noStdio      do not serve stdin/stdout (daemon); requires -listen
-		  -idleTimeout  with -noStdio: exit after this many seconds without clients
-		  -scriptPath   an extra GhidraScript directory; repeat it, or quote a ';' list
+		  -noStdio      do not serve stdin/stdout; requires -listen
+		  -daemon       the shared per-user service: -listen 0 -noStdio, endpoint and instance
+		                lock in -stateDir, named by -instance (default "default")
+		  -idleTimeout  without stdio: exit after this many seconds without clients (0: never)
+		  -keepWarm     keep an unused read-only program or project open this long (default 3600)
+		  -maxQuick     concurrent quick requests (default: CPU count)
+		  -maxLong      concurrent long requests: analyze, import, script, save (default: CPU/4)
+		  -scriptPath   an extra GhidraScript directory; repeat it, or give a list separated by
+		                the platform's path separator
 		  -log          Ghidra application log file
 		""";
 
 	private final Object exitLock = new Object();
 	private volatile Session session;
 	private volatile Path endpointFile;
+	private FileChannel instanceChannel;
+	private FileLock instanceLock;
 
 	@Override
 	public void launch(GhidraApplicationLayout layout, String[] args) throws Exception {
@@ -84,6 +105,11 @@ public class HeadlessSession implements GhidraLaunchable {
 		System.setOut(new PrintStream(new FileOutputStream(FileDescriptor.err), true,
 			StandardCharsets.UTF_8));
 
+		if (o.daemon && !lockInstance(o)) {
+			System.exit(3);
+			return;
+		}
+
 		HeadlessGhidraApplicationConfiguration config = new SessionApplicationConfiguration();
 		if (o.log != null) {
 			config.setApplicationLogFile(new File(o.log));
@@ -93,7 +119,11 @@ public class HeadlessSession implements GhidraLaunchable {
 				.add(o.scriptDirs.stream().map(d -> new ResourceFile(new File(d))).toList(), true,
 					true);
 
-		session = new Session();
+		int cpus = Runtime.getRuntime().availableProcessors();
+		session = new Session(
+			new Scheduler(o.maxQuick > 0 ? o.maxQuick : cpus,
+				o.maxLong > 0 ? o.maxLong : Math.max(2, cpus / 4)),
+			o.keepWarmSeconds);
 		Runtime.getRuntime().addShutdownHook(new Thread(this::removeEndpoint, "session-exit"));
 
 		Connection stdio = null;
@@ -128,20 +158,25 @@ public class HeadlessSession implements GhidraLaunchable {
 			server.bind(new InetSocketAddress(o.listenHost, o.listenPort), 50);
 			session.listenInfo =
 				Json.of("host", o.listenHost.getHostAddress(), "port", server.getLocalPort());
-			if (o.endpoint != null) {
-				writeEndpoint(Path.of(o.endpoint), server.getLocalPort(), token, o);
-			}
 			startAcceptor(server, token);
+		}
+
+		long readyMs = (System.nanoTime() - t0) / 1_000_000;
+		session.launchInfo = launchInfo(readyMs);
+		if (o.endpoint != null) {
+			writeEndpoint(Path.of(o.endpoint), session.listenInfo.get("port").getAsInt(), token,
+				o);
 		}
 
 		JsonObject ready = session.info();
 		ready.addProperty("event", "ready");
-		ready.addProperty("startupMs", (System.nanoTime() - t0) / 1_000_000);
+		ready.addProperty("startupMs", readyMs);
 		if (token != null && o.stdio) {
 			ready.addProperty("token", token); // the launcher's own pipe
 		}
-		Msg.info(this, "headless session ready: " + Json.GSON.toJson(session.info()));
+		Msg.info(this, "headless session ready: " + Json.GSON.toJson(session.launchInfo));
 
+		startReaper();
 		if (stdio != null) {
 			stdio.send(ready);
 			stdio.run(); // returns at end of stdin: the launcher is gone
@@ -149,6 +184,42 @@ public class HeadlessSession implements GhidraLaunchable {
 			return;
 		}
 		idleLoop(o.idleTimeoutSeconds);
+	}
+
+	/** How this JVM was started, as far as it can tell, and how long start-up took. */
+	private static JsonObject launchInfo(long readyMs) {
+		JsonObject o = Json.of("mode",
+			ClassLoader.getSystemClassLoader() instanceof GhidraClassLoader ? "standard" : "fast",
+			"aot", System.getProperty("ghidra.session.aot"), "classCache",
+			SessionApplicationConfiguration.classCacheState, "readyMs", readyMs);
+		Optional<Instant> start = ProcessHandle.current().info().startInstant();
+		start.ifPresent(s -> Json.put(o, "jvmToReadyMs",
+			Duration.between(s, Instant.now()).toMillis()));
+		return o;
+	}
+
+	/**
+	 * Takes the daemon's instance lock, held for the life of the JVM. A second daemon of the same
+	 * instance gives up here, before Ghidra starts, and exits with code 3.
+	 */
+	private boolean lockInstance(Options o) throws IOException {
+		Path dir = Path.of(o.stateDir).toAbsolutePath();
+		Files.createDirectories(dir);
+		Path lock = dir.resolve(o.instance + ".lock");
+		instanceChannel = FileChannel.open(lock, StandardOpenOption.CREATE,
+			StandardOpenOption.WRITE, StandardOpenOption.READ);
+		try {
+			instanceLock = instanceChannel.tryLock();
+		}
+		catch (OverlappingFileLockException e) {
+			instanceLock = null;
+		}
+		if (instanceLock == null) {
+			System.err.println("another headless session daemon holds " + lock + "; exiting");
+			instanceChannel.close();
+			return false;
+		}
+		return true;
 	}
 
 	private void fatal(OutputStream proto, SessionException e, boolean stdio) {
@@ -206,6 +277,25 @@ public class HeadlessSession implements GhidraLaunchable {
 		}
 	}
 
+	private void startReaper() {
+		Thread t = new Thread(() -> {
+			while (!session.isShuttingDown()) {
+				try {
+					Thread.sleep(Math.min(15_000, Math.max(1_000, session.keepWarmMs / 4)));
+					session.reap();
+				}
+				catch (InterruptedException e) {
+					return;
+				}
+				catch (RuntimeException e) {
+					Msg.error(this, "reaper", e);
+				}
+			}
+		}, "session-reaper");
+		t.setDaemon(true);
+		t.start();
+	}
+
 	private void idleLoop(long idleSeconds) throws InterruptedException {
 		long idleSince = System.currentTimeMillis();
 		while (!session.isShuttingDown()) {
@@ -240,8 +330,11 @@ public class HeadlessSession implements GhidraLaunchable {
 	private void writeEndpoint(Path file, int port, String token, Options o) throws IOException {
 		JsonObject e = Json.of("protocol", Session.PROTOCOL_VERSION, "pid",
 			ProcessHandle.current().pid(), "host", o.listenHost.getHostAddress(), "port", port,
-			"token", token, "project", o.project, "writable", o.writable, "ghidra",
-			Application.getApplicationVersion(), "started", System.currentTimeMillis());
+			"token", token, "instance", o.daemon ? o.instance : null, "install",
+			Application.getInstallationDirectory().getAbsolutePath(), "ghidra",
+			Application.getApplicationVersion(), "java", System.getProperty("java.version"),
+			"project", o.project, "writable", o.writable, "launch", session.launchInfo,
+			"started", System.currentTimeMillis());
 		Path dir = file.toAbsolutePath().getParent();
 		Files.createDirectories(dir);
 		Path tmp = Files.createTempFile(dir, ".endpoint", ".tmp");
@@ -257,16 +350,21 @@ public class HeadlessSession implements GhidraLaunchable {
 		endpointFile = file;
 	}
 
+	/** Removes the endpoint file, unless another daemon has replaced it meanwhile. */
 	private void removeEndpoint() {
 		Path f = endpointFile;
 		endpointFile = null;
-		if (f != null) {
-			try {
+		if (f == null) {
+			return;
+		}
+		try {
+			String text = Files.readString(f, StandardCharsets.UTF_8);
+			if (text.contains("\"pid\":" + ProcessHandle.current().pid() + ",")) {
 				Files.deleteIfExists(f);
 			}
-			catch (IOException e) {
-				// best effort
-			}
+		}
+		catch (IOException e) {
+			// best effort
 		}
 	}
 
@@ -277,7 +375,13 @@ public class HeadlessSession implements GhidraLaunchable {
 		InetAddress listenHost;
 		int listenPort = -1;
 		String endpoint;
+		boolean daemon;
+		String stateDir;
+		String instance = "default";
 		long idleTimeoutSeconds;
+		long keepWarmSeconds = 3600;
+		int maxQuick;
+		int maxLong;
 		List<String> scriptDirs = new ArrayList<>();
 		String log;
 
@@ -291,10 +395,15 @@ public class HeadlessSession implements GhidraLaunchable {
 					case "-listen" -> o.listen(value(args, ++i, a));
 					case "-endpoint" -> o.endpoint = value(args, ++i, a);
 					case "-noStdio" -> o.stdio = false;
-					case "-idleTimeout" -> o.idleTimeoutSeconds =
-						Long.parseLong(value(args, ++i, a));
+					case "-daemon" -> o.daemon = true;
+					case "-stateDir" -> o.stateDir = value(args, ++i, a);
+					case "-instance" -> o.instance = value(args, ++i, a);
+					case "-idleTimeout" -> o.idleTimeoutSeconds = number(args, ++i, a);
+					case "-keepWarm" -> o.keepWarmSeconds = number(args, ++i, a);
+					case "-maxQuick" -> o.maxQuick = (int) number(args, ++i, a);
+					case "-maxLong" -> o.maxLong = (int) number(args, ++i, a);
 					case "-scriptPath" -> {
-						for (String d : value(args, ++i, a).split(";")) {
+						for (String d : value(args, ++i, a).split(File.pathSeparator)) {
 							if (!d.isBlank()) {
 								o.scriptDirs.add(d.trim());
 							}
@@ -303,6 +412,19 @@ public class HeadlessSession implements GhidraLaunchable {
 					case "-log" -> o.log = value(args, ++i, a);
 					default -> throw new IllegalArgumentException("unknown option: " + a);
 				}
+			}
+			if (o.daemon) {
+				if (o.stateDir == null) {
+					throw new IllegalArgumentException("-daemon needs -stateDir");
+				}
+				if (!o.instance.matches("[A-Za-z0-9_.-]{1,64}")) {
+					throw new IllegalArgumentException("bad -instance name: " + o.instance);
+				}
+				o.stdio = false;
+				if (o.listenPort < 0) {
+					o.listen("0");
+				}
+				o.endpoint = Path.of(o.stateDir, o.instance + ".json").toString();
 			}
 			if (!o.stdio && o.listenPort < 0) {
 				throw new IllegalArgumentException("-noStdio needs -listen");
@@ -342,6 +464,19 @@ public class HeadlessSession implements GhidraLaunchable {
 				throw new IllegalArgumentException(opt + " needs a value");
 			}
 			return args[i];
+		}
+
+		private static long number(String[] args, int i, String opt) {
+			try {
+				long v = Long.parseLong(value(args, i, opt));
+				if (v < 0) {
+					throw new NumberFormatException();
+				}
+				return v;
+			}
+			catch (NumberFormatException e) {
+				throw new IllegalArgumentException(opt + " needs a number >= 0");
+			}
 		}
 	}
 }

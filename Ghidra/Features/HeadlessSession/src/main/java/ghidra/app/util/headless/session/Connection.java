@@ -28,9 +28,12 @@ import ghidra.util.Msg;
  * One client's JSON-lines channel (stdio or a loopback socket).
  * <p>
  * The reader thread parses each line. {@code ping}, {@code status} and {@code cancel} are
- * answered at once on that thread; every other request runs on this connection's single worker
- * thread, so one client's requests run in the order sent while other clients run in parallel.
- * Responses carry the request's {@code id}; {@code progress} events carry it too.
+ * answered at once on that thread. Every other request runs on this connection's ordered lane,
+ * so one client's requests run in the order sent while other clients run in parallel; a request
+ * with {@code "parallel":true} runs at once on its own thread instead (for clients that
+ * multiplex several callers over one connection). Every request is registered as soon as it is
+ * read, so {@code cancel} reaches it while it still waits its turn. Responses carry the request's
+ * {@code id}; {@code progress} events carry it too.
  */
 final class Connection {
 
@@ -42,6 +45,8 @@ final class Connection {
 	private final String token; // null: no authentication needed (stdio)
 	private final Client client;
 	private final ExecutorService worker;
+	private final ThreadPoolExecutor parallel;
+	static final int MAX_PARALLEL = 32;
 	private final Object writeLock = new Object();
 	private volatile boolean open = true;
 	private final Runnable onShutdown;
@@ -60,6 +65,12 @@ final class Connection {
 			t.setDaemon(true);
 			return t;
 		});
+		this.parallel = new ThreadPoolExecutor(0, MAX_PARALLEL, 30, TimeUnit.SECONDS,
+			new SynchronousQueue<>(), r -> {
+				Thread t = new Thread(r, "session-" + client.label().replace(' ', '-') + "-p");
+				t.setDaemon(true);
+				return t;
+			});
 	}
 
 	Client client() {
@@ -85,8 +96,10 @@ final class Connection {
 			// cancel first: the worker must not finish a long request for a client that is gone
 			client.running.values().forEach(RequestMonitor::cancel);
 			worker.shutdown();
+			parallel.shutdown();
 			try {
 				worker.awaitTermination(1, TimeUnit.HOURS);
+				parallel.awaitTermination(1, TimeUnit.HOURS);
 			}
 			catch (InterruptedException e) {
 				Thread.currentThread().interrupt();
@@ -121,16 +134,38 @@ final class Connection {
 			return;
 		}
 		if (Session.isInline(cmd)) {
-			respond(req, id, cmd);
+			respond(req, id, cmd, new RequestMonitor(id, this::send));
+			return;
+		}
+		String key = id == null ? null : id.toString();
+		RequestMonitor m = new RequestMonitor(id, this::send);
+		if (key != null && client.running.putIfAbsent(key, m) != null) {
+			send(error(id, new SessionException(SessionException.BAD_REQUEST,
+				"request id " + key + " is still running; use a new id"), 0));
+			return;
+		}
+		boolean par;
+		try {
+			par = Json.bool(req, "parallel", false);
+		}
+		catch (SessionException e) {
+			if (key != null) {
+				client.running.remove(key, m);
+			}
+			send(error(id, e, 0));
 			return;
 		}
 		try {
-			worker.execute(() -> {
-				respond(req, id, cmd);
-			});
+			(par ? parallel : worker).execute(() -> respond(req, id, cmd, m));
 		}
 		catch (RejectedExecutionException e) {
-			send(error(id, new SessionException(SessionException.CONFLICT, "connection closing"),
+			if (key != null) {
+				client.running.remove(key, m);
+			}
+			send(error(id, par
+					? new SessionException(SessionException.BUSY,
+						"this client already runs " + MAX_PARALLEL + " parallel requests")
+					: new SessionException(SessionException.CONFLICT, "connection closing"),
 				0));
 		}
 	}
@@ -150,19 +185,19 @@ final class Connection {
 			return;
 		}
 		client.authenticated = true;
-		respond(req, id, cmd);
+		respond(req, id, cmd, new RequestMonitor(id, this::send));
 	}
 
-	private void respond(JsonObject req, JsonElement id, String cmd) {
+	private void respond(JsonObject req, JsonElement id, String cmd, RequestMonitor m) {
 		String key = id == null ? null : id.toString();
-		RequestMonitor m = new RequestMonitor(id, this::send);
-		if (key != null) {
-			client.running.put(key, m);
-		}
 		long t0 = System.nanoTime();
 		JsonObject resp;
 		boolean stop = false;
 		try {
+			if (m.isCancelled()) {
+				throw new SessionException(SessionException.CANCELLED,
+					"cancelled before it started");
+			}
 			JsonElement result = session.execute(client, cmd, req, m);
 			resp = new JsonObject();
 			if (id != null) {
