@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+<title>Hydra Engine</title>
+<g transform="translate(14 22) scale(0.9)">
+<path d="M128 170 C128 222 196 226 200 200 C204 178 170 174 162 192 C157 204 170 212 178 206" fill="none" stroke="#4ade80" stroke-width="22" stroke-linecap="round"/>
+<ellipse cx="128" cy="160" rx="30" ry="24" fill="#4ade80"/>
+<path d="M128 156 C89.9 150.6 77.9 104.7 44.0 102.0" fill="none" stroke="#4ade80" stroke-width="12" stroke-linecap="round"/>
+<path d="M128 156 C126.3 115.5 81.4 95.7 82.0 60.0" fill="none" stroke="#4ade80" stroke-width="12" stroke-linecap="round"/>
+<path d="M128 156 C112.0 115.4 144.0 74.8 128.0 40.0" fill="none" stroke="#4ade80" stroke-width="12" stroke-linecap="round"/>
+<path d="M128 156 C129.7 115.5 174.6 95.7 174.0 60.0" fill="none" stroke="#4ade80" stroke-width="12" stroke-linecap="round"/>
+<path d="M128 156 C160.7 156.9 170.9 115.2 200.0 118.0" fill="none" stroke="#4ade80" stroke-width="12" stroke-linecap="butt"/>
+<g transform="translate(220 82) rotate(40)"><path d="M-13 10 C-15 -3 -9 -15 0 -17 C9 -15 15 -3 13 10 C7 14 -7 14 -13 10 Z" fill="none" stroke="#86efac" stroke-width="3" stroke-dasharray="5 4"/></g>
+<g transform="translate(44 92) rotate(-36.0) scale(1.0)"><path d="M-16 12 C-19 -4 -11 -19 0 -21 C11 -19 19 -4 16 12 C9 17 -9 17 -16 12 Z" fill="#86efac"/><circle cx="-6" cy="-5" r="2.8" fill="#052e16"/><circle cx="6" cy="-5" r="2.8" fill="#052e16"/></g>
+<g transform="translate(82 50) rotate(-16.0) scale(1.0)"><path d="M-16 12 C-19 -4 -11 -19 0 -21 C11 -19 19 -4 16 12 C9 17 -9 17 -16 12 Z" fill="#86efac"/><circle cx="-6" cy="-5" r="2.8" fill="#052e16"/><circle cx="6" cy="-5" r="2.8" fill="#052e16"/></g>
+<g transform="translate(128 30) rotate(0.0) scale(1.18)"><path d="M-16 12 C-19 -4 -11 -19 0 -21 C11 -19 19 -4 16 12 C9 17 -9 17 -16 12 Z" fill="#86efac"/><path d="M-10 -9 L-3 -3 L-10 3" fill="none" stroke="#052e16" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"/><rect x="1" y="1" width="10" height="3.6" rx="1.8" fill="#052e16"/><path d="M0 -21 L0 -29 M0 -29 L-4 -34 M0 -29 L4 -34" fill="none" stroke="#f87171" stroke-width="2.4" stroke-linecap="round"/></g>
+<g transform="translate(174 50) rotate(16.0) scale(1.0)"><path d="M-16 12 C-19 -4 -11 -19 0 -21 C11 -19 19 -4 16 12 C9 17 -9 17 -16 12 Z" fill="#86efac"/><circle cx="-6" cy="-5" r="2.8" fill="#052e16"/><circle cx="6" cy="-5" r="2.8" fill="#052e16"/></g>
+</g></svg>

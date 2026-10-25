@@ -1,0 +1,50 @@
+[
+ {
+  "in": "import ghidra_session as gs",
+  "out": "",
+  "ms": 2.2,
+  "daemonMs": null
+ },
+ {
+  "in": "s = gs.connect(client='demo', harness='readme')",
+  "out": "",
+  "ms": 643.3,
+  "daemonMs": 0
+ },
+ {
+  "in": "s.call('open_project', path='demo.gpr', writable=True)['id']",
+  "out": "'p1'",
+  "ms": 145.3,
+  "daemonMs": 143
+ },
+ {
+  "in": "s.call('import', file='hydra_demo.exe', analyze=True)['imported']",
+  "out": "True",
+  "ms": 15522.6,
+  "daemonMs": 15521
+ },
+ {
+  "in": "s.call('import', file='hydra_demo.exe')['imported']   # same SHA-256: never twice",
+  "out": "False",
+  "ms": 4.2,
+  "daemonMs": 3
+ },
+ {
+  "in": "{k: s.call('info')[k] for k in ('format', 'language', 'functions')}",
+  "out": "{'format': 'Portable Executable (PE)', 'language': 'x86:LE:64:default', 'functions': 574}",
+  "ms": 2.0,
+  "daemonMs": 0
+ },
+ {
+  "in": "print(s.call('decompile', name='grow_heads')['c'])",
+  "out": "\r\nint __cdecl grow_heads(int param_1,int param_2)\r\n\r\n{\r\n  int iVar1;\r\n  \r\n  iVar1 = 0;\r\n  if (0 < param_2) {\r\n    do {\r\n      if (param_1 == 0) {\r\n        return 0;\r\n      }\r\n      param_1 = param_1 + 1;\r\n      iVar1 = iVar1 + 1;\r\n    } while (iVar1 < param_2);\r\n  }\r\n  return param_1;\r\n}\r\n\r",
+  "ms": 248.2,
+  "daemonMs": 247
+ },
+ {
+  "in": "s.call('decompile', name='grow_heads')['signature']",
+  "out": "'int __cdecl grow_heads(int param_1,int param_2);'",
+  "ms": 3.0,
+  "daemonMs": 2
+ }
+]
