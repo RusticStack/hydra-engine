@@ -73,9 +73,10 @@ final class Session {
 	private static final Object SCRIPT_COMPILE = new Object();
 	/**
 	 * Loaders find libraries through {@code AppInfo.getActiveProject()}, one global, so imports
-	 * set it to their own project and run one at a time.
+	 * set it to their own project and run one at a time. Upgrade cache builds open their copies
+	 * under it too, restoring the active project afterwards.
 	 */
-	private static final Object IMPORT = new Object();
+	static final Object IMPORT = new Object();
 	private static final Pattern PROGRAM_KEY = Pattern.compile("(p\\d+):(/.*)");
 
 	private final long startedAt = System.currentTimeMillis();
@@ -153,6 +154,9 @@ final class Session {
 			}
 			shuttingDown = true;
 			clients.values().forEach(c -> c.running.values().forEach(RequestMonitor::cancel));
+			// a background build is cancelled and deletes its temporary folder, or is left to
+			// the exit (the next start removes its folder)
+			upgradeCache.shutdown(3_000);
 			for (ProjectEntry p : new ArrayList<>(projectsById.values())) {
 				try {
 					closeProjectEntry(p, 30_000, true);
@@ -165,14 +169,16 @@ final class Session {
 	}
 
 	/**
-	 * Closes read-only programs and projects that nobody has used for {@link #keepWarmMs}. Never
+	 * Closes read-only programs and projects that nobody has used for {@link #keepWarmMs}, and
+	 * programs upgraded in memory that nobody uses once their upgrade cache copy is ready (the
+	 * next open takes the copy, and the in-memory upgrade's temporary database is freed). Never
 	 * waits: anything in use is left for the next round.
 	 */
 	void reap() {
 		long now = System.currentTimeMillis();
 		for (ProjectEntry p : projectsById.values()) {
 			for (ProgramEntry e : p.programs.values()) {
-				if (e.userCount() == 0 && now - e.lastUsed >= keepWarmMs) {
+				if (e.userCount() == 0 && (now - e.lastUsed >= keepWarmMs || swappable(e))) {
 					closeIdleProgram(p, e);
 				}
 			}
@@ -281,8 +287,21 @@ final class Session {
 		}
 	}
 
+	/**
+	 * How long a request may wait for a slot or a lock. {@code "wait": true} (on
+	 * {@code open_program}: wait for the upgrade cache copy) or {@code false} keeps the default.
+	 */
 	private static long waitMs(JsonObject req) {
+		if (Json.has(req, "wait") && req.get("wait").isJsonPrimitive() &&
+			req.getAsJsonPrimitive("wait").isBoolean()) {
+			return DEFAULT_WAIT_MS;
+		}
 		return Json.num(req, "wait", DEFAULT_WAIT_MS, 0, 86_400_000L);
+	}
+
+	private static boolean waitsForCache(JsonObject req) {
+		return Json.has(req, "wait") && req.get("wait").isJsonPrimitive() &&
+			req.getAsJsonPrimitive("wait").isBoolean() && req.get("wait").getAsBoolean();
 	}
 
 	// ---- session ---------------------------------------------------------------------------
@@ -319,7 +338,7 @@ final class Session {
 		JsonArray ps = new JsonArray();
 		for (ProjectEntry p : projectsById.values()) {
 			for (ProgramEntry e : p.programs.values()) {
-				ps.add(e.describeUse());
+				ps.add(e.describeUse(upgradeCache));
 			}
 		}
 		o.add("programs", ps);
@@ -335,6 +354,15 @@ final class Session {
 	}
 
 	private JsonElement cancel(Client c, JsonObject req) {
+		if (Json.has(req, "cacheBuild")) {
+			// a background upgrade cache build: by build id, cache key, program path or key, "all"
+			String which = Json.str(req, "cacheBuild");
+			ProgramEntry e = PROGRAM_KEY.matcher(which).matches() ? entryByKey(which) : null;
+			if (e != null && e.cachePlan != null) {
+				which = e.cachePlan.id();
+			}
+			return Json.of("cancelled", upgradeCache.cancel(which));
+		}
 		if (Json.bool(req, "all", false)) {
 			int n = 0;
 			for (Map.Entry<String, RequestMonitor> e : c.running.entrySet()) {
@@ -750,7 +778,7 @@ final class Session {
 			Json.put(e, "executable", md.get("Executable Location"));
 		}
 		ProgramEntry pe = p.programs.get(f.getPathname());
-		Json.put(e, "open", pe == null ? null : pe.describeUse());
+		Json.put(e, "open", pe == null ? null : pe.describeUse(upgradeCache));
 		return e;
 	}
 
@@ -827,6 +855,9 @@ final class Session {
 		}
 		String path = df.getPathname();
 		long wait = waitMs(req);
+		if (!writable && waitsForCache(req)) {
+			awaitCacheCopy(p, df, m); // before any program lock: other opens are not held up
+		}
 		JsonObject joined = joinOpen(c, p, path, writable, wait);
 		if (joined != null) {
 			return joined;
@@ -856,6 +887,13 @@ final class Session {
 				}
 				long t0 = System.nanoTime();
 				try {
+					if (!writable && e.userCount() == 0 && swappable(e)) {
+						// upgraded in memory, nobody uses it, and its cached copy is ready: switch
+						e.disposeDecompilers();
+						releaseProgramObject(e);
+						e.mode = null;
+						Msg.info(this, "switching " + e.key + " to its upgrade cache copy");
+					}
 					if (e.program == null) {
 						e.file = df;
 						e.program = writable ? openWritable(e, df, req, m) : openReadOnly(e, df, m);
@@ -884,7 +922,12 @@ final class Session {
 					}
 					throw ex;
 				}
-				return useProgram(c, e, e.openMs);
+				JsonObject info = useProgram(c, e, e.openMs);
+				if (e.cacheBuildStarted) {
+					e.cacheBuildStarted = false;
+					Json.put(info, "cacheBuild", "started");
+				}
+				return info;
 			}
 			finally {
 				e.release(l);
@@ -931,10 +974,16 @@ final class Session {
 		Lock l = e.acquire(false, wait, c, "open_program");
 		try {
 			if (p.programs.get(path) != e || e.program == null ||
-				(writable && !(e.mode == ProgramEntry.Mode.WRITABLE && e.owner == c))) {
+				(writable && !(e.mode == ProgramEntry.Mode.WRITABLE && e.owner == c)) ||
+				(!writable && e.userCount() == 0 && swappable(e))) {
 				return null;
 			}
-			return useProgram(c, e, 0);
+			boolean restarted = !writable && retryCacheBuild(e);
+			JsonObject info = useProgram(c, e, 0);
+			if (restarted) {
+				Json.put(info, "cacheBuild", "started");
+			}
+			return info;
 		}
 		finally {
 			e.release(l);
@@ -942,27 +991,123 @@ final class Session {
 	}
 
 	/**
-	 * Opens a program read-only: from the upgrade cache when it is saved in an older database
-	 * format (see {@link UpgradeCache}), else from the project. Held: its exclusive lock.
+	 * True when {@code e} was upgraded in memory and its upgrade cache copy is now ready, so that
+	 * an open with nobody using it can switch to the copy. Unlocked reads; callers recheck under
+	 * the program's exclusive lock.
+	 */
+	private boolean swappable(ProgramEntry e) {
+		UpgradeCache.Plan plan = e.cachePlan;
+		return plan != null && e.program != null && e.cacheView == null &&
+			e.mode == ProgramEntry.Mode.READ_ONLY && upgradeCache.isReady(plan);
+	}
+
+	/**
+	 * An open that joins a program upgraded in memory whose build failed (or was cancelled)
+	 * starts a new one, with a fresh plan in case the source changed. Returns true when it
+	 * started one. Held: the program's lock (shared is enough: the plan is only replaced by an
+	 * equal or newer one).
+	 */
+	private boolean retryCacheBuild(ProgramEntry e) {
+		UpgradeCache.Plan plan = e.cachePlan;
+		if (plan == null || e.cacheView != null) {
+			return false;
+		}
+		UpgradeCache.Build b = upgradeCache.build(plan);
+		if (b == null ? upgradeCache.isReady(plan) : b.state != UpgradeCache.State.FAILED) {
+			return false;
+		}
+		try {
+			UpgradeCache.Plan fresh = upgradeCache.plan(e.project, e.file);
+			if (fresh == null) {
+				return false;
+			}
+			e.cachePlan = fresh;
+			UpgradeCache.Start st = upgradeCache.startBuild(fresh);
+			return st != null && st.started();
+		}
+		catch (IOException | RuntimeException ex) {
+			Msg.warn(this, "upgrade cache: could not restart the build of " + e.key + ": " + ex);
+			return false;
+		}
+	}
+
+	/**
+	 * {@code open_program} with {@code "wait": true}: when the program is in an older format and
+	 * its upgrade cache copy is not ready, starts (or joins) its build and waits for it, so that
+	 * the open is served from the copy. Holds no program lock while it waits.
+	 */
+	private void awaitCacheCopy(ProjectEntry p, DomainFile df, RequestMonitor m) {
+		UpgradeCache.Plan plan;
+		try {
+			plan = upgradeCache.plan(p, df);
+		}
+		catch (IOException ex) {
+			Msg.warn(this, "upgrade cache: cannot key " + df.getPathname() + ": " + ex);
+			return;
+		}
+		if (plan == null || upgradeCache.isReady(plan)) {
+			return;
+		}
+		UpgradeCache.Start st = upgradeCache.startBuild(plan);
+		if (st == null) {
+			return;
+		}
+		try {
+			if (!upgradeCache.await(st.build(), m)) {
+				Msg.warn(this, "upgrade cache: the build " + plan.id() + " that an open waited " +
+					"for failed (" + st.build().error + "); upgrading in memory");
+			}
+		}
+		catch (CancelledException ex) {
+			throw cancelled(m);
+		}
+	}
+
+	/**
+	 * Opens a program read-only. A program saved in an older database format is served from its
+	 * upgrade cache copy when that is ready (see {@link UpgradeCache}); otherwise it is upgraded
+	 * in memory, as without the cache, and a background build of the copy is started for later
+	 * opens. Held: its exclusive lock.
 	 */
 	private Program openReadOnly(ProgramEntry e, DomainFile df, RequestMonitor m) {
 		try {
-			UpgradeCache.Opened c = null;
+			UpgradeCache.Plan plan = null;
 			try {
-				c = upgradeCache.open(e.project, df, e, m);
+				plan = upgradeCache.plan(e.project, df);
 			}
-			catch (IOException | VersionException ex) {
-				Msg.warn(this, "upgrade cache: could not serve " + e.key + ", opening the source " +
-					"(upgraded in memory): " + ex.getMessage(), ex);
+			catch (IOException ex) {
+				Msg.warn(this, "upgrade cache: cannot key " + e.key + ": " + ex);
 			}
-			if (c != null) {
-				e.cacheView = c.view();
-				e.cacheKey = c.key();
-				e.cacheInfo = c.info();
-				Msg.info(this, "opened " + e.key + " from the upgrade cache " + c.info());
-				return c.program();
+			if (plan != null) {
+				UpgradeCache.Opened c = null;
+				try {
+					c = upgradeCache.openReady(plan, e, m);
+				}
+				catch (IOException | VersionException ex) {
+					Msg.warn(this, "upgrade cache: could not serve " + e.key + " from its copy, " +
+						"opening the source (upgraded in memory): " + ex.getMessage(), ex);
+				}
+				if (c != null) {
+					e.cacheView = c.view();
+					e.cacheLease = c.lease();
+					e.cacheInfo = c.info();
+					e.cachePlan = plan;
+					Msg.info(this, "opened " + e.key + " from the upgrade cache " + c.info());
+					return c.program();
+				}
 			}
-			return (Program) df.getReadOnlyDomainObject(e, DomainFile.DEFAULT_VERSION, m);
+			Program program =
+				(Program) df.getReadOnlyDomainObject(e, DomainFile.DEFAULT_VERSION, m);
+			if (plan != null) {
+				// after the in-memory upgrade, so that the build does not slow this answer
+				e.cachePlan = plan;
+				UpgradeCache.Start st = upgradeCache.startBuild(plan);
+				e.cacheBuildStarted = st != null && st.started();
+				Msg.info(this, "opened " + e.key + " upgraded in memory (" + plan.why() +
+					"); upgrade cache build " + (st == null ? "not started (shutting down)"
+							: st.started() ? "started" : st.build().state.json()));
+			}
+			return program;
 		}
 		catch (VersionException ex) {
 			throw new SessionException(SessionException.CONFLICT,
@@ -1134,10 +1279,12 @@ final class Session {
 		finally {
 			e.program = null;
 			SessionProject view = e.cacheView;
-			String key = e.cacheKey;
+			UpgradeCache.Lease lease = e.cacheLease;
 			e.cacheView = null;
-			e.cacheKey = null;
+			e.cacheLease = null;
 			e.cacheInfo = null;
+			e.cachePlan = null;
+			e.cacheBuildStarted = false;
 			if (view != null) {
 				try {
 					view.close();
@@ -1145,7 +1292,9 @@ final class Session {
 				catch (RuntimeException ex) {
 					Msg.warn(this, "could not close the upgrade cache view of " + e.key, ex);
 				}
-				upgradeCache.release(key);
+			}
+			if (lease != null) {
+				lease.release();
 			}
 		}
 	}
@@ -1284,7 +1433,8 @@ final class Session {
 			p.getExecutableMD5(), "functions", p.getFunctionManager().getFunctionCount(),
 			"analyzed", GhidraProgramUtilities.isAnalyzed(p), "changed", p.isChanged(),
 			"cachedUpgrade", e.cacheInfo != null, "upgradeCache",
-			e.cacheInfo == null ? null : e.cacheInfo.deepCopy());
+			e.cacheInfo == null ? null : e.cacheInfo.deepCopy(), "cacheBuild",
+			e.cacheBuild(upgradeCache), "cacheBuildInfo", e.cacheBuildInfo(upgradeCache));
 		synchronized (e.users) {
 			List<Integer> ids = new ArrayList<>();
 			e.users.forEach(u -> ids.add(u.id));

@@ -474,11 +474,60 @@ def tree_state(root: pathlib.Path) -> list:
     return out
 
 
+def build_of(s, build_id):
+    """The upgrade cache build with this id from status, or None."""
+    for b in s.call("status")["upgradeCache"]["builds"]:
+        if b["id"] == build_id:
+            return b
+    return None
+
+
+def wait_build(s, build_id, timeout=1800):
+    """Waits until the build is no longer building; returns its status entry."""
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        b = build_of(s, build_id)
+        check(b is not None, f"build {build_id} is not in status")
+        if b["state"] != "building":
+            return b
+        time.sleep(0.1)
+    raise Fail(f"build {build_id} still running after {timeout} s")
+
+
+def wait_phase(s, build_id, phases, timeout=600):
+    """Polls status until the build is in one of the phases; returns its entry (or the finished
+    entry, when it ended first)."""
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        b = build_of(s, build_id)
+        if b is not None and (b["state"] != "building" or b.get("phase") in phases):
+            return b
+        time.sleep(0.02)
+    raise Fail(f"build {build_id} never reached {phases}")
+
+
+def key_dir_state(cache: pathlib.Path, key: str):
+    """(entry.json's upgraded programs or None, published generations, temporary folders)."""
+    d = cache / key
+    entry = None
+    if (d / "entry.json").is_file():
+        entry = json.loads((d / "entry.json").read_text(encoding="utf-8")).get("upgraded")
+    subs = [p.name for p in d.iterdir() if p.is_dir()] if d.is_dir() else []
+    return (entry, sorted(n for n in subs if not n.endswith(".tmp")),
+            sorted(n for n in subs if n.endswith(".tmp")))
+
+
 def t_upgrade_cache(c: Ctx):
-    """Read-only opens of a program saved in an older database format are served from an
-    upgraded copy: built once, reused, invalidated when the source changes, never writing the
-    source; current-format programs and an opted-out daemon do not use it. The older-format part
-    needs --legacy-project (a project saved by an older Ghidra; this test works on a copy)."""
+    """Read-only opens of a program saved in an older database format: the first open is
+    upgraded in memory and answers at once, while a background build makes the upgraded copy
+    that later opens use. Checks: current-format programs and an opted-out daemon do not use it;
+    the first open takes in-memory time and starts the build; two concurrent opens make one
+    build; a reopen after the build comes from the copy and is faster; a daemon killed mid-build
+    leaves no entry and the next start builds cleanly; a stop mid-build is prompt; a source that
+    changes during a build fails it and the next open retries; a queued build yields to clients'
+    long work and can be cancelled; an older key's entry is pruned; the source is never written.
+    The older-format part needs --legacy-project (a project saved by an older Ghidra, best a
+    small one; the test works on block-cloned copies)."""
     cache = c.work / "upgrade-cache"
     if cache.exists():
         shutil.rmtree(cache)
@@ -491,68 +540,192 @@ def t_upgrade_cache(c: Ctx):
         check(st["enabled"] and pathlib.Path(st["dir"]) == cache, f"cache not enabled: {st}")
         s.call("open_project", path=str(cur))
         r = s.call("open_program", path=exe)
-        check(r["cachedUpgrade"] is False, f"a current-format program used the cache: {r}")
+        check(r["cachedUpgrade"] is False and r["cacheBuild"] == "none",
+              f"a current-format program used the cache: {r}")
         check(not cache.exists() or not any(p.is_dir() for p in cache.iterdir()),
               "a current-format program made a cache entry")
+    d.stop()
     notes.append("current format: not cached")
     if not c.a.legacy_project:
-        d.stop()
         return "; ".join(notes + ["older format: skipped (no --legacy-project)"])
 
     src = pathlib.Path(c.a.legacy_project)
     src = src.parent if src.suffix == ".gpr" else src
-    legacy = c.work / "legacy"
-    clone_tree(src, legacy)
+
+    def legacy_copy(name):
+        dst = c.work / name
+        clone_tree(src, dst)
+        return dst
+
+    # 1. opted out: the in-memory upgrade, which is also the first open's yardstick
+    legacy = legacy_copy("legacy")
     before = tree_state(legacy)
-    with d.connect("old", "tests") as s:
-        s.call("open_project", path=str(legacy))
-        prog = c.a.legacy_program or s.call("list", programsOnly=True)["entries"][0]["path"]
-        t = time.perf_counter()
-        first = s.call("open_program", path=prog, wait=1800000)
-        first_ms = (time.perf_counter() - t) * 1000
-        check(first["cachedUpgrade"] and first["upgradeCache"]["built"],
-              f"first open did not build the cache: {first.get('upgradeCache')}")
-        check(first["changed"] is False, "the cached program is still changed (upgraded again)")
-        key1 = first["upgradeCache"]["key"]
-        s.call("close_program")
-        t = time.perf_counter()
-        second = s.call("open_program", path=prog, wait=600000)
-        second_ms = (time.perf_counter() - t) * 1000
-        check(second["cachedUpgrade"] and not second["upgradeCache"]["built"] and
-              second["upgradeCache"]["key"] == key1, f"second open: {second.get('upgradeCache')}")
-        check(second_ms < first_ms / 3, f"second open not faster: {second_ms:.0f} ms vs "
-              f"{first_ms:.0f} ms")
-        fn = next(f for f in s.call("functions", limit=50)["functions"] if not f["external"])
-        dec = s.call("decompile", address=fn["address"])
-        check(dec.get("c"), "no decompilation from the cached program")
-        s.call("close_project")
-    check(tree_state(legacy) == before, "the source project was written")
-    notes.append(f"older format: built {first_ms / 1000:.1f} s, reused {second_ms:.0f} ms, "
-                 f"source unchanged")
-    # a changed source makes a new key; the old entry is pruned
-    gpr = next(legacy.glob("*.gpr"))
-    os.utime(gpr, (time.time(), time.time() + 5))
-    with d.connect("changed", "tests") as s:
-        s.call("open_project", path=str(legacy))
-        third = s.call("open_program", path=prog, wait=1800000)
-        check(third["cachedUpgrade"] and third["upgradeCache"]["built"] and
-              third["upgradeCache"]["key"] != key1,
-              f"a changed source did not rebuild: {third.get('upgradeCache')}")
-        s.call("close_project")
-    entries = [p.name for p in cache.iterdir() if p.is_dir()]
-    check(entries == [third["upgradeCache"]["key"]], f"old entry not pruned: {entries}")
-    notes.append("changed source rebuilt, old entry pruned")
-    d.stop()
-    # opted out: the program is upgraded in memory, as without the cache
     off = c.daemon("upgrade-off", keepWarm=0, upgradeCache=False)
     with off.connect("off", "tests") as s:
         check(not s.call("status")["upgradeCache"]["enabled"], "opt-out ignored")
         s.call("open_project", path=str(legacy))
+        prog = c.a.legacy_program or s.call("list", programsOnly=True)["entries"][0]["path"]
+        t = time.perf_counter()
         r = s.call("open_program", path=prog, wait=1800000)
-        check(r["cachedUpgrade"] is False, f"opted out, yet: {r.get('upgradeCache')}")
+        mem_ms = (time.perf_counter() - t) * 1000
+        check(r["cachedUpgrade"] is False and r["cacheBuild"] == "none",
+              f"opted out, yet: {r.get('upgradeCache')} {r.get('cacheBuild')}")
     off.stop()
-    notes.append("opt-out upgrades in memory")
-    c.timings["upgrade cache: build / reuse ms"] = [round(first_ms), round(second_ms)]
+    notes.append(f"opt-out: in memory {mem_ms:.0f} ms")
+
+    # 2. two clients open it at once: one in-memory upgrade answers both, one build starts
+    d = c.daemon("upgrade", keepWarm=3600, upgradeCacheDir=str(cache))
+    with d.connect("a", "tests") as A, d.connect("b", "tests") as B:
+        A.call("open_project", path=str(legacy))
+        B.call("open_project", path=str(legacy))
+        res, errs = {}, []
+
+        def opener(name, s):
+            try:
+                t0 = time.perf_counter()
+                res[name] = (s.call("open_program", path=prog, wait=1800000),
+                             (time.perf_counter() - t0) * 1000)
+            except Exception as e:  # noqa: BLE001
+                errs.append(repr(e))
+
+        ths = [threading.Thread(target=opener, args=(n, s)) for n, s in (("a", A), ("b", B))]
+        for th in ths:
+            th.start()
+        for th in ths:
+            th.join()
+        check(not errs, f"concurrent opens failed: {errs}")
+        answers = [res["a"][0], res["b"][0]]
+        check(all(x["cachedUpgrade"] is False for x in answers),
+              f"served from a cache that cannot exist yet: {answers}")
+        started = [x for x in answers if x["cacheBuild"] == "started"]
+        check(len(started) == 1, f"expected one open to start the build: "
+              f"{[x['cacheBuild'] for x in answers]}")
+        first_ms = res["a"][1] if res["a"][0] is started[0] else res["b"][1]
+        check(first_ms < mem_ms * 1.5 + 2000,
+              f"the first open took {first_ms:.0f} ms, the in-memory upgrade {mem_ms:.0f} ms")
+        build_id = started[0]["cacheBuildInfo"]["id"]
+        key = started[0]["cacheBuildInfo"]["key"]
+        st = A.call("status")["upgradeCache"]
+        check(st["buildsStarted"] == 1 and [b["id"] for b in st["builds"]] == [build_id],
+              f"two opens made more than one build: {st}")
+        b = wait_build(A, build_id)
+        check(b["state"] == "ready", f"build failed: {b}")
+        check(key_dir_state(cache, key) == ([prog], ["g1"], []), f"cache entry: "
+              f"{key_dir_state(cache, key)}")
+        held = [x for x in A.call("status")["programs"] if x["path"] == prog][0]
+        check(held["cachedUpgrade"] is False and held["cacheBuild"] == "ready",
+              f"switched while in use, or not ready: {held}")
+        A.call("close_program")
+        B.call("close_program")
+        # nobody uses the in-memory program now: the next open takes the copy
+        t = time.perf_counter()
+        again = A.call("open_program", path=prog, wait=600000)
+        reopen_ms = (time.perf_counter() - t) * 1000
+        check(again["cachedUpgrade"] and again["upgradeCache"]["key"] == key and
+              again["changed"] is False, f"reopen not from the copy: {again.get('upgradeCache')}")
+        check(reopen_ms < first_ms, f"reopen {reopen_ms:.0f} ms, first open {first_ms:.0f} ms")
+        fn = next(f for f in A.call("functions", limit=50)["functions"] if not f["external"])
+        check(A.call("decompile", address=fn["address"]).get("c"),
+              "no decompilation from the cached program")
+    d.stop()
+    check(tree_state(legacy) == before, "the source project was written")
+    notes.append(f"first open {first_ms:.0f} ms (build started; 2 opens, 1 build), build "
+                 f"{b['ms']} ms {b['phaseMs']}, reopen from the copy {reopen_ms:.0f} ms")
+    c.timings["upgrade cache: in-memory / first open / build / reopen ms"] = [
+        round(mem_ms), round(first_ms), b["ms"], round(reopen_ms)]
+
+    # 3. killed mid-build: no entry; the next start builds cleanly
+    legacy2 = legacy_copy("legacy2")
+    d = c.daemon("upgrade", keepWarm=0, upgradeCacheDir=str(cache))
+    s = d.connect("doomed", "tests")
+    s.call("open_project", path=str(legacy2))
+    r = s.call("open_program", path=prog, wait=1800000)
+    check(r["cacheBuild"] == "started", f"no build started: {r.get('cacheBuild')}")
+    key2, id2 = r["cacheBuildInfo"]["key"], r["cacheBuildInfo"]["id"]
+    b = wait_phase(s, id2, ("upgrade", "save"))
+    check(b["state"] == "building", f"the build ended before it could be killed: {b}")
+    killed_in = b["phase"]
+    check(d.kill(), "kill failed")
+    s.close()
+    entry, gens, tmps = key_dir_state(cache, key2)
+    check(entry is None and not gens, f"a killed build left an entry: {entry} {gens}")
+    with d.connect("after", "tests") as s:
+        s.call("open_project", path=str(legacy2))
+        r = s.call("open_program", path=prog, wait=True)  # waits for the build
+        check(r["cachedUpgrade"] and r["upgradeCache"]["key"] == key2,
+              f"the rebuild after the kill: {r.get('upgradeCache')} {r.get('cacheBuildInfo')}")
+    check(key_dir_state(cache, key2) == ([prog], ["g1"], []),
+          f"after the rebuild: {key_dir_state(cache, key2)}")
+    notes.append(f"killed in {killed_in} ({len(tmps)} temporary folder left), rebuilt cleanly")
+
+    # 4. stopped mid-build: prompt, and the temporary folder goes
+    legacy3 = legacy_copy("legacy3")
+    with d.connect("stopper", "tests") as s:
+        s.call("open_project", path=str(legacy3))
+        r = s.call("open_program", path=prog, wait=1800000)
+        key3, id3 = r["cacheBuildInfo"]["key"], r["cacheBuildInfo"]["id"]
+        b = wait_phase(s, id3, ("upgrade", "save"))
+        stopped_in = b["phase"] if b["state"] == "building" else b["state"]
+    t = time.perf_counter()
+    d.stop(force=True)
+    stop_s = time.perf_counter() - t
+    entry, gens, tmps = key_dir_state(cache, key3)
+    check(stop_s < 10, f"stop took {stop_s:.1f} s during a build")
+    check(stopped_in == "ready" or (entry is None and not gens and not tmps),
+          f"a cancelled build left files: {entry} {gens} {tmps}")
+    notes.append(f"stopped in {stopped_in} in {stop_s:.1f} s, temporary folder removed")
+
+    # 5. a queued build yields to clients' long work; a source change fails it; cancel; prune
+    legacy4 = legacy_copy("legacy4")
+    d = c.daemon("upgrade-s", keepWarm=0, maxLong=1, upgradeCacheDir=str(cache))
+    with d.connect("long", "tests") as L, d.connect("open", "tests") as s:
+        sleep_id = L.send("script", script=c.script("TestSleep.java"), program=None,
+                          args=["8000"], parallel=True, wait=60000)
+        time.sleep(0.5)
+        s.call("open_project", path=str(legacy4))
+        r = s.call("open_program", path=prog, wait=1800000)
+        key4, id4 = r["cacheBuildInfo"]["key"], r["cacheBuildInfo"]["id"]
+        b = wait_phase(s, id4, ("waiting for a long slot",), timeout=60)
+        check(b["state"] == "building", f"the build did not wait for the client's job: {b}")
+        gpr = next(legacy4.glob("*.gpr"))
+        os.utime(gpr, (time.time(), time.time() + 5))  # the source changes meanwhile
+        b = wait_build(s, id4)
+        check(b["state"] == "failed" and "source changed" in (b["error"] or ""),
+              f"a changed source did not fail the build: {b}")
+        check(key_dir_state(cache, key4) == (None, [], []),
+              f"the failed build left files: {key_dir_state(cache, key4)}")
+        L.wait(sleep_id)
+        # the next open, here one that joins the in-memory program, retries with the new key;
+        # a queued build is cancellable
+        sleep_id = L.send("script", script=c.script("TestSleep.java"), program=None,
+                          args=["8000"], parallel=True, wait=60000)
+        time.sleep(0.5)
+        L.call("open_project", path=str(legacy4))
+        r = L.call("open_program", path=prog, wait=1800000)
+        check(r["cacheBuild"] == "started" and r["cacheBuildInfo"]["key"] != key4,
+              f"the next open did not retry: {r.get('cacheBuild')} {r.get('cacheBuildInfo')}")
+        key5, id5 = r["cacheBuildInfo"]["key"], r["cacheBuildInfo"]["id"]
+        n = s.call("cancel", cacheBuild=r["key"])["cancelled"]
+        b = wait_build(s, id5)
+        check(n == 1 and b["state"] == "failed" and b["cancelled"],
+              f"cancel did not stop the build: {n} {b}")
+        L.wait(sleep_id)
+        L.call("close_program")
+        s.call("close_program")
+        r = s.call("open_program", path=prog, wait=True)
+        check(r["cachedUpgrade"] and r["upgradeCache"]["key"] == key5,
+              f"no build after the cancel: {r.get('upgradeCache')} {r.get('cacheBuildInfo')}")
+        s.call("close_program")
+        # a changed source makes a new key; once that is built, the older entry is removed
+        os.utime(gpr, (time.time(), time.time() + 10))
+        r = s.call("open_program", path=prog, wait=True)
+        key6 = r["upgradeCache"]["key"]
+        check(r["cachedUpgrade"] and key6 != key5, f"changed source: {r.get('upgradeCache')}")
+        s.call("close_project")
+    d.stop()
+    check(not (cache / key5).exists(), f"the older entry {key5} was not pruned")
+    notes.append("queued build waited for the client's job; source change failed it; next open "
+                 "retried; cancel stopped it; older entry pruned")
     return "; ".join(notes)
 
 

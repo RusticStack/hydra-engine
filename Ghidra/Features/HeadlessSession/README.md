@@ -197,17 +197,48 @@ Reopen it (all clients leave it, or wait for `keepWarm`) to see them.
 Opened read-only, a program in an older database format is upgraded in memory on every open,
 which for a large program takes many times longer than the open itself (a 66.7 MB executable with
 243,855 functions saved by 12.1.4: 21-24 s on master instead of about 1 s). The **upgrade cache**
-does that work once:
+makes an upgraded copy once, in the background, and serves later opens from it:
 
 1. Before opening, the session reads the program's stored database version and language version
    from its database (a few milliseconds, without opening the program). A current program opens
    as usual.
-2. An older one is served from `<upgradeCacheDir>/<key>/project`: on the first such open the
-   session copies the project there (with the platform's copy, which block-clones on ReFS and
-   other file systems that can), opens the program in the copy writable, upgrades and saves it,
-   and opens it read-only from the copy. Later opens find the copy and skip all of that.
-3. `open_program` and `info` report it: `"cachedUpgrade": true` and `"upgradeCache": {"built":
-   ..., "key": ..., "dir": ..., "reason": "program database version 32, this Ghidra 33"}`.
+2. **First open.** An older program with no copy yet is upgraded in memory, exactly as without
+   the cache, and the answer goes out at once with `"cachedUpgrade": false, "cacheBuild":
+   "started"`. Its clients keep using that in-memory program.
+3. **The build**, on one background thread: it waits for the key's build lock (another daemon may
+   be building it), then for a slot in the **long** lane, which it gets only while no client's
+   request waits for one (it never touches the quick lane); then it copies the project into
+   `<upgradeCacheDir>/<key>/g<n>.tmp` (with the platform's copy, which block-clones on ReFS and
+   other file systems that can), opens the program there writable, upgrades and saves it, checks
+   that the source did not change meanwhile, renames the folder to `g<n>` and only then names it
+   in `<key>/entry.json` (written atomically). Readers open only the generation `entry.json`
+   names, so they never see a half-written copy.
+4. **Later opens** find the copy and open the program read-only from it (`"cachedUpgrade":
+   true`). The in-memory program is never switched under a client: once nobody uses it, the next
+   open takes the copy, and the reaper closes it (it holds the in-memory upgrade's temporary
+   database) instead of keeping it warm.
+5. **While it builds**, other opens of the program join the in-memory one, or upgrade in memory
+   again if it was closed meanwhile; only one build per key and program runs. An
+   `open_program` with `"wait": true` instead starts or joins the build and waits for it (holding
+   no program lock), then opens from the copy.
+6. **Failures.** A build that fails or is cancelled (`cancel` with `"cacheBuild"`, the daemon's
+   shutdown, a source that changed during the build) deletes its temporary folder and is logged;
+   the next open starts a new one. A daemon killed mid-build leaves its `.tmp` folder, which the
+   next start (or the next build of that key) removes. On shutdown a running build is cancelled
+   and given 3 s to clean up; one that has not stopped by then is left to the exit and cleaned up
+   by the next start.
+
+A further program of the same source is upgraded in a fresh copy of the current generation (one
+more block clone), published as the next generation; older generations are removed once no
+daemon reads from them (shared OS locks on `<key>.use` and `<key>/g<n>.use`).
+
+`open_program` and `info` report `"cachedUpgrade"`, `"upgradeCache"` (`key`, `generation`, `dir`,
+`reason`, `openMs`) when served from the copy, and `"cacheBuild"`: `none` (current format, or the
+cache is off), `started` (this open started it), `building`, `ready` or `failed`, with
+`"cacheBuildInfo"` (the build's `id`, `phase`, progress, `error`, per-phase `phaseMs`). `status`
+lists every build under `upgradeCache.builds` (`state`, `phase`: waiting for the build lock,
+waiting for a long slot, copy, upgrade, save, publish; `message`, `progress`, `maximum`, `ms`,
+`error`, `cancelled`) and the program's `cacheBuild` under `programs`.
 
 The key is the source's identity: the canonical path of its `.gpr`, this Ghidra's version, build
 date and program database version, and every file of the `.gpr` and `.rep` with its size and
@@ -215,12 +246,10 @@ modification time, plus the SHA-256 of every file up to 1 MiB (the `.gpr`, prope
 files). Ghidra writes its large database files whole, as new versions, never in place, so their
 size and time identify them; hashing them on every open would cost more than the open. Any change
 makes a new key, and the copies of older keys of the same source are removed once no daemon uses
-them (a shared OS lock on `<key>.use` marks a copy in use; a copy is built under `<key>.lock`, so
-several daemons can share the directory). The source is only ever read.
+them (a key is built under an exclusive OS lock on `<key>.lock`, so several daemons can share the
+directory). The source is only ever read.
 
-The first open costs a copy and a writable upgrade and save instead of an in-memory upgrade; on
-the machine below that was 117 s with Ghidra's temporary directory on the NVMe system drive (51 s
-upgrade, 65 s save), once. Turn it off with `"upgradeCache": false`.
+Turn it off with `"upgradeCache": false`.
 
 ## Protocol (version 2)
 
@@ -279,7 +308,7 @@ code 2). Long commands send throttled `progress` events with the request's `id`:
 | `close_project` | `project`?, `discard`=false | Leaves the project (closes this client's programs there). A writable project closes when its last user leaves; a read-only one after `keepWarm`. |
 | `project` | `project`? | The project: id, name, paths, writable, files, users, programs. |
 | `list` | `project`?, `folder`="/", `recursive`=true, `programsOnly`=false, `metadata`=true, `sha256`, `offset`, `limit`=1000 | Folders and files, with `key`, `sha256`, `language`, `format`, `executable` and `open` (who uses it) for programs; `sha256` finds a program by its hash. Paged, with `truncated`. |
-| `open_program` / `switch` | `path` (path, unique name or key), `project`?, `writable`=false, `checkout`=false, `upgrade`=false | Opens the program, or joins it if it is open (also a warm one nobody uses), and makes it active. Writable needs a writable project; a versioned file needs `checkout`. |
+| `open_program` / `switch` | `path` (path, unique name or key), `project`?, `writable`=false, `checkout`=false, `upgrade`=false, `wait`: `true` | Opens the program, or joins it if it is open (also a warm one nobody uses), and makes it active. Writable needs a writable project; a versioned file needs `checkout`. `"wait": true` on a read-only open of an older-format program waits for its upgrade cache copy instead of upgrading in memory (slot and lock waits keep the default). |
 | `programs` | | This client's programs (all projects) and its active ones. |
 | `info` | `program`? | Key, language, compiler, image base, format, executable path, SHA-256, MD5, functions, analysed, changed, mode, owner, users. |
 | `close_program` | `program`?, `discard`=false | Drops this client's use. The owner of a changed program must `save` first or pass `discard`. |
@@ -291,7 +320,7 @@ code 2). Long commands send throttled `progress` events with the request's `id`:
 | `save` | `program`?, `comment` | Owner only. |
 | `import` | `file`, `project`?, `folder`="/", `name`, `language`, `compiler`, `analyze`=false, `duplicate`=false, `timeout` | Imports into a writable project with `ProgramLoader` (any format it accepts), saves it, opens it writable for this client, and optionally analyses and saves it. A file whose SHA-256 is already in the project returns `{"imported": false, "existing": [...]}` unless `duplicate`. |
 | `script` | `script` (name on the script path, or a file path), `args` [...], `program`? (null: none), `project`?, `address`, `exclusive`=false, `save`=false, `timeout` s, `maxChars` | Runs a GhidraScript and returns its `println` output. See "Scripts". |
-| `cancel` | `target` (an id of this client's request), or `all`: true | Cancels it (or all of this client's requests), running or still queued. |
+| `cancel` | `target` (an id of this client's request), or `all`: true, or `cacheBuild` (a build id, cache key, program key or path, or `all`) | Cancels it (or all of this client's requests), running or still queued; `cacheBuild` cancels background upgrade cache builds, which belong to no client. |
 | `shutdown` | `force`=false | Stops the session; unsaved changes are discarded. From a socket client it is refused while other clients are connected, unless `force`. |
 
 Addresses are `0x140001000`, `va:0x140001000`, `rva:0x1000` (from the image base) or
@@ -321,7 +350,9 @@ Addresses are `0x140001000`, `va:0x140001000`, `rva:0x1000` (from the image base
   script, save; a quarter of the CPUs). Long work can never take the slots quick queries need, so
   one client's whole-program export or analysis does not delay another's 10 ms decompile. When a
   lane is full, waiting requests are admitted round-robin by client, so a client that sends a
-  hundred requests cannot starve one that sends one. `status` shows each lane's use and queue.
+  hundred requests cannot starve one that sends one. The daemon's own background work (upgrade
+  cache builds) takes a long slot only while no client waits for one. `status` shows each lane's
+  use and queue.
 - **Cancellation is per client.** `cancel` reaches a client's own requests, running or queued.
 - **Leaving is safe.** When a client disconnects or its process dies (the OS resets its socket),
   its requests are cancelled, its unsaved changes are discarded (and logged), and its programs go
@@ -464,9 +495,13 @@ took 7.0-7.8 s per question and needed a copy of the project.
   projects in one daemon, a DLL import, a client killed while it owns a program and analyses it,
   the daemon killed and restarted, fair scheduling, `cancel all`, idle shutdown, warm programs,
   a private stdio session, and the upgrade cache (a current program does not use it; with
-  `--legacy-project`, a project saved by an older Ghidra, which the test copies first: the first
-  open builds the cache, the next one reuses it and is faster, the source stays byte-identical, a
-  changed source rebuilds it and the old copy is removed, and an opted-out daemon does not use it).
+  `--legacy-project`, a project saved by an older Ghidra, best a small one, which the test
+  block-clones first: an opted-out daemon upgrades in memory; the first open takes in-memory time
+  and starts the build; two concurrent opens make one build; after the build a reopen comes from
+  the copy and is faster; a daemon killed mid-build leaves no entry and the next start builds
+  cleanly; a stop mid-build is prompt; a queued build waits for a client's long job, fails when
+  the source changes meanwhile, and the next open retries; `cancel` stops a build; an older key's
+  copy is removed; the source stays byte-identical).
 
 ```
 python examples/session_smoke.py --ghidra <install> --work <empty dir> --binary A.exe --binary B.exe

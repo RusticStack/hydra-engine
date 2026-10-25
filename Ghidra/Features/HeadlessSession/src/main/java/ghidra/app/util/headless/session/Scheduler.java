@@ -41,6 +41,9 @@ import com.google.gson.JsonObject;
  * <p>
  * Slots are taken before any project or program lock, and lock holders never wait for a slot, so
  * the two cannot deadlock.
+ * <p>
+ * The daemon's own background work (upgrade cache builds) takes long-lane slots at the lowest
+ * priority: only while no client's request waits for one ({@link #admitBackground}).
  */
 final class Scheduler {
 
@@ -78,6 +81,8 @@ final class Scheduler {
 		/** Waiting tickets by client id; iteration order is the round-robin order. */
 		final LinkedHashMap<Integer, ArrayDeque<Ticket>> queue = new LinkedHashMap<>();
 		final Set<Ticket> running = new LinkedHashSet<>();
+		/** Background tickets waiting, oldest first: admitted only when no client waits. */
+		final ArrayDeque<Ticket> background = new ArrayDeque<>();
 		long admitted;
 		long queuedTotal;
 
@@ -176,6 +181,47 @@ final class Scheduler {
 		}
 	}
 
+	/**
+	 * Waits, without a deadline, for a slot in the long lane for the daemon's own background work
+	 * (building upgrade cache copies). It is admitted only while no client's request waits for
+	 * that lane, so it never delays one: clients' requests are granted first, and the quick lane
+	 * is never touched.
+	 *
+	 * @throws SessionException {@code cancelled} when {@code m} is cancelled while it waits
+	 */
+	Ticket admitBackground(Client c, String what, RequestMonitor m) {
+		lock.lock();
+		try {
+			State s = lanes.get(Lane.LONG);
+			Ticket t = new Ticket(Lane.LONG, c, what);
+			s.background.add(t);
+			while (true) {
+				if (s.inUse < s.slots && s.queue.isEmpty() && s.background.peek() == t) {
+					s.background.poll();
+					grant(s, t);
+					return t;
+				}
+				if (m.isCancelled()) {
+					s.background.remove(t);
+					changed.signalAll();
+					throw new SessionException(SessionException.CANCELLED,
+						"cancelled while queued for a background slot");
+				}
+				try {
+					changed.awaitNanos(TimeUnit.MILLISECONDS.toNanos(100));
+				}
+				catch (InterruptedException e) {
+					Thread.currentThread().interrupt();
+					s.background.remove(t);
+					throw new SessionException(SessionException.CANCELLED, "interrupted");
+				}
+			}
+		}
+		finally {
+			lock.unlock();
+		}
+	}
+
 	private void grant(State s, Ticket t) {
 		t.granted = true;
 		t.startedAt = System.currentTimeMillis();
@@ -239,7 +285,8 @@ final class Scheduler {
 				}
 				o.add(e.getKey().json(),
 					Json.of("slots", s.slots, "inUse", s.inUse, "queued", s.queued(), "running",
-						running, "admitted", s.admitted, "everQueued", s.queuedTotal));
+						running, "admitted", s.admitted, "everQueued", s.queuedTotal,
+						"backgroundQueued", s.background.size()));
 			}
 			return o;
 		}

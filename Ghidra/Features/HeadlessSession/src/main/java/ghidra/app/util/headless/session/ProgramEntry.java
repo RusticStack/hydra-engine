@@ -68,11 +68,20 @@ final class ProgramEntry {
 	long openMs;
 	/**
 	 * When {@link #program} was opened from the upgrade cache: the read-only view of the copy
-	 * that holds it (closed with the program), its key, and what the cache did.
+	 * that holds it (closed with the program), the shared locks that keep the copy in place, and
+	 * what the cache did.
 	 */
 	SessionProject cacheView;
-	String cacheKey;
+	UpgradeCache.Lease cacheLease;
 	JsonObject cacheInfo;
+	/**
+	 * When {@link #program} is in an older database format: its upgrade cache plan, whether it
+	 * came from the cache ({@link #cacheView} set) or was upgraded in memory while a build makes
+	 * the copy. Cleared with the program.
+	 */
+	volatile UpgradeCache.Plan cachePlan;
+	/** Set by the open that started the build, for its answer ({@code "cacheBuild":"started"}). */
+	boolean cacheBuildStarted;
 
 	/** Clients using this program. Guarded by itself. */
 	final Set<Client> users = new LinkedHashSet<>();
@@ -180,7 +189,36 @@ final class ProgramEntry {
 		}
 	}
 
-	JsonObject describeUse() {
+	/**
+	 * The state of this program's upgrade cache build: {@code none} (current format, or the
+	 * cache is off), {@code building}, {@code ready} or {@code failed}.
+	 */
+	String cacheBuild(UpgradeCache uc) {
+		UpgradeCache.Plan plan = cachePlan;
+		if (plan == null) {
+			return "none";
+		}
+		if (cacheView != null) {
+			return "ready";
+		}
+		UpgradeCache.Build b = uc.build(plan);
+		if (b != null) {
+			return b.state.json();
+		}
+		return uc.isReady(plan) ? "ready" : "none";
+	}
+
+	/** The build's details for {@link #cacheBuild}, or null. */
+	JsonObject cacheBuildInfo(UpgradeCache uc) {
+		UpgradeCache.Plan plan = cachePlan;
+		if (plan == null || cacheView != null) {
+			return null;
+		}
+		UpgradeCache.Build b = uc.build(plan);
+		return b == null ? null : b.describe();
+	}
+
+	JsonObject describeUse(UpgradeCache uc) {
 		JsonObject o = Json.of("project", project.id, "path", path, "mode",
 			mode == null ? null : mode.json(), "owner", owner == null ? null : owner.id,
 			"idleMs", System.currentTimeMillis() - lastUsed);
@@ -191,6 +229,7 @@ final class ProgramEntry {
 		}
 		Json.put(o, "busy", exclusiveHolder);
 		Json.put(o, "cachedUpgrade", cacheInfo != null);
+		Json.put(o, "cacheBuild", cacheBuild(uc));
 		return o;
 	}
 }

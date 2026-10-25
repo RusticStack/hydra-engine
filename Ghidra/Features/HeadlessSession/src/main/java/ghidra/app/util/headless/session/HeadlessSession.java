@@ -126,11 +126,10 @@ public class HeadlessSession implements GhidraLaunchable {
 			() -> GhidraScriptUtil.acquireBundleHostReference().add(scriptDirs, true, true));
 
 		int cpus = Runtime.getRuntime().availableProcessors();
-		session = new Session(
-			new Scheduler(o.maxQuick > 0 ? o.maxQuick : cpus,
-				o.maxLong > 0 ? o.maxLong : Math.max(2, cpus / 4)),
-			o.keepWarmSeconds,
-			new UpgradeCache(o.upgradeCache == null ? null : new File(o.upgradeCache)));
+		Scheduler scheduler = new Scheduler(o.maxQuick > 0 ? o.maxQuick : cpus,
+			o.maxLong > 0 ? o.maxLong : Math.max(2, cpus / 4));
+		session = new Session(scheduler, o.keepWarmSeconds,
+			new UpgradeCache(o.upgradeCache == null ? null : new File(o.upgradeCache), scheduler));
 		Runtime.getRuntime().addShutdownHook(new Thread(this::removeEndpoint, "session-exit"));
 
 		Connection stdio = null;
@@ -316,6 +315,14 @@ public class HeadlessSession implements GhidraLaunchable {
 				System.currentTimeMillis() - idleSince > idleSeconds * 1000) {
 				Msg.info(this, "no clients for " + idleSeconds + " s; stopping");
 				exit();
+			}
+		}
+		// Another thread is in exit(): closing projects, cancelling upgrade cache builds. It ends
+		// the process with System.exit. Returning here would end the main thread, and with only
+		// daemon threads left the JVM would exit in the middle of that clean-up.
+		synchronized (exitLock) {
+			while (true) {
+				exitLock.wait();
 			}
 		}
 	}
