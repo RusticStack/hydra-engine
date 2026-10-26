@@ -637,7 +637,7 @@ def t_caller_labels(c: Ctx):
             check(e.code == "cancelled", str(e))
         left = {r["id"] for cl in S.call("status")["clients"] for r in cl["requests"]
                 if r["cmd"] == "script"}
-        check({str(sleep), str(sa2)} <= left, f"agent-a's requests were cancelled: {left}")
+        check({sleep, sa2} <= left, f"agent-a's requests were cancelled: {left}")
         # an unlabelled cancel all is the connection's: everything that is left
         r = S.call("cancel", all=True)
         check(r["cancelled"] == 2, f"unlabelled cancel all: {r}")
