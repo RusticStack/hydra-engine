@@ -98,6 +98,7 @@ three extra JVMs `LaunchSupport` costs on every start:
 | `call CMD key=value...` | One request through the daemon; values are JSON when they parse (`writable=true`). |
 | `stop [--force]` | Asks the daemon to shut down (refused while other clients are connected, unless `--force`). |
 | `kill` | Kills the daemon's JVM without a shutdown (wedged daemon, tests). |
+| `version` | Prints this client's `CLIENT_VERSION`, protocol and release (no daemon needed). |
 | `serve` | Runs the daemon in the foreground (for a service manager). |
 | `stdio [ARGS...]` | A private session on this process's stdin/stdout; no daemon, no socket. |
 | `aot [--project P] [--program X]` | Builds the AOT cache. |
@@ -433,9 +434,9 @@ code 2). Long commands send throttled `progress` events with the request's `id`:
 
 | `cmd` | Fields | Does |
 |---|---|---|
-| `hello` | `client`, `harness`, `token` (socket) | Names the client. On a socket it must be the first request, with the endpoint's `token`. |
+| `hello` | `client`, `harness`, `clientVersion`, `token` (socket) | Names the client. On a socket it must be the first request, with the endpoint's `token`. Answers the session's identity: `protocol`, `minClient`, `hydraVersion`, `ghidraVersion`, `installId`, `startedAt`, `pid` (see "Pinning and upgrading"), then what `status` lists. |
 | `ping` | | `{"pong": true}` |
-| `status` | | Session, launch info, memory, projects, programs (mode, owner, users, what holds each lock, idle time), clients and their requests, scheduler lanes. |
+| `status` | | Session identity (as `hello`), launch info, memory, projects, programs (mode, owner, users, what holds each lock, idle time), clients (`name`, `harness`, `clientVersion`, and their unanswered `requests`: `id`, `cmd`, `artifact`, `ms`, `message`, `progress`, `maximum`), scheduler lanes, upgrade cache builds. |
 | `projects` | | Open projects, which ones this client joined, its active project. |
 | `open_project` | `path`, `writable`=false, `discard`=false | Joins the project, opening it if needed. `path` is a `.gpr`, its folder, a `.rep`, or a parent folder with exactly one project at most two levels below. A read-only view is reopened writable only when no other client uses it; a read-only request on a writable project joins it. |
 | `fork_project` | `project` (id or path), `path`, `name`?, `writable`=true, `mode`=auto\|copy-on-write\|full, `maxCopyMb`? | Copies the project into a working copy of this client's, opened and joined; the source and its read-only views are untouched. See "Working copies". |
@@ -454,7 +455,7 @@ code 2). Long commands send throttled `progress` events with the request's `id`:
 | `analyze` | `program`?, `options` {name: value}, `ranges` [[start, end], ...], `timeout` s | Sets analysis options, then runs auto-analysis on everything (or what the ranges trigger) the way `analyzeHeadless` does, and marks the program analysed. Owner only. |
 | `save` | `program`?, `comment` | Owner only. |
 | `import` | `file`, `project`?, `folder`="/", `name`, `language`, `compiler`, `analyze`=false, `duplicate`=false, `timeout` | Imports into a writable project with `ProgramLoader` (any format it accepts), saves it, opens it writable for this client, and optionally analyses and saves it. A file whose SHA-256 is already in the project returns `{"imported": false, "existing": [...]}` unless `duplicate`. |
-| `script` | `script` (name on the script path, or a file path), `args` [...], `program`? (null: none), `project`?, `address`, `exclusive`=false, `save`=false, `timeout` s, `maxChars` | Runs a GhidraScript and returns its `println` output. See "Scripts". |
+| `script` | `script` (name on the script path, or a file path), `args` [...], `program`? (null: none), `project`?, `address`, `exclusive`=false, `save`=false, `timeout` s, `maxChars`, `artifact` (a path the script writes; echoed in `status` and the result) | Runs a GhidraScript and returns its `println` output. See "Scripts". |
 | `cancel` | `target` (an id of this client's request), or `all`: true, or `cacheBuild` (a build id, cache key, program key or path, or `all`) | Cancels it (or all of this client's requests), running or still queued; `cacheBuild` cancels background upgrade cache builds, which belong to no client. |
 | `shutdown` | `force`=false | Stops the session; unsaved changes are discarded. From a socket client it is refused while other clients are connected, unless `force`. |
 
@@ -466,7 +467,8 @@ Addresses are `0x140001000`, `va:0x140001000`, `rva:0x1000` (from the image base
 `bad_request`, `unknown_command`, `unauthorized`, `no_project`, `no_program`, `not_found`,
 `read_only`, `not_owner`, `busy` (with what holds the slot or lock and for how long), `conflict`,
 `unsaved_changes`, `cancelled` (also on `timeout`), `failed` (Ghidra's message, plus a short
-`trace`).
+`trace`). What `not_owner`, `conflict` and `busy` mean between clients is in "Who can do what at
+the same time".
 
 **Who holds it, and what to do.** `busy`, `conflict`, `not_owner` and `read_only` answers carry,
 in `error.details`:
@@ -509,6 +511,43 @@ in `error.details`:
 - **Opening a project writable is refused while another client uses its read-only view**, and
   the reverse joins: a read-only client in a writable project opens programs read-only.
 
+## Who can do what at the same time
+
+The rules above, as a table. "Same program" means the same file in the same project; a read-only
+view and a writable project are described in "Read-only view, writable project".
+
+| Situation | Result | Why |
+|---|---|---|
+| Any number of readers of one program | in parallel | No project lock; they share one warm program and each decompile takes its own pooled decompiler. Queries hold the program's shared lock. |
+| Any number of read-only views of one project (also a Ghidra window) | in parallel | A read-only view takes no project lock and writes nothing. |
+| Writers in **different projects** | in parallel | Different projects never wait on each other (the one exception is `import`, below). |
+| Two writers of the **same program** | one wins, the other gets `not_owner` | One owner per program: the client that opened it writable. Others may read it and see its unsaved changes. |
+| Two writers on **different programs of one writable project** | allowed, but **not independent** | A writable project is one exclusive open (one project lock, held by the daemon). A second client that opens the same project writable joins that one instance (it does not get `conflict`); each program has its own owner, but the clients share the project: closing it waits for the others' running requests, it closes when its last user leaves, and a script with project access can reach every program in it. Give each writer its own working copy instead (see fork_project). |
+| A second **process** (a Ghidra window, `analyzeHeadless`, another daemon) opens a project this daemon holds writable, or the reverse | `conflict` | The project lock is held by one process; the error names the lock file. |
+| `open_project` writable while another client of this daemon uses its read-only view | `conflict` | The read-only view would change under its reader. The reverse joins: a read-only request on a writable project opens programs read-only. Reopen writable when the other readers have left, or work in a copy (see fork_project). |
+| Read-only view of a project another process has open and saves | works, but stale | It sees the project as it was when the view opened; reopen to see saved changes (see refresh). |
+| Concurrent `import`s | **serialized**, daemon-wide | Ghidra's loaders find libraries through one global "active project", so imports (and upgrade cache builds, which open their copy under it) run one at a time, in any project. Details of waiting and cancelling queued imports: <!-- IMPORT-QUEUE-LANE: replace this comment with the import queue's behaviour (position, holder, cancel of a queued import); do not guess. --> |
+
+What the codes mean when two clients meet:
+
+- **`not_owner`**: the program is open writable by another client of this daemon, and you asked
+  for something only its owner may do (`rename`, `comment`, `analyze`, `save`, a changing
+  script, or a writable `open_program`). `details.owner` is the owner's client id (the
+  `clients` list of `status` names it and its harness). Read it, wait for the owner to save and
+  close it, or work in a copy of the project (see fork_project).
+- **`conflict`**: the project, not a program, cannot be given to you as asked: its lock belongs to
+  another process, it is open read-only and in use by others while you asked for writable, the
+  session is shutting down, a program needs a database upgrade you did not allow (`"upgrade":
+  true`), or a name is ambiguous. Nothing is waiting: retry will not help until the situation
+  changes.
+- **`busy`**: a slot or a lock did not come free within `wait` (default 10 s). `details` names the
+  lane or the program, what wanted it, and the holder (client, harness, command) and for how
+  long. Retry, or pass a longer `wait`; nothing was queued past the deadline.
+
+(see fork_project) and (see refresh) refer to the working copy and view refresh operations that
+are being added; until they are documented below, make the copy outside the daemon, with the
+project closed.
+
 ## Scripts
 
 `script` runs a GhidraScript the way the window's Script Manager does: `currentProgram`,
@@ -535,6 +574,49 @@ usually open the window for: C headers parsed into a `.gdt` and applied, enum, u
 function-definition types, typed data with a global label, a global rename, a bookmark, auto
 create structure from usage, and version tracking from another program in the project.
 
+### Exports: a script that writes a large file
+
+A bulk export (every function, string or reference of a program as JSONL, say) is a `script`
+that writes its own file. This is the contract an integrator can rely on; every line of it is
+exercised by `examples/contract_tests.py` with `examples/scripts/ExportJsonl.java` (600,000 lines,
+about 55 MB, in the default run).
+
+- **Where it writes.** Anywhere the daemon's user can write. The path is the script's own choice
+  (usually an argument in `args`), not the project's: the session neither opens nor limits the
+  file. Pass the same path as `"artifact"` in the request: it is echoed in the result and shown
+  in `status`.
+- **Not capped.** `maxChars` (default 200,000; at most 16,000,000) and the result's `truncated`
+  apply only to the text the script `println`s, which is returned in `output`. They do not touch
+  the file. (The printed text is held in memory for the result, so print a summary, not the
+  data.)
+- **Progress.** `monitor.initialize(total)`, `monitor.setProgress(n)` and `monitor.setMessage(...)`
+  send `progress` events with the request's `id`, at most one per second, whatever the call rate.
+  Send the request with `"parallel": true` (or from its own connection) so that `cancel` and
+  `status` can be sent while it runs.
+- **Seeing the job.** `status` lists, per client, `requests`: for every request not yet
+  answered, its `id`, `cmd`, `artifact` (for a script, as declared), `ms` since it arrived,
+  and the latest `message`, `progress` and `maximum` of its monitor; and `scheduler.long.running`
+  shows its slot. When it ends, it leaves the list.
+- **Cancel, timeout, shutdown.** `cancel {"target": <id>}` and `timeout` cancel the script's
+  `monitor`: a script that calls `monitor.checkCancelled()` between batches stops promptly and the
+  request answers `cancelled`. `stop` of the daemon, and a client that disconnects, cancel it the
+  same way. What the script had already written stays on disk; the session deletes nothing it did
+  not create. A script that ignores its monitor is not stopped (it runs inside the daemon's JVM),
+  and a killed daemon (`kill`, a crash) cannot flush anything the script had buffered.
+- **Write so that a partial file is inspectable.** The sample writes whole batches of lines to
+  `<path>.part`, flushes after each, and renames to `<path>` only when it finishes. A cancelled or
+  stopped export therefore leaves `<path>.part`, valid JSONL up to its last complete line, and no
+  final file; a reader that finds `<path>` knows the export completed. Resuming is the script's
+  job: the sample takes its start from its arguments, and a caller can read the count of lines
+  from the `.part` file.
+
+```python
+rid = s.send("script", script="ExportJsonl.java", program=None, parallel=True, maxChars=1000,
+             args=[out, 500000], artifact=out)         # runs on the long lane
+...                                                    # progress events; s.call("status")
+result = s.wait(rid)                                   # result["artifact"] == out
+```
+
 ## How a client (for example an MCP server) should use it
 
 1. **Connect.** From Python, `ghidra_session.connect(client=<your tool>, harness=<the agent
@@ -555,6 +637,76 @@ create structure from usage, and version tracking from another program in the pr
 6. **Errors.** `busy`: retry, or raise `wait`. `not_owner`: use your own working copy (the
    answer's `suggestion` is a ready `fork_project` request).
    `unsaved_changes`: `save`, or close with `discard`.
+
+## Pinning and upgrading
+
+An integrator (an MCP server, an agent harness) should not copy `ghidra_session.py` from `main`
+and hope the protocol still fits. Each release ships the client as its own file, next to the
+engine, with checksums:
+
+- `hydra-engine-<version>-win_x86_64.zip`: the headless install.
+- `hydra-client-<version>.zip`: `ghidra_session.py` (standard library only, `CLIENT_VERSION` and
+  `HYDRA_RELEASE` inside), `LICENSE` and a short `README.txt`. The file inside is the one in
+  `support/` of the same release, with only `HYDRA_RELEASE` stamped.
+- `SHA256SUMS`: both zips.
+
+`<version>` is `<Ghidra version>-hydra.<n>`, for example `12.3-hydra.1`.
+
+**Pin** a release: download both zips, check them against `SHA256SUMS`, and keep the engine and
+the client of the same release together. `python ghidra_session.py version` prints
+`{"client", "protocol", "release"}` of the client; `hello` (and `status`, and the endpoint file)
+tell the engine's side:
+
+| Field | Meaning |
+|---|---|
+| `protocol` | The wire protocol (an integer, now 2). Must be equal on both sides. |
+| `minClient` | The oldest client library (`major.minor.patch`) this engine accepts. |
+| `hydraVersion` | The Hydra Engine release, for example `12.3-hydra.1` (`12.3-hydra.dev` for a build from the tree). |
+| `ghidraVersion` | The Ghidra version it is built on (also in `ghidra`). |
+| `installId` | 16 hex digits, stable for one installation (directory, Ghidra build, release): tells two installs apart and a restart from a different install. |
+| `startedAt`, `pid` | When this daemon started; its process. Together with `installId` they identify one daemon. |
+
+**Fail on mismatch.** `ghidra_session.py` checks the `hello` answer on every connection and raises
+`IncompatibleError` (a `LaunchError`; exit code 4 on the command line) when the protocol differs
+or its `CLIENT_VERSION` is older than `minClient`, closing the connection first. The message
+names both sides. `status`, `stop` and `kill` still work on such a daemon, so it can be stopped.
+A client in another language should do the same with the fields above: refuse when `protocol`
+differs, or when its own version is older than `minClient`. An engine that sends no `minClient`
+(the `legacy-12.1.4` branch, which predates the contract) is accepted when its protocol matches.
+
+**Versioning rules.** `protocol` changes only when a request or an answer changes shape
+incompatibly. `CLIENT_VERSION` follows `major.minor.patch`: a new major means a protocol change;
+a new minor, something added; a patch, a fix. `minClient` is raised only when an older client
+would misbehave against the new engine. New fields in answers and new optional request fields
+are additions and need neither.
+
+**Upgrade.** Read the release's `CHANGELOG.md` section, then: stop the old daemon (`stop`), put
+the new engine and the new client side by side, point your tool at them, run `version` and
+`ensure`, and check `hello`. The daemon of an instance that runs another install is refused with
+a clear error until it is stopped (use another `--instance` to run two at once). When Hydra's
+Ghidra base changes, the release's version changes with it (`<new Ghidra version>-hydra.1`) and
+its notes say what that does to saved projects.
+
+## Projects analysed with Ghidra 12.1.4
+
+What `main` does with a project that Ghidra 12.1.4 saved (the differences are in the databases:
+the program database is version 33 on `main` and 32 in 12.1.4; the data type database is 3 and 2):
+
+- **Read-only (the default):** works and writes nothing to the project. Each open upgrades the
+  program in memory, which for a large one takes many times longer than the open itself, so the
+  **upgrade cache** (above) builds an upgraded copy outside the project, in the background, and
+  later opens read from it (`cachedUpgrade`, `cacheBuild` in `open_program`). The copy is
+  block-cloned where the file system can, and the project stays byte-identical.
+- **Writable:** `open_program` with `"writable": true` is refused with `conflict` ("needs a
+  database upgrade") until the request passes `"upgrade": true`. The upgrade is **one-way**:
+  once `main` has saved the program, Ghidra 12.1.4 (and 12.2) can no longer open it, because
+  they read database versions 32 and 2. Do it in a copy of the project.
+- **`legacy-12.1.4`:** a branch with the same module on Ghidra 12.1.4, for projects that must stay
+  on 12.1.4 and for comparing old and new analyses side by side (run it as its own
+  `--instance` from its own install). It is a snapshot: it has the protocol 2 of that time but
+  not the upgrade cache, the deferred start-up, or the contract fields above. The current client
+  accepts it (the protocol matches and it sends no `minClient`; this pairing is not covered by
+  the test suites), but features added since then are absent.
 
 ## Performance
 
@@ -640,6 +792,14 @@ took 7.0-7.8 s per question and needed a copy of the project.
 - `examples/session_smoke.py`: the functional smoke test, through the daemon: create a project,
   import and analyse two programs, deduplicate, switch, decompile, rename, save, reopen read-only,
   contained scripts, ownership, busy, cancel and disconnect.
+- `examples/contract_tests.py`: the integration contract, with no binary needed: the identity
+  fields of `hello`, the endpoint file and `status` (stable `installId` over a restart); the
+  client refusing a protocol or `minClient` mismatch (a daemon started with
+  `-Dghidra.session.minClient=99.0.0` is the test hook) while `status` and `stop` still work; and
+  the export contract of "Scripts": 600,000 lines (about 55 MB) written outside the project by
+  `examples/scripts/ExportJsonl.java` with throttled progress, the job and its `artifact` visible
+  in `status`, `maxChars` not capping the file, and a cancel and a daemon shutdown each leaving a
+  valid partial file.
 - `examples/daemon_tests.py`: two harness processes starting the daemon at once, several
   projects in one daemon, a DLL import, a client killed while it owns a program and analyses it,
   the daemon killed and restarted, fair scheduling, `cancel all`, idle shutdown, warm programs,
@@ -662,6 +822,7 @@ took 7.0-7.8 s per question and needed a copy of the project.
 ```
 python examples/session_smoke.py --ghidra <install> --work <empty dir> --binary A.exe --binary B.exe
 python examples/daemon_tests.py --ghidra <install> --work <empty dir> --exe A.exe --dll B.dll [--project <analysed project>] [--legacy-project <older project> [--legacy-program <path>]]
+python examples/contract_tests.py --ghidra <install> --work <empty dir> [--lines 600000]
 ```
 
 Both use their own state dir and daemon instance, so they never touch the user's daemon.

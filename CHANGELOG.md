@@ -9,6 +9,9 @@ example `12.3-hydra.1`); its tag is `v` and the version. Releases are on
 
 ## Unreleased
 
+Not yet released; a release renames this heading to its version and names the upstream commit
+it is based on.
+
 ### Added
 
 - **Holder information in `busy`, `conflict` and `not_owner`** (HeadlessSession). The error
@@ -36,6 +39,27 @@ example `12.3-hydra.1`); its tag is `v` and the version. Releases are on
   `refreshed` (another client refreshed it). New command `refresh` (alias `reopen`) reopens a
   read-only view for all its clients at once, under the same keys. The Python client gains
   `call_raw` and `last_response`.
+- **Integration contract** (`Ghidra/Features/HeadlessSession`, `support/ghidra_session.py`):
+  `hello`, `status` and the endpoint file now carry `protocol`, `minClient`, `hydraVersion`,
+  `ghidraVersion`, `installId` and `startedAt`; the Python client has a `CLIENT_VERSION`
+  (`1.0.0`) and refuses, with `IncompatibleError` (exit code 4 on the command line), an engine of
+  another protocol or one whose `minClient` is newer than itself; `status` and `stop` still work
+  on such an engine. `ghidra_session.py version` prints the client's version. README: "Pinning
+  and upgrading", and a compatibility statement for projects analysed with Ghidra 12.1.4.
+- **Client release artifact**: the release workflow also publishes `hydra-client-<version>.zip`
+  (the standard-library-only `ghidra_session.py` stamped with the release, `LICENSE`, a short
+  `README.txt`), listed in `SHA256SUMS`. `.github/scripts/package-client.sh` builds it and
+  checks the packaged file; CI runs it as a dry run.
+- **Status shows requests**: each client in `status` lists its unanswered requests (`id`, `cmd`,
+  `artifact`, `ms`, `message`, `progress`, `maximum`) and its `clientVersion`.
+- **Script exports**: `script` takes an optional `artifact` (a path the script writes), echoed in
+  `status` and in the result; `examples/scripts/ExportJsonl.java` is a sample export with
+  progress and an inspectable partial file; README "Scripts" states the export contract
+  (output outside the project, not capped by `maxChars`, partial files after cancel and shutdown).
+- **Concurrency documentation**: README "Who can do what at the same time": readers, writers,
+  projects, imports, and what `conflict`, `busy` and `not_owner` mean.
+- **Tests**: `examples/contract_tests.py` (identity fields, client compatibility, a 600,000-line
+  export with progress, cancel and shutdown), run by CI and the release workflow.
 
 ### Changed
 
