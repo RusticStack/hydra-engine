@@ -101,6 +101,9 @@ identical runs. They are ranges, not a benchmark:
 | Nothing changed, run again | 153-960 s, almost all of it copying the install at the drive's speed | 283 s |
 | `clean` afterwards | 23 s | 242-867 s (the javadoc and JSON doc trees) |
 
+On GitHub's `windows-latest` runner, which has none of those problems, a cold `buildHeadless` (no
+build cache) took 9 min 52 s, and the whole CI job, with both test suites, 15.5 min.
+
 What does not depend on the drive: `buildHeadless` runs 312 fewer tasks (help, javadoc, JSON
 docs, stubs, the window-only modules, the zips, other platforms) and writes a 639 MB install
 instead of an 862 MB staging tree, a 538 MB zip and the doc trees. The long single-threaded tail of `buildGhidra` (`createJavadocs`, `createJsondocs`,
