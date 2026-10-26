@@ -45,11 +45,34 @@ final class RequestMonitor extends TaskMonitorAdapter {
 	private volatile boolean timedOut;
 	private volatile long lastEvent;
 	private ScheduledFuture<?> deadline;
+	private final long createdAt = System.currentTimeMillis();
+	private volatile String cmd = "";
+	private volatile String artifact;
 
 	RequestMonitor(JsonElement requestId, Consumer<JsonObject> events) {
 		super(true);
 		this.requestId = requestId;
 		this.events = events;
+	}
+
+	/** Names the command this monitor belongs to (shown in {@code status}). */
+	void command(String c) {
+		cmd = c == null ? "" : c;
+	}
+
+	/**
+	 * The file this request declared it writes outside the project (for example a script's
+	 * export); shown in {@code status}. The session never opens or limits it.
+	 */
+	void artifact(String path) {
+		artifact = path;
+	}
+
+	/** This request as {@code status} shows it. */
+	JsonObject describe() {
+		return Json.of("id", requestId, "cmd", cmd, "artifact", artifact, "ms",
+			System.currentTimeMillis() - createdAt, "message", message, "progress", progress,
+			"maximum", maximum, "cancelled", isCancelled());
 	}
 
 	/** Cancels this request after {@code seconds}; 0 means no deadline. */

@@ -139,6 +139,10 @@ final class Connection {
 		}
 		String key = id == null ? null : id.toString();
 		RequestMonitor m = new RequestMonitor(id, this::send);
+		m.command(cmd);
+		if (req.has("artifact") && req.get("artifact").isJsonPrimitive()) {
+			m.artifact(req.get("artifact").getAsString());
+		}
 		if (key != null && client.running.putIfAbsent(key, m) != null) {
 			send(error(id, new SessionException(SessionException.BAD_REQUEST,
 				"request id " + key + " is still running; use a new id"), 0));

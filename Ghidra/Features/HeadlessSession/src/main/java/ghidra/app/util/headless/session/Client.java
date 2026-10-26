@@ -19,6 +19,7 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
 /**
@@ -37,6 +38,8 @@ final class Client {
 
 	volatile String name = "";
 	volatile String harness = "";
+	/** The {@code CLIENT_VERSION} the client said in {@code hello}, if it did. */
+	volatile String clientVersion = "";
 	volatile boolean authenticated;
 	/** Set when its connection reached end of input; its cleanup may still be running. */
 	volatile boolean leaving;
@@ -101,7 +104,7 @@ final class Client {
 
 	JsonObject describe() {
 		JsonObject o = Json.of("id", id, "name", name, "harness", harness, "transport", transport,
-			"launcher", launcher, "activeProject", activeProject, "active", active,
+			"launcher", launcher, "clientVersion", clientVersion, "activeProject", activeProject, "active", active,
 			"connectedMs", System.currentTimeMillis() - connectedAt);
 		synchronized (projects) {
 			Json.put(o, "projects", new ArrayList<>(projects));
@@ -110,6 +113,11 @@ final class Client {
 			Json.put(o, "programs", new ArrayList<>(programs));
 		}
 		Json.put(o, "running", new ArrayList<>(running.keySet()));
+		JsonArray rq = new JsonArray();
+		for (RequestMonitor r : running.values()) {
+			rq.add(r.describe());
+		}
+		o.add("requests", rq);
 		return o;
 	}
 }

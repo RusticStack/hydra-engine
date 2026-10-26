@@ -318,6 +318,7 @@ final class Session {
 	private JsonElement hello(Client c, JsonObject req) {
 		c.name = Json.str(req, "client", c.name);
 		c.harness = Json.str(req, "harness", c.harness);
+		c.clientVersion = Json.str(req, "clientVersion", c.clientVersion);
 		JsonObject o = info();
 		Json.put(o, "client", c.id);
 		return o;
@@ -325,8 +326,10 @@ final class Session {
 
 	JsonObject info() {
 		Runtime rt = Runtime.getRuntime();
-		JsonObject o = Json.of("protocol", PROTOCOL_VERSION, "ghidra",
-			Application.getApplicationVersion(), "install",
+		JsonObject o = Json.of("protocol", PROTOCOL_VERSION, "minClient", HydraInfo.minClient(),
+			"hydraVersion", HydraInfo.hydraVersion(), "ghidraVersion",
+			Application.getApplicationVersion(), "installId", HydraInfo.installId(), "startedAt",
+			startedAt, "ghidra", Application.getApplicationVersion(), "install",
 			Application.getInstallationDirectory().getAbsolutePath(), "java",
 			System.getProperty("java.version"), "pid", ProcessHandle.current().pid(), "uptimeMs",
 			System.currentTimeMillis() - startedAt, "listen", listenInfo, "launch", launchInfo,
@@ -2518,6 +2521,7 @@ final class Session {
 			out.length(), "truncated", out.length() > cap, "output",
 			out.length() > cap ? out.substring(0, cap) : out, "changed",
 			p != null && p.isChanged());
+		Json.put(r, "artifact", Json.str(req, "artifact", null));
 		if (failure != null) {
 			if (m.isCancelled() || failure instanceof CancelledException) {
 				throw new SessionException(SessionException.CANCELLED,

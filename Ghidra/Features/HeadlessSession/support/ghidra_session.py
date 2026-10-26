@@ -44,6 +44,11 @@ Configuration, lowest to highest precedence: built-in defaults, ``<state dir>/co
 environment (``GHIDRA_SESSION_*``), command-line options. The state dir is
 ``GHIDRA_SESSION_HOME`` or a per-user default (``%LOCALAPPDATA%\\GhidraSession`` on Windows,
 ``$XDG_STATE_HOME/ghidra-session`` or ``~/.local/state/ghidra-session`` elsewhere).
+
+Compatibility: this file is a versioned client (``CLIENT_VERSION``) of protocol ``PROTOCOL``. The
+session's ``hello`` answers ``protocol`` and ``minClient``; ``connect`` raises
+``IncompatibleError`` when the protocol differs or ``CLIENT_VERSION`` is older than ``minClient``
+(README, "Pinning and upgrading").
 """
 from __future__ import annotations
 
@@ -63,6 +68,13 @@ import time
 from pathlib import Path
 
 PROTOCOL = 2
+#: This file's own version (major.minor.patch). The session refuses to be driven by a client older
+#: than its ``minClient``; bump the major when the protocol changes incompatibly, the minor when
+#: the client gains something, the patch for fixes. Shipped as hydra-client-<version>.zip.
+CLIENT_VERSION = "1.0.0"
+#: The Hydra Engine release this file was packaged with (hydra-client-<release>.zip stamps it);
+#: ``dev`` when run from a source tree.
+HYDRA_RELEASE = "dev"
 MAIN_CLASS = "ghidra.app.util.headless.session.HeadlessSession"
 FAST_MAIN_CLASS = "ghidra.app.util.headless.session.SessionMain"
 DEFAULT_INSTANCE = "default"
@@ -76,6 +88,42 @@ IS_MAC = sys.platform == "darwin"
 
 class LaunchError(RuntimeError):
     """The session could not be started: no JDK, a bad install, a daemon that does not answer."""
+
+
+class IncompatibleError(LaunchError):
+    """The session speaks another protocol, or requires a newer client than this file."""
+
+
+def parse_version(text) -> tuple[int, ...]:
+    """``"1.2.3"`` as ``(1, 2, 3)``; anything else raises ``ValueError``."""
+    parts = str(text).strip().split(".")
+    if not parts or not all(p.isdigit() for p in parts):
+        raise ValueError(f"not a dotted version: {text!r}")
+    return tuple(int(p) for p in parts)
+
+
+def check_compatible(info: dict, client_version: str = CLIENT_VERSION,
+                     protocol: int = PROTOCOL) -> None:
+    """Checks a ``hello`` answer (or the ``ready`` event) against this client; raises
+    ``IncompatibleError`` with the versions on both sides when they do not fit. A session that
+    reports no ``minClient`` (a build before the contract) is accepted when the protocol matches."""
+    theirs = info.get("protocol")
+    who = (f"Hydra Engine {info.get('hydraVersion') or '?'} (Ghidra "
+           f"{info.get('ghidraVersion') or info.get('ghidra') or '?'})")
+    if theirs != protocol:
+        raise IncompatibleError(
+            f"{who} speaks protocol {theirs}, this client (ghidra_session.py {client_version}) "
+            f"speaks {protocol}: use the client of the same release as the engine")
+    need = info.get("minClient")
+    if need:
+        try:
+            too_old = parse_version(client_version) < parse_version(need)
+        except ValueError as e:
+            raise IncompatibleError(f"{who} reports an unreadable minClient: {e}") from e
+        if too_old:
+            raise IncompatibleError(
+                f"{who} requires a client of at least {need}, this is ghidra_session.py "
+                f"{client_version}: upgrade the client to the one released with the engine")
 
 
 def _read_properties(path: Path) -> list[tuple[str, str]]:
@@ -727,7 +775,7 @@ class SocketSession(_Base):
     """A client of a session that serves a loopback socket (the daemon)."""
 
     def __init__(self, endpoint: dict | str | os.PathLike, client: str = "", harness: str = "",
-                 timeout: float | None = None):
+                 timeout: float | None = None, check: bool = True):
         super().__init__()
         if not isinstance(endpoint, dict):
             endpoint = json.loads(Path(endpoint).read_text(encoding="utf-8"))
@@ -738,7 +786,15 @@ class SocketSession(_Base):
         self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self._r = self.sock.makefile("r", encoding="utf-8", newline="\n")
         self._w = self.sock.makefile("w", encoding="utf-8", newline="\n")
-        self.hello = self.call("hello", token=endpoint["token"], client=client, harness=harness)
+        try:
+            self.hello = self.call("hello", token=endpoint["token"], client=client,
+                                   harness=harness, clientVersion=CLIENT_VERSION,
+                                   protocol=PROTOCOL)
+            if check:
+                check_compatible(self.hello)
+        except BaseException:
+            self.close()
+            raise
 
     def _send(self, line):
         self._w.write(line)
@@ -795,6 +851,11 @@ class StdioSession(_Base):
             err = first.get("error", {})
             raise SessionError(err.get("code", "fatal"), err.get("message", "did not start"))
         self.ready = first
+        try:
+            check_compatible(first)
+        except IncompatibleError:
+            self.close()
+            raise
 
     def _send(self, line):
         self.proc.stdin.write(line)
@@ -857,7 +918,7 @@ class Daemon:
         finally:
             lk.close()
 
-    def _try_connect(self, client, harness, timeout=5.0) -> SocketSession | None:
+    def _try_connect(self, client, harness, timeout=5.0, check=True) -> SocketSession | None:
         ep = self.read_endpoint()
         if not ep:
             return None
@@ -866,7 +927,8 @@ class Daemon:
         if not self.jvm_alive():
             return None
         try:
-            return SocketSession(ep, client=client, harness=harness, timeout=timeout)
+            return SocketSession(ep, client=client, harness=harness, timeout=timeout,
+                                 check=check)
         except (OSError, SessionError, KeyError, ValueError):
             return None
 
@@ -962,7 +1024,7 @@ class Daemon:
         raise LaunchError(f"the daemon did not answer within {timeout:.0f} s; see {self.log_file}")
 
     def status(self) -> dict | None:
-        s = self._try_connect("ghidra_session", "cli")
+        s = self._try_connect("ghidra_session", "cli", check=False)  # also of an older release
         if not s:
             return None
         with s:
@@ -970,7 +1032,7 @@ class Daemon:
 
     def stop(self, force: bool = False, timeout: float = 60.0) -> bool:
         """Asks the daemon to shut down; returns True when its JVM is gone."""
-        s = self._try_connect("ghidra_session", "cli")
+        s = self._try_connect("ghidra_session", "cli", check=False)  # stop what we cannot drive
         if not s:
             return not self.jvm_alive()
         pid = s.endpoint.get("pid")
@@ -1120,10 +1182,15 @@ def main(argv=None) -> int:
     p = sub.add_parser("command", help="print the java command line")
     p.add_argument("args", nargs=argparse.REMAINDER)
     sub.add_parser("config", help="print the effective configuration")
+    sub.add_parser("version", help="print this client's version and protocol")
     a = ap.parse_args(argv)
     over = {k: getattr(a, k, None) for k in ("java", "maxHeap", "gc", "mode", "tmpdir")}
     try:
         st = state_dir(a.state)
+        if a.action == "version":
+            print(json.dumps({"client": CLIENT_VERSION, "protocol": PROTOCOL,
+                              "release": HYDRA_RELEASE}))
+            return 0
         if a.action == "config":
             cfg = load_config(st, over)
             launch = Launch(Install.locate(a.ghidra), cfg, st)
@@ -1193,6 +1260,9 @@ def main(argv=None) -> int:
     except SessionError as e:
         print(f"error: {e}", file=sys.stderr)
         return 3
+    except IncompatibleError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 4
     except LaunchError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2

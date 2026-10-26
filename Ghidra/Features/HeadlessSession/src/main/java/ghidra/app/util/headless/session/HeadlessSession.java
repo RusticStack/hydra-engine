@@ -349,7 +349,9 @@ public class HeadlessSession implements GhidraLaunchable {
 	}
 
 	private void writeEndpoint(Path file, int port, String token, Options o) throws IOException {
-		JsonObject e = Json.of("protocol", Session.PROTOCOL_VERSION, "pid",
+		JsonObject e = Json.of("protocol", Session.PROTOCOL_VERSION, "minClient",
+			HydraInfo.minClient(), "hydraVersion", HydraInfo.hydraVersion(), "ghidraVersion",
+			Application.getApplicationVersion(), "installId", HydraInfo.installId(), "pid",
 			ProcessHandle.current().pid(), "host", o.listenHost.getHostAddress(), "port", port,
 			"token", token, "instance", o.daemon ? o.instance : null, "install",
 			Application.getInstallationDirectory().getAbsolutePath(), "ghidra",
