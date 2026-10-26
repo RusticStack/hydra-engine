@@ -19,8 +19,22 @@ example `12.3-hydra.1`); its tag is `v` and the version. Releases are on
   `fork_project` (with a ready `suggestion` request) where a working copy is the answer, or
   `open_read_only`. `holder` stays a string as before; everything else is new fields.
 
+- **`fork_project`** (HeadlessSession): copies a project into a working copy for the caller
+  while the source and its read-only views stay open and in use. A block clone on ReFS (Windows
+  11 24H2 and later), else a full copy; `mode` `auto` (clone, or a full copy up to
+  `forkCopyLimitMb`, default 2048), `copy-on-write` (clone or refuse) or `full`. The answer has
+  the new project id, the paths, the source's identity and base revision, `method`, `cloned`
+  (measured), `bytes`, `files` and times. The fork records its source, base revision and lineage
+  in `<name>.fork.json` next to its `.gpr`, shown as `fork` by `project`. A source another
+  client or process writes is refused, naming it. New launcher setting `forkCopyLimitMb`
+  (`GHIDRA_SESSION_FORK_COPY_LIMIT_MB`), daemon option `-forkCopyLimitMb`.
+
 ### Changed
 
+- The project files the upgrade cache keys and copies leave out Ghidra's transient files in a
+  `.rep` (`tmp<n>.ps` pre-save copies of programs open for update, `tmp<n>.tmp`), so that a
+  project another process has open for update keeps its identity until it is saved. Cache
+  entries made before this are rebuilt once.
 - The `busy` details of a program lock carry `program` as the program's key
   (`p1:/path`), like every other error, instead of its project path (now in `path`).
 

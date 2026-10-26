@@ -380,6 +380,7 @@ DEFAULTS = {
     "log": None,             # daemon log; None: <state>/<instance>.log
     "upgradeCache": True,    # serve read-only opens of older-format programs from an upgraded copy
     "upgradeCacheDir": None,  # where those copies live; None: <state>/upgrade-cache
+    "forkCopyLimitMb": 2048,  # fork_project mode auto: refuse a full (not cloned) copy over this
 }
 
 ENV_MAP = {
@@ -394,6 +395,7 @@ ENV_MAP = {
     "GHIDRA_SESSION_UPGRADE_CACHE": ("upgradeCache", lambda v: v.strip().lower() not in
                                      ("0", "false", "off", "no")),
     "GHIDRA_SESSION_UPGRADE_CACHE_DIR": ("upgradeCacheDir", str),
+    "GHIDRA_SESSION_FORK_COPY_LIMIT_MB": ("forkCopyLimitMb", int),
 }
 
 
@@ -543,6 +545,8 @@ class Launch:
         if self.cfg.get("upgradeCache", True):
             app_args += ["-upgradeCache",
                          str(self.cfg.get("upgradeCacheDir") or self.state / "upgrade-cache")]
+        if self.cfg.get("forkCopyLimitMb") is not None:
+            app_args += ["-forkCopyLimitMb", str(int(self.cfg["forkCopyLimitMb"]))]
         argv = [str(self.java), *vm, *head, *main, *app_args]
         return argv, info
 

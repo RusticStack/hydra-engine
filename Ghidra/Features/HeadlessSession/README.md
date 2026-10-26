@@ -130,6 +130,7 @@ Lowest to highest: defaults, `<state>/config.json`, environment, command-line op
 | `log` | | `<state>/<instance>.log` | The daemon's log (Ghidra's log and stderr). |
 | `upgradeCache` | `GHIDRA_SESSION_UPGRADE_CACHE` (`off`, `false`, `0`: off) | `true` | Serve read-only opens of programs saved in an older database format from an upgraded copy (below). |
 | `upgradeCacheDir` | `GHIDRA_SESSION_UPGRADE_CACHE_DIR` | `<state>/upgrade-cache` | Where those copies live; best on the same volume as the projects (a block clone there costs nothing). |
+| `forkCopyLimitMb` | `GHIDRA_SESSION_FORK_COPY_LIMIT_MB` | `2048` | `fork_project` in `auto` mode refuses a full copy (one the file system cannot block-clone) larger than this; `"mode": "full"` copies anyway. |
 
 The state dir is `--state`, else `GHIDRA_SESSION_HOME`, else per user:
 `%LOCALAPPDATA%\GhidraSession` (Windows), `~/Library/Application Support/GhidraSession` (macOS),
@@ -191,6 +192,69 @@ Only one process can hold it; a second writable open gets `conflict` with the lo
 
 A read-only view does not see changes another process saves to the project after it was opened.
 Reopen it (all clients leave it, or wait for `keepWarm`) to see them.
+
+### Working copies: `fork_project`
+
+A read-only view lets any number of clients read a project; only one may write it, and only
+when nobody else uses it. A client that wants to change things while others keep reading forks
+the project into a **working copy** of its own:
+
+```json
+{"cmd": "fork_project", "project": "p1", "path": "C:/work/agent-a", "writable": true, "mode": "auto"}
+```
+
+```json
+{"project": "p2", "path": "C:/work/agent-a", "gpr": "C:/work/agent-a/Game.gpr", "name": "Game",
+ "writable": true, "baseRevision": "9c1e0f6a2b7d4e15",
+ "source": {"project": "p1", "gpr": "C:/re/Game/Game.gpr", "name": "Game",
+            "revision": "9c1e0f6a2b7d4e15", "writable": false, "fork": false},
+ "mode": "auto", "method": "clone", "cloned": true,
+ "clonedBy": "free space (3702784 of 1560659022 bytes used)",
+ "bytes": 1560659022, "files": 10, "copyMs": 204, "freeSpaceUsedBytes": 3702784, "depth": 1,
+ "sidecar": "C:/work/agent-a/Game.fork.json", "ms": 275, "info": {...}}
+```
+
+- `project`: the source, an open project's id or a project path (the client need not have
+  joined it). `path`: a folder for the fork (it keeps the source's name, or `name`), or a
+  `.gpr` path. An existing project there is never overwritten (`conflict`).
+- **The source is only read.** Its read-only views stay open and in use; nothing in the source
+  is written. The fork is opened for the caller, writable unless `"writable": false`, and is an
+  ordinary project from then on (`close_project` it; deleting it is the caller's business).
+- **The copy** is the one the upgrade cache makes: the `.gpr` and every file of the `.rep`, never
+  the lock files or Ghidra's transient pre-save files, with the platform's copy. On Windows 11
+  24H2 and later that block-clones on ReFS (a Dev Drive): the fork shares the source's blocks
+  until either side writes. Elsewhere it is a full copy. `mode`:
+  - `auto` (default): clone where possible; otherwise a full copy up to `forkCopyLimitMb`
+    (default 2048 MB), and above it `conflict` with `reason: "too_large"` and the cost (`bytes`,
+    `files`, file systems, free space) so that the caller can decide.
+  - `copy-on-write`: only a clone; otherwise `conflict` with `reason: "no_copy_on_write"` and the
+    cost.
+  - `full`: copy whatever it costs (`maxCopyMb` on the request overrides the limit for `auto`).
+  `cloned` says whether it was a clone: from the free space the copy used when the fork is
+  64 MiB or more, else from the file system (`clonedBy` says which). Other copy-on-write file
+  systems (Btrfs, XFS, APFS) are not claimed; there a fork counts as a full copy.
+- **A source someone writes is refused**, because its saved state may change under the copy:
+  writable in this daemon by another client (`conflict`, naming the `holders`), or locked by
+  another process (`conflict`, naming it from Ghidra's lock file). A source that only the caller
+  holds writable is forked under its exclusive lock once nothing in it is unsaved
+  (`unsaved_changes` otherwise). The source's revision is read before and after the copy; a
+  change in between removes the copy and answers `conflict` naming the changed files.
+- **Sidecar.** The fork's source and base revision are written to `<name>.fork.json` next to its
+  `.gpr` (Ghidra ignores the file): `source` (`gpr`, `canonical`, `name`, `revision`, whether it
+  was itself a fork), `baseRevision`, `created`, `by` (the client), `mode`, `method`, `cloned`,
+  `bytes`, `depth`, and `parent`: the source's own sidecar when the source is a fork, so a fork of
+  a fork keeps its whole lineage. `project` and `projects` show it as `fork`.
+
+Measured on Windows 11 (build 26300) with a 1.49 GB analysed project (10 files, a 66.7 MB
+executable with 243,855 functions), three runs:
+
+| Fork | Time | Space used |
+|---|---|---|
+| Same ReFS volume (block clone) | 204-225 ms (249-312 ms for the whole request, opening the fork included) | 2.8-5.0 MB |
+| To an NTFS volume (`mode: full`) | 8.5 s | 1.56 GB |
+
+For comparison, a single 261 MB database file: 14 ms and 36 KB cloned on ReFS, 2.0 s and 262 MB
+copied to NTFS.
 
 ### Programs saved by an older Ghidra
 
@@ -305,8 +369,9 @@ code 2). Long commands send throttled `progress` events with the request's `id`:
 | `status` | | Session, launch info, memory, projects, programs (mode, owner, users, what holds each lock, idle time), clients and their requests, scheduler lanes. |
 | `projects` | | Open projects, which ones this client joined, its active project. |
 | `open_project` | `path`, `writable`=false, `discard`=false | Joins the project, opening it if needed. `path` is a `.gpr`, its folder, a `.rep`, or a parent folder with exactly one project at most two levels below. A read-only view is reopened writable only when no other client uses it; a read-only request on a writable project joins it. |
+| `fork_project` | `project` (id or path), `path`, `name`?, `writable`=true, `mode`=auto\|copy-on-write\|full, `maxCopyMb`? | Copies the project into a working copy of this client's, opened and joined; the source and its read-only views are untouched. See "Working copies". |
 | `close_project` | `project`?, `discard`=false | Leaves the project (closes this client's programs there). A writable project closes when its last user leaves; a read-only one after `keepWarm`. |
-| `project` | `project`? | The project: id, name, paths, writable, files, users, programs. |
+| `project` | `project`? | The project: id, name, paths, writable, files, users, programs, and `fork` (its sidecar's summary) when it is a fork. |
 | `list` | `project`?, `folder`="/", `recursive`=true, `programsOnly`=false, `metadata`=true, `sha256`, `offset`, `limit`=1000 | Folders and files, with `key`, `sha256`, `language`, `format`, `executable` and `open` (who uses it) for programs; `sha256` finds a program by its hash. Paged, with `truncated`. |
 | `open_program` / `switch` | `path` (path, unique name or key), `project`?, `writable`=false, `checkout`=false, `upgrade`=false, `wait`: `true` | Opens the program, or joins it if it is open (also a warm one nobody uses), and makes it active. Writable needs a writable project; a versioned file needs `checkout`. `"wait": true` on a read-only open of an older-format program waits for its upgrade cache copy instead of upgrading in memory (slot and lock waits keep the default). |
 | `programs` | | This client's programs (all projects) and its active ones. |
@@ -415,9 +480,10 @@ create structure from usage, and version tracking from another program in the pr
 4. **New binary.** `open_project` a working project with `"writable": true`, then `import` with
    `"analyze": true`. The same file is never imported twice.
 5. **Change things** (names, types, bulk imports, version tracking) in a writable project that is
-   a working copy, never in a master you want unchanged; another client can keep a read-only view
-   of the master open at the same time.
-6. **Errors.** `busy`: retry, or raise `wait`. `not_owner`: use your own working copy.
+   a working copy, never in a master you want unchanged: `fork_project` the master, which other
+   clients keep reading meanwhile, and write the fork.
+6. **Errors.** `busy`: retry, or raise `wait`. `not_owner`: use your own working copy (the
+   answer's `suggestion` is a ready `fork_project` request).
    `unsaved_changes`: `save`, or close with `discard`.
 
 ## Performance
@@ -514,7 +580,11 @@ took 7.0-7.8 s per question and needed a copy of the project.
   the copy and is faster; a daemon killed mid-build leaves no entry and the next start builds
   cleanly; a stop mid-build is prompt; a queued build waits for a client's long job, fails when
   the source changes meanwhile, and the next open retries; `cancel` stops a build; an older key's
-  copy is removed; the source stays byte-identical).
+  copy is removed; the source stays byte-identical); `holders` (who holds what, in `busy`, `conflict` and
+  `not_owner`, and the suggested action); `fork` (a fork while the master's view stays open and
+  in use; its sidecar; a fork of a fork; unsaved changes, an existing destination, a source
+  another client or process writes, refused; `copy-on-write`, `auto` and `full` modes; the master
+  stays byte-identical).
 
 ```
 python examples/session_smoke.py --ghidra <install> --work <empty dir> --binary A.exe --binary B.exe

@@ -58,7 +58,7 @@ final class Scheduler {
 	/** The lane of a command, or null for commands that need no slot (bookkeeping). */
 	static Lane laneOf(String cmd) {
 		return switch (cmd) {
-			case "analyze", "import", "script", "save" -> Lane.LONG;
+			case "analyze", "import", "script", "save", "fork_project" -> Lane.LONG;
 			case "list", "functions", "decompile", "rename", "comment", "open_program", "switch",
 					"open_project" ->
 				Lane.QUICK;

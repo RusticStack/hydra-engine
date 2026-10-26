@@ -63,7 +63,7 @@ public class HeadlessSession implements GhidraLaunchable {
 		                       [-daemon -stateDir <dir> [-instance <name>]]
 		                       [-idleTimeout <seconds>] [-keepWarm <seconds>]
 		                       [-maxQuick <n>] [-maxLong <n>] [-scriptPath <dir>]... [-log <file>]
-		                       [-upgradeCache <dir>]
+		                       [-upgradeCache <dir>] [-forkCopyLimitMb <n>]
 		  (normally started by Ghidra/Features/HeadlessSession/support/ghidra_session.py)
 		  -project      open this project at start (a .gpr, its folder, or a parent with one)
 		  -writable     open it writable (takes the project lock); default: read-only view
@@ -81,6 +81,8 @@ public class HeadlessSession implements GhidraLaunchable {
 		  -log          Ghidra application log file
 		  -upgradeCache serve read-only opens of programs in an older database format from an
 		                upgraded copy of their project kept in this directory (default: none)
+		  -forkCopyLimitMb  fork_project mode auto refuses a full (not block-cloned) copy larger
+		                than this (default 2048)
 		""";
 
 	private final Object exitLock = new Object();
@@ -130,6 +132,9 @@ public class HeadlessSession implements GhidraLaunchable {
 			o.maxLong > 0 ? o.maxLong : Math.max(2, cpus / 4));
 		session = new Session(scheduler, o.keepWarmSeconds,
 			new UpgradeCache(o.upgradeCache == null ? null : new File(o.upgradeCache), scheduler));
+		if (o.forkCopyLimitMb >= 0) {
+			session.forkCopyLimitBytes = o.forkCopyLimitMb << 20;
+		}
 		Runtime.getRuntime().addShutdownHook(new Thread(this::removeEndpoint, "session-exit"));
 
 		Connection stdio = null;
@@ -401,6 +406,7 @@ public class HeadlessSession implements GhidraLaunchable {
 		List<String> scriptDirs = new ArrayList<>();
 		String log;
 		String upgradeCache;
+		long forkCopyLimitMb = -1;
 
 		static Options parse(String[] args) {
 			Options o = new Options();
@@ -428,6 +434,7 @@ public class HeadlessSession implements GhidraLaunchable {
 					}
 					case "-log" -> o.log = value(args, ++i, a);
 					case "-upgradeCache" -> o.upgradeCache = value(args, ++i, a);
+					case "-forkCopyLimitMb" -> o.forkCopyLimitMb = number(args, ++i, a);
 					default -> throw new IllegalArgumentException("unknown option: " + a);
 				}
 			}

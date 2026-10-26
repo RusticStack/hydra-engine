@@ -122,6 +122,7 @@ final class ProjectEntry {
 			Json.put(o, "users", ids);
 		}
 		Json.put(o, "programs", programs.size());
+		o.add("fork", ProjectFork.summary(ProjectFork.readSidecar(resolved)));
 		return o;
 	}
 }

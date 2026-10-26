@@ -827,7 +827,7 @@ final class UpgradeCache {
 	 * (not its lock files) into {@code dest}. {@link Files#copy} uses the platform's copy, which
 	 * block-clones on ReFS. Checks for cancellation between files.
 	 */
-	private static void copyProject(Path base, String name, Path dest, RequestMonitor m)
+	static void copyProject(Path base, String name, Path dest, RequestMonitor m)
 			throws IOException, CancelledException {
 		Files.createDirectories(dest);
 		Path gpr = base.resolve(name + ProjectLocator.getProjectExtension());
@@ -1083,8 +1083,22 @@ final class UpgradeCache {
 		return HexFormat.of().formatHex(md.digest()).substring(0, 16);
 	}
 
-	/** The {@code .gpr} and every file below the {@code .rep}, by relative path, sorted. */
-	private static SortedMap<String, Path> sourceFiles(Path gpr, String name) throws IOException {
+	/**
+	 * Ghidra's transient files inside a {@code .rep}: the pre-save copy a program opened for
+	 * update keeps next to its database ({@code tmp<n>.ps}, {@code LocalManagedBufferFile}) and
+	 * the temporary files of a database item ({@code tmp<n>.tmp}, {@code LocalDatabaseItem}).
+	 * They are never part of what is saved: Ghidra deletes or replaces them, and removes old
+	 * ones when it next opens the item.
+	 */
+	private static final java.util.regex.Pattern TRANSIENT =
+		java.util.regex.Pattern.compile("tmp\\d+\\.(ps|tmp)");
+
+	/**
+	 * The {@code .gpr} and every file below the {@code .rep}, by relative path, sorted; without
+	 * Ghidra's {@link #TRANSIENT} files, so that a project open for update elsewhere keeps its
+	 * identity until it is saved.
+	 */
+	static SortedMap<String, Path> sourceFiles(Path gpr, String name) throws IOException {
 		SortedMap<String, Path> files = new TreeMap<>();
 		files.put(gpr.getFileName().toString(), gpr);
 		Path rep = gpr.resolveSibling(name + ProjectLocator.getProjectDirExtension());
@@ -1093,10 +1107,20 @@ final class UpgradeCache {
 			Files.walkFileTree(rep, new SimpleFileVisitor<>() {
 				@Override
 				public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
-					if (attrs.isRegularFile()) {
+					if (attrs.isRegularFile() &&
+						!TRANSIENT.matcher(file.getFileName().toString()).matches()) {
 						files.put(base.relativize(file).toString().replace('\\', '/'), file);
 					}
 					return FileVisitResult.CONTINUE;
+				}
+
+				@Override
+				public FileVisitResult visitFileFailed(Path file, IOException e)
+						throws IOException {
+					if (e instanceof NoSuchFileException) {
+						return FileVisitResult.CONTINUE; // a transient file, gone meanwhile
+					}
+					throw e;
 				}
 			});
 		}

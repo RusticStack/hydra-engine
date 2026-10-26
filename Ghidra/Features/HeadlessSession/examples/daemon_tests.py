@@ -26,7 +26,7 @@ read-only, to the multi-project test. --legacy-project (optional) is copied into
 older-format part of upgrade_cache; the original is only read.
 
 Tests: two_harnesses, two_projects, dll_import, client_kill, daemon_restart, fairness, cancel_all,
-idle_shutdown, keep_warm, stdio, upgrade_cache, holders.
+idle_shutdown, keep_warm, stdio, upgrade_cache, holders, fork.
 """
 import argparse
 import json
@@ -80,7 +80,8 @@ def expect_error(code, fn, *args, **kw):
         r = fn(*args, **kw)
     except Exception as e:  # noqa: BLE001
         if getattr(e, "code", None) != code:
-            raise Fail(f"expected {code}, got {type(e).__name__}: {e}") from e
+            raise Fail(f"expected {code}, got {type(e).__name__}: {e} "
+                       f"{getattr(e, 'details', '')}") from e
         return e
     raise Fail(f"expected {code}, got a result: {str(r)[:300]}")
 
@@ -818,9 +819,133 @@ def t_holders(c: Ctx):
     return "; ".join(notes)
 
 
+def tree_state(folder):
+    """{relative path: (size, mtime_ns)} of every file below a folder."""
+    folder = pathlib.Path(folder)
+    return {str(f.relative_to(folder)): (f.stat().st_size, f.stat().st_mtime_ns)
+            for f in folder.rglob("*") if f.is_file()}
+
+
+def t_fork(c: Ctx):
+    """fork_project makes a working copy while the master's read-only view stays open and in
+    use: the fork is writable by its maker, records its source and base revision, and leaves the
+    master byte-identical. A source someone else writes is refused, naming the writer."""
+    src = c.copy_fixture("projForkSrc")
+    exe = pathlib.Path(c.a.exe).name
+    forks = c.work / "forks"
+    if forks.exists():
+        shutil.rmtree(forks)
+    before = tree_state(src.parent)
+    d = c.daemon("fork", keepWarm=0)
+    notes = []
+    with d.connect("reader", "harness-a") as a, d.connect("writer", "harness-b") as b:
+        pa = a.call("open_project", path=str(src))
+        a.call("open_program", path=exe)
+        fn = a.call("functions", limit=1)["functions"][0]
+        a.call("decompile", address=fn["address"])
+        # the reader keeps its view; the writer forks the master it has not even joined
+        t = time.perf_counter()
+        r = b.call("fork_project", project=pa["id"], path=str(forks / "b1"), wait=600000)
+        c.timings["fork_project (small project)"] = round((time.perf_counter() - t) * 1000)
+        check(r["project"] != pa["id"] and r["writable"] and r["info"]["writable"],
+              f"fork not opened writable: {r}")
+        check(r["source"]["project"] == pa["id"] and r["source"]["gpr"] and
+              r["source"]["revision"] == r["baseRevision"] and len(r["baseRevision"]) == 16,
+              f"fork source: {r['source']}")
+        check(r["bytes"] > 0 and r["files"] > 0 and r["method"] in ("clone", "copy") and
+              isinstance(r["cloned"], bool) and r["depth"] == 1, f"fork cost: {r}")
+        check(pathlib.Path(r["gpr"]).is_file() and pathlib.Path(r["sidecar"]).is_file(),
+              f"fork files: {r}")
+        side = json.loads(pathlib.Path(r["sidecar"]).read_text())
+        check(side["baseRevision"] == r["baseRevision"] and side["source"]["gpr"] and
+              side["by"]["name"] == "writer", f"sidecar: {side}")
+        check(not list(forks.glob("*/.*.tmp")), "a temporary folder was left")
+        notes.append(f"fork {r['bytes']} bytes/{r['files']} files by {r['method']} "
+                     f"(cloned {r['cloned']}) in {r['copyMs']} ms")
+        # the reader's view is unaffected and still answers
+        a.call("decompile", address=fn["address"])
+        st = a.call("project")
+        check(st["id"] == pa["id"] and a.hello["client"] in st["users"], f"reader view: {st}")
+        info = b.call("project", project=r["project"])
+        check(info["fork"] and info["fork"]["baseRevision"] == r["baseRevision"] and
+              info["fork"]["source"]["gpr"] == r["source"]["gpr"], f"project.fork: {info}")
+        # the writer edits and saves its fork; the master and its view do not change
+        b.call("open_program", path=exe, writable=True)
+        b.call("rename", address=fn["address"], name="fork_only_name")
+        b.call("save")
+        check(not a.call("functions", contains="fork_only_name")["functions"],
+              "the fork's rename shows in the master's view")
+        check(b.call("functions", contains="fork_only_name")["functions"],
+              "the fork's rename is missing in the fork")
+        # fork of a fork: an unsaved change is refused, a saved one is forked
+        b.call("rename", address=fn["address"], name="fork_unsaved")
+        expect_error("unsaved_changes", b.call, "fork_project", project=r["project"],
+                     path=str(forks / "b2"))
+        b.call("save")
+        r2 = b.call("fork_project", project=r["project"], path=str(forks / "b2" / "Second.gpr"),
+                    wait=600000)
+        check(r2["depth"] == 2 and r2["name"] == "Second" and r2["source"]["fork"] and
+              r2["source"]["project"] == r["project"], f"fork of a fork: {r2}")
+        side2 = json.loads(pathlib.Path(r2["sidecar"]).read_text())
+        check(side2["parent"]["baseRevision"] == r["baseRevision"], f"lineage: {side2}")
+        notes.append("fork of a fork records its lineage")
+        # a destination that holds a project is refused
+        e = expect_error("conflict", b.call, "fork_project", project=pa["id"],
+                         path=str(forks / "b1"))
+        check("already exists" in e.message, f"existing destination: {e}")
+        # copy-on-write is promised only where the file system clones; auto refuses large
+        # full copies; full always copies
+        try:
+            r3 = b.call("fork_project", project=pa["id"], path=str(forks / "cow"),
+                        mode="copy-on-write", wait=600000)
+            check(r3["method"] == "clone", f"copy-on-write fork was not a clone: {r3}")
+            cow = f"copy-on-write: clone, cloned={r3['cloned']}"
+        except c.gs.SessionError as e:
+            check(e.code == "conflict" and e.details.get("reason") == "no_copy_on_write" and
+                  e.details.get("bytes", 0) > 0, f"copy-on-write refusal: {e} {e.details}")
+            cow = f"copy-on-write refused here ({e.details.get('destinationFileSystem')})"
+        try:
+            r4 = b.call("fork_project", project=pa["id"], path=str(forks / "auto0"),
+                        maxCopyMb=0, wait=600000)
+            check(r4["method"] == "clone", f"auto over the limit without a clone: {r4}")
+        except c.gs.SessionError as e:
+            check(e.code == "conflict" and e.details.get("reason") == "too_large" and
+                  e.details.get("suggest") == "mode full", f"auto refusal: {e} {e.details}")
+        r5 = b.call("fork_project", project=pa["id"], path=str(forks / "full"), mode="full",
+                    maxCopyMb=0, writable=False, wait=600000)
+        check(not r5["info"]["writable"], f"a read-only fork opened writable: {r5}")
+        notes.append(cow)
+        # a source that another client writes is refused, naming it
+        with d.connect("third", "harness-c") as x:
+            x.call("open_project", path=r["gpr"])  # joins b's writable fork
+            e = expect_error("conflict", x.call, "fork_project", project=r["project"],
+                             path=str(forks / "x1"))
+            names = [h.get("name") for h in e.details.get("holders", [])]
+            check("writer" in names and e.details.get("suggest") == "retry",
+                  f"writer not named: {e.details}")
+            x.call("close_project")
+        notes.append("a source written by another client is refused, naming it")
+        a.call("close_project")
+        for pid in (r["project"], r2["project"], r5["project"]):
+            b.call("close_project", project=pid, discard=True)
+    # another process holds the source writable: refused, naming it from its lock file
+    d2 = c.daemon("fork2")
+    with d2.connect("other-process", "tests") as o, d.connect("late", "tests") as s:
+        o.call("open_project", path=str(forks / "b1" / "Fixture.gpr"), writable=True)
+        e = expect_error("conflict", s.call, "fork_project",
+                         project=str(forks / "b1" / "Fixture.gpr"), path=str(forks / "y1"))
+        check((e.details.get("holderInfo") or {}).get("live") is True,
+              f"lock holder: {e.details}")
+    d2.stop()
+    d.stop()
+    check(tree_state(src.parent) == before, "the master project changed")
+    notes.append("master byte-identical")
+    return "; ".join(notes)
+
+
 TESTS = ["two_harnesses", "two_projects", "dll_import", "client_kill", "daemon_restart",
          "fairness", "cancel_all", "idle_shutdown", "keep_warm", "stdio", "upgrade_cache",
-         "holders"]
+         "holders", "fork"]
 
 
 def main():
@@ -852,7 +977,9 @@ def main():
                 print(f"ok   {n:16s} {time.perf_counter() - t:7.1f} s  {note}", flush=True)
             except Exception as e:  # noqa: BLE001
                 failed += 1
-                print(f"FAIL {n:16s} {time.perf_counter() - t:7.1f} s  {type(e).__name__}: {e}",
+                print(f"FAIL {n:16s} {time.perf_counter() - t:7.1f} s  {type(e).__name__}: {e}"
+                      f"{' ' + json.dumps(e.details) if getattr(e, 'details', None) else ''}"
+                      f" at line {e.__traceback__.tb_next.tb_lineno if e.__traceback__.tb_next else '?'}",
                       flush=True)
                 c.cleanup()
     finally:
