@@ -228,8 +228,10 @@ if (headlessRequested) {
 		// write. Never write into a directory that is not an install.
 		def dir = headlessInstallDir()
 		if (dir.exists()) {
-			def entries = dir.list() as List
-			if (!entries.isEmpty() && !new File(dir, 'Ghidra/application.properties').isFile()) {
+			// In the default place (build/dist/<ZIP_DIR_PREFIX>) the modules' zipExtensions tasks
+			// may already have written Extensions/ before this runs; that is this build's own output.
+			def entries = (dir.list() as List) - ['Extensions']
+			if (!entries.isEmpty() &&!new File(dir, 'Ghidra/application.properties').isFile()) {
 				throw new GradleException("headlessInstallDir ${dir} is not empty and is not a Ghidra install; refusing to write into it")
 			}
 		}
