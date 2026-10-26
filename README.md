@@ -57,11 +57,28 @@ headless-only build. It is upstream Ghidra `master` plus those, kept in sync.
   `writable` when you want to change it.
 - **Fair under load.** Quick requests (decompile, functions, list) and long ones (analyze,
   import, script) run in separate lanes, admitted round-robin by client, so one agent's
-  whole-program analysis never stalls another's 10 ms query. One writer and many readers per
-  program, per-client cancel, and a `busy` answer that names who holds the lock instead of a
-  silent wait.
-- **Imports once.** Any format a Ghidra loader accepts; a file whose SHA-256 is already in the
-  project is never imported twice.
+  whole-program analysis never stalls another's 10 ms query. Per-client (and per-label) cancel,
+  and `busy`, `conflict` and `not_owner` answers that name who holds what and suggest what to
+  do instead of a silent wait.
+- **Several agents writing at once.** Each in the way its work needs:
+  - a **working copy** of a project (`fork_project`) while the others keep reading the master:
+    a block clone on ReFS (about 0.2 s and a few MB for a 1.5 GB project), a full copy
+    elsewhere, with its source and base revision recorded;
+  - a private **overlay** of a program others read: names, labels, comments, signatures and
+    data types only that client sees, never saved unless promoted into a working copy;
+  - **several writers** of one project (different programs in parallel), or of one program in
+    shared mode, with every change journalled with its author, `expect` against lost updates,
+    atomic multi-operation `edit`s and `discard_edits`.
+- **Fresh views.** Every project and program has a revision; when another process saves a
+  project that a read-only view serves, its clients are told (`stale`), and `refresh` reopens it
+  for all of them at once.
+- **Imports once, in parallel.** Any format a Ghidra loader accepts; a file whose SHA-256 is
+  already in the project is never imported twice. Up to `maxImports` imports run at once (four
+  large PEs in 64 s instead of 165 s); the rest wait in a queue that `status` shows, with
+  positions and estimated waits, and that `cancel` empties.
+- **A versioned contract.** `hello` and `status` carry the protocol, the minimum client, the
+  engine and Ghidra versions and an install id; each release ships the Python client as its own
+  versioned zip, which refuses an engine it cannot drive.
 - **Scripts, contained.** Any GhidraScript, Java or Python, with arguments. On a program you do
   not own, it runs inside a transaction that is always rolled back, so it cannot change what
   others see.
@@ -94,12 +111,12 @@ decompile) took 7.0-7.8 s per question, and needed a copy of the project (measur
 You need a JDK 25 and Python 3.10 or later.
 
 **Download (Windows x64).** Each [release](https://github.com/RusticStack/hydra-engine/releases)
-has `hydra-engine-<version>-win_x86_64.zip` and a `SHA256SUMS`. Unzip it anywhere; it holds the
-install, `ghidra_12.3_DEV\`:
+has `hydra-engine-<version>-win_x86_64.zip`, the client alone as `hydra-client-<version>.zip`,
+and a `SHA256SUMS`. Unzip the engine anywhere; it holds the install, `ghidra_12.3_DEV\`:
 
 ```powershell
-Get-FileHash hydra-engine-12.3-hydra.1-win_x86_64.zip     # compare with SHA256SUMS
-Expand-Archive hydra-engine-12.3-hydra.1-win_x86_64.zip C:\tools
+Get-FileHash hydra-engine-12.3-hydra.2-win_x86_64.zip     # compare with SHA256SUMS
+Expand-Archive hydra-engine-12.3-hydra.2-win_x86_64.zip C:\tools
 $G = "C:\tools\ghidra_12.3_DEV"
 python $G\Ghidra\Features\HeadlessSession\support\ghidra_session.py ensure   # the daemon
 & $G\support\analyzeHeadless.bat C:\re MyProject -import target.exe          # stock headless
@@ -174,7 +191,8 @@ The protocol, every command and every error code are in the
 | Lifetime | one run per command, then exit | one daemon per user, stays up (or idles out) |
 | Clients | the one that started it | any number, at once |
 | Projects | one per run | any number, at once |
-| Project lock | always, even with `-readOnly` | none for a read-only view; one owner when writable |
+| Project lock | always, even with `-readOnly` | none for a read-only view; one per daemon when writable, shared by its clients |
+| Several writers | one process per project | several clients per project or per program, overlays, working copies |
 | Programs | the ones `-import`/`-process` select | open, switch, close at will, without importing |
 | A question about an analysed program | 7.0-7.8 s (start, open, decompile, exit) | about 7 ms warm |
 | Re-import of the same file | a second copy | refused by SHA-256 |
@@ -236,9 +254,10 @@ Nothing is removed from the source tree. How the module list was worked out, and
 keeps it honest, are in [CONTRIBUTING](.github/CONTRIBUTING.md#the-headless-build).
 
 CI ([`ci.yml`](.github/workflows/ci.yml)) builds the headless install and runs
-`session_smoke.py` and `daemon_tests.py` on Windows, the platform that is tested and released.
-The launcher and module have no Windows-only path, and Linux x64 and macOS arm64 builds passed
-both suites once (a release dry run, 2026-10-26), but neither is tested routinely. The full build
+`session_smoke.py`, `daemon_tests.py` and `contract_tests.py` on Windows, the platform that is
+tested and released. The launcher and module have no Windows-only path, and Linux x64 and macOS
+arm64 builds passed the suites of the time once (a release dry run, 2026-10-26), but neither is
+tested routinely. The full build
 runs weekly. Releases are cut by [`release.yml`](.github/workflows/release.yml)
 ([CONTRIBUTING](.github/CONTRIBUTING.md#releases)).
 
@@ -248,9 +267,11 @@ For Ghidra's own GUI build and usage docs, see Ghidra's original README:
 ## Upstream sync
 
 `main` is upstream Ghidra `master` plus the additions above, merged (never rebased) when
-upstream moves. Only three upstream files are changed (`README.md`, one line of `build.gradle`,
-two issue templates), so a sync conflicts in those at most. The steps and the resolutions are in
-[CONTRIBUTING](.github/CONTRIBUTING.md#upstream-sync).
+upstream moves. Few upstream files are changed: `README.md`, one line of `build.gradle`, two
+lines of `gradle/distributableGhidraModule.gradle`, `.gitattributes`, two issue templates, and
+three small Java fixes (`LocalBufferFile`, `LocalDatabaseItem`, `SleighLanguageFile`; see the
+module README's "Changes outside this module"), so a sync conflicts in those at most. The steps
+and the resolutions are in [CONTRIBUTING](.github/CONTRIBUTING.md#upstream-sync).
 
 Branches: `main` (on upstream `master`) and `legacy-12.1.4`, the same module on Ghidra 12.1.4,
 kept only for projects analysed with 12.1.4. A project opened writable by `main` may be upgraded

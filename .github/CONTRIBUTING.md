@@ -199,19 +199,27 @@ version: `12.3-hydra.1`, `12.3-hydra.2`, then `12.4-hydra.1`. The tag is `v` and
 
 1. Sync with upstream first (above), so a release is on the latest `master`, and let CI pass on
    `main`.
-2. In `CHANGELOG.md`, turn the top section into `## <version>`: the date, what changed, the known
-   limits, and the upstream commit it is based on, written as ``commit `<40-hex sha>` ``; the
-   release workflow refuses a section without one, or with a commit that is not in the tag's
-   history. Commit it to `main`.
+2. In `CHANGELOG.md`, turn the `## Unreleased` entries into a new `## <version>` section below
+   an emptied `## Unreleased`: the date, the upstream commit it is based on, written as
+   ``commit `<40-hex sha>` `` (the release workflow refuses a section without one, or with a
+   commit that is not in the tag's history), a summary for integrators, the compatibility
+   statement (protocol version, `minClient`, `CLIENT_VERSION`, project formats, platforms tested),
+   the known limits, and what changed. If the client gained something since the last release,
+   bump `CLIENT_VERSION` in `ghidra_session.py` (and `MIN_CLIENT` in `HydraInfo.java` only when
+   older clients can no longer drive the engine). Commit it to `main` and let CI pass on that
+   exact commit.
 3. Dry run, optional: `gh workflow run release.yml --ref main -f version=<version>` builds and
    tests every platform and uploads the notes it would publish (`release-dry-run-notes`), without
    publishing.
 4. Tag and push: `git tag v<version> && git push origin v<version>`. `release.yml` builds the
    headless zip on Windows (`hydra-engine-<version>-win_x86_64.zip`), unzips it and runs
-   `session_smoke.py` and `daemon_tests.py` on it, and only if both pass publishes the release
-   with the zip, `SHA256SUMS` and the changelog section, followed by a table of what was tested
-   where.
-5. Check the release page: the assets there, and the zip's SHA-256 matching `SHA256SUMS`.
+   `session_smoke.py`, `daemon_tests.py` and `contract_tests.py` on it, and only if all pass
+   packages the client (`.github/scripts/package-client.sh`: `hydra-client-<version>.zip`) and
+   publishes the release with both zips, `SHA256SUMS` and the changelog section, followed by a
+   table of what was tested where.
+5. Check the release page: both zips there, their SHA-256 matching `SHA256SUMS`; unzip the
+   engine and run `session_smoke.py` against that install (not the source tree), and run the
+   packaged client's `python ghidra_session.py version`, which must print the release.
 
 Releases are Windows-only, like CI. The build matrix in `release.yml` takes more platforms
 (`ubuntu-latest` as `linux_x86_64` and `macos-latest` as `mac_arm_64` passed in a dry run), but

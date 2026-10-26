@@ -12,6 +12,77 @@ example `12.3-hydra.1`); its tag is `v` and the version. Releases are on
 Not yet released; a release renames this heading to its version and names the upstream commit
 it is based on.
 
+## 12.3-hydra.2
+
+Released 2026-10-26. Based on upstream Ghidra `master` (12.3 DEV) as of 2026-10-26, commit
+`057a646233edfb21768a42a0aabc1d1a7709da19`: the same upstream commit as 12.3-hydra.1 (upstream
+had no newer commit when this release was cut).
+
+### What's new for integrators
+
+Several agents can now change things at the same time, each in the way that fits its work:
+
+- **A working copy of a project** (`fork_project`) while every other client keeps reading the
+  master: a block clone on ReFS (about 0.2 s and 3-5 MB for a 1.5 GB project), a full copy
+  elsewhere (8.5 s for the same project to NTFS), with the source
+  and base revision recorded next to the fork.
+- **A private overlay** of a program others read (`open_program` with `overlay`,
+  `apply_overlay`): renames, labels, comments, signatures and data types only that client sees,
+  never saved unless promoted into a working copy (`promote_overlay`).
+- **Several writers**: several clients write one project (different programs in parallel), or
+  one program in shared mode (`"share": true`), with every change journalled with its author,
+  `expect` against lost updates, an atomic `edit` command and `discard_edits`.
+- **Revisions and `refresh`**: answers say when another process saved a project a read-only
+  view serves (`stale`); `refresh` reopens it for all its clients at once.
+- **Who holds it, and what to do**: `busy`, `conflict` and `not_owner` name the holder
+  (`holderInfo`) and suggest the action (`retry`, `fork_project` with a ready request, an
+  overlay, `share`, `reread`, `open_read_only`).
+- **Imports in parallel** (`maxImports`), with a visible, cancellable queue in `status.imports`.
+- **Per-request `client`/`harness` labels**, so one MCP server serving several agents can tell
+  them apart in holders, `status`, the import queue and `cancel`.
+- **A versioned integration contract**: `hello` and `status` carry `protocol`, `minClient`,
+  `hydraVersion`, `ghidraVersion` and `installId`; the client ships as its own release asset,
+  `hydra-client-12.3-hydra.2.zip`, and refuses an engine it cannot drive. The export contract
+  of long scripts (artifact path, progress, cancel, partial files) is documented and tested.
+
+### Compatibility
+
+- **Protocol 2, unchanged.** Everything above is new commands and new fields; nothing was
+  renamed or removed, except that the `busy` details of a program lock carry the program's key
+  in `program` (its project path moved to `path`). The engine answers `minClient: "1.0.0"`.
+- **Client 1.0.0** (`ghidra_session.py`, `CLIENT_VERSION`) is the first versioned client;
+  pin it together with the engine. The unversioned client of 12.3-hydra.1 still speaks protocol
+  2 but does not check the engine.
+- **Projects**: a project saved by this build cannot be opened by Ghidra 12.2 or 12.1.4
+  (upstream `master` writes data type databases at version 3). Projects analysed with 12.1.4
+  open read-only without being written, upgraded in memory and then served from the upgrade
+  cache; `fork_project` makes a writable copy that leaves the original as it was. The
+  `legacy-12.1.4` branch remains for projects that must stay on 12.1.4.
+- **Platforms**: built and tested on Windows 11 x64 only (locally and in the release
+  workflow). Linux and macOS are not released or tested routinely.
+
+### Downloads
+
+- `hydra-engine-12.3-hydra.2-win_x86_64.zip`: the headless install for Windows x64 (`gradle
+  zipHeadless`); the release workflow ran the three test suites on it after unzipping it.
+- `hydra-client-12.3-hydra.2.zip`: `ghidra_session.py` (standard library only) stamped with
+  this release, `LICENSE` and a short `README.txt`.
+- `SHA256SUMS` for both.
+
+You need a JDK 25 and Python 3.10 or later; the install has no JDK.
+
+### Known limits
+
+- The data type database version 3 limit above, and a development snapshot as the base
+  (upstream `master` is Ghidra's next version under work, not a Ghidra release).
+- Overlays change only through their five operations (rename, label, comment, signature, data
+  type) and show the program as stored when they opened, not other writers' unsaved changes.
+- A fork is a block clone only on ReFS (Windows 11 24H2 and later); on NTFS it is a full copy,
+  which `auto` mode refuses above `forkCopyLimitMb` (default 2048).
+- The author journal lives in the daemon's memory while the program is open and keeps the last
+  200,000 entries; `discard_edits` reverts renames, labels and comments only.
+- Headless only: no window, help, javadoc or Python type stubs.
+
 ### Added
 
 - **Holder information in `busy`, `conflict` and `not_owner`** (HeadlessSession). The error
@@ -129,6 +200,48 @@ it is based on.
   entries made before this are rebuilt once.
 - The `busy` details of a program lock carry `program` as the program's key
   (`p1:/path`), like every other error, instead of its project path (now in `path`).
+- A `script` result's `changed` now says whether the script changed the program (always false
+  for a contained script, whose changes are rolled back); the new `unsaved` says whether the
+  program has unsaved changes, which is what `changed` used to report.
+
+### Fixed
+
+- **A writer's read-only script was journalled as a change** (HeadlessSession). A script run by
+  an owner or shared writer of a program with unsaved changes (from anyone) answered
+  `changed: true` and added a `script` entry to the author journal, although it changed
+  nothing; on a shared program every query script did so. The session now compares the
+  program's modification number before and after the script. Found by `daemon_tests.py edit`.
+- **A program killed while being written into a project was listed but could not be opened**
+  (Ghidra, `Framework/FileSystem` `LocalDatabaseItem.create`). Ghidra wrote the new item's
+  property file, with its file type, before streaming the database in, so a process killed
+  mid-write (an import's save, or a *Save As*) left an item that every later open listed as a
+  program and failed to open ("Unrecognized file format"). The file type is now written once
+  version 1 of the database is complete; an item killed earlier is removed by Ghidra's existing
+  repair the next time its folder is listed. Found by `daemon_tests.py import_write_kill`.
+- **`kill` returned before the daemon's process was gone** (`ghidra_session.py`). It waited for
+  the instance lock only; a daemon killed during a large write on ReFS kept its project lock
+  for seconds more (closing a file with many dirty pages waits for them), so a daemon started
+  right after got `conflict` ("locked by another process", `live: true`). `kill` now also waits
+  for the process to exit (within its 30 s). Found by `daemon_tests.py import_write_kill`.
+- **A daemon started after a crash could take minutes to become ready** (HeadlessSession).
+  Ghidra's `DBInitializer` deletes the buffer cache files dead processes left in the user temp
+  folder before start-up goes on; with `tmpdir` on ReFS, deleting the large cache file of a JVM
+  killed while it held a big program waits until ReFS has written its dirty pages back
+  (measured: 43 s, 61 s and once 222 s, beyond the launcher's 180 s wait). On a class cache hit
+  the session now does this cleanup itself on a background thread, and on Windows renames each
+  file first (which fails while any live process has it open), truncates it to 0 bytes (which
+  drops its unwritten pages) and deletes it: the next daemon was ready in 0.35 s. Found by
+  `daemon_tests.py import_write_kill`.
+
+### Tests
+
+- `daemon_tests.py`: `edit` (the `edit` command, all or none, `expect` naming the author;
+  `discard_edits` deleting newly created labels), `overlay_owned` (an overlay of a program
+  another client owns writable, with the owner saving while it is open), `refresh_force`,
+  `legacy_overlay` (overlays of a 12.1.4-format program, during and after its upgrade cache
+  build), `orphan_shutdown` (orphaned shared-write work discarded and logged at shutdown),
+  `import_write_kill` (the daemon killed during an import's final write: the program absent or
+  complete, never half).
 
 ## 12.3-hydra.1
 
