@@ -424,6 +424,7 @@ DEFAULTS = {
     "keepWarm": 3600,        # seconds an unused read-only program stays open; 0: close at once
     "maxQuick": 0,           # concurrent quick requests (decompile, ...); 0: CPU count
     "maxLong": 0,            # concurrent long requests (analyze, import, script); 0: CPU/4
+    "maxImports": 0,         # concurrent imports (each also takes a long slot); 0: CPU/4, 1..4
     "scriptPath": [],        # extra GhidraScript directories
     "log": None,             # daemon log; None: <state>/<instance>.log
     "upgradeCache": True,    # serve read-only opens of older-format programs from an upgraded copy
@@ -1035,6 +1036,8 @@ class Daemon:
         args = ["-daemon", "-stateDir", str(self.state), "-instance", self.instance,
                 "-idleTimeout", str(cfg["idleTimeout"]), "-keepWarm", str(cfg["keepWarm"]),
                 "-maxQuick", str(cfg["maxQuick"]), "-maxLong", str(cfg["maxLong"])]
+        if cfg.get("maxImports"):
+            args += ["-maxImports", str(cfg["maxImports"])]
         for d in cfg.get("scriptPath") or []:
             args += ["-scriptPath", d]
         argv, info = launch.command(args)
@@ -1282,6 +1285,8 @@ def main(argv=None) -> int:
             args = ["-daemon", "-stateDir", str(st), "-instance", a.instance, "-idleTimeout",
                     str(cfg["idleTimeout"]), "-keepWarm", str(cfg["keepWarm"]), "-maxQuick",
                     str(cfg["maxQuick"]), "-maxLong", str(cfg["maxLong"])]
+            if cfg.get("maxImports"):
+                args += ["-maxImports", str(cfg["maxImports"])]
             for d in cfg.get("scriptPath") or []:
                 args += ["-scriptPath", d]
             argv_, _ = launch.command(args)

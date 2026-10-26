@@ -26,9 +26,10 @@ read-only, to the multi-project test. --legacy-project (optional) is copied into
 older-format part of upgrade_cache; the original is only read.
 
 Tests: two_harnesses, two_projects, dll_import, client_kill, daemon_restart, fairness, cancel_all,
-import_queue, import_isolation, caller_labels, idle_shutdown, keep_warm, stdio, upgrade_cache,
-holders, fork, revisions, overlays, multi_writer, shared,
-shared_stress.
+import_queue, import_isolation, parallel_imports, import_kill, import_readers, import_speed,
+caller_labels, idle_shutdown, keep_warm, stdio, upgrade_cache, holders, fork, revisions,
+overlays, multi_writer, shared, shared_stress. import_speed takes --big <binary> (repeat) and
+--big-analyze.
 """
 import argparse
 import json
@@ -436,11 +437,12 @@ def wait_for(cond, what, timeout=120.0, step=0.05):
 
 
 def t_import_queue(c: Ctx):
-    """Imports run one at a time; the others queue in arrival order, say who they wait behind
-    and for how long, and leave the queue when cancelled without disturbing the running one."""
+    """With maxImports=1, imports run one at a time; the others queue in arrival order, say who
+    they wait behind and for how long, and leave the queue when cancelled without disturbing the
+    running one. (With more places the same queue forms behind maxImports running imports.)"""
     mb = c.a.raw_mb
     files = [raw_file(c, "q.bin", mb)] * 5  # one file, imported again each time (duplicate)
-    d = c.daemon("iq", maxLong=2)
+    d = c.daemon("iq", maxLong=2, maxImports=1)
     with d.connect("A", "agent-a") as A, d.connect("B", "agent-b") as B, \
             d.connect("C", "agent-c") as C:
         gpr = c.make_project(A, c.work / "projQueue", "Queue")
@@ -549,8 +551,10 @@ def t_import_queue(c: Ctx):
 
 
 def t_import_isolation(c: Ctx):
-    """Why imports are serialized: two ungated loads into two projects share process-wide state.
-    Runs ImportIsolationProbe in a throwaway daemon and records what it saw."""
+    """What two loads at once share: the library search path set is process-wide (whatever the
+    project), and concurrent loads each handed their own project land in it. Runs
+    ImportIsolationProbe in a throwaway daemon and records what it saw (README, "Parallel
+    imports")."""
     a = c.a.exe
     b = c.a.dll
     d = c.daemon("iso")
@@ -574,6 +578,298 @@ def t_import_isolation(c: Ctx):
     return ("search path set is process-wide (leaks between projects); concurrent loads: " +
             f"{got.get('race.failures')} failures, {got.get('race.wrongProject')} misplaced, " +
             f"{got.get('race.activeProjectNotMineAfterLoad')} loads saw a foreign active project")
+
+
+def program_paths(s, project=None):
+    kw = {"project": project} if project else {}
+    return sorted(e["path"] for e in s.call("list", programsOnly=True, metadata=False,
+                                             **kw)["entries"])
+
+
+def heap_sampler(s, stop, out):
+    """Samples the daemon's used heap (status memory) every 0.25 s into out (MB values)."""
+    while not stop.is_set():
+        try:
+            out.append(s.call("status")["memory"]["usedMb"])
+        except Exception:  # noqa: BLE001
+            return
+        stop.wait(0.25)
+
+
+def run_imports(c: Ctx, maxi: int, files: list, analyze: bool, tag: str, lang: dict):
+    """Imports each file into its own new project, from its own client, all sent at once, in a
+    daemon with maxImports=maxi; returns (wall s, [answers], peak used heap MB)."""
+    d = c.daemon(f"speed{maxi}{tag}", maxImports=maxi, maxLong=max(2, len(files)))
+    sessions = [d.connect(f"imp{i}", "tests") for i in range(len(files))]
+    mon = None
+    try:
+        for i, s in enumerate(sessions):
+            folder = c.work / f"projSpeed{maxi}{tag}{i}"
+            if folder.exists():
+                shutil.rmtree(folder)
+            gpr = c.make_project(s, folder, f"Speed{i}")
+            s.call("open_project", path=str(gpr), writable=True)
+        stop, heap = threading.Event(), []
+        mon = d.connect("heap", "tests")
+        th = threading.Thread(target=heap_sampler, args=(mon, stop, heap))
+        th.start()
+        t = time.perf_counter()
+        ids = [s.send("import", file=f, analyze=analyze, timeout=7200, wait=7_200_000,
+                      parallel=True, **lang) for s, f in zip(sessions, files)]
+        res = [s.wait(i) for s, i in zip(sessions, ids)]
+        wall = time.perf_counter() - t
+        peak_running = mon.call("status")["imports"]["history"]["peakRunning"]
+        stop.set()
+        th.join()
+        return wall, res, (max(heap) if heap else None), peak_running
+    finally:
+        for s in sessions + ([mon] if mon else []):
+            s.close()
+        d.stop(force=True)
+
+
+def t_import_speed(c: Ctx):
+    """Several different binaries imported at once (maxImports = their count) against one at
+    a time (maxImports=1): wall time, peak heap, and identical programs either way."""
+    files = c.a.big or [raw_file(c, f"speed{i}.bin", c.a.raw_mb) for i in range(2)]
+    analyze = bool(c.a.big_analyze)
+    lang = {} if c.a.big else RAW_LANG
+    seq = run_imports(c, 1, files, analyze, "s", lang)
+    par = run_imports(c, len(files), files, analyze, "p", lang)
+    check(seq[3] == 1, f"maxImports=1 ran {seq[3]} imports at once")
+    check(par[3] == len(files), f"maxImports={len(files)} ran at most {par[3]} at once")
+
+    def shape(r):
+        p = r["program"]
+        return (pathlib.Path(r["path"]).name, p.get("functions"), p.get("language"))
+
+    check(sorted(map(shape, seq[1])) == sorted(map(shape, par[1])),
+          f"programs differ: {[shape(r) for r in seq[1]]} vs {[shape(r) for r in par[1]]}")
+    names = ", ".join(pathlib.Path(f).name for f in files)
+    key = f"import speed ({names}{', analyze' if analyze else ''})"
+    c.timings[key] = {"sequential s": round(seq[0], 1), "parallel s": round(par[0], 1),
+                      "each s (parallel)": [round(r["importSeconds"], 1) for r in par[1]],
+                      "peak heap MB seq/par": [seq[2], par[2]]}
+    # Real binaries: loading is CPU work and must scale. Random raw files are mostly disk
+    # writes, whose speed-up depends on the disk (reported, not checked). With analysis, the
+    # gate covers the load and save only, so analyses overlap even with maxImports=1 (bounded
+    # by maxLong) and the gain is the loads': checked not to be slower.
+    if c.a.big and not analyze:
+        check(par[0] < seq[0] * 0.85,
+              f"parallel ({par[0]:.1f} s) not faster than sequential ({seq[0]:.1f} s)")
+    elif c.a.big:
+        check(par[0] <= seq[0] * 1.05,
+              f"parallel ({par[0]:.1f} s) slower than sequential ({seq[0]:.1f} s)")
+    return (f"{len(files)} imports: sequential {seq[0]:.1f} s, parallel {par[0]:.1f} s; "
+            f"peak heap {seq[2]} / {par[2]} MB")
+
+
+def t_parallel_imports(c: Ctx):
+    """Imports run at once: into two projects, two files into one project (one new folder), the
+    same file twice into one project (imported once), and a cancel that leaves the other one
+    running."""
+    mb = c.a.raw_mb
+    f1, f2, f3 = (raw_file(c, f"par{i}.bin", mb) for i in range(3))
+    d = c.daemon("par", maxImports=3, maxLong=4)
+    notes = []
+    with d.connect("A", "agent-a") as A, d.connect("B", "agent-b") as B:
+        ga = c.make_project(A, c.work / "projParA", "ParA")
+        gb = c.make_project(A, c.work / "projParB", "ParB")
+        pa = A.call("open_project", path=str(ga), writable=True)["id"]
+        pb = B.call("open_project", path=str(gb), writable=True)["id"]
+
+        def imports():
+            return A.call("status")["imports"]
+
+        # 1. Two projects at once.
+        ia = A.send("import", file=f1, name="a1", parallel=True, **RAW_LANG)
+        ib = B.send("import", file=f2, name="b1", parallel=True, **RAW_LANG)
+        st = wait_for(lambda: (imports() if len(imports()["running"]) == 2 else None),
+                      "both imports to run at once", 60)
+        check(not st["queue"] and st["maxImports"] == 3, f"import gate: {st}")
+        check({r["project"] for r in st["running"]} == {pa, pb}, f"running: {st['running']}")
+        ra, rb = A.wait(ia), B.wait(ib)
+        check(ra["imported"] and rb["imported"], f"answers: {ra} {rb}")
+        check(ra["queue"]["behind"] is None and rb["queue"]["behind"] is None,
+              f"one waited for the other: {ra['queue']} {rb['queue']}")
+        check(program_paths(A, pa) == ["/a1"] and program_paths(B, pb) == ["/b1"],
+              "a program landed in the wrong project")
+        notes.append(f"2 projects: {ra['importSeconds']:.1f}+{rb['importSeconds']:.1f} s overlapped")
+
+        # 2. Two files into one project, into the same new folder, at once.
+        B.call("open_project", path=str(ga), writable=True)
+        ia = A.send("import", file=f2, folder="/new/sub", name="x", parallel=True, **RAW_LANG)
+        ib = B.send("import", file=f3, folder="/new/sub", name="x", parallel=True, project=pa,
+                    **RAW_LANG)
+        wait_for(lambda: len(imports()["running"]) == 2, "two imports into one project", 60)
+        ra, rb = A.wait(ia), B.wait(ib)
+        paths = program_paths(A, pa)
+        check(ra["imported"] and rb["imported"] and ra["path"] != rb["path"],
+              f"same name, two files: {ra['path']} {rb['path']}")
+        check(paths == sorted(["/a1", ra["path"], rb["path"]]), f"project content: {paths}")
+        notes.append(f"1 project, 1 new folder: {ra['path']} + {rb['path']}")
+
+        # 3. The same file twice into one project at once: imported once.
+        ia = A.send("import", file=f3, parallel=True, **RAW_LANG)
+        ib = B.send("import", file=f3, parallel=True, project=pa, **RAW_LANG)
+        ra, rb = A.wait(ia), B.wait(ib)
+        sha_paths = [e["path"] for e in A.call("list", sha256=ra["sha256"], project=pa)["entries"]]
+        check(sha_paths == [rb["existing"][0]], f"SHA-256 matches: {sha_paths}")  # step 2's
+        both = [ra, rb]
+        check(all(r["imported"] is False for r in both), f"the same file again: {both}")
+        # with a fresh file: one imports, the other waits for it and answers existing
+        f4 = raw_file(c, "par3.bin", mb)
+        ia = A.send("import", file=f4, name="once", parallel=True, **RAW_LANG)
+        wait_for(lambda: imports()["running"], "the first import to run", 60)
+        ib = B.send("import", file=f4, name="twice", parallel=True, project=pa, **RAW_LANG)
+        ra, rb = A.wait(ia), B.wait(ib)
+        check(ra["imported"] is True and rb["imported"] is False and
+              rb["existing"] == [ra["path"]], f"same file at once: {ra} / {rb}")
+        check(rb.get("sameFileImport", {}).get("who", "").find("agent-a") >= 0,
+              f"the second did not wait for the first: {rb}")
+        check("/twice" not in program_paths(A, pa), "the same file was imported twice")
+        notes.append(f"same file at once: one import, the other waited "
+                     f"{rb['sameFileImport']['waitedMs']} ms and answered existing")
+
+        # 4. Cancel one of two running imports; the other completes.
+        f5, f6 = raw_file(c, "par4.bin", mb), raw_file(c, "par5.bin", mb)
+        ia = A.send("import", file=f5, name="cancelme", parallel=True, **RAW_LANG)
+        ib = B.send("import", file=f6, name="keep", parallel=True, project=pa, **RAW_LANG)
+        wait_for(lambda: len(imports()["running"]) == 2, "two imports running", 60)
+        time.sleep(1.0)
+        check(A.call("cancel", target=ia)["cancelled"] is True, "cancel")
+        expect_error("cancelled", A.wait, ia)
+        rb = B.wait(ib)
+        check(rb["imported"] is True, f"the other import: {rb}")
+        paths = program_paths(A, pa)
+        check("/cancelme" not in paths and "/keep" in paths, f"after the cancel: {paths}")
+        check(not imports()["running"] and not imports()["queue"], f"gate: {imports()}")
+        notes.append("cancel of one running import left the other running to completion")
+    d.stop()
+    return "; ".join(notes)
+
+
+def tmp_files(c: Ctx):
+    tmp = c.work / "tmp"
+    return {p for p in tmp.rglob("*") if p.is_file()} if tmp.exists() else set()
+
+
+def t_import_kill(c: Ctx):
+    """A client killed while its import runs (next to another client's import): its import is
+    cancelled, leaves no program and no temporary file, the other completes. The daemon killed
+    while two imports run: the next daemon opens the project, which holds no partial program,
+    and the same files import again."""
+    mb = c.a.raw_mb * 4  # long enough that the kills land while the imports run
+    f1, f2 = raw_file(c, "kill0.bin", mb), raw_file(c, "kill1.bin", mb)
+    d = c.daemon("ikill", maxImports=2, maxLong=4)
+    folder = c.work / "projImpKill"
+    if folder.exists():
+        shutil.rmtree(folder)
+    with d.connect("survivor", "tests") as s:
+        gpr = c.make_project(s, folder, "ImpKill")
+        pid = s.call("open_project", path=str(gpr), writable=True)["id"]
+        before_tmp = tmp_files(c)
+        code = ("s = gs.connect(client='doomed', harness='crashy', state=A[0], instance='ikill',"
+                " ghidra=A[1])\n"
+                "s.call('open_project', path=A[2], writable=True)\n"
+                "s.send('import', file=A[3], name='doomed', language='DATA:LE:64:default',"
+                " compiler='pointer64', parallel=True)\n"
+                "print(json.dumps({'client': s.hello['client']}), flush=True)\n"
+                "time.sleep(3600)\n")
+        p = c.child(code, c.state, c.a.ghidra, gpr, f1)
+        line = p.stdout.readline()
+        check(line, f"child did not start: {p.stderr.read()[-2000:] if p.poll() is not None else ''}")
+        child = json.loads(line)["client"]
+        mine = s.send("import", file=f2, name="survives", parallel=True, **RAW_LANG)
+        wait_for(lambda: len(s.call("status")["imports"]["running"]) == 2, "both imports", 60)
+        time.sleep(0.5)
+        t = time.perf_counter()
+        p.kill()
+        p.wait()
+        wait_for(lambda: all(r["client"] != child for r in s.call("status")["imports"]["running"]),
+                 "the dead client's import to stop", 60)
+        gone = (time.perf_counter() - t) * 1000
+        r = s.wait(mine)
+        check(r["imported"] is True, f"the other import: {r}")
+        paths = program_paths(s, pid)
+        check(paths == ["/survives"], f"project after the kill: {paths}")
+        s.call("close_program", program=r["key"])
+        if c.a.tmpdir != "default":  # the dead import's temporary database files are gone
+            wait_for(lambda: not (tmp_files(c) - before_tmp),
+                     "the dead import's temporary files to go", 30)
+        c.timings["killed client mid-import: its import stopped after (ms)"] = round(gone)
+        # 2. the daemon dies while two imports run
+        a = s.send("import", file=f1, name="k1", parallel=True, **RAW_LANG)
+        b = s.send("import", file=f2, name="k2", parallel=True, duplicate=True, **RAW_LANG)
+        wait_for(lambda: len(s.call("status")["imports"]["running"]) == 2, "two imports", 60)
+        time.sleep(0.5)
+        check(len(s.call("status")["imports"]["running"]) == 2, "an import ended before the kill")
+        check(d.kill(), "kill failed")
+    with d.connect("after", "tests") as s2:
+        pid = s2.call("open_project", path=str(gpr), writable=True)["id"]
+        paths = program_paths(s2, pid)
+        check(paths == ["/survives"], f"a partial program survived the daemon's death: {paths}")
+        r1 = s2.call("import", file=f1, name="k1", **RAW_LANG)
+        check(r1["imported"] is True and r1["path"] == "/k1", f"re-import after restart: {r1}")
+        s2.call("open_program", path="/survives")
+    d.stop()
+    return (f"killed client's import stopped {gone:.0f} ms after the kill, no program or temp "
+            f"file left; killed daemon left no partial program, re-import ok")
+
+
+def t_import_readers(c: Ctx):
+    """A reader decompiles in a project while two imports run into that same project: its
+    latency stays within the noise of the same reads without imports."""
+    mb = c.a.raw_mb
+    f1, f2 = raw_file(c, "rd0.bin", mb), raw_file(c, "rd1.bin", mb)
+    gpr = c.copy_fixture("projReaders")
+    exe = pathlib.Path(c.a.exe).name
+    d = c.daemon("readers", maxImports=2, maxLong=4)
+    with d.connect("reader", "tests") as R, d.connect("importer", "tests") as W:
+        W.call("open_project", path=str(gpr), writable=True)
+        R.call("open_project", path=str(gpr), writable=True)
+        R.call("open_program", path=exe)
+        fns = [f["address"] for f in R.call("functions", limit=400)["functions"]
+               if not f["external"] and not f["thunk"]][:60]
+        check(fns, "no functions to decompile")
+        for a in fns:  # warm
+            R.call("decompile", address=a)
+
+        def pass_ms():
+            out = []
+            for a in fns:
+                t = time.perf_counter()
+                R.call("decompile", address=a)
+                out.append((time.perf_counter() - t) * 1000)
+            return out
+
+        base = pass_ms() + pass_ms()
+        ids = [W.send("import", file=f, name=f"r{i}", parallel=True, **RAW_LANG)
+               for i, f in enumerate((f1, f2))]
+        wait_for(lambda: len(W.call("status")["imports"]["running"]) == 2, "imports", 60)
+        during = []
+        while len(W.call("status")["imports"]["running"]) == 2 and len(during) < 2000:
+            during += pass_ms()
+        for i in ids:
+            W.wait(i)
+        after = pass_ms() + pass_ms()
+
+    def med(x):
+        return sorted(x)[len(x) // 2]
+
+    def p90(x):
+        return sorted(x)[int(len(x) * 0.9)]
+
+    noise = abs(med(after) - med(base))
+    c.timings["decompile ms median/p90: before, during 2 imports, after"] = [
+        [round(med(base), 1), round(p90(base), 1)], [round(med(during), 1), round(p90(during), 1)],
+        [round(med(after), 1), round(p90(after), 1)], len(during)]
+    check(len(during) >= len(fns), f"only {len(during)} decompiles while the imports ran")
+    check(med(during) <= max(med(base), med(after)) * 1.5 + noise + 5,
+          f"decompile median {med(during):.1f} ms during imports vs {med(base):.1f} before")
+    d.stop()
+    return (f"decompile median {med(base):.1f} ms before, {med(during):.1f} ms during two "
+            f"imports into the same project, {med(after):.1f} ms after ({len(during)} during)")
 
 
 def t_caller_labels(c: Ctx):
@@ -1755,7 +2051,8 @@ def t_shared_stress(c: Ctx):
 
 
 TESTS = ["two_harnesses", "two_projects", "dll_import", "client_kill", "daemon_restart",
-         "fairness", "cancel_all", "import_queue", "import_isolation", "caller_labels",
+         "fairness", "cancel_all", "import_queue", "import_isolation", "parallel_imports",
+         "import_kill", "import_readers", "import_speed", "caller_labels",
          "idle_shutdown", "keep_warm", "stdio", "upgrade_cache", "holders", "fork", "revisions",
          "overlays", "multi_writer", "shared", "shared_stress"]
 
@@ -1776,6 +2073,10 @@ def main():
     ap.add_argument("--raw-mb", dest="raw_mb", type=int, default=128,
                     help="size of the random raw binary the import queue test imports "
                     "(default 128): large enough that an import outlasts the polling")
+    ap.add_argument("--big", action="append", default=[],
+                    help="a binary for import_speed (repeat; default: two random raw files)")
+    ap.add_argument("--big-analyze", dest="big_analyze", action="store_true",
+                    help="import_speed also analyses (import with analyze:true)")
     ap.add_argument("--only")
     a = ap.parse_args()
     sys.path.insert(0, str(pathlib.Path(a.ghidra) / "Ghidra" / "Features" / "HeadlessSession" /

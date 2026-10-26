@@ -306,27 +306,24 @@ final class UpgradeCache {
 	}
 
 	/**
-	 * Opens a project without changing the application's active project (which imports set for
-	 * their loaders, under the {@link ImportGate}).
+	 * Opens a project and gives the application's active project back to what it was. Nothing
+	 * the session runs depends on the active project (imports hand their loader its project), so
+	 * this needs no exclusion against imports.
 	 */
 	private static SessionProject openProject(ProjectLocator locator, boolean writable)
 			throws IOException {
-		try (ImportGate.Entry gate = ImportGate.GLOBAL.enter(ImportGate.Kind.INTERNAL,
-			"upgrade cache", 0, null, locator.getName(), 0, null, -1)) {
-			Project previous = AppInfo.getActiveProject();
-			try {
-				return SessionProject.open(locator, writable);
-			}
-			catch (IOException e) {
-				throw e;
-			}
-			catch (Exception e) {
-				throw new IOException("cannot open the upgrade cache copy " + locator + ": " + e,
-					e);
-			}
-			finally {
-				AppInfo.setActiveProject(previous);
-			}
+		Project previous = AppInfo.getActiveProject();
+		try {
+			return SessionProject.open(locator, writable);
+		}
+		catch (IOException e) {
+			throw e;
+		}
+		catch (Exception e) {
+			throw new IOException("cannot open the upgrade cache copy " + locator + ": " + e, e);
+		}
+		finally {
+			AppInfo.setActiveProject(previous);
 		}
 	}
 

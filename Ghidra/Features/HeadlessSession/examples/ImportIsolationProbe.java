@@ -13,9 +13,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-// Do two imports into two projects at once stay apart?  The session serializes imports because
-// Ghidra's loaders reach project state through one process-wide "active project". This script
-// asks that question of the real classes, without the session's gate, and prints what it saw.
+// Do two imports into two projects at once stay apart?  The session runs imports in parallel
+// because each load is handed its project and nothing on the load path reads the process-wide
+// "active project"; this script asks that question of the real classes, without the session's
+// gate, and prints what it saw.
 // Run it only in a throwaway session (daemon_tests.py "import_isolation" does): it changes the
 // process-wide active project and the library search paths.
 //

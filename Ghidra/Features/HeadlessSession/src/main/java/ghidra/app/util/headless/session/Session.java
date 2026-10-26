@@ -19,6 +19,7 @@ import java.io.*;
 import java.lang.reflect.Method;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.Lock;
@@ -39,7 +40,6 @@ import ghidra.app.util.importer.MessageLog;
 import ghidra.app.util.importer.ProgramLoader;
 import ghidra.app.util.opinion.LoadResults;
 import ghidra.framework.Application;
-import ghidra.framework.main.AppInfo;
 import ghidra.framework.model.*;
 import ghidra.framework.options.OptionType;
 import ghidra.framework.options.Options;
@@ -253,7 +253,7 @@ final class Session {
 			default:
 				break;
 		}
-		// An import queues for the process-wide import gate first and takes its long slot only
+		// An import queues for the import gate (maxImports) first and takes its long slot only
 		// when it is its turn (importProgram), so that queued imports do not occupy the slots
 		// that analysis and scripts need.
 		Scheduler.Ticket slot = cmd.equals("import") ? null : scheduler.admit(c, cmd, m, waitMs(req));
@@ -3244,13 +3244,39 @@ final class Session {
 		catch (IOException ex) {
 			throw new SessionException(SessionException.FAILED, ex.getMessage(), null, ex);
 		}
-		// Loaders use one process-wide active project, so imports run one at a time. Queue in
-		// arrival order without holding a slot (the wait is unlimited unless "wait" is a number),
-		// then take the long slot for this import's own work.
+		// Imports run in parallel up to maxImports (each load is handed its project; nothing on
+		// the load path reads the process-wide active project). Queue in arrival order without
+		// holding a slot (the wait is unlimited unless "wait" is a number), then take the long
+		// slot for this import's own work.
 		boolean limited = Json.has(req, "wait") && !(req.get("wait").isJsonPrimitive() &&
 			req.getAsJsonPrimitive("wait").isBoolean());
-		ImportGate.Entry gate = ImportGate.GLOBAL.enter(ImportGate.Kind.IMPORT, Caller.label(c),
-			c.id, p.id, file.getName(), file.length(), m, limited ? waitMs(req) : -1);
+		long deadline = limited ? System.nanoTime() + waitMs(req) * 1_000_000L : Long.MAX_VALUE;
+		// The same file into the same project at once: the second waits for the first and then
+		// finds its result by SHA-256, so the file is imported once.
+		InFlightImport mine = null;
+		JsonObject sameFile = null;
+		if (!Json.bool(req, "duplicate", false)) {
+			String key = p.id + ":" + sha.toLowerCase(Locale.ROOT);
+			InFlightImport claim = new InFlightImport(Caller.label(c));
+			long t0 = System.currentTimeMillis();
+			for (InFlightImport other; (other = importsInFlight.putIfAbsent(key, claim)) != null;) {
+				sameFile = Json.of("who", other.who, "file", file.getName());
+				awaitSameImport(other, sameFile, m, deadline);
+				Json.put(sameFile, "waitedMs", System.currentTimeMillis() - t0);
+			}
+			mine = claim;
+			mine.key = key;
+		}
+		ImportGate.Entry gate;
+		try {
+			gate = ImportGate.GLOBAL.enter(ImportGate.Kind.IMPORT, Caller.label(c), c.id, p.id,
+				file.getName(), file.length(), m,
+				limited ? Math.max(0, (deadline - System.nanoTime()) / 1_000_000L) : -1);
+		}
+		catch (RuntimeException ex) {
+			finishInFlight(mine);
+			throw ex;
+		}
 		Scheduler.Ticket slot = null;
 		String saved;
 		double importS;
@@ -3268,6 +3294,9 @@ final class Session {
 						Json.put(r, "note", "already in the project; open_program it, or pass " +
 							"\"duplicate\":true to import again");
 						Json.put(r, "queue", gate.describeWait());
+						if (sameFile != null) {
+							Json.put(r, "sameFileImport", sameFile);
+						}
 						return r;
 					}
 				}
@@ -3291,7 +3320,6 @@ final class Session {
 						b.compiler(Json.str(req, "compiler"));
 					}
 					m.setMessage("importing " + file.getName());
-					AppInfo.setActiveProject(p.project);
 					try (LoadResults<Program> results = b.load()) {
 						saved = results.getPrimary().save(m).getPathname();
 						p.invalidateRevision();
@@ -3311,6 +3339,7 @@ final class Session {
 			}
 			finally {
 				gate.close(); // the next import may start; this one goes on to open and analyse
+				finishInFlight(mine); // saved (or failed): a same-file import may check now
 				pl.unlock();
 			}
 			importS = (System.nanoTime() - t0) / 1e9;
@@ -3336,9 +3365,65 @@ final class Session {
 		}
 		finally {
 			gate.close();
+			finishInFlight(mine);
 			if (slot != null) {
 				slot.close();
 			}
+		}
+	}
+
+	/** An import of one file into one project that has not saved its program yet. */
+	private static final class InFlightImport {
+		final String who;
+		final CountDownLatch done = new CountDownLatch(1);
+		String key;
+
+		InFlightImport(String who) {
+			this.who = who;
+		}
+	}
+
+	/** Imports in flight by {@code "<project id>:<sha256>"} (not those with "duplicate"). */
+	private final ConcurrentHashMap<String, InFlightImport> importsInFlight =
+		new ConcurrentHashMap<>();
+
+	private void finishInFlight(InFlightImport f) {
+		if (f != null && f.key != null) {
+			importsInFlight.remove(f.key, f);
+			f.done.countDown();
+		}
+	}
+
+	/**
+	 * Waits until another import of the same file into the same project has saved (or failed),
+	 * saying so in the request's progress; a cancel or the request's numeric {@code wait} ends
+	 * the wait.
+	 */
+	private static void awaitSameImport(InFlightImport other, JsonObject info, RequestMonitor m,
+			long deadline) {
+		try {
+			while (!other.done.await(100, TimeUnit.MILLISECONDS)) {
+				if (m.isCancelled()) {
+					throw new SessionException(SessionException.CANCELLED,
+						"cancelled while waiting for " + other.who + "'s import of the same file");
+				}
+				if (deadline != Long.MAX_VALUE && System.nanoTime() - deadline >= 0) {
+					throw new SessionException(SessionException.BUSY,
+						other.who + " is importing the same file into this project; retry, or " +
+							"pass a longer \"wait\"",
+						info);
+				}
+				m.waiting("same file import", info);
+				m.setMessage("waiting for " + other.who + "'s import of the same file " +
+					"(the result is used instead of a second copy)");
+			}
+		}
+		catch (InterruptedException ex) {
+			Thread.currentThread().interrupt();
+			throw new SessionException(SessionException.CANCELLED, "interrupted");
+		}
+		finally {
+			m.waiting(null, null);
 		}
 	}
 

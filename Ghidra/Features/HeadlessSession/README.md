@@ -127,6 +127,7 @@ Lowest to highest: defaults, `<state>/config.json`, environment, command-line op
 | `keepWarm` | `GHIDRA_SESSION_KEEP_WARM` | `3600` | Seconds an unused read-only program or project stays open, so the next client gets it at once with warm decompilers; `0`: close at once. |
 | `maxQuick` | | CPU count | Concurrent quick requests. |
 | `maxLong` | | CPU / 4 (at least 2) | Concurrent long requests (analyze, import, script, save). |
+| `maxImports` | | CPU / 4, between 1 and 4 | Concurrent imports, in any projects (see "Parallel imports"). Each running import also holds a long slot, so at most `min(maxImports, maxLong)` run at once. Each holds its whole program in memory until it is saved: budget about 0.7 GB of heap per 25 MB PE. |
 | `scriptPath` | | `[]` | Extra GhidraScript directories. |
 | `log` | | `<state>/<instance>.log` | The daemon's log (Ghidra's log and stderr). |
 | `upgradeCache` | `GHIDRA_SESSION_UPGRADE_CACHE` (`off`, `false`, `0`: off) | `true` | Serve read-only opens of programs saved in an older database format from an upgraded copy (below). |
@@ -600,9 +601,9 @@ code 2). Long commands send throttled `progress` events with the request's `id`:
 | `comment` | `program`?, `address`, `text` (null clears), `type`=eol\|pre\|post\|plate\|repeatable, `expect`?, `overlay`? | Owner or shared writers only; with `overlay`, in the client's overlay. Answers `old` and the journal `seq`. |
 | `analyze` | `program`?, `options` {name: value}, `ranges` [[start, end], ...], `timeout` s | Sets analysis options, then runs auto-analysis on everything (or what the ranges trigger) the way `analyzeHeadless` does, and marks the program analysed. Owner only. |
 | `save` | `program`?, `comment` | Owner only. |
-| `import` | `file`, `project`?, `folder`="/", `name`, `language`, `compiler`, `analyze`=false, `duplicate`=false, `timeout` | Imports into a writable project with `ProgramLoader` (any format it accepts), saves it, opens it writable for this client, and optionally analyses and saves it. A file whose SHA-256 is already in the project returns `{"imported": false, "existing": [...]}` unless `duplicate`. Imports run one at a time across the daemon and queue in arrival order (see "The import queue"): the answer carries `queue` (`waitedMs`, `positionAtEntry`, `behind`), and a request that waits sends `progress` events "waiting behind ..." with its `queue` position and estimate. `wait` limits the time in the queue only when it is a number; by default a queued import waits until it runs or is cancelled. |
+| `import` | `file`, `project`?, `folder`="/", `name`, `language`, `compiler`, `analyze`=false, `duplicate`=false, `timeout` | Imports into a writable project with `ProgramLoader` (any format it accepts), saves it, opens it writable for this client, and optionally analyses and saves it. A file whose SHA-256 is already in the project returns `{"imported": false, "existing": [...]}` unless `duplicate`; the same file sent twice at once into one project is imported once (the second waits for the first and answers `existing`, with `sameFileImport`). Up to `maxImports` imports run at once, in any projects; more queue in arrival order (see "Parallel imports"): the answer carries `queue` (`waitedMs`, `positionAtEntry`, `behind`, `runningAtStart`), and a request that waits sends `progress` events "waiting behind ..." with its `queue` position and estimate. `wait` limits the time in the queue only when it is a number; by default a queued import waits until it runs or is cancelled. |
 | `script` | `script` (name on the script path, or a file path), `args` [...], `program`? (null: none), `project`?, `address`, `exclusive`=false, `save`=false, `timeout` s, `maxChars`, `artifact` (a path the script writes; echoed in `status` and the result) | Runs a GhidraScript and returns its `println` output. See "Scripts". |
-| `cancel` | `target` (an id of this client's request), or `all`: true, or `cacheBuild` (a build id, cache key, program key or path, or `all`) | Cancels it (or all of this client's requests), running or still queued (a queued import leaves the import queue; the running one is untouched). With `client`/`harness` on the `cancel`, `all` reaches only the requests of that label, and `target` refuses another label's request. `cacheBuild` cancels background upgrade cache builds, which belong to no client. |
+| `cancel` | `target` (an id of this client's request), or `all`: true, or `cacheBuild` (a build id, cache key, program key or path, or `all`) | Cancels it (or all of this client's requests), running or still queued (a queued import leaves the import queue; the running ones are untouched). With `client`/`harness` on the `cancel`, `all` reaches only the requests of that label, and `target` refuses another label's request. `cacheBuild` cancels background upgrade cache builds, which belong to no client. |
 | `shutdown` | `force`=false | Stops the session; unsaved changes are discarded. From a socket client it is refused while other clients are connected, unless `force`. |
 
 Addresses are `0x140001000`, `va:0x140001000`, `rva:0x1000` (from the image base) or
@@ -671,13 +672,15 @@ view and a writable project are described in "Read-only view, writable project".
 |---|---|---|
 | Any number of readers of one program | in parallel | No project lock; they share one warm program and each decompile takes its own pooled decompiler. Queries hold the program's shared lock. |
 | Any number of read-only views of one project (also a Ghidra window) | in parallel | A read-only view takes no project lock and writes nothing. |
-| Writers in **different projects** | in parallel | Different projects never wait on each other (the one exception is `import`, below). |
+| Writers in **different projects** | in parallel | Different projects never wait on each other. |
 | Two writers of the **same program** | owner mode (default): one wins, the other gets `not_owner` with `alternatives: ["overlay", "fork_project"]`; shared mode (`"share": true`): **both write** | Owner mode: one owner, the client that opened it writable; others may read it and see its unsaved changes, or annotate their own overlay. Shared mode: every writer's change is committed in its own transaction, one at a time, under the program's exclusive lock, visible to all at once, journalled with its author; last writer wins per value, `expect` turns a lost update into `conflict` ("Shared writing"). Owner and shared mode do not mix on one program. |
 | Two writers on **different programs of one writable project** | in parallel | A second client that opens the project writable joins the daemon's one writable instance (one project lock). Each program has its own lock and owner (or shared writers), so renames, comments, analysis and saves of two programs run at the same time (tested: 2 writers x 600 edits, 14 saves and an analysis each, then the project reopens with all of them). They share the project's lifetime: it closes when its last user leaves, and a script with project access can reach every program in it. |
 | A second **process** (a Ghidra window, `analyzeHeadless`, another daemon) opens a project this daemon holds writable, or the reverse | `conflict` | The project lock is held by one process; the error names the lock file. |
 | `open_project` writable while another client of this daemon uses its read-only view | reopened writable **in place** | The daemon takes the project lock, replaces the view under the project's exclusive lock (requests running on it finish first) and reopens its clients' programs from the writable project, same keys; their overlays are rebuilt; they see `refreshed` once. Refused (`conflict`, `suggest: "open_read_only"`) only when another process holds the project lock. Measured with a reader using a 243,855-function program: 130-152 ms, and the reader's next decompile 246-259 ms (a new decompiler on the reopened program). To keep the master unchanged, `fork_project` it instead. |
 | Read-only view of a project another process has open and saves | works, flagged `stale` | It shows the project as it was when the view opened; its clients are told with `stale` on their next answers, and `refresh` reopens the view for all of them at once, without anyone leaving ("Revisions and `refresh`"). |
-| Concurrent `import`s | **serialized**, daemon-wide | Ghidra's loaders find libraries through one global "active project", so imports (and upgrade cache builds, which open their copy under it) run one at a time, in any project. Queued imports are first-come, first-served, visible in `status.imports` (holder, position, estimated wait), cancellable without touching the running one, and tell their requester who they wait behind: see "The import queue". |
+| Concurrent `import`s of **different files** | in parallel, up to `maxImports` | Into different projects or into one: each load is handed its own project, and nothing on the load path reads the process-wide "active project". Beyond `maxImports` they queue first-come, first-served, visible in `status.imports` (running, position, estimated wait), cancellable without touching the running ones: see "Parallel imports". |
+| Concurrent `import`s of the **same file into one project** | once | The second waits for the first and answers `imported: false` with `existing` (unless `duplicate`). |
+| An `import` while other clients read the project | in parallel | Readers are not slowed beyond noise (measured below). Ghidra holds the project's file-system lock while it writes a new program into the project, so a `list` or `open_program` of that project may wait for that write (a few seconds for a large program); `decompile` and other queries of open programs do not. |
 
 What the codes mean when two clients meet:
 
@@ -702,47 +705,94 @@ What the codes mean when two clients meet:
 All three carry `holderInfo` and `suggest` in `details` (see "Error codes"): who holds it, and
 whether the answer is to retry, to fork, or to open read-only.
 
+### Parallel imports
+
+Up to **`maxImports`** imports load and save at once (default: one per four CPUs, between 1 and
+4), into different projects or into one; the others queue (below). Each runs in its own request
+thread: its own `ProgramLoader`, handed its own project, its own `MessageLog` and monitor, then
+its own save. The open and the analysis of `analyze: true` follow outside the gate, in the
+import's long slot, so analyses of imported programs run side by side as they always did,
+bounded by `maxLong`, and the next import can load meanwhile.
+
+**Why this is safe.** Imports used to run one at a time because Ghidra's loaders were thought to
+read project state through the process-wide "active project" (`AppInfo`). Reading the load path
+(Ghidra master, 12.3 DEV) shows what actually reads global state:
+
+| Global | Read on the load path? | What it means for parallel imports |
+|---|---|---|
+| `AppInfo.getActiveProject()` | Only by `LibrarySearchPathManager` (once, when the class loads, and when someone changes the paths). The loader options' editors (`Option.getState()`, the browse buttons of `DomainFolderOption`/`DomainFileOption`) read it, but only in the window's import dialog. | Nothing. The session no longer sets the active project for an import. |
+| `LibrarySearchPathManager` path set | A static set, loaded once from whatever project was active first, read under `synchronized` by loaders that search for libraries. | Every import in the process reads the same set, whatever its project, exactly as it did when imports were serialized (`examples/ImportIsolationProbe.java`, `daemon_tests.py import_isolation`: a path added while project A is active is visible while B is active and is not in B's saved state). The session never changes it; a script that calls `LibrarySearchPathManager.setLibraryPaths` changes it for every later import. |
+| Language and compiler specs | `DefaultLanguageService`: loading a language is `synchronized` per language. | Two imports of one new language wait for its one load. |
+| Project data | Every `GhidraFolder` change takes the project's file-system lock (`synchronized (fileSystem)`); `createFile` writes the new program's database under it; the default (indexed) file system ignores a second `createFolder` of an existing name; `Loaded.save` retries with `name.0`, `name.1`, ... on `DuplicateFileException`. | Two imports into one project serialize only while each writes its program into the project; two files with the same name both land (`x`, `x.0`); two imports into the same new folder both land in it. |
+
+Measured: four PE files at once (`mshtml.dll` 22.9 MB, `edgehtml.dll` 24.8 MB,
+`Windows.UI.Xaml.dll` 17.1 MB, `ntoskrnl.exe` 12.5 MB from Windows 11; a script calling
+`ProgramLoader` directly, no active project set; 24 CPUs, Dev Drive) took **54 s** against **141-158
+s** one after the other: each load took as long alone as next to the others (40-55 s for the
+DLLs, 8 s for the kernel), so nothing on the load path serializes them. Peak heap above the
+baseline was **2.9 GB** at once against **1.5-1.8 GB** one at a time. In two rounds each way the
+programs were identical (functions, defined data, symbols, memory blocks). Through the daemon
+(`daemon_tests.py import_speed`): see "Performance".
+
+**Why not a worker process.** An import in a separate JVM that imports into a scratch project
+for the daemon to adopt was the alternative. It is not needed: the in-process loads measured
+above do not share state that changes their result, and a worker would pay a JVM and Ghidra
+start (seconds), a second copy of the language and class data, and a copy of the finished
+database for every import.
+
+**The same file twice.** Two imports of the same file (by SHA-256) into the same project at once
+import it once: the second waits for the first to save (its `progress` says "waiting for client
+2 (agent-a, ...)'s import of the same file"), then finds the result and answers `imported:
+false`, `existing: [path]` and `sameFileImport` (`who`, `file`, `waitedMs`). If the first fails
+or is cancelled, the second imports the file itself. `duplicate: true` skips the check and the
+wait. Different projects never wait on each other's files.
+
+**Readers.** Clients that read or decompile in a project while imports run into it are not
+slowed beyond noise (`daemon_tests.py import_readers`, numbers in "Performance"). The one wait
+is Ghidra's: listing or opening files of that project waits while an import writes its new
+program into the project (the project's file-system lock, above).
+
+**Failure.** A cancelled import (`cancel`, its client disconnecting or dying, the daemon
+stopping) stops its load at the loader's next cancellation check, releases its program (and its
+temporary database files) and leaves nothing in the project; the other imports go on. A daemon
+killed mid-import leaves no partial program: the program reaches the project only in the final
+`createFile`, and the next daemon opens the project and imports the file again
+(`daemon_tests.py import_kill`).
+
 ### The import queue
 
-Imports run **one at a time across the whole daemon**, whatever the project: Ghidra's loaders
-reach project state through one process-wide "active project" (`AppInfo`) and one static library
-search path set (`LibrarySearchPathManager`), so two imports at once would read and write each
-other's project. This was tested rather than assumed (`examples/ImportIsolationProbe.java`, run
-by `daemon_tests.py import_isolation`): a library search path added while project A is active is
-visible while project B is active and is not in B's saved state, so a loader in B resolves
-libraries with A's settings; and in 6 rounds of two concurrent loads into two projects (12 loads),
-none failed and no program landed in the wrong project, but in 6 of the 12 the active project,
-read right after the load, was the other thread's: nothing failed because the loader was handed
-its own project explicitly, not because the shared state is safe. The serialization is a hard limit of the loaders
-the session runs, not of the session; lifting it needs Ghidra to scope that state per thread or
-per load.
-
-What the session adds is that the wait is visible and under control:
+When `maxImports` imports run, the next ones wait, and the wait is visible and under control:
 
 - Imports queue **first-come, first-served** at an `ImportGate`, **before** they take a
   scheduler slot, so queued imports do not occupy the long slots that analysis and scripts need.
-  Opening an upgrade cache copy uses the same gate (kind `internal`, short).
-- `status.imports`: `holder` (who, client id, project, file, bytes, running time), `queue`
-  (the same, plus `position` and `estimatedWaitMs`) and `history` (`count`, `meanMs`, `msPerMb`
-  of the last 12 finished imports). `status.clients[].requests[]` marks a queued import
-  `"waiting": "import queue"` with its `queue` details.
+- `status.imports`: `maxImports`, `running` (each: who, client id, project, file, bytes,
+  running time), `holder` (the oldest running one, or null), `queue` (the same, plus `position`
+  and `estimatedWaitMs`) and `history` (`count`, `meanMs`, `msPerMb` of the last 12 finished
+  imports, and `peakRunning`, the most that ran at once). `status.clients[].requests[]` marks a
+  queued import `"waiting": "import queue"` with its `queue` details, and an import waiting for
+  the same file `"waiting": "same file import"`.
 - A queued `import` sends `progress` events (at most one a second): `"message": "waiting behind
-  client 2 (agent-a, claude-code) import of big.exe (position 1 in the import queue, about 40
-  s)"`, with `"queue": {"position", "ahead", "holder", "estimatedWaitMs"}`. The final answer
-  repeats what the wait was in `queue`: `waitedMs`, `positionAtEntry`, `behind`.
-- The **estimate** is the holder's remaining time plus the time of each import ahead, each
-  taken as the history's rate (ms per byte of the last 12 completed imports) times the file's
-  size, never below the shortest import seen. `null` until one import has finished in this
-  daemon. It is a guide: format, loaders and options change an import's time, and so do the
-  disk and the other work on the machine. Measured in `daemon_tests.py import_queue` (random 128
-  MB raw binaries, Windows 11, Dev Drive): an import took 8.8-17 s; estimates made while queued
-  were rough: one measured pair was 7.0 s estimated against 17.5 s waited, because the import ahead ran slower than the history's rate.
+  client 2 (agent-a, claude-code) import of big.exe and 1 other import (position 1 in the import
+  queue, about 40 s)"`, with `"queue": {"position", "ahead", "holder", "running", "maxImports",
+  "estimatedWaitMs"}`. The final answer repeats what the wait was in `queue`: `waitedMs`,
+  `positionAtEntry`, `behind`, and `runningAtStart` (how many ran, this one included, when it
+  started).
+- The **estimate** places each running import's remaining time, then each import ahead in the
+  queue on the place that frees first, each taken as the history's rate (ms per byte of the last
+  12 completed imports) times the file's size, never below the shortest import seen; the wait is
+  when the next place frees after them. `null` until one import has finished in this daemon. It
+  is a guide: format, loaders and options change an import's time, and so do the disk, the other
+  imports and the other work on the machine. Measured in `daemon_tests.py import_queue` (with
+  `maxImports` 1; random 128 MB raw binaries, Windows 11, Dev Drive): an import took 8.8-17 s;
+  estimates made while queued were rough: one measured pair was 7.0 s estimated against 17.5 s
+  waited, because the import ahead ran slower than the history's rate.
 - **Cancelling a queued import** (`cancel` by id, `cancel all`, a disconnect) takes it out of the
-  queue at once and answers `cancelled`; the running import and the others queued are
-  untouched. Cancelling the running import releases the gate and the next one starts.
+  queue at once and answers `cancelled`; the running imports and the others queued are
+  untouched. Cancelling a running import frees its place and the next one starts.
 - The queue wait is unlimited unless the request passes a numeric `wait`, in which case it fails
-  with `busy` (details: the same queue information) after that long. A queue position is not
-  lost to the slot wait: an import that reaches the front takes its long slot then.
+  with `busy` (details: the same queue information) after that long; the same `wait` also limits
+  a wait for the same file. A queue position is not lost to the slot wait: an import that
+  reaches the front takes its long slot then.
 - Duplicates: the SHA-256 check runs when the import gets its turn, so two queued requests for
   the same file import it once and the second answers `imported: false`.
 
@@ -934,6 +984,32 @@ the program database is version 33 on `main` and 32 in 12.1.4; the data type dat
 
 ## Performance
 
+### Parallel imports
+
+`daemon_tests.py import_speed`: the same files, each into its own new project from its own
+client, all sent at once, to a daemon with `maxImports` 1 and then N. Windows 11, 24 threads,
+64 GB, Dev Drive, default heap; Windows 11 system binaries.
+
+| Files | `maxImports` 1 | `maxImports` N | Peak heap (used), 1 / N |
+|---|---|---|---|
+| 4 PEs, load only: `mshtml.dll` 22.9 MB, `edgehtml.dll` 24.8 MB, `Windows.UI.Xaml.dll` 17.1 MB, `ntoskrnl.exe` 12.5 MB | 165.1 s | **63.9 s** | 1.5 / 3.0 GB |
+| 2 random 128 MB raw files (mostly disk writes) | 15.6 s | **8.8 s** | 0.8 / 0.9 GB |
+| 2 PEs with `analyze: true`: `wmp.dll` 10.1 MB, `onnxruntime.dll` 10.2 MB | 340.4 s | **320.1 s** | 5.7 / 5.9 GB |
+
+With analysis the gain is only the second load's 33 s: the analyses (290-320 s each) already
+overlapped with `maxImports` 1, because the gate covers the load and the save. Run directly
+(`ProgramLoader` and `AutoAnalysisManager` in one script, no gate), the two analyses took 314 s
+side by side against 605 s one after the other, each as long as alone, and gave identical
+programs (functions, instructions, defined data, symbols, memory blocks). One run of the same
+script while a 22-worker Gradle build saturated the machine gave each analysis twice its time
+and different symbol counts (134,506 against 190,423 for `onnxruntime.dll`): Ghidra's analysis
+results depend on time when the CPU is oversubscribed (timed analyzers such as the decompiler's
+give up), with or without parallel imports, so keep `maxLong` within the CPUs you can spare.
+
+Readers (`import_readers`, 60 functions of `choice.exe` decompiled again and again in the
+project that two 128 MB raw imports write into): median **5.7 ms** before, **4.9 ms** during
+(1,740 decompiles), 4.9 ms after.
+
 ### Ghidra master (12.3 DEV) against 12.1.4, same machine, same hour
 
 Windows 11, JDK 25.0.4, 24 threads, 64 GB; the installs and projects on a USB NVMe Dev Drive
@@ -1027,9 +1103,18 @@ took 7.0-7.8 s per question and needed a copy of the project.
 - `examples/daemon_tests.py`: two harness processes starting the daemon at once, several
   projects in one daemon, a DLL import, a client killed while it owns a program and analyses it,
   the daemon killed and restarted, fair scheduling, `cancel all`, idle shutdown, warm programs,
-  the import queue (two and three concurrent imports: a queued one cancelled, the running one
-  cancelled and the next starting, re-ordering; `--raw-mb` sets the size of the random raw
-  files it imports), why imports are serialized (`import_isolation`), per-request labels (the
+  the import queue (with `maxImports` 1, two and three concurrent imports: a queued one
+  cancelled, the running one cancelled and the next starting, re-ordering; `--raw-mb` sets the
+  size of the random raw files it imports), what concurrent loads share (`import_isolation`),
+  parallel imports (`parallel_imports`: into two projects at once, two files into one project
+  and one new folder, the same file twice at once imported once, a running import cancelled
+  while the other completes; `import_kill`: a client killed mid-import, its import stopped with
+  no program or temporary file left while another client's import completes, and the daemon
+  killed with two imports running, after which the project holds no partial program and the
+  files import again; `import_readers`: decompile latency in a project before, during and after
+  two imports into it; `import_speed`: the same binaries with `maxImports` 1 and N, wall time,
+  peak heap and identical programs, on `--big <binary>` (repeat) or two random raw files,
+  `--big-analyze` to analyse too), per-request labels (the
   holder in a `busy` answer names the label, cancel scoped per label),
   a private stdio session, and the upgrade cache (a current program does not use it; with
   `--legacy-project`, a project saved by an older Ghidra, best a small one, which the test
@@ -1057,7 +1142,7 @@ took 7.0-7.8 s per question and needed a copy of the project.
 
 ```
 python examples/session_smoke.py --ghidra <install> --work <empty dir> --binary A.exe --binary B.exe
-python examples/daemon_tests.py --ghidra <install> --work <empty dir> --exe A.exe --dll B.dll [--project <analysed project>] [--legacy-project <older project> [--legacy-program <path>]]
+python examples/daemon_tests.py --ghidra <install> --work <empty dir> --exe A.exe --dll B.dll [--project <analysed project>] [--legacy-project <older project> [--legacy-program <path>]] [--big <binary>]... [--big-analyze]
 python examples/contract_tests.py --ghidra <install> --work <empty dir> [--lines 600000]
 ```
 
@@ -1113,6 +1198,7 @@ The distribution also leaves out `__pycache__` folders and `.pyc` files that run
   than on NTFS (ReFS writes a file's dirty pages back when its last handle closes), so an
   in-memory upgrade or a large analysis is slower there. Closing is fixed (see "Changes outside
   this module"); put `tmpdir` on a fast NTFS or ext4 disk with room if you can.
-- Imports run one at a time across the daemon: Ghidra's loaders find libraries and options
-  through one global "active project" and one static library search path set (see "The import
-  queue" for the test that shows it). Queued imports are visible, estimated and cancellable.
+- At most `maxImports` imports run at once (default one per four CPUs, 1 to 4), each holding
+  its program in memory until it is saved; more queue, visibly. The library search path set
+  that loaders use to find libraries is one per process, not per project (as it always was);
+  see "Parallel imports".

@@ -62,7 +62,8 @@ public class HeadlessSession implements GhidraLaunchable {
 		                       [-listen [127.0.0.1:]<port>] [-endpoint <file>] [-noStdio]
 		                       [-daemon -stateDir <dir> [-instance <name>]]
 		                       [-idleTimeout <seconds>] [-keepWarm <seconds>]
-		                       [-maxQuick <n>] [-maxLong <n>] [-scriptPath <dir>]... [-log <file>]
+		                       [-maxQuick <n>] [-maxLong <n>] [-maxImports <n>]
+		                       [-scriptPath <dir>]... [-log <file>]
 		                       [-upgradeCache <dir>] [-forkCopyLimitMb <n>]
 		  (normally started by Ghidra/Features/HeadlessSession/support/ghidra_session.py)
 		  -project      open this project at start (a .gpr, its folder, or a parent with one)
@@ -76,6 +77,7 @@ public class HeadlessSession implements GhidraLaunchable {
 		  -keepWarm     keep an unused read-only program or project open this long (default 3600)
 		  -maxQuick     concurrent quick requests (default: CPU count)
 		  -maxLong      concurrent long requests: analyze, import, script, save (default: CPU/4)
+		  -maxImports   concurrent imports, each also in a long slot (default: CPU/4, 1 to 4)
 		  -scriptPath   an extra GhidraScript directory; repeat it, or give a list separated by
 		                the platform's path separator
 		  -log          Ghidra application log file
@@ -130,6 +132,8 @@ public class HeadlessSession implements GhidraLaunchable {
 		int cpus = Runtime.getRuntime().availableProcessors();
 		Scheduler scheduler = new Scheduler(o.maxQuick > 0 ? o.maxQuick : cpus,
 			o.maxLong > 0 ? o.maxLong : Math.max(2, cpus / 4));
+		ImportGate.GLOBAL.setPermits(
+			o.maxImports > 0 ? o.maxImports : ImportGate.defaultPermits(cpus));
 		session = new Session(scheduler, o.keepWarmSeconds,
 			new UpgradeCache(o.upgradeCache == null ? null : new File(o.upgradeCache), scheduler));
 		if (o.forkCopyLimitMb >= 0) {
@@ -405,6 +409,7 @@ public class HeadlessSession implements GhidraLaunchable {
 		long keepWarmSeconds = 3600;
 		int maxQuick;
 		int maxLong;
+		int maxImports;
 		List<String> scriptDirs = new ArrayList<>();
 		String log;
 		String upgradeCache;
@@ -427,6 +432,7 @@ public class HeadlessSession implements GhidraLaunchable {
 					case "-keepWarm" -> o.keepWarmSeconds = number(args, ++i, a);
 					case "-maxQuick" -> o.maxQuick = (int) number(args, ++i, a);
 					case "-maxLong" -> o.maxLong = (int) number(args, ++i, a);
+					case "-maxImports" -> o.maxImports = (int) number(args, ++i, a);
 					case "-scriptPath" -> {
 						for (String d : value(args, ++i, a).split(File.pathSeparator)) {
 							if (!d.isBlank()) {

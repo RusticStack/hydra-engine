@@ -61,10 +61,9 @@ it is based on.
   projects, imports, and what `conflict`, `busy` and `not_owner` mean.
 - **Tests**: `examples/contract_tests.py` (identity fields, client compatibility, a 600,000-line
   export with progress, cancel and shutdown), run by CI and the release workflow.
-- **The import queue is visible and cancellable.** Imports still run one at a time across the
-  daemon (Ghidra's loaders share one process-wide active project and library search path set;
-  `examples/ImportIsolationProbe.java` and the `import_isolation` test document why), but they
-  now queue first-come, first-served without holding a scheduler slot. `status.imports` shows the
+- **The import queue is visible and cancellable.** Imports that cannot run yet (one at a time
+  when this was added; up to `maxImports` since "Imports run in parallel" below) queue
+  first-come, first-served without holding a scheduler slot. `status.imports` shows the
   holder (client label, project, file, running time), the queue with each entry's position and an
   estimated wait (from the durations of earlier imports), and the history. A queued `import`
   sends `progress` events "waiting behind ..." and its answer reports `queue` (`waitedMs`,
@@ -111,6 +110,19 @@ it is based on.
 
 ### Changed
 
+- **Imports run in parallel** (HeadlessSession). Up to `maxImports` imports (new launcher
+  setting and daemon option `-maxImports`; default one per four CPUs, 1 to 4) run at once, into
+  different projects or into one; more queue as before. Imports no longer set the process-wide
+  active project: nothing on Ghidra's load path reads it (the README's "Parallel imports" lists
+  what the load path shares and why it is safe): four 12-25 MB PEs imported at once took 64 s
+  against 165 s one after the other, with identical programs. The gate covers the load and the
+  save; `analyze: true` analyses afterwards in the import's long slot, as before. The same file sent twice at
+  once into one project is imported once: the second waits and answers `existing`, with
+  `sameFileImport`. `status.imports` gains `maxImports`, `running` and `history.peakRunning`
+  (`holder` is the oldest running import); an import's `queue` gains `runningAtStart`. Opening an
+  upgrade cache copy no longer goes through the import gate.
+- `daemon_tests.py`: `parallel_imports`, `import_kill`, `import_readers`, `import_speed`
+  (`--big`, `--big-analyze`); `import_queue` runs with `maxImports` 1.
 - The project files the upgrade cache keys and copies leave out Ghidra's transient files in a
   `.rep` (`tmp<n>.ps` pre-save copies of programs open for update, `tmp<n>.tmp`), so that a
   project another process has open for update keeps its identity until it is saved. Cache
