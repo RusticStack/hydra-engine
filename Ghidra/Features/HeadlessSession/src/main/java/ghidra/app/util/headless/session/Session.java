@@ -591,9 +591,9 @@ final class Session {
 	}
 
 	/**
-	 * Joins a project, opening it if no client has it open. A project open read-only is upgraded
-	 * to writable only when no other client uses it (and, unless {@code discard}, nothing of this
-	 * client's is unsaved). A read-only request on a writable project joins it.
+	 * Joins a project, opening it if no client has it open. A writable request on a read-only
+	 * view reopens it writable in place, also while other clients use it ({@link #makeWritable});
+	 * a writable request on a writable project, and a read-only request on one, join it.
 	 */
 	private JsonElement openProject(Client c, JsonObject req) {
 		ProjectResolver.Resolved r;
@@ -3556,6 +3556,9 @@ final class Session {
 		}
 		GhidraState state = new GhidraState(null, project, p, loc, null, null);
 		boolean contained = p != null && mode.equals("contained");
+		// what this script changed, not whether the program had unsaved changes already (which a
+		// shared program usually has): every change fires an event, which moves this number
+		long modBefore = p == null ? 0 : p.getModificationNumber();
 		int outer = -1;
 		if (contained) {
 			outer = p.startTransaction("session: contained script (rolled back)");
@@ -3579,6 +3582,7 @@ final class Session {
 			e == null ? null : e.key, "seconds", (System.nanoTime() - t0) / 1e9, "chars",
 			out.length(), "truncated", out.length() > cap, "output",
 			out.length() > cap ? out.substring(0, cap) : out, "changed",
+			p != null && !contained && p.getModificationNumber() != modBefore, "unsaved",
 			p != null && p.isChanged());
 		Json.put(r, "artifact", Json.str(req, "artifact", null));
 		if (failure != null) {
