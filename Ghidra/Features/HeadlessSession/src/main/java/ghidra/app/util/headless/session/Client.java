@@ -50,6 +50,9 @@ final class Client {
 	/** Key of the active program. */
 	volatile String active;
 
+	/** The {@link ProjectEntry#generation} of each joined project this client last saw. */
+	final Map<String, Integer> seenGeneration = new ConcurrentHashMap<>();
+
 	/** Requests of this client not yet answered (queued or running), by request id. */
 	final Map<String, RequestMonitor> running = new ConcurrentHashMap<>();
 

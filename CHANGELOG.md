@@ -29,6 +29,14 @@ example `12.3-hydra.1`); its tag is `v` and the version. Releases are on
   client or process writes is refused, naming it. New launcher setting `forkCopyLimitMb`
   (`GHIDRA_SESSION_FORK_COPY_LIMIT_MB`), daemon option `-forkCopyLimitMb`.
 
+- **Revisions and `refresh`** (HeadlessSession): every project and program has a `revision`
+  (a fingerprint of the saved files), shown by `open_project`, `project`, `projects`,
+  `open_program`, `info`, `save` and `status` with `diskRevision`, `stale` and `generation`.
+  Answers carry `stale` (a read-only view whose project another process saved) and, once,
+  `refreshed` (another client refreshed it). New command `refresh` (alias `reopen`) reopens a
+  read-only view for all its clients at once, under the same keys. The Python client gains
+  `call_raw` and `last_response`.
+
 ### Changed
 
 - The project files the upgrade cache keys and copies leave out Ghidra's transient files in a

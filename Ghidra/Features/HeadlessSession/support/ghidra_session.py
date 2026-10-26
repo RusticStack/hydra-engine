@@ -637,6 +637,8 @@ class _Base:
         self.events = []
         self.on_event = None
         self.last_ms = 0
+        self.last_response = None  # the last whole response (with stale/refreshed markers)
+        self._raw = {}
 
     def _send(self, line: str):
         raise NotImplementedError
@@ -647,6 +649,21 @@ class _Base:
     def call(self, cmd: str, **fields):
         """Sends one request and waits for its response. Raises SessionError on ok:false."""
         return self.wait(self.send(cmd, **fields))
+
+    def call_raw(self, cmd: str, **fields) -> dict:
+        """Like ``call``, but returns the whole response: ``result`` plus the markers next to it
+        (``stale``: read-only views whose project changed on disk, send ``refresh``;
+        ``refreshed``: projects another client refreshed since this one last heard)."""
+        rid = self.send(cmd, **fields)
+        with self._done:
+            self._raw[rid] = None
+        try:
+            self.wait(rid)
+            with self._done:
+                return self._raw[rid]
+        finally:
+            with self._done:
+                self._raw.pop(rid, None)
 
     def send(self, cmd: str, **fields) -> int:
         """Sends a request without waiting; returns its id (for ``cancel`` or a later wait)."""
@@ -690,6 +707,10 @@ class _Base:
                 with self._done:
                     self._done.wait(0.05)
         self.last_ms = msg.get("ms", 0)
+        self.last_response = msg
+        with self._done:
+            if rid in self._raw:
+                self._raw[rid] = msg
         if not msg.get("ok"):
             e = msg.get("error", {})
             raise SessionError(e.get("code"), e.get("message"), e.get("details"), e.get("trace"))

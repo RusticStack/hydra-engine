@@ -67,6 +67,11 @@ final class ProgramEntry {
 	Client owner;
 	long openMs;
 	/**
+	 * The program's saved revision when it was opened (or last saved here): its path and its
+	 * stored file's size, time and version ({@link Revision#ofProgram}).
+	 */
+	volatile String revision;
+	/**
 	 * When {@link #program} was opened from the upgrade cache: the read-only view of the copy
 	 * that holds it (closed with the program), the shared locks that keep the copy in place, and
 	 * what the cache did.
@@ -141,6 +146,22 @@ final class ProgramEntry {
 			exclusiveSince = System.currentTimeMillis();
 		}
 		return l;
+	}
+
+	/** Records the revision of {@link #file} as stored now. */
+	void stampRevision() {
+		DomainFile f = file;
+		if (f == null) {
+			revision = null;
+			return;
+		}
+		try {
+			revision = Revision.ofProgram(path, f.length(), f.getLastModifiedTime(),
+				f.getVersion());
+		}
+		catch (java.io.IOException | RuntimeException e) {
+			revision = null;
+		}
 	}
 
 	void release(Lock l) {
@@ -267,6 +288,7 @@ final class ProgramEntry {
 			Json.put(o, "users", ids);
 		}
 		Json.put(o, "busy", exclusiveHolder);
+		Json.put(o, "revision", revision);
 		Json.put(o, "cachedUpgrade", cacheInfo != null);
 		Json.put(o, "cacheBuild", cacheBuild(uc));
 		return o;

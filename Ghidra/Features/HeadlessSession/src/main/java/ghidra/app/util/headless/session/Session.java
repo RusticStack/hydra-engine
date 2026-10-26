@@ -266,6 +266,7 @@ final class Session {
 			return switch (cmd) {
 				case "open_project" -> openProject(c, req);
 				case "fork_project" -> forkProject(c, req, m);
+				case "refresh", "reopen" -> refresh(c, req, m);
 				case "close_project" -> closeProject(c, req);
 				case "project" -> inProject(projectFor(c, req), req, cmd, ProjectEntry::info);
 				case "list" -> {
@@ -599,6 +600,7 @@ final class Session {
 				p.users.add(c);
 			}
 			p.joinedAt.putIfAbsent(c, System.currentTimeMillis());
+			c.seenGeneration.putIfAbsent(p.id, p.generation);
 			c.projects.add(p.id);
 			c.activeProject = p.id;
 			p.lastUsed = System.currentTimeMillis();
@@ -620,6 +622,13 @@ final class Session {
 				"Ghidra cannot open this path: " + e.getMessage());
 		}
 		long t0 = System.nanoTime();
+		String revision;
+		try {
+			revision = Revision.of(r);
+		}
+		catch (IOException e) {
+			revision = null;
+		}
 		SessionProject sp;
 		try {
 			sp = SessionProject.open(locator, writable);
@@ -642,6 +651,7 @@ final class Session {
 		}
 		String id = "p" + nextProject.getAndIncrement();
 		ProjectEntry p = new ProjectEntry(id, r, canonical, sp, (System.nanoTime() - t0) / 1_000_000);
+		p.openRevision = revision;
 		projects.put(canonical, p);
 		projectsById.put(id, p);
 		Msg.info(this, c.label() + " opened project " + id + " " + r.gpr() +
@@ -742,6 +752,7 @@ final class Session {
 				p.users.remove(c);
 			}
 			p.joinedAt.remove(c);
+			c.seenGeneration.remove(p.id);
 			c.projects.remove(p.id);
 			if (p.id.equals(c.activeProject)) {
 				c.activeProject = firstOf(c.projects);
@@ -991,6 +1002,183 @@ final class Session {
 		return out;
 	}
 
+	// ---- revisions -------------------------------------------------------------------------
+
+	/**
+	 * Adds to a response what changed under this client: {@code "stale"} lists its read-only
+	 * views whose project another process saved since they were opened (send {@code refresh}),
+	 * and {@code "refreshed"} the projects someone else refreshed since this client last heard,
+	 * once each (answers it kept from before came from the older revision).
+	 */
+	void annotate(Client c, JsonObject resp) {
+		List<String> joined;
+		synchronized (c.projects) {
+			joined = new ArrayList<>(c.projects);
+		}
+		JsonArray stale = new JsonArray();
+		JsonArray refreshed = new JsonArray();
+		for (String id : joined) {
+			ProjectEntry p = projectsById.get(id);
+			if (p == null || p.closed) {
+				continue;
+			}
+			int gen = p.generation;
+			Integer seen = c.seenGeneration.put(id, gen);
+			if (seen != null && seen < gen) {
+				refreshed.add(Json.of("project", id, "generation", gen, "from", p.previousRevision,
+					"revision", p.openRevision));
+			}
+			if (p.stale()) {
+				stale.add(Json.of("project", id, "revision", p.openRevision, "diskRevision",
+					p.diskRevision(), "suggest", "refresh"));
+			}
+		}
+		if (!stale.isEmpty()) {
+			resp.add("stale", stale);
+		}
+		if (!refreshed.isEmpty()) {
+			resp.add("refreshed", refreshed);
+		}
+	}
+
+	/**
+	 * {@code refresh} (or {@code reopen}): reopens a read-only view on what is saved now, without
+	 * its clients leaving. The new view is opened first, outside every lock; then, under the
+	 * project's exclusive lock (so that no request sees half of the switch), every program that
+	 * clients use is reopened from it with the same key, programs nobody uses are closed, and the
+	 * old view is closed. Programs the new revision no longer has are closed for their users.
+	 * A writable project needs none (no other process can write it while this daemon holds its
+	 * lock).
+	 */
+	private JsonElement refresh(Client c, JsonObject req, RequestMonitor m) {
+		ProjectEntry p = projectFor(c, req);
+		long t0 = System.nanoTime();
+		boolean force = Json.bool(req, "force", false);
+		p.invalidateRevision();
+		String disk = p.diskRevision();
+		if (p.writable()) {
+			return Json.of("project", p.id, "refreshed", false, "reason",
+				"writable: this daemon holds the project lock, so it always shows what is saved",
+				"revision", disk, "generation", p.generation);
+		}
+		String from = p.openRevision;
+		if (!force && disk != null && disk.equals(from)) {
+			c.seenGeneration.put(p.id, p.generation);
+			return Json.of("project", p.id, "refreshed", false, "reason", "unchanged",
+				"revision", from, "generation", p.generation);
+		}
+		String rev;
+		SessionProject nv;
+		try {
+			rev = Revision.of(p.resolved);
+			nv = SessionProject.open(new ProjectLocator(p.resolved.dir().getPath(),
+				p.resolved.name()), false);
+		}
+		catch (Exception e) {
+			throw new SessionException(SessionException.FAILED,
+				"could not reopen project " + p.id + ": " + e.getMessage(), null, e);
+		}
+		Lock l;
+		try {
+			l = lockProject(p, true, waitMs(req), "refresh");
+			p.exclusiveClient = c;
+		}
+		catch (RuntimeException e) {
+			nv.close();
+			throw e;
+		}
+		SessionProject old = p.project;
+		JsonArray progs = new JsonArray();
+		try {
+			p.project = nv;
+			p.previousRevision = from;
+			p.openRevision = rev;
+			p.invalidateRevision();
+			p.generation++;
+			p.refreshedAt = System.currentTimeMillis();
+			for (ProgramEntry e : new ArrayList<>(p.programs.values())) {
+				progs.add(reopenIn(p, nv, e, m));
+			}
+		}
+		finally {
+			unlockProject(p, l);
+		}
+		try {
+			old.close();
+		}
+		catch (RuntimeException e) {
+			Msg.warn(this, "refresh: could not close the old view of " + p.id, e);
+		}
+		c.seenGeneration.put(p.id, p.generation);
+		Msg.info(this, c.label() + " refreshed project " + p.id + " from revision " + from +
+			" to " + rev + " (generation " + p.generation + ")");
+		JsonObject out = Json.of("project", p.id, "refreshed", true, "from", from, "revision",
+			rev, "generation", p.generation, "programs", progs, "ms",
+			(System.nanoTime() - t0) / 1_000_000);
+		out.add("info", p.info());
+		return out;
+	}
+
+	/**
+	 * One program of a refreshed view: reopened from the new view when clients use it, closed
+	 * otherwise. Held: the project's exclusive lock (no request runs on it).
+	 */
+	private JsonObject reopenIn(ProjectEntry p, SessionProject nv, ProgramEntry e,
+			RequestMonitor m) {
+		JsonObject r = Json.of("program", e.key, "revision", e.revision);
+		boolean got = false;
+		try {
+			got = e.lock.writeLock().tryLock(CLEANUP_WAIT_MS, TimeUnit.MILLISECONDS);
+		}
+		catch (InterruptedException ex) {
+			Thread.currentThread().interrupt();
+		}
+		if (!got) {
+			Json.put(r, "action", "kept (still in use: " + e.exclusiveHolder + ")");
+			return r;
+		}
+		boolean unlock = true;
+		try {
+			if (e.userCount() == 0) {
+				disposeProgram(e);
+				Json.put(r, "action", "closed (nobody used it)");
+				return r;
+			}
+			DomainFile df = nv.getProjectData().getFile(e.path);
+			if (df == null || !Program.class.isAssignableFrom(df.getDomainObjectClass())) {
+				e.lock.writeLock().unlock();
+				unlock = false;
+				closeEntry(e);
+				Json.put(r, "action", "removed (not in the new revision)");
+				return r;
+			}
+			e.disposeDecompilers();
+			releaseProgramObject(e);
+			e.mode = null;
+			try {
+				e.file = df;
+				e.program = openReadOnly(e, df, m);
+				e.mode = ProgramEntry.Mode.READ_ONLY;
+				e.stampRevision();
+				Json.put(r, "action", "reopened");
+				Json.put(r, "newRevision", e.revision);
+			}
+			catch (RuntimeException ex) {
+				Msg.error(this, "refresh: could not reopen " + e.key + "; closing it", ex);
+				e.lock.writeLock().unlock();
+				unlock = false;
+				closeEntry(e);
+				Json.put(r, "action", "closed (reopen failed: " + ex.getMessage() + ")");
+			}
+			return r;
+		}
+		finally {
+			if (unlock) {
+				e.lock.writeLock().unlock();
+			}
+		}
+	}
+
 	private JsonElement list(ProjectEntry p, JsonObject req) {
 		String path = Json.str(req, "folder", "/");
 		boolean recursive = Json.bool(req, "recursive", true);
@@ -1214,6 +1402,7 @@ final class Session {
 						e.file = df;
 						e.program = writable ? openWritable(e, df, req, m) : openReadOnly(e, df, m);
 						e.mode = writable ? ProgramEntry.Mode.WRITABLE : ProgramEntry.Mode.READ_ONLY;
+						e.stampRevision();
 						e.owner = writable ? c : null;
 						e.ownedSince = System.currentTimeMillis();
 						e.openMs = (System.nanoTime() - t0) / 1_000_000;
@@ -1228,6 +1417,7 @@ final class Session {
 						releaseProgramObject(e);
 						e.program = np;
 						e.mode = ProgramEntry.Mode.WRITABLE;
+						e.stampRevision();
 						e.owner = c;
 						e.ownedSince = System.currentTimeMillis();
 						e.openMs = (System.nanoTime() - t0) / 1_000_000;
@@ -1545,6 +1735,7 @@ final class Session {
 					try {
 						e.program = openReadOnly(e, e.file, new RequestMonitor(null, null));
 						e.mode = ProgramEntry.Mode.READ_ONLY;
+						e.stampRevision();
 					}
 					catch (RuntimeException ex) {
 						Msg.error(this, "could not reopen " + e.key + " read-only for its " +
@@ -1762,7 +1953,8 @@ final class Session {
 			p.getExecutablePath(), "sha256", p.getExecutableSHA256(), "md5",
 			p.getExecutableMD5(), "functions", p.getFunctionManager().getFunctionCount(),
 			"analyzed", GhidraProgramUtilities.isAnalyzed(p), "changed", p.isChanged(),
-			"cachedUpgrade", e.cacheInfo != null, "upgradeCache",
+			"revision", e.revision, "projectRevision", e.project.revision(), "generation",
+			e.project.generation, "cachedUpgrade", e.cacheInfo != null, "upgradeCache",
 			e.cacheInfo == null ? null : e.cacheInfo.deepCopy(), "cacheBuild",
 			e.cacheBuild(upgradeCache), "cacheBuildInfo", e.cacheBuildInfo(upgradeCache));
 		synchronized (e.users) {
@@ -1778,8 +1970,11 @@ final class Session {
 		boolean changed = e.program.isChanged();
 		if (changed) {
 			e.program.save(Json.str(req, "comment", "headless session"), m);
+			e.stampRevision();
+			e.project.invalidateRevision();
 		}
-		return Json.of("program", e.key, "saved", changed);
+		return Json.of("program", e.key, "saved", changed, "revision", e.revision,
+			"projectRevision", e.project.revision());
 	}
 
 	// ---- queries ---------------------------------------------------------------------------
@@ -2135,6 +2330,7 @@ final class Session {
 					AppInfo.setActiveProject(p.project);
 					try (LoadResults<Program> results = b.load()) {
 						saved = results.getPrimary().save(m).getPathname();
+						p.invalidateRevision();
 					}
 				}
 			}
@@ -2235,6 +2431,8 @@ final class Session {
 					owner ? "owner" : "contained", m);
 				if (owner && Json.bool(req, "save", false) && e.program.isChanged()) {
 					e.program.save("script " + name, m);
+					e.stampRevision();
+					p.invalidateRevision();
 					Json.put(r, "saved", true);
 				}
 				return r;

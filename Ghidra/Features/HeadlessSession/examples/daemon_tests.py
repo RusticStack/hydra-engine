@@ -26,7 +26,7 @@ read-only, to the multi-project test. --legacy-project (optional) is copied into
 older-format part of upgrade_cache; the original is only read.
 
 Tests: two_harnesses, two_projects, dll_import, client_kill, daemon_restart, fairness, cancel_all,
-idle_shutdown, keep_warm, stdio, upgrade_cache, holders, fork.
+idle_shutdown, keep_warm, stdio, upgrade_cache, holders, fork, revisions.
 """
 import argparse
 import json
@@ -943,9 +943,98 @@ def t_fork(c: Ctx):
     return "; ".join(notes)
 
 
+def t_revisions(c: Ctx):
+    """Projects and programs carry revisions; a read-only view whose project another process
+    saved is marked stale on its clients' next answers; refresh reopens it for all of them at
+    once (the others are told once); a fork starts at its source's revision."""
+    gpr = c.copy_fixture("projRev")
+    exe = pathlib.Path(c.a.exe).name
+    d = c.daemon("rev", keepWarm=0)
+    notes = []
+    with d.connect("reader-a", "tests") as a, d.connect("reader-b", "tests") as b:
+        pa = a.call("open_project", path=str(gpr))
+        rev0 = pa["revision"]
+        check(isinstance(rev0, str) and len(rev0) == 16 and pa["diskRevision"] == rev0 and
+              pa["stale"] is False and pa["generation"] == 1, f"open_project revision: {pa}")
+        b.call("open_project", path=str(gpr))
+        ia = a.call("open_program", path=exe)
+        b.call("open_program", path=exe)
+        check(len(ia["revision"]) == 16 and ia["projectRevision"] == rev0 and
+              ia["generation"] == 1, f"open_program revision: {ia}")
+        st = a.call("status")
+        check([p["revision"] for p in st["projects"]] == [rev0] and
+              [p["revision"] for p in st["programs"]] == [ia["revision"]],
+              f"status revisions: {st['projects']} {st['programs']}")
+        fn = a.call("functions", limit=1)["functions"][0]
+        # another process saves the project (a second daemon, writable)
+        d2 = c.daemon("rev-writer")
+        with d2.connect("writer", "tests") as w:
+            w.call("open_project", path=str(gpr), writable=True)
+            w.call("open_program", path=exe, writable=True)
+            w.call("rename", address=fn["address"], name="saved_elsewhere")
+            w.call("save")
+            w.call("close_project")
+        d2.stop()
+        # the readers' next answers say their view is stale; their view is unchanged
+        r = a.call_raw("functions", contains="saved_elsewhere")
+        check(not r["result"]["functions"], "the old view shows the new save")
+        stale = r.get("stale") or []
+        check(len(stale) == 1 and stale[0]["project"] == pa["id"] and
+              stale[0]["revision"] == rev0 and stale[0]["diskRevision"] != rev0 and
+              stale[0]["suggest"] == "refresh", f"no stale marker: {r}")
+        check(a.call("project")["stale"] is True, "project.stale is not set")
+        notes.append("stale marker after another process saved")
+        # one reader refreshes; both see the new revision, the other is told once
+        t = time.perf_counter()
+        rf = b.call("refresh")
+        c.timings["refresh (1 program reopened)"] = round((time.perf_counter() - t) * 1000)
+        check(rf["refreshed"] and rf["from"] == rev0 and rf["revision"] != rev0 and
+              rf["generation"] == 2 and rf["programs"][0]["action"] == "reopened",
+              f"refresh: {rf}")
+        check(b.call("functions", contains="saved_elsewhere")["functions"],
+              "the refreshing reader does not see the save")
+        r = a.call_raw("functions", contains="saved_elsewhere")
+        check(r["result"]["functions"], "the other reader does not see the save after refresh")
+        told = r.get("refreshed") or []
+        check(len(told) == 1 and told[0]["project"] == pa["id"] and told[0]["from"] == rev0 and
+              told[0]["generation"] == 2 and not r.get("stale"), f"refreshed marker: {r}")
+        r = a.call_raw("info")
+        check(not r.get("refreshed") and not r.get("stale") and
+              r["result"]["projectRevision"] == rf["revision"] and
+              r["result"]["generation"] == 2, f"told twice, or info stale: {r}")
+        check(a.call("decompile", address=fn["address"])["name"] == "saved_elsewhere",
+              "decompile after refresh")
+        again = a.call("refresh")
+        check(again["refreshed"] is False and again["reason"] == "unchanged", f"again: {again}")
+        notes.append(f"refresh switched both readers in {c.timings['refresh (1 program reopened)']}"
+                     " ms; the other was told once")
+        # a fork starts at its source's revision; a save in the fork moves only the fork
+        fk = a.call("fork_project", project=pa["id"], path=str(c.work / "projRevFork"),
+                    wait=600000)
+        fi = a.call("project", project=fk["project"])
+        check(fk["baseRevision"] == rf["revision"] and fi["revision"] == fk["baseRevision"],
+              f"fork revision: {fk['baseRevision']} {fi['revision']} {rf['revision']}")
+        a.call("open_program", path=f"{fk['project']}:/{exe}", writable=True)
+        a.call("rename", address=fn["address"], name="fork_change")
+        sv = a.call("save")
+        check(sv["projectRevision"] != fk["baseRevision"] and
+              a.call("project", project=pa["id"])["revision"] == fk["baseRevision"],
+              f"fork save: {sv}")
+        notes.append("fork starts at its source's revision")
+        # a writable project needs no refresh
+        wr = a.call("refresh", project=fk["project"])
+        check(wr["refreshed"] is False and "writable" in wr["reason"], f"writable: {wr}")
+        a.call("close_project", project=fk["project"])
+        a.call("close_project")
+        b.call("close_project")
+    d.stop()
+    shutil.rmtree(c.work / "projRevFork", ignore_errors=True)
+    return "; ".join(notes)
+
+
 TESTS = ["two_harnesses", "two_projects", "dll_import", "client_kill", "daemon_restart",
          "fairness", "cancel_all", "idle_shutdown", "keep_warm", "stdio", "upgrade_cache",
-         "holders", "fork"]
+         "holders", "fork", "revisions"]
 
 
 def main():

@@ -190,8 +190,75 @@ calls `new DefaultProjectData(locator, true, ...)` and locks the project, even w
 With `"writable": true` the project is opened with its lock, as the window's *Open Project* does.
 Only one process can hold it; a second writable open gets `conflict` with the lock file's path.
 
-A read-only view does not see changes another process saves to the project after it was opened.
-Reopen it (all clients leave it, or wait for `keepWarm`) to see them.
+A read-only view does not see changes another process saves to the project after it was opened;
+its clients are told (`stale`, below), and `refresh` reopens it for all of them.
+
+### Revisions and `refresh`
+
+Every project and program has a **revision**, a 16-hex-digit fingerprint of what is saved:
+
+- **Project revision**: every file of the `.gpr` and `.rep` by relative path, size and
+  modification time, plus the SHA-256 of every file up to 1 MiB (the `.gpr`, property and index
+  files): the identity the upgrade cache keys by, without the project's location and this
+  Ghidra's version, and without `<name>.rep/projectState` (window and tool state Ghidra rewrites
+  when a writable project closes) and Ghidra's transient pre-save files. Ghidra writes its large
+  database files whole, as new versions, never in place, so their size and time identify them.
+  Two daemons, and a copy with its files' times kept, agree on it.
+- **Program revision**: its project path and the size, time and version of its stored file,
+  taken when it is opened and after every save here.
+
+`open_project`, `project`, `projects` and `status` show a project's `revision` (for a read-only
+view: what it was opened from; for a writable project: what is saved now), `diskRevision` (what
+is saved now, read at most once a second), `stale` and `generation` (bumped by every refresh).
+`open_program`, `info` and `status` show a program's `revision`, its `projectRevision` and
+`generation`; `save` answers the new `revision` and `projectRevision`.
+
+**Stale views.** Every answer to a client (but `ping`, `status` and `cancel`) carries, next to
+`result`, what changed under it:
+
+```json
+{"id": 12, "ok": true, "result": {...}, "ms": 3,
+ "stale": [{"project": "p1", "revision": "5b0c9e2d81f4a7c3", "diskRevision": "e1d24f6b9a03c8d7", "suggest": "refresh"}]}
+{"id": 13, "ok": true, "result": {...}, "ms": 2,
+ "refreshed": [{"project": "p1", "generation": 2, "from": "5b0c9e2d81f4a7c3", "revision": "e1d24f6b9a03c8d7"}]}
+```
+
+`stale` lists the client's read-only views whose project another process saved since they were
+opened: their answers still come from the old revision. `refreshed` lists, once, the projects
+another client refreshed since this client last heard: what it cached from them before came from
+the older revision. (`ghidra_session.py`: `call_raw` returns the whole response; `last_response`
+holds the last one.)
+
+**`refresh`** (or `reopen`) `{project}` reopens a read-only view on what is saved now **without
+its clients leaving**. The new view is opened first, outside every lock; then, under the
+project's exclusive lock (requests already running finish first, new ones wait, so nobody sees
+half of the switch), every program clients use is reopened from it under the same key,
+programs nobody uses are closed, and the old view is closed:
+
+```json
+{"cmd": "refresh", "project": "p1"}
+{"project": "p1", "refreshed": true, "from": "5b0c9e2d81f4a7c3", "revision": "e1d24f6b9a03c8d7",
+ "generation": 2, "programs": [{"program": "p1:/game.exe", "revision": "0d8a1f...", "action": "reopened", "newRevision": "77c2e0..."}],
+ "ms": 140, "info": {...}}
+```
+
+A program the new revision no longer has is closed for its users (`action: "removed ..."`).
+Unchanged (`"force": true` reopens anyway) or writable (this daemon holds its lock, so it always
+shows what is saved) projects answer `"refreshed": false` with the `reason`.
+
+**Forks and a newer master.** A fork's sidecar keeps `baseRevision`: the master's revision when
+the fork was made. A fork starts at that revision itself (the copy keeps the files' times), and
+moves on with its first save. So:
+
+- master `revision` == fork `baseRevision`: the master has not changed since the fork; anything
+  derived from the fork's base still describes the master.
+- master `revision` != fork `baseRevision`: the master was saved since (for example a newer
+  analysis was promoted into it); overlays and annotations made against the base must be
+  re-checked (replayed) against it.
+- fork `revision` == master `revision`: the two hold the same saved files (a promotion that
+  copied the fork over the master with its times kept gives this).
+
+Revisions compare saved state, not programs' meaning: any save changes them.
 
 ### Working copies: `fork_project`
 
@@ -340,6 +407,8 @@ Response:
 {"id": 7, "ok": false, "error": {"code": "busy", "message": "...", "details": {...}}, "ms": 500}
 ```
 
+A response may also carry `stale` and `refreshed` (see "Revisions and `refresh`").
+
 Events carry no `ok`. On stdio the first line is `ready` (or `fatal`, and the process exits with
 code 2). Long commands send throttled `progress` events with the request's `id`:
 
@@ -371,11 +440,12 @@ code 2). Long commands send throttled `progress` events with the request's `id`:
 | `open_project` | `path`, `writable`=false, `discard`=false | Joins the project, opening it if needed. `path` is a `.gpr`, its folder, a `.rep`, or a parent folder with exactly one project at most two levels below. A read-only view is reopened writable only when no other client uses it; a read-only request on a writable project joins it. |
 | `fork_project` | `project` (id or path), `path`, `name`?, `writable`=true, `mode`=auto\|copy-on-write\|full, `maxCopyMb`? | Copies the project into a working copy of this client's, opened and joined; the source and its read-only views are untouched. See "Working copies". |
 | `close_project` | `project`?, `discard`=false | Leaves the project (closes this client's programs there). A writable project closes when its last user leaves; a read-only one after `keepWarm`. |
-| `project` | `project`? | The project: id, name, paths, writable, files, users, programs, and `fork` (its sidecar's summary) when it is a fork. |
+| `project` | `project`? | The project: id, name, paths, writable, files, users, programs, `revision`, `diskRevision`, `stale`, `generation`, and `fork` (its sidecar's summary) when it is a fork. |
+| `refresh` / `reopen` | `project`?, `force`=false | Reopens a read-only view on what is saved now, for all its clients at once. See "Revisions and `refresh`". |
 | `list` | `project`?, `folder`="/", `recursive`=true, `programsOnly`=false, `metadata`=true, `sha256`, `offset`, `limit`=1000 | Folders and files, with `key`, `sha256`, `language`, `format`, `executable` and `open` (who uses it) for programs; `sha256` finds a program by its hash. Paged, with `truncated`. |
 | `open_program` / `switch` | `path` (path, unique name or key), `project`?, `writable`=false, `checkout`=false, `upgrade`=false, `wait`: `true` | Opens the program, or joins it if it is open (also a warm one nobody uses), and makes it active. Writable needs a writable project; a versioned file needs `checkout`. `"wait": true` on a read-only open of an older-format program waits for its upgrade cache copy instead of upgrading in memory (slot and lock waits keep the default). |
 | `programs` | | This client's programs (all projects) and its active ones. |
-| `info` | `program`? | Key, language, compiler, image base, format, executable path, SHA-256, MD5, functions, analysed, changed, mode, owner, users. |
+| `info` | `program`? | Key, language, compiler, image base, format, executable path, SHA-256, MD5, functions, analysed, changed, mode, owner, users, `revision`, `projectRevision`, `generation`. |
 | `close_program` | `program`?, `discard`=false | Drops this client's use. The owner of a changed program must `save` first or pass `discard`. |
 | `functions` | `program`?, `contains`, `regex`, `offset`, `limit`=200 (max 10000) | Functions by name filter, paged. |
 | `decompile` | `program`?, `address` or `name`, `timeout`=60 s, `maxChars`=200000 | C text and signature. Decompilers are pooled per program, so warm calls skip the start-up cost. |
@@ -406,7 +476,7 @@ in `error.details`:
 | `holder` | A one-line label of the holder (`"client 3 (agent-b, claude-code) script Export.java"`). |
 | `holderInfo` | The holder: `client` (id), `name`, `harness`, `label`, `command` (what it is doing: `open_program writable`, `script X`, `analyze`, `refresh`, ...) and `heldMs`. For a project locked by another process: `label: "another process"`, `user`, `host`, `since` and `os` from Ghidra's lock file, `lockFile`, and `live` (whether that process still holds it). |
 | `holders` | `conflict` on `open_project`: every client using the project, each as a `holderInfo`. |
-| `project`, `gpr`, `name`, `writable` | The project concerned. |
+| `project`, `gpr`, `name`, `writable`, `revision` | The project concerned (its revision: see "Revisions and `refresh`"). |
 | `program`, `path`, `sha256` | The program concerned: its key, its project path and its executable's SHA-256. |
 | `suggest` | What to do: `retry` (a lock that will be released: retry or raise `wait`), `fork_project` (the project or program has another writer, or is a shared read-only view: write your own working copy), `open_read_only` (another process holds the project writable), `open_program writable`. |
 | `suggestion` | With `suggest: fork_project`: a ready request, `{"cmd": "fork_project", "project": "p1", "path": "<a folder next to the project>", "writable": true}`. The path is only a proposal. |
@@ -584,7 +654,10 @@ took 7.0-7.8 s per question and needed a copy of the project.
   `not_owner`, and the suggested action); `fork` (a fork while the master's view stays open and
   in use; its sidecar; a fork of a fork; unsaved changes, an existing destination, a source
   another client or process writes, refused; `copy-on-write`, `auto` and `full` modes; the master
-  stays byte-identical).
+  stays byte-identical); `revisions` (revisions in `open_project`, `open_program`, `info` and
+  `status`; another process saves: `stale` on the readers' next answers; one reader's `refresh`
+  switches both, the other is told once with `refreshed`; a fork starts at its source's revision;
+  a writable project needs no refresh).
 
 ```
 python examples/session_smoke.py --ghidra <install> --work <empty dir> --binary A.exe --binary B.exe
@@ -638,7 +711,7 @@ The distribution also leaves out `__pycache__` folders and `.pyc` files that run
   locks, `start_new_session`, owner-only state dir), but Linux and macOS have not been run.
 - The AOT cache needs JDK 25 or later (`-XX:AOTCacheOutput`); older JDKs run without it.
 - A read-only view does not pick up changes saved to the project by another process after it was
-  opened (see above).
+  opened until a client sends `refresh` (its clients are told with `stale`).
 - With `tmpdir` on a ReFS volume (a Windows Dev Drive), writing Ghidra's buffer cache is slower
   than on NTFS (ReFS writes a file's dirty pages back when its last handle closes), so an
   in-memory upgrade or a large analysis is slower there. Closing is fixed (see "Changes outside

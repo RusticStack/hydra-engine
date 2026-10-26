@@ -223,6 +223,12 @@ final class Connection {
 			}
 		}
 		if (!Session.isInline(cmd)) {
+			try {
+				session.annotate(client, resp);
+			}
+			catch (RuntimeException e) {
+				Msg.warn(this, client.label() + ": could not check revisions: " + e);
+			}
 			Msg.info(this, client.label() + " " + cmd + " " + resp.get("ms") + " ms " +
 				(resp.get("ok").getAsBoolean() ? "ok"
 						: resp.getAsJsonObject("error").get("code").getAsString()));
