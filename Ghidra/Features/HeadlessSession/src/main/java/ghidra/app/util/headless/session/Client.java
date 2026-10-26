@@ -70,11 +70,16 @@ final class Client {
 	}
 
 	String label() {
+		return label(name, harness);
+	}
+
+	/** This client's label with another name and harness (a request's own labels). */
+	String label(String n, String h) {
 		StringBuilder sb = new StringBuilder("client ").append(id);
-		if (!name.isEmpty() || !harness.isEmpty()) {
-			sb.append(" (").append(name);
-			if (!harness.isEmpty()) {
-				sb.append(name.isEmpty() ? "" : ", ").append(harness);
+		if (!n.isEmpty() || !h.isEmpty()) {
+			sb.append(" (").append(n);
+			if (!h.isEmpty()) {
+				sb.append(n.isEmpty() ? "" : ", ").append(h);
 			}
 			sb.append(')');
 		}
@@ -86,7 +91,16 @@ final class Client {
 	 * {@code not_owner} answers: {@code {client, name, harness, label}}.
 	 */
 	JsonObject identity() {
-		return Json.of("client", id, "name", name, "harness", harness, "label", label());
+		return identity(null);
+	}
+
+	/** Like {@link #identity()}, named as the request that carried {@code who} named itself. */
+	JsonObject identity(Caller.Identity who) {
+		if (who == null) {
+			return Json.of("client", id, "name", name, "harness", harness, "label", label());
+		}
+		return Json.of("client", id, "name", who.name(), "harness", who.harness(), "label",
+			label(who.name(), who.harness()));
 	}
 
 	/**
@@ -94,7 +108,11 @@ final class Client {
 	 * long ({@code heldMs}, from {@code since}, epoch milliseconds; omitted when 0).
 	 */
 	JsonObject holder(String command, long since) {
-		JsonObject o = identity();
+		return holder(command, since, null);
+	}
+
+	JsonObject holder(String command, long since, Caller.Identity who) {
+		JsonObject o = identity(who);
 		Json.put(o, "command", command);
 		if (since > 0) {
 			Json.put(o, "heldMs", System.currentTimeMillis() - since);

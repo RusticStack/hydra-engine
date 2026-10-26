@@ -72,12 +72,6 @@ final class Session {
 	private static final int DEFAULT_TEXT_CAP = 200_000;
 	private static final int MAX_TEXT_CAP = 16_000_000;
 	private static final Object SCRIPT_COMPILE = new Object();
-	/**
-	 * Loaders find libraries through {@code AppInfo.getActiveProject()}, one global, so imports
-	 * set it to their own project and run one at a time. Upgrade cache builds open their copies
-	 * under it too, restoring the active project afterwards.
-	 */
-	static final Object IMPORT = new Object();
 	private static final Pattern PROGRAM_KEY = Pattern.compile("(p\\d+):(/.*)");
 
 	private final long startedAt = System.currentTimeMillis();
@@ -258,7 +252,10 @@ final class Session {
 			default:
 				break;
 		}
-		Scheduler.Ticket slot = scheduler.admit(c, cmd, m, waitMs(req));
+		// An import queues for the process-wide import gate first and takes its long slot only
+		// when it is its turn (importProgram), so that queued imports do not occupy the slots
+		// that analysis and scripts need.
+		Scheduler.Ticket slot = cmd.equals("import") ? null : scheduler.admit(c, cmd, m, waitMs(req));
 		try {
 			if (cmd.equals("script") || cmd.equals("import") || cmd.equals("analyze")) {
 				DeferredInit.await(); // the TLS context and the script framework
@@ -374,6 +371,12 @@ final class Session {
 		}
 		o.add("overlays", ovs);
 		o.add("scheduler", scheduler.describe());
+		o.add("imports", ImportGate.GLOBAL.describe());
+		Caller.Identity me = Caller.current(c);
+		if (me != null) {
+			Json.put(o, "youAre", Json.of("client", me.name(), "harness", me.harness(),
+				"labelled", me.labelled()));
+		}
 		o.add("upgradeCache", upgradeCache.describe());
 		Json.put(o, "deferredInitMs", DeferredInit.doneMs());
 		return o;
@@ -389,22 +392,33 @@ final class Session {
 			}
 			return Json.of("cancelled", upgradeCache.cancel(which));
 		}
+		// A cancel that carries a client/harness label reaches only requests of that same label.
+		Caller.Identity who = Caller.current(c);
+		String scope = who == null ? null : who.scope();
 		if (Json.bool(req, "all", false)) {
 			int n = 0;
 			for (Map.Entry<String, RequestMonitor> e : c.running.entrySet()) {
 				if (req.has("id") && req.get("id").toString().equals(e.getKey())) {
 					continue; // not this cancel itself
 				}
+				if (scope != null && !scope.equals(e.getValue().scope())) {
+					continue; // another caller's request on this connection
+				}
 				e.getValue().cancel();
 				n++;
 			}
-			return Json.of("cancelled", n);
+			return Json.of("cancelled", n, "scope", scope == null ? null : who.name() + " / " +
+				who.harness());
 		}
 		if (!req.has("target")) {
 			throw new SessionException(SessionException.BAD_REQUEST,
 				"missing field: target (the id of your request), or \"all\":true");
 		}
 		RequestMonitor m = c.running.get(req.get("target").toString());
+		if (m != null && scope != null && m.scope() != null && !scope.equals(m.scope())) {
+			return Json.of("cancelled", false, "note",
+				"that request belongs to another caller on this connection");
+		}
 		if (m != null) {
 			m.cancel();
 		}
@@ -1964,12 +1978,12 @@ final class Session {
 						e.program = writable ? openWritable(e, df, req, m) : openReadOnly(e, df, m);
 						e.mode = writable ? ProgramEntry.Mode.WRITABLE : ProgramEntry.Mode.READ_ONLY;
 						e.stampRevision();
-						e.owner = writable ? c : null;
+						e.setOwner(writable ? c : null);
 						e.ownedSince = System.currentTimeMillis();
 						e.openMs = (System.nanoTime() - t0) / 1_000_000;
 					}
 					else if (writable && e.mode == ProgramEntry.Mode.WRITABLE && e.owner != c) {
-						throw notOwner(e, c, path + " is open writable by " + e.owner.label() +
+						throw notOwner(e, c, path + " is open writable by " + e.ownerText() +
 							"; one writer per program: fork the project to write your own copy");
 					}
 					else if (writable && e.mode == ProgramEntry.Mode.READ_ONLY) {
@@ -1979,7 +1993,7 @@ final class Session {
 						e.program = np;
 						e.mode = ProgramEntry.Mode.WRITABLE;
 						e.stampRevision();
-						e.owner = c;
+						e.setOwner(c);
 						e.ownedSince = System.currentTimeMillis();
 						e.openMs = (System.nanoTime() - t0) / 1_000_000;
 					}
@@ -2291,7 +2305,7 @@ final class Session {
 				}
 				e.disposeDecompilers();
 				releaseProgramObject(e); // releasing a changed program discards its changes
-				e.owner = null;
+				e.setOwner(null);
 				e.mode = null;
 				if (others) {
 					try {
@@ -2332,7 +2346,7 @@ final class Session {
 		e.disposeDecompilers();
 		releaseProgramObject(e);
 		e.mode = null;
-		e.owner = null;
+		e.setOwner(null);
 		e.project.programs.remove(e.path, e);
 	}
 
@@ -2489,7 +2503,7 @@ final class Session {
 						: suggestFork(e.identity(), e.project, c));
 		}
 		if (e.owner != c) {
-			throw notOwner(e, c, e.key + " is owned by " + e.owner.label() +
+			throw notOwner(e, c, e.key + " is owned by " + e.ownerText() +
 				"; only the owner may " + cmd + " (fork the project to write your own copy)");
 		}
 	}
@@ -2499,7 +2513,7 @@ final class Session {
 		JsonObject d = e.identity();
 		Client o = e.owner;
 		Json.put(d, "owner", o == null ? null : o.id);
-		Json.put(d, "holder", o == null ? null : o.label());
+		Json.put(d, "holder", o == null ? null : e.ownerText());
 		d.add("holderInfo", e.ownerHolder());
 		return new SessionException(SessionException.NOT_OWNER, message,
 			suggestFork(d, e.project, c));
@@ -2854,7 +2868,6 @@ final class Session {
 			throw new SessionException(SessionException.NOT_FOUND, "no such file: " + file);
 		}
 		String folder = Json.str(req, "folder", "/");
-		long t0 = System.nanoTime();
 		String sha;
 		try {
 			sha = HashUtilities.getHash(HashUtilities.SHA256_ALGORITHM, file);
@@ -2862,80 +2875,102 @@ final class Session {
 		catch (IOException ex) {
 			throw new SessionException(SessionException.FAILED, ex.getMessage(), null, ex);
 		}
+		// Loaders use one process-wide active project, so imports run one at a time. Queue in
+		// arrival order without holding a slot (the wait is unlimited unless "wait" is a number),
+		// then take the long slot for this import's own work.
+		boolean limited = Json.has(req, "wait") && !(req.get("wait").isJsonPrimitive() &&
+			req.getAsJsonPrimitive("wait").isBoolean());
+		ImportGate.Entry gate = ImportGate.GLOBAL.enter(ImportGate.Kind.IMPORT, Caller.label(c),
+			c.id, p.id, file.getName(), file.length(), m, limited ? waitMs(req) : -1);
+		Scheduler.Ticket slot = null;
 		String saved;
-		Lock pl = lockProject(p, false, waitMs(req), "import");
+		double importS;
 		try {
-			if (!Json.bool(req, "duplicate", false)) {
-				List<String> same = new ArrayList<>();
-				findBySha(p.data().getRootFolder(), sha, same);
-				if (!same.isEmpty()) {
-					JsonObject r = Json.of("imported", false, "project", p.id, "sha256", sha);
-					Json.put(r, "existing", same);
-					Json.put(r, "note", "already in the project; open_program it, or pass " +
-						"\"duplicate\":true to import again");
-					return r;
-				}
-			}
-			MessageLog log = new MessageLog();
+			slot = scheduler.admit(c, "import", m, waitMs(req));
+			long t0 = System.nanoTime();
+			Lock pl = lockProject(p, false, waitMs(req), "import");
 			try {
-				DomainFolder dest =
-					ProjectDataUtils.createDomainFolderPath(p.data().getRootFolder(), folder);
-				ProgramLoader.Builder b = ProgramLoader.builder()
-						.source(file)
-						.project(p.project)
-						.projectFolderPath(dest.getPathname())
-						.log(log)
-						.monitor(m);
-				if (Json.has(req, "name")) {
-					b.name(Json.str(req, "name"));
+				if (!Json.bool(req, "duplicate", false)) {
+					List<String> same = new ArrayList<>();
+					findBySha(p.data().getRootFolder(), sha, same);
+					if (!same.isEmpty()) {
+						JsonObject r = Json.of("imported", false, "project", p.id, "sha256", sha);
+						Json.put(r, "existing", same);
+						Json.put(r, "note", "already in the project; open_program it, or pass " +
+							"\"duplicate\":true to import again");
+						Json.put(r, "queue", gate.describeWait());
+						return r;
+					}
 				}
-				if (Json.has(req, "language")) {
-					b.language(Json.str(req, "language"));
-				}
-				if (Json.has(req, "compiler")) {
-					b.compiler(Json.str(req, "compiler"));
-				}
-				synchronized (IMPORT) {
+				MessageLog log = new MessageLog();
+				try {
+					DomainFolder dest =
+						ProjectDataUtils.createDomainFolderPath(p.data().getRootFolder(), folder);
+					ProgramLoader.Builder b = ProgramLoader.builder()
+							.source(file)
+							.project(p.project)
+							.projectFolderPath(dest.getPathname())
+							.log(log)
+							.monitor(m);
+					if (Json.has(req, "name")) {
+						b.name(Json.str(req, "name"));
+					}
+					if (Json.has(req, "language")) {
+						b.language(Json.str(req, "language"));
+					}
+					if (Json.has(req, "compiler")) {
+						b.compiler(Json.str(req, "compiler"));
+					}
+					m.setMessage("importing " + file.getName());
 					AppInfo.setActiveProject(p.project);
 					try (LoadResults<Program> results = b.load()) {
 						saved = results.getPrimary().save(m).getPathname();
 						p.invalidateRevision();
 					}
+					gate.succeeded();
+				}
+				catch (CancelledException ex) {
+					throw cancelled(m);
+				}
+				catch (SessionException ex) {
+					throw ex;
+				}
+				catch (Exception ex) {
+					throw new SessionException(SessionException.FAILED,
+						"import failed: " + ex.getMessage(), Json.of("log", log.toString()), ex);
 				}
 			}
-			catch (CancelledException ex) {
-				throw cancelled(m);
+			finally {
+				gate.close(); // the next import may start; this one goes on to open and analyse
+				pl.unlock();
 			}
-			catch (SessionException ex) {
-				throw ex;
+			importS = (System.nanoTime() - t0) / 1e9;
+			JsonObject openReq = Json.of("path", saved, "writable", true, "project", p.id);
+			if (req.has("wait")) {
+				openReq.add("wait", req.get("wait"));
 			}
-			catch (Exception ex) {
-				throw new SessionException(SessionException.FAILED,
-					"import failed: " + ex.getMessage(), Json.of("log", log.toString()), ex);
+			JsonObject info = (JsonObject) openProgram(c, openReq, m);
+			JsonObject r = Json.of("imported", true, "project", p.id, "path", saved, "key",
+				p.id + ":" + saved, "sha256", sha, "importSeconds", importS, "program", info);
+			Json.put(r, "queue", gate.describeWait());
+			if (Json.bool(req, "analyze", false)) {
+				JsonObject areq = Json.of("program", p.id + ":" + saved);
+				if (req.has("timeout")) {
+					areq.add("timeout", req.get("timeout"));
+				}
+				r.add("analysis", withProgram(c, areq, "analyze", true, true,
+					e -> analyze(e, areq, m)));
+				r.add("save", withProgram(c, areq, "save", true, true,
+					e -> save(e, Json.of("comment", "import + analysis"), m)));
 			}
+			return r;
 		}
 		finally {
-			pl.unlock();
-		}
-		double importS = (System.nanoTime() - t0) / 1e9;
-		JsonObject openReq = Json.of("path", saved, "writable", true, "project", p.id);
-		if (req.has("wait")) {
-			openReq.add("wait", req.get("wait"));
-		}
-		JsonObject info = (JsonObject) openProgram(c, openReq, m);
-		JsonObject r = Json.of("imported", true, "project", p.id, "path", saved, "key",
-			p.id + ":" + saved, "sha256", sha, "importSeconds", importS, "program", info);
-		if (Json.bool(req, "analyze", false)) {
-			JsonObject areq = Json.of("program", p.id + ":" + saved);
-			if (req.has("timeout")) {
-				areq.add("timeout", req.get("timeout"));
+			gate.close();
+			if (slot != null) {
+				slot.close();
 			}
-			r.add("analysis", withProgram(c, areq, "analyze", true, true,
-				e -> analyze(e, areq, m)));
-			r.add("save", withProgram(c, areq, "save", true, true,
-				e -> save(e, Json.of("comment", "import + analysis"), m)));
 		}
-		return r;
 	}
 
 	private static void findBySha(DomainFolder folder, String sha, List<String> out) {

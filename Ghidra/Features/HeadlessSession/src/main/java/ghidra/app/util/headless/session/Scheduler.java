@@ -106,6 +106,8 @@ final class Scheduler {
 		final Lane lane;
 		final Client client;
 		final String cmd;
+		/** Who asked, named the way the request names itself (its own labels, if any). */
+		final String who;
 		final long queuedAt = System.currentTimeMillis();
 		long startedAt;
 		boolean granted;
@@ -115,6 +117,7 @@ final class Scheduler {
 			this.lane = lane;
 			this.client = client;
 			this.cmd = cmd;
+			this.who = Caller.label(client);
 		}
 
 		@Override
@@ -123,7 +126,7 @@ final class Scheduler {
 		}
 
 		String describe() {
-			return client.label() + " " + cmd;
+			return who + " " + cmd;
 		}
 	}
 
@@ -148,6 +151,9 @@ final class Scheduler {
 			s.queuedTotal++;
 			s.queue.computeIfAbsent(c.id, k -> new ArrayDeque<>()).add(t);
 			long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(waitMs);
+			if (m != null) {
+				m.waiting(lane.json() + " slot");
+			}
 			while (!t.granted) {
 				if (m != null && m.isCancelled()) {
 					dequeue(s, t);
@@ -179,6 +185,9 @@ final class Scheduler {
 			return t;
 		}
 		finally {
+			if (m != null) {
+				m.waiting(null);
+			}
 			lock.unlock();
 		}
 	}
@@ -282,13 +291,20 @@ final class Scheduler {
 				State s = e.getValue();
 				JsonArray running = new JsonArray();
 				for (Ticket t : s.running) {
-					running.add(Json.of("client", t.client.id, "cmd", t.cmd, "ms",
+					running.add(Json.of("client", t.client.id, "who", t.who, "cmd", t.cmd, "ms",
 						now - t.startedAt));
+				}
+				JsonArray waiting = new JsonArray();
+				for (ArrayDeque<Ticket> q : s.queue.values()) {
+					for (Ticket t : q) {
+						waiting.add(Json.of("client", t.client.id, "who", t.who, "cmd", t.cmd,
+							"waitedMs", now - t.queuedAt));
+					}
 				}
 				o.add(e.getKey().json(),
 					Json.of("slots", s.slots, "inUse", s.inUse, "queued", s.queued(), "running",
-						running, "admitted", s.admitted, "everQueued", s.queuedTotal,
-						"backgroundQueued", s.background.size()));
+						running, "waiting", waiting, "admitted", s.admitted, "everQueued",
+						s.queuedTotal, "backgroundQueued", s.background.size()));
 			}
 			return o;
 		}

@@ -695,7 +695,12 @@ class _Base:
         raise NotImplementedError
 
     def call(self, cmd: str, **fields):
-        """Sends one request and waits for its response. Raises SessionError on ok:false."""
+        """Sends one request and waits for its response. Raises SessionError on ok:false.
+
+        ``client=`` and ``harness=`` are labels of this one request: they replace the
+        connection's name for it in ``busy``/``conflict`` holders, ``status``, the import queue
+        and ``cancel`` scoping (README, "Who is asking"). For a caller that makes many requests
+        use :meth:`labelled`."""
         return self.wait(self.send(cmd, **fields))
 
     def call_raw(self, cmd: str, **fields) -> dict:
@@ -712,6 +717,16 @@ class _Base:
         finally:
             with self._done:
                 self._raw.pop(rid, None)
+
+    def labelled(self, client: str | None = None, harness: str | None = None) -> "Labelled":
+        """A view of this connection whose requests all carry the given labels, for one
+        connection that serves several callers (an MCP server with several agents)::
+
+            agent_a = s.labelled(client="agent-a", harness="claude-code")
+            agent_a.call("decompile", address="0x1000")
+            agent_a.cancel_all()          # only agent-a's requests
+        """
+        return Labelled(self, client, harness)
 
     def send(self, cmd: str, **fields) -> int:
         """Sends a request without waiting; returns its id (for ``cancel`` or a later wait)."""
@@ -769,6 +784,50 @@ class _Base:
 
     def __exit__(self, *exc):
         self.close()
+
+
+class Labelled:
+    """One caller's view of a shared connection: every request it sends carries this view's
+    ``client`` and ``harness`` labels (a label given to a single call wins). Requests are
+    ``parallel`` by default, because a connection that carries several callers must not make
+    them wait for each other; pass ``parallel=False`` to keep the connection's order."""
+
+    def __init__(self, base: _Base, client: str | None = None, harness: str | None = None,
+                 parallel: bool = True):
+        self.base = base
+        self.client = client
+        self.harness = harness
+        self.parallel = parallel
+
+    def _fields(self, fields: dict) -> dict:
+        out = dict(fields)
+        if self.client is not None:
+            out.setdefault("client", self.client)
+        if self.harness is not None:
+            out.setdefault("harness", self.harness)
+        if self.parallel:
+            out.setdefault("parallel", True)
+        return out
+
+    def call(self, cmd: str, **fields):
+        return self.base.call(cmd, **self._fields(fields))
+
+    def send(self, cmd: str, **fields) -> int:
+        return self.base.send(cmd, **self._fields(fields))
+
+    def wait(self, rid: int):
+        return self.base.wait(rid)
+
+    def cancel(self, target: int):
+        """Cancels one of this view's requests by id."""
+        return self.base.call("cancel", target=target, **self._fields({}))
+
+    def cancel_all(self):
+        """Cancels every request of this view's label and no other caller's."""
+        return self.base.call("cancel", all=True, **self._fields({}))
+
+    def __getattr__(self, name):
+        return getattr(self.base, name)
 
 
 class SocketSession(_Base):

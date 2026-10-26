@@ -95,9 +95,33 @@ final class ProgramEntry implements Decompilers {
 	volatile String exclusiveHolder;
 	volatile Client exclusiveClient;
 	volatile String exclusiveCmd;
+	/** The label the holder's request carried, if any. */
+	volatile Caller.Identity exclusiveWho;
 	volatile long exclusiveSince;
 	/** When {@link #owner} opened it writable, for {@code not_owner} answers. */
 	volatile long ownedSince;
+
+	/**
+	 * How the owner was named by the request that opened this program writable (its own
+	 * {@code client}/{@code harness} labels, if it had any). Ownership itself belongs to the
+	 * connection ({@link #owner}); this is what messages call the owner.
+	 */
+	volatile String ownerLabel;
+	/** The identity the opening request carried, for the owner's holder record. */
+	volatile Caller.Identity ownerWho;
+
+	void setOwner(Client c) {
+		owner = c;
+		ownerWho = c == null ? null : Caller.current(c);
+		ownerLabel = c == null ? null : Caller.label(c);
+	}
+
+	/** The owner as people see it: the opening request's label, else the connection's. */
+	String ownerText() {
+		Client o = owner;
+		String l = ownerLabel;
+		return l != null ? l : o == null ? "nobody" : o.label();
+	}
 
 	/** Decompilers bound to {@link #program}, reused across requests. Guarded by itself. */
 	private final Deque<DecompInterface> decompilers = new ArrayDeque<>();
@@ -127,7 +151,8 @@ final class ProgramEntry implements Decompilers {
 			if (holder != null) {
 				Json.put(d, "holder", holder);
 				Json.put(d, "holderInfo",
-					hc != null ? hc.holder(exclusiveCmd, exclusiveSince) : Json.of("label", holder));
+					hc != null ? hc.holder(exclusiveCmd, exclusiveSince, exclusiveWho)
+							: Json.of("label", holder));
 				Json.put(d, "heldMs", System.currentTimeMillis() - exclusiveSince);
 			}
 			else {
@@ -140,9 +165,10 @@ final class ProgramEntry implements Decompilers {
 				d);
 		}
 		if (exclusive) {
-			exclusiveHolder = c.label() + " " + cmd;
+			exclusiveHolder = Caller.label(c) + " " + cmd;
 			exclusiveClient = c;
 			exclusiveCmd = cmd;
+			exclusiveWho = Caller.current(c);
 			exclusiveSince = System.currentTimeMillis();
 		}
 		return l;
@@ -169,6 +195,7 @@ final class ProgramEntry implements Decompilers {
 			exclusiveHolder = null;
 			exclusiveClient = null;
 			exclusiveCmd = null;
+			exclusiveWho = null;
 		}
 		lastUsed = System.currentTimeMillis();
 		l.unlock();
@@ -197,7 +224,7 @@ final class ProgramEntry implements Decompilers {
 	/** The owner as a holder record, for {@code not_owner} and {@code conflict} answers. */
 	JsonObject ownerHolder() {
 		Client o = owner;
-		return o == null ? null : o.holder("open_program writable", ownedSince);
+		return o == null ? null : o.holder("open_program writable", ownedSince, ownerWho);
 	}
 
 	@Override
@@ -294,6 +321,7 @@ final class ProgramEntry implements Decompilers {
 			users.forEach(u -> ids.add(u.id));
 			Json.put(o, "users", ids);
 		}
+		Json.put(o, "ownerLabel", owner == null ? null : ownerLabel);
 		Json.put(o, "busy", exclusiveHolder);
 		Json.put(o, "revision", revision);
 		Json.put(o, "cachedUpgrade", cacheInfo != null);

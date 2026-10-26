@@ -49,6 +49,12 @@ final class RequestMonitor extends TaskMonitorAdapter {
 	private volatile String cmd = "";
 	private volatile String artifact;
 
+	private volatile Caller.Identity caller;
+	/** What the request waits for now (a scheduler slot, the import queue), or null. */
+	private volatile String waiting;
+	/** Queue details added to this request's progress events while it waits, or null. */
+	private volatile JsonObject queue;
+
 	RequestMonitor(JsonElement requestId, Consumer<JsonObject> events) {
 		super(true);
 		this.requestId = requestId;
@@ -60,6 +66,22 @@ final class RequestMonitor extends TaskMonitorAdapter {
 		cmd = c == null ? "" : c;
 	}
 
+	/** Names the request for label-scoped {@code cancel} and {@code status}. */
+	void describeAs(String cmd, Caller.Identity caller) {
+		this.cmd = cmd == null ? "" : cmd;
+		this.caller = caller;
+	}
+
+	Caller.Identity caller() {
+		return caller;
+	}
+
+	/** The key that scopes cancellation, or null when the request carries no label of its own. */
+	String scope() {
+		Caller.Identity c = caller;
+		return c == null ? null : c.scope();
+	}
+
 	/**
 	 * The file this request declared it writes outside the project (for example a script's
 	 * export); shown in {@code status}. The session never opens or limits it.
@@ -68,11 +90,26 @@ final class RequestMonitor extends TaskMonitorAdapter {
 		artifact = path;
 	}
 
+	void waiting(String what) {
+		waiting = what;
+	}
+
+	/** Sets (or, with null, clears) what this request waits for and the queue details to report. */
+	void waiting(String what, JsonObject queueInfo) {
+		waiting = what;
+		queue = queueInfo;
+	}
+
 	/** This request as {@code status} shows it. */
 	JsonObject describe() {
-		return Json.of("id", requestId, "cmd", cmd, "artifact", artifact, "ms",
+		Caller.Identity c = caller;
+		JsonObject o = Json.of("id", requestId, "cmd", cmd, "artifact", artifact, "ms",
 			System.currentTimeMillis() - createdAt, "message", message, "progress", progress,
-			"maximum", maximum, "cancelled", isCancelled());
+			"maximum", maximum, "cancelled", isCancelled(), "client", c == null ? null : c.name(),
+			"harness", c == null ? null : c.harness(), "labelled", c != null && c.labelled());
+		Json.put(o, "waiting", waiting);
+		Json.put(o, "queue", queue);
+		return o;
 	}
 
 	/** Cancels this request after {@code seconds}; 0 means no deadline. */
@@ -151,6 +188,10 @@ final class RequestMonitor extends TaskMonitorAdapter {
 		lastEvent = now;
 		JsonObject e = Json.of("event", "progress", "id", requestId, "message", message,
 			"progress", progress, "maximum", maximum);
+		JsonObject q = queue;
+		if (q != null) {
+			e.add("queue", q);
+		}
 		try {
 			events.accept(e);
 		}

@@ -133,13 +133,23 @@ final class Connection {
 			authenticate(req, id, cmd);
 			return;
 		}
+		Caller.Identity who;
+		try {
+			who = Caller.of(client, req);
+		}
+		catch (SessionException e) {
+			send(error(id, e, 0));
+			return;
+		}
 		if (Session.isInline(cmd)) {
-			respond(req, id, cmd, new RequestMonitor(id, this::send));
+			RequestMonitor im = new RequestMonitor(id, this::send);
+			im.describeAs(cmd, who);
+			respond(req, id, cmd, im);
 			return;
 		}
 		String key = id == null ? null : id.toString();
 		RequestMonitor m = new RequestMonitor(id, this::send);
-		m.command(cmd);
+		m.describeAs(cmd, who);
 		if (req.has("artifact") && req.get("artifact").isJsonPrimitive()) {
 			m.artifact(req.get("artifact").getAsString());
 		}
@@ -189,7 +199,9 @@ final class Connection {
 			return;
 		}
 		client.authenticated = true;
-		respond(req, id, cmd, new RequestMonitor(id, this::send));
+		RequestMonitor hm = new RequestMonitor(id, this::send);
+		hm.describeAs(cmd, new Caller.Identity(client.name, client.harness, false));
+		respond(req, id, cmd, hm);
 	}
 
 	private void respond(JsonObject req, JsonElement id, String cmd, RequestMonitor m) {
@@ -202,6 +214,7 @@ final class Connection {
 				throw new SessionException(SessionException.CANCELLED,
 					"cancelled before it started");
 			}
+			Caller.enter(client, m.caller());
 			JsonElement result = session.execute(client, cmd, req, m);
 			resp = new JsonObject();
 			if (id != null) {
@@ -221,6 +234,7 @@ final class Connection {
 				t.getClass().getSimpleName() + ": " + t.getMessage(), null, t), t0);
 		}
 		finally {
+			Caller.leave();
 			m.done();
 			if (key != null) {
 				client.running.remove(key, m);
@@ -233,7 +247,9 @@ final class Connection {
 			catch (RuntimeException e) {
 				Msg.warn(this, client.label() + ": could not check revisions: " + e);
 			}
-			Msg.info(this, client.label() + " " + cmd + " " + resp.get("ms") + " ms " +
+			Caller.Identity ci = m.caller();
+			Msg.info(this, (ci == null ? client.label() : client.label(ci.name(), ci.harness())) +
+				" " + cmd + " " + resp.get("ms") + " ms " +
 				(resp.get("ok").getAsBoolean() ? "ok"
 						: resp.getAsJsonObject("error").get("code").getAsString()));
 		}
