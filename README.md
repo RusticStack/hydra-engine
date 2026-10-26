@@ -93,21 +93,19 @@ decompile) took 7.0-7.8 s per question, and needed a copy of the project (measur
 
 You need a JDK 25 and Python 3.10 or later.
 
-**Download.** Each [release](https://github.com/RusticStack/hydra-engine/releases) has one zip per
-platform (`hydra-engine-<version>-win_x86_64.zip`, `-linux_x86_64.zip`, `-mac_arm_64.zip`) and a
-`SHA256SUMS`. Unzip yours anywhere; it holds the install, `ghidra_12.3_DEV/`:
+**Download (Windows x64).** Each [release](https://github.com/RusticStack/hydra-engine/releases)
+has `hydra-engine-<version>-win_x86_64.zip` and a `SHA256SUMS`. Unzip it anywhere; it holds the
+install, `ghidra_12.3_DEV\`:
 
-```sh
-sha256sum -c SHA256SUMS --ignore-missing   # optional (macOS: shasum -a 256 -c; Windows: Get-FileHash)
-unzip hydra-engine-12.3-hydra.1-linux_x86_64.zip
-GHIDRA=$PWD/ghidra_12.3_DEV
-python $GHIDRA/Ghidra/Features/HeadlessSession/support/ghidra_session.py ensure   # the daemon
-$GHIDRA/support/analyzeHeadless /re MyProject -import target.exe                  # stock headless
+```powershell
+Get-FileHash hydra-engine-12.3-hydra.1-win_x86_64.zip     # compare with SHA256SUMS
+Expand-Archive hydra-engine-12.3-hydra.1-win_x86_64.zip C:\tools
+$G = "C:\tools\ghidra_12.3_DEV"
+python $G\Ghidra\Features\HeadlessSession\support\ghidra_session.py ensure   # the daemon
+& $G\support\analyzeHeadless.bat C:\re MyProject -import target.exe          # stock headless
 ```
 
-(`analyzeHeadless.bat` on Windows. The release notes say which platforms ran the test suites.)
-
-**Or build** the headless install:
+**Or build** the headless install (Linux and macOS: from source only, for now):
 
 ```sh
 git clone https://github.com/RusticStack/hydra-engine.git

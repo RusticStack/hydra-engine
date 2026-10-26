@@ -207,14 +207,16 @@ version: `12.3-hydra.1`, `12.3-hydra.2`, then `12.4-hydra.1`. The tag is `v` and
    tests every platform and uploads the notes it would publish (`release-dry-run-notes`), without
    publishing.
 4. Tag and push: `git tag v<version> && git push origin v<version>`. `release.yml` builds the
-   headless zip on Windows, Linux and macOS (`hydra-engine-<version>-<platform>.zip`), unzips
-   each and runs `session_smoke.py` and `daemon_tests.py` on it, and only if every platform passes
-   publishes the release with the zips, `SHA256SUMS` and the changelog section, followed by a table
-   of what was tested where.
-5. Check the release page: every asset there, and one asset's SHA-256 matching `SHA256SUMS`.
+   headless zip on Windows (`hydra-engine-<version>-win_x86_64.zip`), unzips it and runs
+   `session_smoke.py` and `daemon_tests.py` on it, and only if both pass publishes the release
+   with the zip, `SHA256SUMS` and the changelog section, followed by a table of what was tested
+   where.
+5. Check the release page: the assets there, and the zip's SHA-256 matching `SHA256SUMS`.
 
-A platform that fails cannot ship silently: fix it, or take it out of the matrix in `release.yml`
-and say so in the changelog section.
+Releases are Windows-only, like CI. The build matrix in `release.yml` takes more platforms
+(`ubuntu-latest` as `linux_x86_64` and `macos-latest` as `mac_arm_64` passed in a dry run), but
+their test steps then need PE files as test inputs, which their runners do not have; a platform
+is added only together with CI, and never ships untested.
 
 ## Code style
 

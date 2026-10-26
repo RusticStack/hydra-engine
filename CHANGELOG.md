@@ -14,9 +14,9 @@ Released 2026-10-26. The first release. Based on upstream Ghidra `master` (12.3 
 
 ### Downloads
 
-One zip per platform: the headless install (`gradle zipHeadless`), Windows x64, Linux x64 and
-macOS arm64. The table under each release says which platforms ran the two test suites on the
-unzipped install. You need a JDK 25 and Python 3.10 or later; the install has no JDK.
+One zip, `hydra-engine-12.3-hydra.1-win_x86_64.zip`: the headless install for Windows x64
+(`gradle zipHeadless`), on which the release workflow ran both test suites after unzipping it.
+You need a JDK 25 and Python 3.10 or later; the install has no JDK.
 
 ### Known limits
 
@@ -26,8 +26,10 @@ unzipped install. You need a JDK 25 and Python 3.10 or later; the install has no
   `legacy-12.1.4` branch serves projects that must stay on 12.1.4.
 - **Based on a development snapshot.** Upstream `master` is Ghidra's next version under work
   (12.3 DEV), not a Ghidra release.
-- **Windows first.** The module and launcher were developed and measured on Windows; CI runs on
-  Windows on every push. Linux and macOS are built and tested only by the release workflow.
+- **Windows only.** CI and releases build and test on Windows. The module and launcher have no
+  Windows-only path, and a one-off dry run of the release workflow on 2026-10-26 built Linux x64
+  and macOS arm64 installs that passed both test suites, but neither is released or tested
+  routinely; build from source there (`gradle buildHeadless`).
 - **Headless only.** No window, help, javadoc or Python type stubs; the full Ghidra build is
   still `gradle buildGhidra`, from source.
 
@@ -56,9 +58,8 @@ unzipped install. You need a JDK 25 and Python 3.10 or later; the install has no
   security policy and contributor guide in `.github/`, issue and pull request templates, and CI
   (`.github/workflows/ci.yml`) that builds the headless install and runs both test suites.
 - **Releases** (`.github/workflows/release.yml`): a tag `v<version>` builds the headless zip on
-  Windows, Linux and macOS, runs both test suites on each unzipped install, and publishes the
-  zips, `SHA256SUMS` and this file's section as a GitHub Release.
-
+  Windows, runs both test suites on the unzipped install, and publishes the zip, `SHA256SUMS`
+  and this file's section as a GitHub Release.
 ### Branches
 
 - `main`: the above, on upstream `master`.
