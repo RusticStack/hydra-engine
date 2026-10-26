@@ -14,9 +14,9 @@ it is based on.
 
 ## 12.3-hydra.2
 
-Released 2026-10-26. Based on upstream Ghidra `master` (12.3 DEV) as of 2026-10-26, commit
-`057a646233edfb21768a42a0aabc1d1a7709da19`: the same upstream commit as 12.3-hydra.1 (upstream
-had no newer commit when this release was cut).
+Released 2026-10-26. Based on upstream Ghidra `master` (12.3 DEV) as of 2026-10-26,
+commit `057a646233edfb21768a42a0aabc1d1a7709da19`: the same upstream commit as 12.3-hydra.1
+(upstream had no newer commit when this release was cut).
 
 ### What's new for integrators
 
