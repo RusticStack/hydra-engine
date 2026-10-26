@@ -1,14 +1,18 @@
 name: Release
 
-# Builds the headless install on Windows, Linux and macOS, tests each one unzipped, and publishes
-# a GitHub Release with the zips, SHA256SUMS and the release's CHANGELOG.md section.
+# Builds the headless install on Windows, tests it unzipped, and publishes a GitHub Release with
+# the zip, SHA256SUMS and the release's CHANGELOG.md section.
 #
-#   git tag v12.3-hydra.1 && git push origin v12.3-hydra.1     # publishes
+#   git tag v12.3-hydra.1 && git push origin v12.3-hydra.1               # publishes
 #   gh workflow run release.yml --ref <branch> -f version=12.3-hydra.1   # dry run: builds and
 #                                                                       # tests, publishes nothing
 #
 # Versions are <Ghidra version>-hydra.<n>, where the Ghidra version is application.version in
 # Ghidra/application.properties. See .github/CONTRIBUTING.md, "Releases".
+#
+# Windows only, as CI. Linux (ubuntu-latest) and macOS (macos-latest, arm64) built and passed
+# both test suites in a dry run on 2026-10-26 (with Windows PE files as test inputs), but are not
+# released or tested routinely.
 
 on:
   push:
@@ -62,38 +66,15 @@ jobs:
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
           echo "Version $version (Ghidra $ghidra), publish: $publish" >> "$GITHUB_STEP_SUMMARY"
 
-  # The test suites need PE files (two executables and a DLL). Linux and macOS have none, so the
-  # Windows runner's own copies are handed to every platform as a short-lived artifact. They are
-  # test inputs only and are never part of a release.
-  test-binaries:
-    name: test binaries
-    runs-on: windows-latest
-    steps:
-      - name: Copy the test binaries
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force bins | Out-Null
-          Copy-Item C:\Windows\System32\choice.exe, C:\Windows\System32\whoami.exe, C:\Windows\System32\version.dll bins\
-
-      - uses: actions/upload-artifact@v7.0.2
-        with:
-          name: test-binaries
-          path: bins
-          retention-days: 1
-
   build:
     name: build + test (${{ matrix.platform }})
-    needs: [version, test-binaries]
+    needs: version
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: windows-latest
             platform: win_x86_64
-          - os: ubuntu-latest
-            platform: linux_x86_64
-          - os: macos-latest
-            platform: mac_arm_64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     defaults:
@@ -102,6 +83,9 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
       ASSET: hydra-engine-${{ needs.version.outputs.version }}-${{ matrix.platform }}.zip
+      BIN_A: C:/Windows/System32/choice.exe
+      BIN_B: C:/Windows/System32/whoami.exe
+      BIN_DLL: C:/Windows/System32/version.dll
     steps:
       - uses: actions/checkout@v7.0.1
 
@@ -123,8 +107,7 @@ jobs:
           path: dependencies
           key: deps-${{ runner.os }}-${{ hashFiles('gradle/support/fetchDependencies.gradle') }}
 
-      # PowerShell runs gradlew.bat on Windows (Ghidra's POSIX gradlew does not find its wrapper
-      # under Git Bash) and gradlew elsewhere
+      # PowerShell runs gradlew.bat (Ghidra's POSIX gradlew does not find its wrapper under Git Bash)
       - name: Fetch dependencies
         shell: pwsh
         run: ./gradlew -I gradle/support/fetchDependencies.gradle -DhideDownloadProgress -DnoEclipse
@@ -143,34 +126,28 @@ jobs:
           mv "${zips[0]}" "out/$ASSET"
           ls -l out
 
-      # Test what ships: the zip, unzipped (unzip keeps the executable bits on Linux and macOS)
+      # Test what ships: the zip, unzipped
       - name: Unzip
         shell: pwsh
         run: |
           $dest = Join-Path $env:RUNNER_TEMP 'install'
-          if ($IsWindows) { Expand-Archive -LiteralPath "out/$env:ASSET" -DestinationPath $dest }
-          else { unzip -q "out/$env:ASSET" -d $dest; if ($LASTEXITCODE) { exit $LASTEXITCODE } }
+          Expand-Archive -LiteralPath "out/$env:ASSET" -DestinationPath $dest
           $top = @(Get-ChildItem -Directory $dest)
           if ($top.Count -ne 1) { throw "expected one top folder in the zip, found $($top.Count)" }
           "GHIDRA_INSTALL=$($top[0].FullName)" >> $env:GITHUB_ENV
           Write-Output "Install: $($top[0].FullName)"
 
-      - uses: actions/download-artifact@v8.0.2
-        with:
-          name: test-binaries
-          path: ${{ runner.temp }}/bins
-
       - name: session_smoke.py
         run: >
           python Ghidra/Features/HeadlessSession/examples/session_smoke.py
           --ghidra "$GHIDRA_INSTALL" --work "$RUNNER_TEMP/smoke"
-          --binary "$RUNNER_TEMP/bins/choice.exe" --binary "$RUNNER_TEMP/bins/whoami.exe"
+          --binary "$BIN_A" --binary "$BIN_B"
 
       - name: daemon_tests.py
         run: >
           python Ghidra/Features/HeadlessSession/examples/daemon_tests.py
           --ghidra "$GHIDRA_INSTALL" --work "$RUNNER_TEMP/daemon"
-          --exe "$RUNNER_TEMP/bins/choice.exe" --dll "$RUNNER_TEMP/bins/version.dll"
+          --exe "$BIN_A" --dll "$BIN_DLL"
 
       - name: Record the result
         run: |
@@ -243,9 +220,9 @@ jobs:
           {
             printf '%s\n' "$section"
             echo
-            echo "### Downloads and testing"
+            echo "### Download and testing"
             echo
-            echo "Each zip is the headless install for one platform, built by the [release workflow]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) from \`$GITHUB_SHA\`, then unzipped and tested there."
+            echo "Built by the [release workflow]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) from \`$GITHUB_SHA\`, then unzipped and tested there."
             echo
             echo "| File | Size | Built and tested on | Result |"
             echo "|---|---|---|---|"
