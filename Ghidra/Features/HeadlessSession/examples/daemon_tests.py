@@ -28,8 +28,9 @@ older-format part of upgrade_cache; the original is only read.
 Tests: two_harnesses, two_projects, dll_import, client_kill, daemon_restart, fairness, cancel_all,
 import_queue, import_isolation, parallel_imports, import_kill, import_readers, import_speed,
 caller_labels, idle_shutdown, keep_warm, stdio, upgrade_cache, holders, fork, revisions,
-overlays, multi_writer, shared, shared_stress. import_speed takes --big <binary> (repeat) and
---big-analyze.
+refresh_force, overlays, overlay_owned, legacy_overlay, multi_writer, shared, edit,
+orphan_shutdown, import_write_kill, shared_stress. import_speed takes --big <binary> (repeat)
+and --big-analyze.
 """
 import argparse
 import json
@@ -2050,11 +2051,534 @@ def t_shared_stress(c: Ctx):
             f"value")
 
 
+SYMBOLS = """// @category HeadlessSession.Test
+import ghidra.app.script.GhidraScript;
+import ghidra.program.model.address.Address;
+import ghidra.program.model.symbol.Symbol;
+public class TestSymbols extends GhidraScript {
+    @Override protected void run() throws Exception {
+        for (String a : getScriptArgs()) {
+            Address at = currentProgram.getAddressFactory().getAddress(a);
+            StringBuilder b = new StringBuilder();
+            for (Symbol s : currentProgram.getSymbolTable().getSymbols(at)) {
+                if (s.isDynamic()) continue;
+                b.append(b.length() > 0 ? "," : "").append(s.getName());
+            }
+            println("S|" + a + "|" + b);
+        }
+    }
+}
+"""
+
+
+def symbols_at(s, addresses, program=None):
+    """{address: [names of the non-dynamic symbols there]} through a contained script."""
+    path = s_scripts_dir / "TestSymbols.java"
+    if not path.exists():
+        path.write_text(SYMBOLS)
+    kw = {"program": program} if program else {}
+    out = s.call("script", script=str(path), args=list(addresses), maxChars=16_000_000,
+                 wait=120000, **kw)["output"]
+    res = {}
+    for line in out.splitlines():
+        if line.startswith("S|"):
+            _, a, names = line.split("|", 2)
+            res[a] = [n for n in names.split(",") if n]
+    return res
+
+
+def free_addresses(s, fns, n, program=None):
+    """n addresses inside functions (not entries) with no symbol: places for new labels."""
+    cands = []
+    for f in fns:
+        base = int(f, 16)
+        cands += [hex(base + k) for k in (1, 2, 3)]
+    syms = symbols_at(s, cands, program)
+    free = [a for a in cands if not syms.get(a)]
+    check(len(free) >= n, f"not enough free addresses: {syms}")
+    return free[:n]
+
+
+def t_edit(c: Ctx):
+    """The edit command: several operations in one call, all or none; expect turns a lost
+    update into a conflict naming who made the change; a non-writer is refused. discard_edits
+    reverts one author's renames, comments and newly created labels (the label is deleted) and
+    keeps everyone else's; the project reopens with exactly the kept changes."""
+    global s_scripts_dir
+    s_scripts_dir = c.scripts
+    gpr = c.copy_fixture("projEdit")
+    exe = pathlib.Path(c.a.exe).name
+    d = c.daemon("edit", keepWarm=0)
+    notes = []
+    with d.connect("agent-a", "harness-a") as a, d.connect("agent-b", "harness-b") as b, \
+            d.connect("reader", "harness-r") as x:
+        for s in (a, b):
+            s.call("open_project", path=str(gpr), writable=True)
+            s.call("open_program", path=exe, writable=True, share=True)
+        x.call("open_project", path=str(gpr))
+        x.call("open_program", path=exe)
+        f = code_functions(a, 6)
+        names0 = names_at(a)
+        lab_a, lab_b, lab_b2 = free_addresses(a, f, 3)
+        # several operations, one call, each journalled
+        r = a.call("edit", ops=[
+            {"op": "rename", "address": f[0], "name": "ed_a0"},
+            {"op": "comment", "address": f[1], "text": "a note"},
+            {"op": "label", "address": lab_a, "name": "ed_label_a"}])
+        check(r["applied"] == 3 and len(r["seqs"]) == 3 and r["seqs"] == sorted(r["seqs"]) and
+              r["unsavedEdits"] == 3 and r["results"][2]["created"] is True, f"edit: {r}")
+        check(names_at(b)[f[0]] == "ed_a0" and symbols_at(b, [lab_a])[lab_a] == ["ed_label_a"] and
+              comments_at(b, [f[1]])[f[1]] == "a note", "the other writer does not see the edit")
+        notes.append("3 ops in one edit, journalled")
+        # b changes f0 after a; a's edit that expects its own old value fails as a whole
+        b.call("rename", address=f[0], name="b_over_a", expect="ed_a0")
+        seq0 = a.call("journal")["seq"]
+        e = expect_error("conflict", a.call, "edit", ops=[
+            {"op": "rename", "address": f[2], "name": "never_applied"},
+            {"op": "comment", "address": f[3], "text": "never applied either"},
+            {"op": "rename", "address": f[0], "name": "a_again", "expect": "ed_a0"}])
+        dt = e.details
+        check(dt.get("index") == 2 and dt.get("rolledBack") is True and
+              dt.get("reason") == "changed" and dt.get("current") == "b_over_a" and
+              (dt.get("holderInfo") or {}).get("name") == "agent-b" and
+              (dt.get("holderInfo") or {}).get("harness") == "harness-b" and
+              (dt.get("lastEdit") or {}).get("client") == b.hello["client"] and
+              dt.get("suggest") == "reread", f"edit expect conflict: {dt}")
+        check(names_at(a)[f[2]] == names0[f[2]] and comments_at(a, [f[3]])[f[3]] == "" and
+              names_at(a)[f[0]] == "b_over_a", "a refused edit left a change")
+        check(a.call("journal")["seq"] == seq0, "a refused edit was journalled")
+        # a writer's script that changes nothing is not a change (the program has unsaved
+        # changes from before: they are not the script's)
+        rs = a.call("script", script=str(s_scripts_dir / "TestComments.java"), args=[f[0]])
+        check(rs["changed"] is False and rs["unsaved"] is True and
+              a.call("journal")["seq"] == seq0, f"a read-only script was a change: {rs}")
+        # a comment's expect names its author too
+        e = expect_error("conflict", b.call, "edit", ops=[
+            {"op": "comment", "address": f[1], "text": "b's", "expect": None}])
+        check(e.details.get("current") == "a note" and
+              (e.details.get("holderInfo") or {}).get("name") == "agent-a",
+              f"comment expect: {e.details}")
+        # an operation that fails for another reason also undoes the call
+        e = expect_error("bad_request", a.call, "edit", ops=[
+            {"op": "label", "address": lab_b2, "name": "never_label"},
+            {"op": "signature", "address": f[4], "signature": "this is ( not C"}])
+        check(e.details.get("index") == 1 and not symbols_at(a, [lab_b2])[lab_b2],
+              f"a failing op left its call's label: {e.details}")
+        notes.append("all or none: a stale expect or a bad op refuses the whole call, naming "
+                     "the last editor")
+        # a client that is not a writer of the shared program
+        e = expect_error("not_owner", x.call, "edit", ops=[
+            {"op": "rename", "address": f[5], "name": "x_nope"}])
+        check(e.details.get("suggest") == "share", f"non-writer edit: {e.details}")
+        # discard_edits: b's rename, comment, a label b created with edit and one with rename
+        rb = b.call("edit", ops=[
+            {"op": "label", "address": lab_b, "name": "b_new_label"},
+            {"op": "comment", "address": f[5], "text": "b comment"}])
+        check(rb["results"][0]["created"] is True, f"label not created: {rb}")
+        rr = b.call("rename", address=lab_b2, name="b_label_by_rename", kind="label")
+        check(rr["created"] is True, f"rename kind label: {rr}")
+        check(symbols_at(a, [lab_b, lab_b2]) == {lab_b: ["b_new_label"],
+                                                 lab_b2: ["b_label_by_rename"]},
+              "b's labels are not there")
+        dr = a.call("discard_edits", author=b.hello["client"])
+        syms = symbols_at(a, [lab_a, lab_b, lab_b2])
+        check(syms[lab_b] == [] and syms[lab_b2] == [],
+              f"discard_edits left b's new labels: {syms} {dr}")
+        check(syms[lab_a] == ["ed_label_a"], f"discard_edits touched a's label: {syms}")
+        names = names_at(a)
+        check(names[f[0]] == "ed_a0" and comments_at(a, [f[5]])[f[5]] == "" and
+              comments_at(a, [f[1]])[f[1]] == "a note",
+              f"discard_edits: {dr} {names[f[0]]}")
+        check(len(dr["reverted"]) == 4 and not dr["skipped"], f"discard_edits answer: {dr}")
+        j = a.call("journal", author=a.hello["client"])["entries"]
+        check(any(x_["op"] == "label" and x_.get("deleted") for x_ in j),
+              f"the label's deletion is not journalled: {j[-5:]}")
+        notes.append("discard_edits deleted b's 2 new labels and reverted its rename and "
+                     "comment; a's kept")
+        a.call("save")
+        for s in (a, b, x):
+            s.call("close_project")
+    d.stop()
+    d2 = c.daemon("edit-check")
+    with d2.connect("check", "tests") as s:
+        s.call("open_project", path=str(gpr))
+        s.call("open_program", path=exe)
+        names = names_at(s)
+        syms = symbols_at(s, [lab_a, lab_b, lab_b2])
+        check(names[f[0]] == "ed_a0" and names[f[2]] == names0[f[2]] and
+              syms == {lab_a: ["ed_label_a"], lab_b: [], lab_b2: []} and
+              comments_at(s, [f[1], f[5]]) == {f[1]: "a note", f[5]: ""},
+              f"after reopen: {names[f[0]]} {syms}")
+    d2.stop()
+    notes.append("reopened with exactly the kept changes")
+    return "; ".join(notes)
+
+
+def t_overlay_owned(c: Ctx):
+    """An overlay of a program another client owns writable: a client refused with not_owner
+    takes the suggested overlay; its changes stay in the overlay while the owner keeps
+    writing; the overlay is over the stored program (not the owner's unsaved changes); the
+    owner saves while the overlay is open (twice) and the overlay keeps working; nothing of the
+    overlay reaches the owner's program or the saved project."""
+    global s_scripts_dir
+    s_scripts_dir = c.scripts
+    gpr = c.copy_fixture("projOvOwned")
+    exe = pathlib.Path(c.a.exe).name
+    d = c.daemon("ovowned", keepWarm=0)
+    notes = []
+    with d.connect("owner", "harness-o") as o, d.connect("guest", "harness-g") as g:
+        o.call("open_project", path=str(gpr), writable=True)
+        key = o.call("open_program", path=exe, writable=True)["key"]
+        f = code_functions(o, 4)
+        canon = names_at(o)
+        o.call("rename", address=f[0], name="owner_unsaved")
+        g.call("open_project", path=str(gpr))
+        e = expect_error("not_owner", g.call, "open_program", path=exe, writable=True)
+        sug = e.details.get("overlaySuggestion") or {}
+        check(sug.get("cmd") == "open_program" and sug.get("overlay"), f"no overlay: {e.details}")
+        t = time.perf_counter()
+        gi = g.call("open_program", path=sug["path"], overlay=sug["overlay"])
+        open_ms = (time.perf_counter() - t) * 1000
+        ov = sug["overlay"]
+        check(gi["overlay"]["name"] == ov and gi["mine"] is False, f"overlay open: {gi}")
+        r = g.call("apply_overlay", overlay=ov, ops=[
+            {"op": "rename", "address": f[1], "name": "guest_idea"},
+            {"op": "comment", "address": f[1], "text": "guest's hypothesis", "type": "plate"}])
+        check(r["applied"] == 2, f"apply_overlay: {r}")
+        check(g.call("decompile", overlay=ov, address=f[1])["name"] == "guest_idea",
+              "the overlay does not show its change")
+        check(names_at(o)[f[1]] == canon[f[1]], "the overlay reached the owner's program")
+        check(g.call("decompile", overlay=ov, address=f[0])["name"] == canon[f[0]],
+              "the overlay shows the owner's unsaved change (it is over the stored program)")
+        check(names_at(g)[f[0]] == "owner_unsaved", "the guest's plain view lost the owner's work")
+        expect_error("not_owner", g.call, "rename", program=key, address=f[2], name="nope")
+        notes.append(f"not_owner -> overlay ({open_ms:.0f} ms); private; over the stored file")
+        # the owner saves while the overlay is open: both go on
+        sv = o.call("save")
+        check(sv["saved"], f"save: {sv}")
+        g.call("rename", overlay=ov, address=f[3], name="guest_second")
+        check(g.call("decompile", overlay=ov, address=f[1])["name"] == "guest_idea" and
+              g.call("decompile", overlay=ov, address=f[3])["name"] == "guest_second",
+              "the overlay broke when the owner saved")
+        o.call("rename", address=f[2], name="owner_saved_twice")
+        check(o.call("save")["saved"], "second save")
+        oi = g.call("info", overlay=ov)
+        check(oi["overlay"]["error"] is None and oi["overlay"]["overlayVersion"] == 2,
+              f"overlay after two saves: {oi['overlay']}")
+        # the overlay keeps the program as it was stored when the overlay opened
+        snap = g.call("decompile", overlay=ov, address=f[0])["name"]
+        notes.append(f"after the owner's saves the overlay shows f0 as "
+                     f"{'its snapshot' if snap == canon[f[0]] else 'saved since'}")
+        check(snap in (canon[f[0]], "owner_unsaved"), f"overlay f0: {snap}")
+        check(o.call("info")["changed"] is False and
+              names_at(o)[f[1]] == canon[f[1]] and names_at(o)[f[3]] == canon[f[3]],
+              "the overlay reached the owner's program")
+        notes.append("owner saved twice with the overlay open; overlay intact")
+        # the owner leaves: the guest keeps its read-only use and its overlay
+        o.call("close_project")
+        check(g.call("decompile", overlay=ov, address=f[1])["name"] == "guest_idea",
+              "the overlay died with the owner's close")
+        check(g.call("drop_overlay", overlay=ov)["dropped"], "drop")
+        g.call("close_project")
+    d.stop()
+    d2 = c.daemon("ovowned-check")
+    with d2.connect("check", "tests") as s:
+        s.call("open_project", path=str(gpr))
+        s.call("open_program", path=exe)
+        names = names_at(s)
+        check(names[f[0]] == "owner_unsaved" and names[f[2]] == "owner_saved_twice" and
+              names[f[1]] == canon[f[1]] and names[f[3]] == canon[f[3]],
+              f"after reopen: {[names[a_] for a_ in f]}")
+    d2.stop()
+    notes.append("reopened: the owner's saves, nothing of the overlay")
+    return "; ".join(notes)
+
+
+def t_refresh_force(c: Ctx):
+    """refresh of an unchanged view is a no-op unless force: force reopens it anyway, for all
+    its clients (same keys, generation bumped, the others told once with refreshed), and
+    rebuilds their overlays from their logs; the project is not written."""
+    gpr = c.copy_fixture("projForce")
+    exe = pathlib.Path(c.a.exe).name
+    before = tree_state(gpr.parent)
+    d = c.daemon("force", keepWarm=0)
+    with d.connect("a", "tests") as a, d.connect("b", "tests") as b:
+        pa = a.call("open_project", path=str(gpr))
+        b.call("open_project", path=str(gpr))
+        ka = a.call("open_program", path=exe)["key"]
+        b.call("open_program", path=exe, overlay="bo")
+        fn = code_functions(a, 1)[0]
+        b.call("rename", overlay="bo", address=fn, name="bo_name")
+        r = a.call("refresh")
+        check(r["refreshed"] is False and r["reason"] == "unchanged" and
+              r["generation"] == pa["generation"], f"unforced refresh: {r}")
+        r = a.call("refresh", force=True)
+        check(r["refreshed"] is True and r["from"] == r["revision"] == pa["revision"] and
+              r["generation"] == pa["generation"] + 1 and
+              [p_["action"] for p_ in r["programs"]] == ["reopened"] and
+              r["programs"][0]["program"] == ka, f"forced refresh: {r}")
+        told = b.call_raw("info", overlay="bo")
+        check([t_["generation"] for t_ in told.get("refreshed") or []] == [r["generation"]],
+              f"the other client was not told: {told.get('refreshed')}")
+        ov = told["result"]["overlay"]
+        check(ov["error"] is None and ov["stale"] is False and ov["ops"] == 1,
+              f"overlay after a forced refresh: {ov}")
+        check(b.call("decompile", overlay="bo", address=fn)["name"] == "bo_name",
+              "the overlay was not rebuilt")
+        check(a.call("info")["key"] == ka and a.call("info")["generation"] == r["generation"],
+              "the key or generation moved")
+        r2 = b.call("refresh", force=True)
+        check(r2["refreshed"] and r2["generation"] == r["generation"] + 1, f"second: {r2}")
+        for s in (a, b):
+            s.call("close_project")
+    d.stop()
+    check(tree_state(gpr.parent) == before, "a forced refresh wrote the project")
+    return (f"unforced: unchanged; forced: reopened (generation {pa['generation']} -> "
+            f"{r2['generation']}), other client told once, overlay rebuilt; project unwritten")
+
+
+def t_legacy_overlay(c: Ctx):
+    """Overlays of a program saved by an older Ghidra (needs --legacy-project): an overlay
+    opened while the first open's upgrade cache build is still running is upgraded in memory and
+    works; once the copy is ready and the program reopens from it, a new overlay opens from the
+    copy, faster; both overlays stay private; the source is never written."""
+    global s_scripts_dir
+    s_scripts_dir = c.scripts
+    if not c.a.legacy_project:
+        return "skipped (no --legacy-project)"
+    src = pathlib.Path(c.a.legacy_project)
+    src = src.parent if src.suffix == ".gpr" else src
+    legacy = c.work / "legacyOverlay"
+    clone_tree(src, legacy)
+    before = tree_state(legacy)
+    cache = c.work / "upgrade-cache-ov"
+    if cache.exists():
+        shutil.rmtree(cache)
+    d = c.daemon("legacy-ov", keepWarm=0, maxLong=1, upgradeCacheDir=str(cache))
+    notes = []
+    with d.connect("owner", "tests") as s, d.connect("hold", "tests") as h, \
+            d.connect("other", "tests") as x:
+        # a long job holds the only long slot, so the build is still waiting when the overlay
+        # opens: the overlay is made while the build is in progress
+        sleep_id = h.send("script", script=c.script("TestSleep.java"), program=None,
+                          args=["30000"], parallel=True, wait=60000)
+        time.sleep(0.5)
+        for s_ in (s, x):
+            s_.call("open_project", path=str(legacy))
+        prog = c.a.legacy_program or s.call("list", programsOnly=True)["entries"][0]["path"]
+        r = s.call("open_program", path=prog, wait=1800000)
+        check(r["cacheBuild"] == "started" and r["cachedUpgrade"] is False, f"first open: {r}")
+        build_id = r["cacheBuildInfo"]["id"]
+        x.call("open_program", path=prog)
+        fn = code_functions(s, 1)[0]
+        canon = s.call("decompile", address=fn)["name"]
+        t = time.perf_counter()
+        o1 = s.call("open_program", path=prog, overlay="during-build", wait=1800000)
+        mem_ms = (time.perf_counter() - t) * 1000
+        b = build_of(s, build_id)
+        check(b is not None and b["state"] == "building", f"the build is not in progress: {b}")
+        check(o1["overlay"]["error"] is None, f"overlay during the build: {o1['overlay']}")
+        s.call("rename", overlay="during-build", address=fn, name="ov_during_build")
+        check(s.call("decompile", overlay="during-build", address=fn)["name"] ==
+              "ov_during_build", "the in-memory overlay does not show its change")
+        check(x.call("decompile", address=fn)["name"] == canon, "the overlay leaked")
+        notes.append(f"overlay during the build: {mem_ms:.0f} ms (in-memory upgrade)")
+        h.call("cancel", target=sleep_id)
+        b = wait_build(s, build_id)
+        check(b["state"] == "ready", f"build: {b}")
+        check(s.call("decompile", overlay="during-build", address=fn)["name"] ==
+              "ov_during_build", "the overlay was disturbed by the build finishing")
+        s.call("drop_overlay", overlay="during-build")
+        s.call("close_program")
+        x.call("close_program")
+        time.sleep(2.5)  # the reaper closes the in-memory program (its copy is ready)
+        r = s.call("open_program", path=prog, wait=600000)
+        check(r["cachedUpgrade"] is True, f"reopen not from the copy: {r.get('upgradeCache')}")
+        t = time.perf_counter()
+        o2 = s.call("open_program", path=prog, overlay="from-copy", wait=600000)
+        copy_ms = (time.perf_counter() - t) * 1000
+        check(o2["overlay"]["error"] is None, f"overlay from the copy: {o2['overlay']}")
+        s.call("rename", overlay="from-copy", address=fn, name="ov_from_copy")
+        check(s.call("decompile", overlay="from-copy", address=fn)["name"] == "ov_from_copy" and
+              s.call("decompile", address=fn)["name"] == canon, "overlay from the copy")
+        check(copy_ms < mem_ms, f"overlay from the copy {copy_ms:.0f} ms, in memory "
+              f"{mem_ms:.0f} ms")
+        notes.append(f"overlay from the cache copy: {copy_ms:.0f} ms")
+        c.timings["legacy overlay: in-memory / from the copy ms"] = [round(mem_ms),
+                                                                     round(copy_ms)]
+        s.call("drop_overlay", overlay="from-copy")
+        for s_ in (s, x):
+            s_.call("close_project")
+    d.stop()
+    check(tree_state(legacy) == before, "the legacy source was written")
+    notes.append("source byte-identical")
+    return "; ".join(notes)
+
+
+def t_orphan_shutdown(c: Ctx):
+    """Shared-write work orphaned by its last writer's death is kept (program and project stay
+    open, status shows it) until a client adopts it; a daemon shutdown before that discards it,
+    says so in the log, and leaves the project clean: it reopens writable without the orphaned
+    changes."""
+    global s_scripts_dir
+    s_scripts_dir = c.scripts
+    gpr = c.copy_fixture("projOrphan")
+    exe = pathlib.Path(c.a.exe).name
+    d = c.daemon("orphan", keepWarm=0)
+    with d.connect("watcher", "tests") as w:
+        w.call("open_project", path=str(gpr))
+        w.call("open_program", path=exe)
+        f = code_functions(w, 2)
+        canon = names_at(w)
+        w.call("close_project")
+        code = ("s = gs.connect(client='doomed', harness='crashy', state=A[0], instance='orphan',"
+                " ghidra=A[1])\n"
+                "s.call('open_project', path=A[2], writable=True)\n"
+                "s.call('open_program', path=A[3], writable=True, share=True)\n"
+                "s.call('rename', address=A[4], name='orphaned_name')\n"
+                "s.call('comment', address=A[5], text='orphaned comment')\n"
+                "print(json.dumps({'client': s.hello['client']}), flush=True)\n"
+                "time.sleep(3600)\n")
+        p = c.child(code, c.state, c.a.ghidra, gpr, exe, f[0], f[1])
+        line = p.stdout.readline()
+        check(line, f"child did not start: {p.stderr.read()[-2000:] if p.poll() is not None else ''}")
+        p.kill()
+        p.wait()
+        held = wait_for(lambda: [pg for pg in w.call("status")["programs"]
+                                 if pg["path"] == "/" + exe and pg.get("orphanedMs") is not None],
+                        "the orphaned program in status", 30)
+        time.sleep(2.5)  # past the reaper (keepWarm 0): still held
+        held = [pg for pg in w.call("status")["programs"] if pg["path"] == "/" + exe]
+        check(held and held[0]["writers"] == [] and held[0]["unsavedEdits"] == 2,
+              f"orphaned work not kept: {held}")
+    log = d.log_file
+    mark = log.stat().st_size if log.exists() else 0
+    t = time.perf_counter()
+    check(d.stop(), "stop failed")
+    stop_s = time.perf_counter() - t
+    text = log.read_text(encoding="utf-8", errors="replace")[mark:] if log.exists() else ""
+    check(f"discarding unsaved changes in /{exe}" in text,
+          f"the shutdown did not log the discarded work: {text[-1500:]}")
+    d2 = c.daemon("orphan-check")
+    with d2.connect("check", "tests") as s:
+        s.call("open_project", path=str(gpr), writable=True)
+        s.call("open_program", path=exe, writable=True)
+        check(names_at(s)[f[0]] == canon[f[0]] and comments_at(s, [f[1]])[f[1]] == "",
+              "orphaned work reached the saved project")
+        s.call("close_project")
+    d2.stop()
+    return (f"orphaned work kept (2 unsaved edits, no writers) until the shutdown "
+            f"({stop_s:.1f} s), which discarded and logged it; project reopened writable, clean")
+
+
+MEM_SIZE = """// @category HeadlessSession.Test
+import ghidra.app.script.GhidraScript;
+public class TestMemSize extends GhidraScript {
+    @Override protected void run() throws Exception {
+        println("MEM|" + currentProgram.getMemory().getAllInitializedAddressSet().getNumAddresses());
+    }
+}
+"""
+
+
+def rep_state(gpr: pathlib.Path):
+    """(item property files, database folders) under the project's .rep."""
+    rep = gpr.with_suffix(".rep")
+    prp = {p for p in rep.rglob("*.prp")}
+    dbs = {p for p in rep.rglob("*.db") if p.is_dir()}
+    return prp, dbs
+
+
+def t_import_write_kill(c: Ctx):
+    """The daemon killed while an import writes its program into the project (Ghidra's final
+    createFile, after the load): at the first sight of the new database folder, and part-way
+    through the write. Each time the next daemon opens the project clean, and the program is
+    either absent or complete (it opens, with the whole file in memory), never half; the file
+    then imports again."""
+    mb = c.a.raw_mb * 4
+    f1 = raw_file(c, "wkill.bin", mb)
+    size = os.path.getsize(f1)
+    folder = c.work / "projWriteKill"
+    if folder.exists():
+        shutil.rmtree(folder)
+    d = c.daemon("wkill", maxImports=1)
+    with d.connect("calib", "tests") as s:
+        gpr = c.make_project(s, folder, "WriteKill")
+        s.call("open_project", path=str(gpr), writable=True)
+        # calibration: how long the write into the project takes
+        dbs0 = rep_state(gpr)[1]
+        rid = s.send("import", file=f1, name="calib", parallel=True, **RAW_LANG)
+        wait_for(lambda: rep_state(gpr)[1] - dbs0, "the database folder", 600, 0.005)
+        t0 = time.perf_counter()
+        s.wait(rid)  # the write, then the open for this client (small next to the write)
+        write_s = time.perf_counter() - t0
+        s.call("close_project")
+    d.stop()
+    c.timings["import write into the project (s)"] = round(write_s, 2)
+    notes = [f"write of {mb} MB takes {write_s:.2f} s"]
+    outcomes = []
+    kept = {"/calib"}
+    teardown, restart = [], []
+    (c.scripts / "TestMemSize.java").write_text(MEM_SIZE)
+    for i, frac in enumerate((0.0, 0.3, 0.7)):
+        name = f"k{i}"
+        with d.connect("doomed", "tests") as s:
+            s.call("open_project", path=str(gpr), writable=True)
+            dbs0 = rep_state(gpr)[1]
+            rid = s.send("import", file=f1, name=name, duplicate=True, parallel=True,
+                         **RAW_LANG)
+            wait_for(lambda: rep_state(gpr)[1] - dbs0, "the database folder", 600, 0.002)
+            if frac:
+                time.sleep(write_s * frac)
+            pid = d.read_endpoint()["pid"]
+            check(d.kill(), "kill failed")
+            # The OS may need long to tear the killed JVM down: with tmpdir on ReFS it writes
+            # back the dirty pages of its temporary database (README, "Limits"). Measure it, and
+            # start the next daemon only once it is gone.
+            t = time.perf_counter()
+            check(c.gs._wait_pid_exit(int(pid), 900), "the killed JVM did not exit in 900 s")
+            teardown.append(round(time.perf_counter() - t, 1))
+        t = time.perf_counter()
+        with d.connect("after", "tests") as s:
+            restart.append(round(time.perf_counter() - t, 1))
+            # the dead JVM's buffer cache file is removed in the background, not before ready
+            check(restart[-1] < 30, f"the daemon after the kill took {restart[-1]} s to answer")
+            pid = s.call("open_project", path=str(gpr), writable=True)["id"]
+            paths = program_paths(s, pid)
+            check(set(paths) - {f"/{name}"} == kept, f"unexpected programs: {paths} {kept}")
+            if f"/{name}" in paths:
+                info = s.call("open_program", path=f"/{name}", wait=600000)
+                st = s.call("script", script=c.script("TestMemSize.java"), args=[])["output"]
+                check(f"MEM|{size}" in st, f"{name}: listed but not complete: {st} {info}")
+                s.call("close_program")
+                kept.add(f"/{name}")
+                outcomes.append(f"{frac:.1f}: complete")
+            else:
+                outcomes.append(f"{frac:.1f}: absent")
+            stray = len(rep_state(gpr)[1]) - len(kept)
+            if stray:
+                outcomes[-1] += f" ({stray} unused database folder(s) left on disk)"
+            s.call("close_project")
+        d.stop()
+    with d.connect("again", "tests") as s:
+        s.call("open_project", path=str(gpr), writable=True)
+        r = s.call("import", file=f1, name="again", duplicate=True, **RAW_LANG)
+        check(r["imported"] is True and r["path"] == "/again", f"re-import: {r}")
+        s.call("close_project")
+    d.stop()
+    notes.append("killed at " + ", ".join(outcomes) + "; reopened clean each time; re-import ok")
+    notes.append(f"killed JVM gone after (s): {teardown}; next daemon answered after (s): "
+                 f"{restart}")
+    c.timings["killed JVM mid-write: process gone after (s)"] = teardown
+    return "; ".join(notes)
+
+
 TESTS = ["two_harnesses", "two_projects", "dll_import", "client_kill", "daemon_restart",
          "fairness", "cancel_all", "import_queue", "import_isolation", "parallel_imports",
-         "import_kill", "import_readers", "import_speed", "caller_labels",
+         "import_kill", "import_write_kill", "import_readers", "import_speed", "caller_labels",
          "idle_shutdown", "keep_warm", "stdio", "upgrade_cache", "holders", "fork", "revisions",
-         "overlays", "multi_writer", "shared", "shared_stress"]
+         "refresh_force", "overlays", "overlay_owned", "legacy_overlay", "multi_writer",
+         "shared", "edit", "orphan_shutdown", "shared_stress"]
 
 
 def main():
