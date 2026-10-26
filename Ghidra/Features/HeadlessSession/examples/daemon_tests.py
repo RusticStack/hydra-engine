@@ -26,7 +26,7 @@ read-only, to the multi-project test. --legacy-project (optional) is copied into
 older-format part of upgrade_cache; the original is only read.
 
 Tests: two_harnesses, two_projects, dll_import, client_kill, daemon_restart, fairness, cancel_all,
-idle_shutdown, keep_warm, stdio, upgrade_cache.
+idle_shutdown, keep_warm, stdio, upgrade_cache, holders.
 """
 import argparse
 import json
@@ -72,6 +72,17 @@ class Fail(Exception):
 def check(cond, what):
     if not cond:
         raise Fail(what)
+
+
+def expect_error(code, fn, *args, **kw):
+    """Runs fn, which must fail with the protocol error ``code``; returns the SessionError."""
+    try:
+        r = fn(*args, **kw)
+    except Exception as e:  # noqa: BLE001
+        if getattr(e, "code", None) != code:
+            raise Fail(f"expected {code}, got {type(e).__name__}: {e}") from e
+        return e
+    raise Fail(f"expected {code}, got a result: {str(r)[:300]}")
 
 
 class Ctx:
@@ -729,8 +740,87 @@ def t_upgrade_cache(c: Ctx):
     return "; ".join(notes)
 
 
+def t_holders(c: Ctx):
+    """busy, conflict and not_owner name the holder (client, harness, command, how long) and the
+    project or program, and suggest what to do (a fork where a fork is the answer)."""
+    gpr = c.copy_fixture("projHolders")
+    exe = pathlib.Path(c.a.exe).name
+    d = c.daemon("holders", keepWarm=0)
+    notes = []
+    with d.connect("reader-a", "harness-a") as a, d.connect("writer-b", "harness-b") as b:
+        # a read-only view in use: a writable open is refused, naming the reader, suggesting a fork
+        pa = a.call("open_project", path=str(gpr))
+        e = expect_error("conflict", b.call, "open_project", path=str(gpr), writable=True)
+        dt = e.details
+        names = [(h.get("name"), h.get("harness")) for h in dt.get("holders", [])]
+        check(("reader-a", "harness-a") in names, f"conflict does not name the reader: {dt}")
+        check(dt.get("project") == pa["id"] and dt.get("gpr"), f"no project identity: {dt}")
+        check(dt.get("suggest") == "fork_project" and
+              dt.get("suggestion", {}).get("cmd") == "fork_project" and
+              dt["suggestion"].get("project") == pa["id"] and dt["suggestion"].get("path"),
+              f"no fork suggestion: {dt}")
+        check(all(isinstance(h.get("heldMs"), int) for h in dt["holders"]), f"no heldMs: {dt}")
+        notes.append("conflict names reader + suggests fork_project")
+        # writing to a read-only view: read_only, with the same suggestion
+        b.call("open_project", path=str(gpr))
+        e = expect_error("read_only", b.call, "open_program", path=exe, writable=True)
+        check(e.details.get("suggest") == "fork_project", f"read_only: {e.details}")
+        a.call("close_project")
+        b.call("close_project")
+        # one writer per program: not_owner names the owner
+        b.call("open_project", path=str(gpr), writable=True)
+        b.call("open_program", path=exe, writable=True)
+        a.call("open_project", path=str(gpr))   # joins the writable project read-only
+        info = a.call("open_program", path=exe)
+        e = expect_error("not_owner", a.call, "open_program", path=exe, writable=True)
+        dt = e.details
+        hi = dt.get("holderInfo") or {}
+        check(hi.get("name") == "writer-b" and hi.get("harness") == "harness-b" and
+              hi.get("command") == "open_program writable" and isinstance(hi.get("heldMs"), int),
+              f"not_owner holder: {dt}")
+        check(dt.get("program") == info["key"] and dt.get("sha256") == info["sha256"] and
+              dt.get("gpr"), f"not_owner program identity: {dt}")
+        check(dt.get("suggest") == "fork_project" and dt.get("owner") == b.hello["client"],
+              f"not_owner suggestion/owner: {dt}")
+        fn = a.call("functions", limit=1)["functions"][0]["address"]
+        e = expect_error("not_owner", a.call, "rename", address=fn, name="x_not_mine")
+        check((e.details.get("holderInfo") or {}).get("name") == "writer-b",
+              f"rename not_owner: {e.details}")
+        notes.append("not_owner names owner + program sha256")
+        # busy: the owner's exclusive script holds the program; a reader that cannot wait is told
+        # who holds it, doing what, for how long
+        rid = b.send("script", script=c.script("TestSleep.java"), args=["4000"], parallel=True,
+                     wait=60000)
+        time.sleep(1.0)
+        e = expect_error("busy", a.call, "decompile", address=fn, wait=200)
+        dt = e.details
+        hi = dt.get("holderInfo") or {}
+        check(hi.get("name") == "writer-b" and "script" in (hi.get("command") or "") and
+              hi.get("heldMs", 0) >= 500, f"busy holder: {dt}")
+        check(dt.get("program") == info["key"] and dt.get("suggest") == "retry" and
+              isinstance(dt.get("holder"), str), f"busy identity: {dt}")
+        b.wait(rid)
+        notes.append(f"busy names holder ({hi.get('command')}, {hi.get('heldMs')} ms)")
+        b.call("close_project", discard=True)
+        a.call("close_project")
+    # another process holds the project's lock: conflict names it from Ghidra's lock file
+    d2 = c.daemon("holders2")
+    with d2.connect("other-process", "tests") as o, d.connect("late", "tests") as s:
+        o.call("open_project", path=str(gpr), writable=True)
+        e = expect_error("conflict", s.call, "open_project", path=str(gpr), writable=True)
+        hi = e.details.get("holderInfo") or {}
+        check(hi.get("live") is True and hi.get("user") and hi.get("lockFile"),
+              f"lock holder: {e.details}")
+        check(e.details.get("suggest") == "open_read_only", f"lock suggestion: {e.details}")
+        notes.append("project lock of another process named (user, host, since)")
+    d2.stop()
+    d.stop()
+    return "; ".join(notes)
+
+
 TESTS = ["two_harnesses", "two_projects", "dll_import", "client_kill", "daemon_restart",
-         "fairness", "cancel_all", "idle_shutdown", "keep_warm", "stdio", "upgrade_cache"]
+         "fairness", "cancel_all", "idle_shutdown", "keep_warm", "stdio", "upgrade_cache",
+         "holders"]
 
 
 def main():

@@ -47,8 +47,15 @@ final class ProjectEntry {
 	final Map<String, ProgramEntry> programs = new ConcurrentHashMap<>();
 	/** Clients that joined it. Guarded by itself. */
 	final Set<Client> users = new LinkedHashSet<>();
+	/** When each user joined it (epoch ms), for holder records. */
+	final Map<Client, Long> joinedAt = new ConcurrentHashMap<>();
 	volatile long lastUsed = System.currentTimeMillis();
 	volatile boolean closed;
+
+	/** What holds {@link #lock} exclusively now (closing, refreshing), for {@code busy} answers. */
+	volatile String exclusiveCmd;
+	volatile Client exclusiveClient;
+	volatile long exclusiveSince;
 
 	ProjectEntry(String id, ProjectResolver.Resolved resolved, String canonical,
 			SessionProject project, long openMs) {
@@ -68,6 +75,29 @@ final class ProjectEntry {
 			throw new SessionException(SessionException.NO_PROJECT, "project " + id + " was closed");
 		}
 		return project.getProjectData();
+	}
+
+	/**
+	 * This project's identity for error details: {@code project} (its id), {@code name},
+	 * {@code gpr} and {@code writable}.
+	 */
+	JsonObject identity() {
+		return Json.of("project", id, "name", resolved.name(), "gpr", resolved.gpr().getPath(),
+			"writable", writable());
+	}
+
+	/** The clients that use it, other than {@code except}, as holder records. */
+	com.google.gson.JsonArray holders(Client except) {
+		com.google.gson.JsonArray a = new com.google.gson.JsonArray();
+		synchronized (users) {
+			for (Client u : users) {
+				if (u != except) {
+					a.add(u.holder(writable() ? "open_project writable" : "open_project read-only",
+						joinedAt.getOrDefault(u, 0L)));
+				}
+			}
+		}
+		return a;
 	}
 
 	int userCount() {

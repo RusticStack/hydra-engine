@@ -475,17 +475,69 @@ final class Session {
 			Thread.currentThread().interrupt();
 		}
 		if (!got) {
+			JsonObject d = p.identity();
+			Json.put(d, "wanted", exclusive ? "exclusive" : "shared");
+			Json.put(d, "waitedMs", wait);
+			String holderCmd = p.exclusiveCmd;
+			if (holderCmd != null) {
+				Client hc = p.exclusiveClient;
+				Json.put(d, "holder", (hc == null ? "the session" : hc.label()) + " " + holderCmd);
+				Json.put(d, "holderInfo", hc != null ? hc.holder(holderCmd, p.exclusiveSince)
+						: Json.of("label", "the session", "command", holderCmd, "heldMs",
+							System.currentTimeMillis() - p.exclusiveSince));
+			}
+			else {
+				Json.put(d, "readers", p.lock.getReadLockCount());
+			}
+			Json.put(d, "suggest", "retry");
 			throw new SessionException(SessionException.BUSY,
 				exclusive ? cmd + " needs project " + p.id + " to itself and requests are running"
-						: "project " + p.id + " is being opened or closed",
-				Json.of("project", p.id, "waitedMs", wait));
+						: "project " + p.id + " is being " +
+							(holderCmd == null ? "opened or closed" : "changed (" + holderCmd + ")"),
+				d);
 		}
 		if (p.closed) {
 			l.unlock();
 			throw new SessionException(SessionException.NO_PROJECT,
 				"project " + p.id + " was closed", Json.of("project", p.id));
 		}
+		if (exclusive) {
+			p.exclusiveCmd = cmd;
+			p.exclusiveClient = null;
+			p.exclusiveSince = System.currentTimeMillis();
+		}
 		return l;
+	}
+
+	/** Releases a project lock taken with {@link #lockProject}. */
+	private static void unlockProject(ProjectEntry p, Lock l) {
+		if (l == p.lock.writeLock()) {
+			p.exclusiveCmd = null;
+			p.exclusiveClient = null;
+		}
+		l.unlock();
+	}
+
+	/**
+	 * What a client that cannot write a project or program should do instead: fork the project
+	 * into a working copy of its own (see {@code fork_project}). The path is a suggestion, next to
+	 * the project's folder.
+	 */
+	static JsonObject forkSuggestion(ProjectEntry p, Client c) {
+		String who = (c == null || c.name.isEmpty() ? "client" + (c == null ? "" : c.id) : c.name)
+				.replaceAll("[^A-Za-z0-9_.-]", "_");
+		File dir = p.resolved.dir();
+		File parent = dir.getAbsoluteFile().getParentFile();
+		File dest = new File(parent == null ? dir : parent, dir.getName() + "-fork-" + who);
+		return Json.of("cmd", "fork_project", "project", p.id, "path", dest.getPath(), "writable",
+			true);
+	}
+
+	/** Adds {@code suggest: fork_project} and its {@code suggestion} to error details. */
+	static JsonObject suggestFork(JsonObject d, ProjectEntry p, Client c) {
+		Json.put(d, "suggest", "fork_project");
+		d.add("suggestion", forkSuggestion(p, c));
+		return d;
 	}
 
 	/**
@@ -519,11 +571,14 @@ final class Session {
 					p.users.stream().filter(u -> u != c).forEach(u -> others.add(u.label()));
 				}
 				if (!others.isEmpty()) {
+					JsonObject d = p.identity();
+					d.add("holders", p.holders(c));
 					throw new SessionException(SessionException.CONFLICT,
 						"project " + p.id + " is open read-only and used by " +
 							String.join(", ", others) + "; it can be reopened writable only " +
-							"when no other client uses it",
-						Json.of("project", p.id));
+							"when no other client uses it. To write while they read, fork it: " +
+							"fork_project makes a working copy of your own",
+						suggestFork(d, p, c));
 				}
 				closeProjectEntry(p, wait, discard);
 				p = null;
@@ -535,6 +590,7 @@ final class Session {
 			synchronized (p.users) {
 				p.users.add(c);
 			}
+			p.joinedAt.putIfAbsent(c, System.currentTimeMillis());
 			c.projects.add(p.id);
 			c.activeProject = p.id;
 			p.lastUsed = System.currentTimeMillis();
@@ -561,10 +617,14 @@ final class Session {
 			sp = SessionProject.open(locator, writable);
 		}
 		catch (LockException e) {
+			JsonObject d = Json.of("gpr", r.gpr().getPath(), "name", r.name(), "lockFile",
+				locator.getProjectLockFile().getPath());
+			d.add("holderInfo", ProjectLocks.holder(locator));
+			Json.put(d, "suggest", "open_read_only");
 			throw new SessionException(SessionException.CONFLICT,
 				"the project is locked by another process (a Ghidra window, analyzeHeadless or a " +
 					"writable session): open it read-only, or close that process",
-				Json.of("lockFile", locator.getProjectLockFile().getPath()), e);
+				d, e);
 		}
 		catch (NotOwnerException e) {
 			throw new SessionException(SessionException.CONFLICT, e.getMessage());
@@ -609,7 +669,7 @@ final class Session {
 			p.project.close();
 		}
 		finally {
-			l.unlock();
+			unlockProject(p, l);
 			projects.remove(p.canonical, p);
 			projectsById.remove(p.id, p);
 			List<Client> users;
@@ -617,6 +677,7 @@ final class Session {
 				users = new ArrayList<>(p.users);
 				p.users.clear();
 			}
+			p.joinedAt.clear();
 			for (Client u : users) {
 				u.projects.remove(p.id);
 				if (p.id.equals(u.activeProject)) {
@@ -672,6 +733,7 @@ final class Session {
 			synchronized (p.users) {
 				p.users.remove(c);
 			}
+			p.joinedAt.remove(c);
 			c.projects.remove(p.id);
 			if (p.id.equals(c.activeProject)) {
 				c.activeProject = firstOf(c.projects);
@@ -844,9 +906,13 @@ final class Session {
 			RequestMonitor m) {
 		boolean writable = Json.bool(req, "writable", false);
 		if (writable && !p.writable()) {
+			JsonObject d = suggestFork(p.identity(), p, c);
+			Json.put(d, "alternative", "open_project writable");
 			throw new SessionException(SessionException.READ_ONLY,
 				"project " + p.id + " is open read-only; send open_project with " +
-					"\"writable\":true first (this takes the project lock)");
+					"\"writable\":true first (this takes the project lock), or fork_project " +
+					"to write a working copy while others keep reading",
+				d);
 		}
 		DomainFile df = findFile(p, name);
 		if (!Program.class.isAssignableFrom(df.getDomainObjectClass())) {
@@ -877,10 +943,16 @@ final class Session {
 					// Its owner disconnected and its cleanup (cancel, discard) is still running:
 					// that is a lock being released, so wait for it like one.
 					if (System.currentTimeMillis() >= deadline) {
+						JsonObject d = e.identity();
+						Json.put(d, "holder", e.owner.label() + " (leaving)");
+						JsonObject h = e.ownerHolder();
+						Json.put(h, "leaving", true);
+						d.add("holderInfo", h);
+						Json.put(d, "suggest", "retry");
 						throw new SessionException(SessionException.BUSY,
 							path + " is being released by " + e.owner.label() +
 								", which disconnected; retry, or pass a longer \"wait\"",
-							Json.of("program", e.key, "holder", e.owner.label() + " (leaving)"));
+							d);
 					}
 					retry = true;
 					continue;
@@ -899,12 +971,12 @@ final class Session {
 						e.program = writable ? openWritable(e, df, req, m) : openReadOnly(e, df, m);
 						e.mode = writable ? ProgramEntry.Mode.WRITABLE : ProgramEntry.Mode.READ_ONLY;
 						e.owner = writable ? c : null;
+						e.ownedSince = System.currentTimeMillis();
 						e.openMs = (System.nanoTime() - t0) / 1_000_000;
 					}
 					else if (writable && e.mode == ProgramEntry.Mode.WRITABLE && e.owner != c) {
-						throw new SessionException(SessionException.NOT_OWNER,
-							path + " is open writable by " + e.owner.label(),
-							Json.of("program", e.key, "owner", e.owner.id));
+						throw notOwner(e, c, path + " is open writable by " + e.owner.label() +
+							"; one writer per program: fork the project to write your own copy");
 					}
 					else if (writable && e.mode == ProgramEntry.Mode.READ_ONLY) {
 						Program np = openWritable(e, df, req, m);
@@ -913,6 +985,7 @@ final class Session {
 						e.program = np;
 						e.mode = ProgramEntry.Mode.WRITABLE;
 						e.owner = c;
+						e.ownedSince = System.currentTimeMillis();
 						e.openMs = (System.nanoTime() - t0) / 1_000_000;
 					}
 				}
@@ -1411,14 +1484,27 @@ final class Session {
 		if (e.mode != ProgramEntry.Mode.WRITABLE) {
 			throw new SessionException(SessionException.READ_ONLY,
 				e.key + " is open read-only; " + cmd + " needs open_program with " +
-					"\"writable\":true",
-				Json.of("program", e.key));
+					"\"writable\":true" + (e.project.writable() ? ""
+							: " in a writable project (fork_project makes one)"),
+				e.project.writable()
+						? Json.of("program", e.key, "suggest", "open_program writable")
+						: suggestFork(e.identity(), e.project, c));
 		}
 		if (e.owner != c) {
-			throw new SessionException(SessionException.NOT_OWNER,
-				e.key + " is owned by " + e.owner.label() + "; only the owner may " + cmd,
-				Json.of("program", e.key, "owner", e.owner.id));
+			throw notOwner(e, c, e.key + " is owned by " + e.owner.label() +
+				"; only the owner may " + cmd + " (fork the project to write your own copy)");
 		}
+	}
+
+	/** {@code not_owner}, naming the owner and suggesting a fork. */
+	private static SessionException notOwner(ProgramEntry e, Client c, String message) {
+		JsonObject d = e.identity();
+		Client o = e.owner;
+		Json.put(d, "owner", o == null ? null : o.id);
+		Json.put(d, "holder", o == null ? null : o.label());
+		d.add("holderInfo", e.ownerHolder());
+		return new SessionException(SessionException.NOT_OWNER, message,
+			suggestFork(d, e.project, c));
 	}
 
 	private JsonObject programInfo(ProgramEntry e, Client c) {

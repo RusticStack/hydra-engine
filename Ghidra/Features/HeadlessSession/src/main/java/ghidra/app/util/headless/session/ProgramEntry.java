@@ -88,7 +88,11 @@ final class ProgramEntry {
 
 	/** What holds the exclusive lock now, for {@code busy} answers. */
 	volatile String exclusiveHolder;
+	volatile Client exclusiveClient;
+	volatile String exclusiveCmd;
 	volatile long exclusiveSince;
+	/** When {@link #owner} opened it writable, for {@code not_owner} answers. */
+	volatile long ownedSince;
 
 	/** Decompilers bound to {@link #program}, reused across requests. Guarded by itself. */
 	private final Deque<DecompInterface> decompilers = new ArrayDeque<>();
@@ -110,16 +114,21 @@ final class ProgramEntry {
 			got = false;
 		}
 		if (!got) {
-			JsonObject d = Json.of("program", path, "wanted", exclusive ? "exclusive" : "shared",
-				"waitedMs", waitMs);
+			JsonObject d = identity();
+			Json.put(d, "wanted", exclusive ? "exclusive" : "shared");
+			Json.put(d, "waitedMs", waitMs);
 			String holder = exclusiveHolder;
+			Client hc = exclusiveClient;
 			if (holder != null) {
 				Json.put(d, "holder", holder);
+				Json.put(d, "holderInfo",
+					hc != null ? hc.holder(exclusiveCmd, exclusiveSince) : Json.of("label", holder));
 				Json.put(d, "heldMs", System.currentTimeMillis() - exclusiveSince);
 			}
 			else {
 				Json.put(d, "readers", lock.getReadLockCount());
 			}
+			Json.put(d, "suggest", "retry");
 			throw new SessionException(SessionException.BUSY,
 				path + " is busy" + (holder != null ? " (" + holder + ")" : "") +
 					"; retry, or pass a longer \"wait\"",
@@ -127,6 +136,8 @@ final class ProgramEntry {
 		}
 		if (exclusive) {
 			exclusiveHolder = c.label() + " " + cmd;
+			exclusiveClient = c;
+			exclusiveCmd = cmd;
 			exclusiveSince = System.currentTimeMillis();
 		}
 		return l;
@@ -135,9 +146,37 @@ final class ProgramEntry {
 	void release(Lock l) {
 		if (l == lock.writeLock()) {
 			exclusiveHolder = null;
+			exclusiveClient = null;
+			exclusiveCmd = null;
 		}
 		lastUsed = System.currentTimeMillis();
 		l.unlock();
+	}
+
+	/**
+	 * This program's identity for error details: {@code program} (its key), {@code path},
+	 * {@code project} (id and {@code .gpr}) and, when it is open, its {@code sha256}. Unlocked
+	 * reads.
+	 */
+	JsonObject identity() {
+		JsonObject o = Json.of("program", key, "path", path, "project", project.id, "gpr",
+			project.resolved.gpr().getPath());
+		Program p = program;
+		if (p != null) {
+			try {
+				Json.put(o, "sha256", p.getExecutableSHA256());
+			}
+			catch (RuntimeException e) {
+				// closing meanwhile
+			}
+		}
+		return o;
+	}
+
+	/** The owner as a holder record, for {@code not_owner} and {@code conflict} answers. */
+	JsonObject ownerHolder() {
+		Client o = owner;
+		return o == null ? null : o.holder("open_program writable", ownedSince);
 	}
 
 	DecompInterface borrowDecompiler() {

@@ -7,6 +7,23 @@ A version is the Ghidra version a release is built on, then `-hydra.` and a coun
 example `12.3-hydra.1`); its tag is `v` and the version. Releases are on
 [GitHub](https://github.com/RusticStack/hydra-engine/releases).
 
+## Unreleased
+
+### Added
+
+- **Holder information in `busy`, `conflict` and `not_owner`** (HeadlessSession). The error
+  details name who holds the project, program or lock: `holderInfo` (`client`, `name`,
+  `harness`, `label`, `command`, `heldMs`; for another process, the user, host and time from
+  Ghidra's project lock file and whether that process is alive), the project or program identity
+  (`project`, `gpr`, `program` key, `path`, `sha256`), and `suggest`: `retry`,
+  `fork_project` (with a ready `suggestion` request) where a working copy is the answer, or
+  `open_read_only`. `holder` stays a string as before; everything else is new fields.
+
+### Changed
+
+- The `busy` details of a program lock carry `program` as the program's key
+  (`p1:/path`), like every other error, instead of its project path (now in `path`).
+
 ## 12.3-hydra.1
 
 Released 2026-10-26. The first release. Based on upstream Ghidra `master` (12.3 DEV) as of

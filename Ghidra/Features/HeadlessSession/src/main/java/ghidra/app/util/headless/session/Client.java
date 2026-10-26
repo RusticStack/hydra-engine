@@ -75,6 +75,27 @@ final class Client {
 		return sb.toString();
 	}
 
+	/**
+	 * Who this client is, for the {@code holder} of {@code busy}, {@code conflict} and
+	 * {@code not_owner} answers: {@code {client, name, harness, label}}.
+	 */
+	JsonObject identity() {
+		return Json.of("client", id, "name", name, "harness", harness, "label", label());
+	}
+
+	/**
+	 * A holder record: this client's identity plus what it is doing ({@code command}) and for how
+	 * long ({@code heldMs}, from {@code since}, epoch milliseconds; omitted when 0).
+	 */
+	JsonObject holder(String command, long since) {
+		JsonObject o = identity();
+		Json.put(o, "command", command);
+		if (since > 0) {
+			Json.put(o, "heldMs", System.currentTimeMillis() - since);
+		}
+		return o;
+	}
+
 	JsonObject describe() {
 		JsonObject o = Json.of("id", id, "name", name, "harness", harness, "transport", transport,
 			"launcher", launcher, "activeProject", activeProject, "active", active,

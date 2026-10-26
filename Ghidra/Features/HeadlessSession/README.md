@@ -333,6 +333,19 @@ Addresses are `0x140001000`, `va:0x140001000`, `rva:0x1000` (from the image base
 `unsaved_changes`, `cancelled` (also on `timeout`), `failed` (Ghidra's message, plus a short
 `trace`).
 
+**Who holds it, and what to do.** `busy`, `conflict`, `not_owner` and `read_only` answers carry,
+in `error.details`:
+
+| Field | Meaning |
+|---|---|
+| `holder` | A one-line label of the holder (`"client 3 (agent-b, claude-code) script Export.java"`). |
+| `holderInfo` | The holder: `client` (id), `name`, `harness`, `label`, `command` (what it is doing: `open_program writable`, `script X`, `analyze`, `refresh`, ...) and `heldMs`. For a project locked by another process: `label: "another process"`, `user`, `host`, `since` and `os` from Ghidra's lock file, `lockFile`, and `live` (whether that process still holds it). |
+| `holders` | `conflict` on `open_project`: every client using the project, each as a `holderInfo`. |
+| `project`, `gpr`, `name`, `writable` | The project concerned. |
+| `program`, `path`, `sha256` | The program concerned: its key, its project path and its executable's SHA-256. |
+| `suggest` | What to do: `retry` (a lock that will be released: retry or raise `wait`), `fork_project` (the project or program has another writer, or is a shared read-only view: write your own working copy), `open_read_only` (another process holds the project writable), `open_program writable`. |
+| `suggestion` | With `suggest: fork_project`: a ready request, `{"cmd": "fork_project", "project": "p1", "path": "<a folder next to the project>", "writable": true}`. The path is only a proposal. |
+
 ## Several clients
 
 - **Projects are shared.** Clients that open the same project (by any path to it) use one
