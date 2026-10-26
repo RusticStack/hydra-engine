@@ -698,7 +698,8 @@ agents over one connection. Any request may carry its own `client` and/or `harne
 field replaces the connection's value for that request. With the label:
 
 - `busy` and `conflict` answers name the **requester's label** as the holder (`details.holder`:
-  `client 3 (agent-a, claude-code) script TestSleep.java`), as do `status` (`programs[].busy`,
+  `client 3 (agent-a, claude-code) script TestSleep.java`; `holderInfo` carries the same `name`,
+  `harness` and `label`), as do `status` (`programs[].busy`,
   `ownerLabel` of a writable program, the scheduler's `running` and `waiting`, the import queue)
   and the daemon's log.
 - `status.clients[].requests[]` lists each unanswered request with its `cmd`, age, `client`,
