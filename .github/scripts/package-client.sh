@@ -77,6 +77,7 @@ check=$(mktemp -d)
 "$PY" -c "import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "$out/$name.zip" "$check"
 got=$("$PY" -I "$check/$name/ghidra_session.py" version)
 rm -rf "$check"
+got=${got%$''}   # Python on Windows ends its lines with CR LF
 want="{\"client\": \"$client\", \"protocol\": $protocol, \"release\": \"$version\"}"
 if [ "$got" != "$want" ]; then
   echo "the packaged client reports $got, expected $want" >&2; exit 1

@@ -79,3 +79,6 @@
 *.tgz binary
 *.war binary
 *.zip binary
+
+# Scripts run by the workflows must keep LF line endings on a Windows checkout
+.github/scripts/*.sh text eol=lf
