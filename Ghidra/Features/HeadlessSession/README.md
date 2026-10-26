@@ -39,9 +39,12 @@ OS) starts the JVM itself.
 
 ```
 python <ghidra>/Ghidra/Features/HeadlessSession/support/ghidra_session.py ensure
-python <ghidra>/Ghidra/Features/HeadlessSession/support/ghidra_session.py call open_project path=C:/re/Game
 python <ghidra>/Ghidra/Features/HeadlessSession/support/ghidra_session.py status
 ```
+
+Each `ghidra_session.py call <cmd> ...` is one request from a new client that disconnects when it
+returns, so what it opened does not carry over: `call open_project` and then `call decompile`
+answers `no_project`. For a sequence, keep one connection.
 
 From Python (put `support/` on `sys.path`, or copy the one file):
 
@@ -102,7 +105,7 @@ three extra JVMs `LaunchSupport` costs on every start:
 |---|---|
 | `ensure` | Starts the daemon if it is not running; prints its endpoint (without the token). |
 | `status` | The running daemon: projects, programs and who uses them, clients, scheduler, memory, launch info. |
-| `call CMD key=value...` | One request through the daemon; values are JSON when they parse (`writable=true`). |
+| `call CMD key=value...` | One request through the daemon, as a new client that disconnects afterwards (nothing it opens carries over to the next `call`); values are JSON when they parse (`writable=true`). |
 | `stop [--force]` | Asks the daemon to shut down (refused while other clients are connected, unless `--force`). |
 | `kill` | Kills the daemon's JVM without a shutdown (wedged daemon, tests). |
 | `version` | Prints this client's `CLIENT_VERSION`, protocol and release (no daemon needed). |
@@ -615,7 +618,7 @@ code 2). Long commands send throttled `progress` events with the request's `id`:
 | `analyze` | `program`?, `options` {name: value}, `ranges` [[start, end], ...], `timeout` s | Sets analysis options, then runs auto-analysis on everything (or what the ranges trigger) the way `analyzeHeadless` does, and marks the program analysed. Owner or shared writers only; journalled. |
 | `save` | `program`?, `comment` | Saves the program (everyone's changes on a shared one). Owner or shared writers only. Answers `revision`, `projectRevision` and `savedSeq`. |
 | `import` | `file`, `project`?, `folder`="/", `name`, `language`, `compiler`, `analyze`=false, `duplicate`=false, `timeout` | Imports into a writable project with `ProgramLoader` (any format it accepts), saves it, opens it writable for this client, and optionally analyses and saves it. A file whose SHA-256 is already in the project returns `{"imported": false, "existing": [...]}` unless `duplicate`; the same file sent twice at once into one project is imported once (the second waits for the first and answers `existing`, with `sameFileImport`). Up to `maxImports` imports run at once, in any projects; more queue in arrival order (see "Parallel imports"): the answer carries `queue` (`waitedMs`, `positionAtEntry`, `behind`, `runningAtStart`), and a request that waits sends `progress` events "waiting behind ..." with its `queue` position and estimate. `wait` limits the time in the queue only when it is a number; by default a queued import waits until it runs or is cancelled. |
-| `script` | `script` (name on the script path, or a file path), `args` [...], `program`? (null: none), `project`?, `address`, `exclusive`=false, `save`=false, `timeout` s, `maxChars`, `artifact` (a path the script writes; echoed in `status` and the result) | Runs a GhidraScript and returns its `println` output (`output`, `truncated`), its `mode` (`owner` or `contained`), `changed` (whether the script changed the program; false when contained) and `unsaved` (whether the program has unsaved changes, anyone's). See "Scripts". |
+| `script` | `script` (name on the script path, or a file path; a Java file must be in a script folder, see "Scripts"), `args` [...], `program`? (null: none), `project`?, `address`, `exclusive`=false, `save`=false, `timeout` s, `maxChars`, `artifact` (a path the script writes; echoed in `status` and the result) | Runs a GhidraScript and returns its `println` output (`output`, `truncated`), its `mode` (`owner` or `contained`), `changed` (whether the script changed the program; false when contained) and `unsaved` (whether the program has unsaved changes, anyone's). See "Scripts". |
 | `cancel` | `target` (an id of this client's request), or `all`: true, or `cacheBuild` (a build id, cache key, program key or path, or `all`) | Cancels it (or all of this client's requests), running or still queued (a queued import leaves the import queue; the running ones are untouched). With `client`/`harness` on the `cancel`, `all` reaches only the requests of that label, and `target` refuses another label's request. `cacheBuild` cancels background upgrade cache builds, which belong to no client. |
 | `shutdown` | `force`=false | Stops the session; unsaved changes are discarded. From a socket client it is refused while other clients are connected, unless `force`. |
 
@@ -862,6 +865,13 @@ Ghidra's package-private setter, reflectively, so no Ghidra class is changed.
   take its own locks, must run as owner.
 - With `"program": null`, or with no program open, it runs with only the active project (or
   none).
+
+**Where scripts are found.** `script` takes a name, looked up in the script folders (Ghidra's own
+and every `scriptPath` entry of `config.json` or `-scriptPath`), or a file path. A Java script is
+compiled from its folder's source bundle, so its folder must be one of those script folders,
+whichever way it is named: a `.java` file elsewhere fails with `script did not load: ... Failed
+to find source bundle containing script`. Put your scripts' folder on `scriptPath` (the daemon
+reads it at start: `stop`, then start it again).
 
 A script is Java with the session's rights, so this is not a sandbox. Containment protects other
 clients' view of the program, not the machine.

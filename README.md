@@ -134,16 +134,18 @@ cd hydra-engine
 (On Windows, `gradlew.bat`. The full Ghidra build with the GUI is still there:
 `gradle buildGhidra`. Details in [CONTRIBUTING](.github/CONTRIBUTING.md#build).)
 
-Start the daemon and ask it something:
+Start the daemon and look at it:
 
 ```sh
 GS=build/dist/ghidra_12.3_DEV/Ghidra/Features/HeadlessSession/support/ghidra_session.py
 python $GS ensure                                   # starts the daemon if it is not running
-python $GS call open_project path=/re/MyProject     # read-only view, no lock
-python $GS call open_program path=target.exe
-python $GS call decompile address=rva:0x1000
 python $GS status                                   # projects, programs, clients, lanes, memory
 ```
+
+Each `python $GS call <cmd> ...` is one request from a new client that disconnects when it
+returns, so nothing it opened carries over to the next `call`: `call open_project` followed by
+`call decompile` answers `no_project`. Use `call` for a request that needs nothing opened
+first (`call ping`), and one connection for a sequence, as below.
 
 <p align="center">
   <picture>
