@@ -17,6 +17,7 @@ package ghidra.framework.store.local;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 
 import org.apache.commons.lang3.StringUtils;
 
@@ -262,6 +263,18 @@ public class LocalDatabaseItem extends LocalFolderItem implements DatabaseItem {
 				bfile = PrivateDatabase.createDatabase(dbDir, (db, version) -> {
 					synchronized (fileSystem) {
 						if (version == 1) {
+							// The content is complete: only now does the item say what it is.
+							// Until then its property file has no file type, so an item whose
+							// process died while writing it is removed as "not properly created"
+							// the next time it is listed, instead of being listed as a database
+							// that cannot be opened.
+							try {
+								dbItem.propertyFile.putInt(FILE_TYPE, DATABASE_FILE_TYPE);
+								dbItem.propertyFile.writeState();
+							}
+							catch (IOException e) {
+								throw new UncheckedIOException(e);
+							}
 							if (dbItem.privateDb == null) {
 								db.setSynchronizationObject(dbItem.fileSystem);
 								dbItem.privateDb = (PrivateDatabase) db;
@@ -271,6 +284,12 @@ public class LocalDatabaseItem extends LocalFolderItem implements DatabaseItem {
 						}
 					}
 				}, bufferSize);
+				// written without its file type until version 1 exists (above)
+				propertyFile.remove(FILE_TYPE);
+				propertyFile.writeState();
+				propertyFile.putInt(FILE_TYPE, DATABASE_FILE_TYPE);
+				success = true;
+				return bfile;
 			}
 
 			propertyFile.writeState();
