@@ -17,7 +17,6 @@ name: Release
 on:
   push:
     tags: ['v*']
-    branches: [release]   # TEMPORARY: dry run before release.yml is on main
   workflow_dispatch:
     inputs:
       version:
@@ -52,7 +51,7 @@ jobs:
             version="${GITHUB_REF_NAME#v}"
             publish=true
           else
-            version="${INPUT_VERSION:-12.3-hydra.1}"   # TEMPORARY
+            version="${INPUT_VERSION:-$ghidra-hydra.dev}"
             publish=false
           fi
           case "$version" in

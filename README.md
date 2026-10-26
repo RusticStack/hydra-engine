@@ -236,9 +236,11 @@ Nothing is removed from the source tree. How the module list was worked out, and
 keeps it honest, are in [CONTRIBUTING](.github/CONTRIBUTING.md#the-headless-build).
 
 CI ([`ci.yml`](.github/workflows/ci.yml)) builds the headless install and runs
-`session_smoke.py` and `daemon_tests.py` on Windows, the only platform tested so far. The
-launcher and module have no Windows-only path, but Linux and macOS have not been run. The full
-build runs weekly.
+`session_smoke.py` and `daemon_tests.py` on Windows, the platform that is tested and released.
+The launcher and module have no Windows-only path, and Linux x64 and macOS arm64 builds passed
+both suites once (a release dry run, 2026-10-26), but neither is tested routinely. The full build
+runs weekly. Releases are cut by [`release.yml`](.github/workflows/release.yml)
+([CONTRIBUTING](.github/CONTRIBUTING.md#releases)).
 
 For Ghidra's own GUI build and usage docs, see Ghidra's original README:
 [README-GHIDRA.md](README-GHIDRA.md).
