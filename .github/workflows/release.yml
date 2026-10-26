@@ -111,6 +111,10 @@ jobs:
         shell: pwsh
         run: ./gradlew -I gradle/support/fetchDependencies.gradle -DhideDownloadProgress -DnoEclipse
 
+      # The engine reports this as hello's hydraVersion (hydra.properties is empty in the tree)
+      - name: Stamp the release version
+        run: echo "hydra.version=$VERSION" > Ghidra/Features/HeadlessSession/src/main/resources/hydra.properties
+
       - name: Build the headless zip
         shell: pwsh
         run: ./gradlew zipHeadless --parallel
@@ -148,12 +152,17 @@ jobs:
           --ghidra "$GHIDRA_INSTALL" --work "$RUNNER_TEMP/daemon"
           --exe "$BIN_A" --dll "$BIN_DLL"
 
+      - name: contract_tests.py
+        run: >
+          python Ghidra/Features/HeadlessSession/examples/contract_tests.py
+          --ghidra "$GHIDRA_INSTALL" --work "$RUNNER_TEMP/contract"
+
       - name: Record the result
         run: |
           os_name=$(python -c "import platform; print(platform.platform(terse=True))")
           java_ver=$(java -version 2>&1 | head -n 1)
           size=$(python -c "import os; print(f'{os.path.getsize(\"out/$ASSET\") / 2**20:.0f} MiB')")
-          echo "| \`$ASSET\` | $size | ${{ matrix.os }} ($os_name, $java_ver) | built; session_smoke.py and daemon_tests.py passed on the unzipped install |" > "out/$ASSET.row"
+          echo "| \`$ASSET\` | $size | ${{ matrix.os }} ($os_name, $java_ver) | built; session_smoke.py, daemon_tests.py and contract_tests.py passed on the unzipped install |" > "out/$ASSET.row"
           cat "out/$ASSET.row" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v7.0.2
@@ -171,6 +180,7 @@ jobs:
           path: |
             ${{ runner.temp }}/smoke/**/*.log
             ${{ runner.temp }}/daemon/**/*.log
+            ${{ runner.temp }}/contract/**/*.log
           if-no-files-found: ignore
 
   release:
@@ -192,19 +202,24 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # The Python client as its own versioned file, so an integrator pins it with the engine
+      - name: Package the client
+        run: .github/scripts/package-client.sh "$VERSION" dist
+
       - name: Checksums
         working-directory: dist
         run: |
-          sha256sum hydra-engine-*.zip > SHA256SUMS
+          sha256sum hydra-engine-*.zip hydra-client-*.zip > SHA256SUMS
           cat SHA256SUMS
 
       - name: Release notes
         run: |
           # The CHANGELOG section of this version, or, for a dry run without one, the first section
+          # that is not Unreleased
           section=$(awk -v h="## $VERSION" '$0==h {on=1; next} on && /^## / {exit} on {print}' CHANGELOG.md)
           if [ -z "$section" ]; then
             [ "$PUBLISH" = true ] && { echo "::error::no CHANGELOG section for $VERSION"; exit 1; }
-            section=$(awk '/^## / {if (on) exit; on=1; next} on {print}' CHANGELOG.md)
+            section=$(awk '/^## / {if (on) exit; if ($0 != "## Unreleased") on=1; next} on {print}' CHANGELOG.md)
           fi
           # The upstream commit the section names must be in this release's history
           base=$(printf '%s\n' "$section" | grep -oE 'commit `[0-9a-f]{40}`' | head -n 1 | grep -oE '[0-9a-f]{40}' || true)
@@ -238,7 +253,7 @@ jobs:
       - name: Publish the release
         if: env.PUBLISH == 'true'
         run: >
-          gh release create "$GITHUB_REF_NAME" dist/hydra-engine-*.zip dist/SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" dist/hydra-engine-*.zip dist/hydra-client-*.zip dist/SHA256SUMS
           --verify-tag --title "Hydra Engine $VERSION" --notes-file notes.md
 
       - name: Dry run (nothing published)
@@ -249,4 +264,5 @@ jobs:
           path: |
             notes.md
             dist/SHA256SUMS
+            dist/hydra-client-*.zip
           retention-days: 7

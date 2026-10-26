@@ -94,6 +94,14 @@ jobs:
           --ghidra "$GHIDRA_INSTALL" --work "$RUNNER_TEMP/daemon"
           --exe "$BIN_A" --dll "$BIN_DLL"
 
+      - name: contract_tests.py
+        run: >
+          python Ghidra/Features/HeadlessSession/examples/contract_tests.py
+          --ghidra "$GHIDRA_INSTALL" --work "$RUNNER_TEMP/contract"
+
+      - name: Package the client (dry run)
+        run: .github/scripts/package-client.sh 12.3-hydra.ci "$RUNNER_TEMP/client"
+
       - name: Upload the daemon logs
         if: failure()
         uses: actions/upload-artifact@v7
@@ -102,6 +110,7 @@ jobs:
           path: |
             ${{ runner.temp }}/smoke/**/*.log
             ${{ runner.temp }}/daemon/**/*.log
+            ${{ runner.temp }}/contract/**/*.log
           if-no-files-found: ignore
 
   full:
