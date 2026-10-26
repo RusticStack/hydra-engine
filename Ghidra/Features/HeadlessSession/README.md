@@ -488,6 +488,10 @@ Request:
 - `parallel`: `true` runs the request at once on its own thread. Without it, one client's
   requests run in the order sent (other clients always run in parallel). Use it when one
   connection carries several independent callers, as an MCP server's does.
+- `client`, `harness`: optional labels of this request alone. They replace the connection's
+  name (from `hello`) wherever people are told who does what: the holder in `busy` and
+  `conflict` answers, `status`, the import queue, and the scope of `cancel`. See "Who is
+  asking". Strings of at most 128 characters.
 
 Response:
 
@@ -524,7 +528,7 @@ code 2). Long commands send throttled `progress` events with the request's `id`:
 |---|---|---|
 | `hello` | `client`, `harness`, `clientVersion`, `token` (socket) | Names the client. On a socket it must be the first request, with the endpoint's `token`. Answers the session's identity: `protocol`, `minClient`, `hydraVersion`, `ghidraVersion`, `installId`, `startedAt`, `pid` (see "Pinning and upgrading"), then what `status` lists. |
 | `ping` | | `{"pong": true}` |
-| `status` | | Session identity (as `hello`), launch info, memory, projects, programs (mode, owner, users, what holds each lock, idle time), clients (`name`, `harness`, `clientVersion`, and their unanswered `requests`: `id`, `cmd`, `artifact`, `ms`, `message`, `progress`, `maximum`), overlays, scheduler lanes, upgrade cache builds. |
+| `status` | | Session identity (as `hello`), launch info, memory, projects, programs (mode, owner and `ownerLabel`, users, what holds each lock, idle time), clients (`name`, `harness`, `clientVersion`, and their unanswered `requests`: `id`, `cmd`, `artifact`, `ms`, `message`, `progress`, `maximum`, and `client`, `harness`, `labelled`, what it waits for (`waiting`) and its `queue` position), overlays, scheduler lanes (running and waiting requests, by label), the import queue (`imports`), upgrade cache builds, and `youAre`, the label this request carried. |
 | `projects` | | Open projects, which ones this client joined, its active project. |
 | `open_project` | `path`, `writable`=false, `discard`=false | Joins the project, opening it if needed. `path` is a `.gpr`, its folder, a `.rep`, or a parent folder with exactly one project at most two levels below. A read-only view is reopened writable only when no other client uses it; a read-only request on a writable project joins it. |
 | `fork_project` | `project` (id or path), `path`, `name`?, `writable`=true, `mode`=auto\|copy-on-write\|full, `maxCopyMb`? | Copies the project into a working copy of this client's, opened and joined; the source and its read-only views are untouched. See "Working copies". |
@@ -547,9 +551,9 @@ code 2). Long commands send throttled `progress` events with the request's `id`:
 | `comment` | `program`?, `address`, `text` (null clears), `type`=eol\|pre\|post\|plate\|repeatable, `overlay`? | Owner only; with `overlay`, in the client's overlay. |
 | `analyze` | `program`?, `options` {name: value}, `ranges` [[start, end], ...], `timeout` s | Sets analysis options, then runs auto-analysis on everything (or what the ranges trigger) the way `analyzeHeadless` does, and marks the program analysed. Owner only. |
 | `save` | `program`?, `comment` | Owner only. |
-| `import` | `file`, `project`?, `folder`="/", `name`, `language`, `compiler`, `analyze`=false, `duplicate`=false, `timeout` | Imports into a writable project with `ProgramLoader` (any format it accepts), saves it, opens it writable for this client, and optionally analyses and saves it. A file whose SHA-256 is already in the project returns `{"imported": false, "existing": [...]}` unless `duplicate`. |
+| `import` | `file`, `project`?, `folder`="/", `name`, `language`, `compiler`, `analyze`=false, `duplicate`=false, `timeout` | Imports into a writable project with `ProgramLoader` (any format it accepts), saves it, opens it writable for this client, and optionally analyses and saves it. A file whose SHA-256 is already in the project returns `{"imported": false, "existing": [...]}` unless `duplicate`. Imports run one at a time across the daemon and queue in arrival order (see "The import queue"): the answer carries `queue` (`waitedMs`, `positionAtEntry`, `behind`), and a request that waits sends `progress` events "waiting behind ..." with its `queue` position and estimate. `wait` limits the time in the queue only when it is a number; by default a queued import waits until it runs or is cancelled. |
 | `script` | `script` (name on the script path, or a file path), `args` [...], `program`? (null: none), `project`?, `address`, `exclusive`=false, `save`=false, `timeout` s, `maxChars`, `artifact` (a path the script writes; echoed in `status` and the result) | Runs a GhidraScript and returns its `println` output. See "Scripts". |
-| `cancel` | `target` (an id of this client's request), or `all`: true, or `cacheBuild` (a build id, cache key, program key or path, or `all`) | Cancels it (or all of this client's requests), running or still queued; `cacheBuild` cancels background upgrade cache builds, which belong to no client. |
+| `cancel` | `target` (an id of this client's request), or `all`: true, or `cacheBuild` (a build id, cache key, program key or path, or `all`) | Cancels it (or all of this client's requests), running or still queued (a queued import leaves the import queue; the running one is untouched). With `client`/`harness` on the `cancel`, `all` reaches only the requests of that label, and `target` refuses another label's request. `cacheBuild` cancels background upgrade cache builds, which belong to no client. |
 | `shutdown` | `force`=false | Stops the session; unsaved changes are discarded. From a socket client it is refused while other clients are connected, unless `force`. |
 
 Addresses are `0x140001000`, `va:0x140001000`, `rva:0x1000` (from the image base) or
@@ -596,7 +600,8 @@ in `error.details`:
   hundred requests cannot starve one that sends one. The daemon's own background work (upgrade
   cache builds) takes a long slot only while no client waits for one. `status` shows each lane's
   use and queue.
-- **Cancellation is per client.** `cancel` reaches a client's own requests, running or queued.
+- **Cancellation is per client**, and per label when the request carries one (below). `cancel`
+  reaches a client's own requests, running or queued.
 - **Leaving is safe.** When a client disconnects or its process dies (the OS resets its socket),
   its requests are cancelled, its unsaved changes are discarded (and logged), and its programs go
   back to read-only for the others. Another client that asks for the program meanwhile waits for
@@ -619,7 +624,7 @@ view and a writable project are described in "Read-only view, writable project".
 | A second **process** (a Ghidra window, `analyzeHeadless`, another daemon) opens a project this daemon holds writable, or the reverse | `conflict` | The project lock is held by one process; the error names the lock file. |
 | `open_project` writable while another client of this daemon uses its read-only view | `conflict` | The read-only view would change under its reader. The reverse joins: a read-only request on a writable project opens programs read-only. Reopen writable when the other readers have left, or `fork_project` the project and write the fork while they keep reading the master. |
 | Read-only view of a project another process has open and saves | works, flagged `stale` | It shows the project as it was when the view opened; its clients are told with `stale` on their next answers, and `refresh` reopens the view for all of them at once, without anyone leaving ("Revisions and `refresh`"). |
-| Concurrent `import`s | **serialized**, daemon-wide | Ghidra's loaders find libraries through one global "active project", so imports (and upgrade cache builds, which open their copy under it) run one at a time, in any project. Details of waiting and cancelling queued imports: <!-- IMPORT-QUEUE-LANE: replace this comment with the import queue's behaviour (position, holder, cancel of a queued import); do not guess. --> |
+| Concurrent `import`s | **serialized**, daemon-wide | Ghidra's loaders find libraries through one global "active project", so imports (and upgrade cache builds, which open their copy under it) run one at a time, in any project. Queued imports are first-come, first-served, visible in `status.imports` (holder, position, estimated wait), cancellable without touching the running one, and tell their requester who they wait behind: see "The import queue". |
 
 What the codes mean when two clients meet:
 
@@ -641,6 +646,75 @@ What the codes mean when two clients meet:
 
 All three carry `holderInfo` and `suggest` in `details` (see "Error codes"): who holds it, and
 whether the answer is to retry, to fork, or to open read-only.
+
+### The import queue
+
+Imports run **one at a time across the whole daemon**, whatever the project: Ghidra's loaders
+reach project state through one process-wide "active project" (`AppInfo`) and one static library
+search path set (`LibrarySearchPathManager`), so two imports at once would read and write each
+other's project. This was tested rather than assumed (`examples/ImportIsolationProbe.java`, run
+by `daemon_tests.py import_isolation`): a library search path added while project A is active is
+visible while project B is active and is not in B's saved state, so a loader in B resolves
+libraries with A's settings; and in 6 rounds of two concurrent loads into two projects (12 loads),
+none failed and no program landed in the wrong project, but in 6 of the 12 the active project,
+read right after the load, was the other thread's: nothing failed because the loader was handed
+its own project explicitly, not because the shared state is safe. The serialization is a hard limit of the loaders
+the session runs, not of the session; lifting it needs Ghidra to scope that state per thread or
+per load.
+
+What the session adds is that the wait is visible and under control:
+
+- Imports queue **first-come, first-served** at an `ImportGate`, **before** they take a
+  scheduler slot, so queued imports do not occupy the long slots that analysis and scripts need.
+  Opening an upgrade cache copy uses the same gate (kind `internal`, short).
+- `status.imports`: `holder` (who, client id, project, file, bytes, running time), `queue`
+  (the same, plus `position` and `estimatedWaitMs`) and `history` (`count`, `meanMs`, `msPerMb`
+  of the last 12 finished imports). `status.clients[].requests[]` marks a queued import
+  `"waiting": "import queue"` with its `queue` details.
+- A queued `import` sends `progress` events (at most one a second): `"message": "waiting behind
+  client 2 (agent-a, claude-code) import of big.exe (position 1 in the import queue, about 40
+  s)"`, with `"queue": {"position", "ahead", "holder", "estimatedWaitMs"}`. The final answer
+  repeats what the wait was in `queue`: `waitedMs`, `positionAtEntry`, `behind`.
+- The **estimate** is the holder's remaining time plus the time of each import ahead, each
+  taken as the history's rate (ms per byte of the last 12 completed imports) times the file's
+  size, never below the shortest import seen. `null` until one import has finished in this
+  daemon. It is a guide: format, loaders and options change an import's time, and so do the
+  disk and the other work on the machine. Measured in `daemon_tests.py import_queue` (random 128
+  MB raw binaries, Windows 11, Dev Drive): an import took 8.8-17 s; estimates made while queued
+  were rough: one measured pair was 7.0 s estimated against 17.5 s waited, because the import ahead ran slower than the history's rate.
+- **Cancelling a queued import** (`cancel` by id, `cancel all`, a disconnect) takes it out of the
+  queue at once and answers `cancelled`; the running import and the others queued are
+  untouched. Cancelling the running import releases the gate and the next one starts.
+- The queue wait is unlimited unless the request passes a numeric `wait`, in which case it fails
+  with `busy` (details: the same queue information) after that long. A queue position is not
+  lost to the slot wait: an import that reaches the front takes its long slot then.
+- Duplicates: the SHA-256 check runs when the import gets its turn, so two queued requests for
+  the same file import it once and the second answers `imported: false`.
+
+### Who is asking
+
+A connection has one identity from `hello` (`client`, `harness`), but an MCP server serves several
+agents over one connection. Any request may carry its own `client` and/or `harness`; each present
+field replaces the connection's value for that request. With the label:
+
+- `busy` and `conflict` answers name the **requester's label** as the holder (`details.holder`:
+  `client 3 (agent-a, claude-code) script TestSleep.java`), as do `status` (`programs[].busy`,
+  `ownerLabel` of a writable program, the scheduler's `running` and `waiting`, the import queue)
+  and the daemon's log.
+- `status.clients[].requests[]` lists each unanswered request with its `cmd`, age, `client`,
+  `harness` and `labelled`; `status.youAre` echoes the label a `status` call carried.
+- `cancel` with a label: `all` cancels only that label's requests (a request counts as that
+  label's when it carried the same `client` and `harness`); `target` refuses another label's
+  request (`"cancelled": false`). A `cancel` with no label keeps its meaning: all of the
+  connection's requests.
+- It changes **no ownership**: a program is still owned by the connection that opened it
+  writable, so every label of that connection may use it as its owner; only the owner's *name*
+  in messages is the label that opened it. Labels are for telling callers apart and for scoping
+  cancellation, not an access control: anyone with the token can send any label.
+
+`ghidra_session.py`: `s.call("decompile", client="agent-a", harness="claude-code", ...)` for one
+request, or `a = s.labelled(client="agent-a", harness="claude-code")`, a view whose `call`,
+`send`, `cancel(target)` and `cancel_all()` all carry the labels (and are `parallel` by default).
 
 ## Scripts
 
@@ -897,6 +971,10 @@ took 7.0-7.8 s per question and needed a copy of the project.
 - `examples/daemon_tests.py`: two harness processes starting the daemon at once, several
   projects in one daemon, a DLL import, a client killed while it owns a program and analyses it,
   the daemon killed and restarted, fair scheduling, `cancel all`, idle shutdown, warm programs,
+  the import queue (two and three concurrent imports: a queued one cancelled, the running one
+  cancelled and the next starting, re-ordering; `--raw-mb` sets the size of the random raw
+  files it imports), why imports are serialized (`import_isolation`), per-request labels (the
+  holder in a `busy` answer names the label, cancel scoped per label),
   a private stdio session, and the upgrade cache (a current program does not use it; with
   `--legacy-project`, a project saved by an older Ghidra, best a small one, which the test
   block-clones first: an opted-out daemon upgrades in memory; the first open takes in-memory time
@@ -975,5 +1053,6 @@ The distribution also leaves out `__pycache__` folders and `.pyc` files that run
   than on NTFS (ReFS writes a file's dirty pages back when its last handle closes), so an
   in-memory upgrade or a large analysis is slower there. Closing is fixed (see "Changes outside
   this module"); put `tmpdir` on a fast NTFS or ext4 disk with room if you can.
-- Imports run one at a time across the daemon: Ghidra's loaders find libraries through one global
-  "active project".
+- Imports run one at a time across the daemon: Ghidra's loaders find libraries and options
+  through one global "active project" and one static library search path set (see "The import
+  queue" for the test that shows it). Queued imports are visible, estimated and cancellable.

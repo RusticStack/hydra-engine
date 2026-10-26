@@ -60,6 +60,24 @@ it is based on.
   projects, imports, and what `conflict`, `busy` and `not_owner` mean.
 - **Tests**: `examples/contract_tests.py` (identity fields, client compatibility, a 600,000-line
   export with progress, cancel and shutdown), run by CI and the release workflow.
+- **The import queue is visible and cancellable.** Imports still run one at a time across the
+  daemon (Ghidra's loaders share one process-wide active project and library search path set;
+  `examples/ImportIsolationProbe.java` and the `import_isolation` test document why), but they
+  now queue first-come, first-served without holding a scheduler slot. `status.imports` shows the
+  holder (client label, project, file, running time), the queue with each entry's position and an
+  estimated wait (from the durations of earlier imports), and the history. A queued `import`
+  sends `progress` events "waiting behind ..." and its answer reports `queue` (`waitedMs`,
+  `positionAtEntry`, `behind`). Cancelling a queued import removes it without touching the
+  running one; cancelling the running one starts the next. A numeric `wait` now limits the queue
+  wait; without one a queued import waits until it runs or is cancelled.
+- **Per-request `client` and `harness` labels.** Any request may carry them; they replace the
+  connection's name for that request in `busy`/`conflict` holders (`holder` and `holderInfo`), `status` (requests, scheduler
+  lanes, owner of a writable program, `youAre`), the import queue and the log, and they scope
+  `cancel` (`all` reaches only that label's requests; `target` refuses another label's request).
+  Ownership is unchanged (still per connection). One MCP server serving several agents can now
+  tell which agent holds a program or an import. `ghidra_session.py`: labels on any `call`, and
+  `labelled(client=, harness=)` views with `cancel_all()`.
+- `daemon_tests.py`: `import_queue`, `import_isolation`, `caller_labels`; `--raw-mb`.
 
 - **Overlays** (HeadlessSession): a client's private annotation view of a shared program.
   `open_program` with `overlay` opens one: its own program object over the stored file
