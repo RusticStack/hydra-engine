@@ -1120,7 +1120,36 @@ class Daemon:
         end = time.monotonic() + 30
         while time.monotonic() < end and self.jvm_alive():
             time.sleep(0.05)
+        # The instance lock goes with the first handles the OS closes; the project locks may go
+        # seconds later (closing a file with many dirty pages, on ReFS, waits for them). Wait for
+        # the process itself, so that a daemon started next finds every lock released.
+        _wait_pid_exit(int(ep["pid"]), max(1.0, end - time.monotonic()))
         return not self.jvm_alive()
+
+
+def _wait_pid_exit(pid: int, timeout: float) -> bool:
+    """Waits until the process is gone (True), or the timeout passes (False)."""
+    if IS_WINDOWS:
+        import ctypes
+        h = ctypes.windll.kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+        if not h:
+            return True  # no such process any more
+        try:
+            return ctypes.windll.kernel32.WaitForSingleObject(h, int(timeout * 1000)) == 0
+        finally:
+            ctypes.windll.kernel32.CloseHandle(h)
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        with contextlib.suppress(ChildProcessError, OSError):
+            os.waitpid(pid, os.WNOHANG)  # reap it when this process started it
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            pass
+        time.sleep(0.05)
+    return False
 
 
 def _kill_pid(pid: int):
