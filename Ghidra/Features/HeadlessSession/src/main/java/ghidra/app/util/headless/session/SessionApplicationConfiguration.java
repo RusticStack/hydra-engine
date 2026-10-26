@@ -67,6 +67,17 @@ final class SessionApplicationConfiguration extends HeadlessGhidraApplicationCon
 	static final String SSL_INITIALIZER = "ghidra.net.DefaultSSLContextInitializer";
 	private static boolean sslDeferred;
 
+	/**
+	 * The module initializer that deletes the buffer cache files a dead Ghidra process left in
+	 * the user temp folder. After a process was killed while it held a large program, deleting
+	 * its cache file can take a minute on ReFS (the file system writes the file's dirty pages
+	 * back first), and the session would not be ready until then. On a cache hit it is left out
+	 * of the initializers and its cleanup runs on a background thread of its own while the
+	 * session starts (a file another live process uses is not deleted, as before).
+	 */
+	static final String DB_INITIALIZER = "db.DBInitializer";
+	private static boolean dbDeferred;
+
 	@Override
 	protected void initializeApplication() {
 		String file = System.getProperty(CACHE_PROPERTY);
@@ -90,6 +101,26 @@ final class SessionApplicationConfiguration extends HeadlessGhidraApplicationCon
 		if (seeded && sslDeferred) {
 			DeferredInit.add("SSL context", DefaultSSLContextInitializer::initialize);
 		}
+		if (seeded && dbDeferred) {
+			// not a DeferredInit task: scripts and imports wait for those, and this can be slow
+			Thread t = new Thread(() -> {
+				long t0 = System.nanoTime();
+				try {
+					removeOldCacheFiles();
+				}
+				catch (RuntimeException e) {
+					Msg.warn(SessionApplicationConfiguration.class,
+						"old buffer cache files not removed: " + e);
+				}
+				long ms = (System.nanoTime() - t0) / 1_000_000;
+				if (ms > 1000) {
+					Msg.info(SessionApplicationConfiguration.class,
+						"removed old buffer cache files in " + ms + " ms (in the background)");
+				}
+			}, "session-old-cache-cleanup");
+			t.setDaemon(true);
+			t.start();
+		}
 		if (file != null && !file.isBlank() && !seeded && inputs != null) {
 			try {
 				store(Path.of(file), inputs);
@@ -98,6 +129,41 @@ final class SessionApplicationConfiguration extends HeadlessGhidraApplicationCon
 				classCacheState = "error: " + e;
 				Msg.warn(this, "class search cache not written: " + e);
 			}
+		}
+	}
+
+	/**
+	 * What {@code BufferMgr.cleanupOldCacheFiles} does (delete the {@code ghidra*.cache} files
+	 * in the user temp folder that no live process uses), without the wait on ReFS: on Windows a
+	 * file is first renamed, which fails while any process has it open (Java opens it without
+	 * delete sharing), so only a dead process's file is touched; it is then truncated to 0
+	 * bytes, which drops its unwritten pages (as {@code LocalBufferFile} does for its own
+	 * temporary files), and deleted. Elsewhere it is deleted, as before.
+	 */
+	static void removeOldCacheFiles() {
+		File dir = Application.getUserTempDirectory();
+		File[] files = dir.listFiles(f -> f.isFile() && f.getName().startsWith("ghidra") &&
+			f.getName().endsWith(".cache"));
+		if (files == null) {
+			return;
+		}
+		boolean windows = System.getProperty("os.name", "").startsWith("Windows");
+		for (File f : files) {
+			if (!windows) {
+				f.delete();
+				continue;
+			}
+			File stale = new File(f.getPath() + ".stale");
+			if (!f.renameTo(stale)) {
+				continue; // in use by a live process
+			}
+			try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(stale, "rw")) {
+				raf.setLength(0);
+			}
+			catch (java.io.IOException e) {
+				// delete it anyway
+			}
+			stale.delete();
 		}
 	}
 
@@ -151,6 +217,7 @@ final class SessionApplicationConfiguration extends HeadlessGhidraApplicationCon
 		}
 		for (Set<ClassFileInfo> set : map.values()) {
 			sslDeferred |= set.removeIf(i -> i.name().equals(SSL_INITIALIZER));
+			dbDeferred |= set.removeIf(i -> i.name().equals(DB_INITIALIZER));
 		}
 		field("extensionPointSuffixToInfoMap").set(null, map);
 		field("hasSearched").set(null, true);
