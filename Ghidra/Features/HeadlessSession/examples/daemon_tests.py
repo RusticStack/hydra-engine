@@ -26,7 +26,8 @@ read-only, to the multi-project test. --legacy-project (optional) is copied into
 older-format part of upgrade_cache; the original is only read.
 
 Tests: two_harnesses, two_projects, dll_import, client_kill, daemon_restart, fairness, cancel_all,
-idle_shutdown, keep_warm, stdio, upgrade_cache, holders, fork, revisions, overlays.
+import_queue, import_isolation, caller_labels, idle_shutdown, keep_warm, stdio, upgrade_cache,
+holders, fork, revisions, overlays.
 """
 import argparse
 import json
@@ -405,6 +406,248 @@ def t_cancel_all(c: Ctx):
         B.wait(bid)  # B's own job was not touched
     d.stop()
     return "3 queued/running requests cancelled; the other client's job finished"
+
+
+RAW_LANG = {"language": "DATA:LE:64:default", "compiler": "pointer64"}
+
+
+def raw_file(c: Ctx, name: str, mb: int) -> str:
+    """A file of random bytes, imported as a raw binary: an import whose length is set by its
+    size, which is how the import queue is tested with a small system binary as the only
+    fixture."""
+    p = c.work / "raw" / name
+    p.parent.mkdir(parents=True, exist_ok=True)
+    if not p.exists() or p.stat().st_size != mb << 20:
+        with open(p, "wb") as f:
+            for _ in range(mb):
+                f.write(os.urandom(1 << 20))
+    return str(p)
+
+
+def wait_for(cond, what, timeout=120.0, step=0.05):
+    end = time.time() + timeout
+    while time.time() < end:
+        v = cond()
+        if v:
+            return v
+        time.sleep(step)
+    raise Fail(f"timed out waiting for {what}")
+
+
+def t_import_queue(c: Ctx):
+    """Imports run one at a time; the others queue in arrival order, say who they wait behind
+    and for how long, and leave the queue when cancelled without disturbing the running one."""
+    mb = c.a.raw_mb
+    files = [raw_file(c, "q.bin", mb)] * 5  # one file, imported again each time (duplicate)
+    d = c.daemon("iq", maxLong=2)
+    with d.connect("A", "agent-a") as A, d.connect("B", "agent-b") as B, \
+            d.connect("C", "agent-c") as C:
+        gpr = c.make_project(A, c.work / "projQueue", "Queue")
+        for s in (A, B, C):
+            s.call("open_project", path=str(gpr), writable=True)
+
+        def imports(s=A):
+            return s.call("status")["imports"]
+
+        def start(s, i, name):
+            return s.send("import", file=files[i], name=name, parallel=True, duplicate=True,
+                          **RAW_LANG)
+
+        # 1. A runs; B queues behind it and is cancelled while queued.
+        ia = start(A, 0, "qa")
+        wait_for(lambda: imports()["holder"], "A's import to hold the gate")
+        ib = start(B, 1, "qb")
+        st = wait_for(lambda: (imports() if imports()["queue"] else None), "B to queue")
+        check(st["holder"]["client"] != st["queue"][0]["client"], f"holder/queue: {st}")
+        check("agent-a" in st["holder"]["who"], f"the holder is not named: {st['holder']}")
+        check("agent-b" in st["queue"][0]["who"], f"the waiter is not named: {st['queue']}")
+        check(st["queue"][0]["position"] == 1, f"position: {st['queue']}")
+        full = A.call("status")
+        waiting = [r for cl in full["clients"] for r in cl["requests"]
+                   if r["waiting"] == "import queue"]
+        check(len(waiting) == 1 and waiting[0]["cmd"] == "import" and waiting[0]["queue"]["holder"],
+              f"status.clients[].requests does not show the queued import: {waiting}")
+        def pumped():  # events are read while the client waits on a response
+            B.call("ping")
+            return any(e.get("id") == ib and "waiting behind" in e.get("message", "")
+                       for e in list(B.events))
+
+        wait_for(pumped, "a 'waiting behind' progress event", 15, 0.2)
+        ev = [e for e in B.events if e.get("id") == ib and "waiting behind" in e.get("message", "")][-1]
+        check(ev.get("queue", {}).get("position") == 1, f"progress event without a queue: {ev}")
+        r = B.call("cancel", target=ib)
+        check(r["cancelled"] is True, f"cancel of the queued import: {r}")
+        try:
+            B.wait(ib)
+            raise Fail("the cancelled queued import succeeded")
+        except c.gs.SessionError as e:
+            check(e.code == "cancelled", f"queued cancel: {e}")
+        check(not imports()["queue"], "the cancelled import is still queued")
+        ra = A.wait(ia)  # the running import was not touched
+        check(ra["imported"] is True, f"A's import: {ra}")
+        check(ra["queue"]["behind"] is None, f"A waited behind someone: {ra['queue']}")
+        h = imports()["history"]
+        check(h["count"] == 1 and h["meanMs"] > 0, f"no duration history: {h}")
+
+        # 2. The running import is cancelled; the queued one runs next. The estimate comes from
+        #    the first import's duration.
+        ia = start(A, 2, "qc")
+        wait_for(lambda: imports()["holder"], "the next import to hold the gate")
+        ib = start(B, 1, "qb")
+        st = wait_for(lambda: (imports() if imports()["queue"] else None), "B to queue again")
+        est = st["queue"][0]["estimatedWaitMs"]
+        check(est is not None and est > 0, f"no wait estimate with history: {st['queue']}")
+        t_run = time.time()
+        check(A.call("cancel", target=ia)["cancelled"] is True, "cancel of the running import")
+        try:
+            A.wait(ia)
+            raise Fail("the cancelled running import succeeded")
+        except c.gs.SessionError as e:
+            check(e.code == "cancelled", f"running cancel: {e}")
+        rb = B.wait(ib)  # the queued import ran next
+        check(rb["imported"] is True and rb["queue"]["behind"], f"B's import: {rb}")
+        check(rb["queue"]["positionAtEntry"] == 1, f"B's queue place: {rb['queue']}")
+        check(not imports()["queue"] and not imports()["holder"], f"gate not free: {imports()}")
+        names = {e["name"] for e in A.call("list", programsOnly=True)["entries"]}
+        check(names == {"qa", "qb"}, f"programs after the cancels: {names}")
+        c.timings["import queue: B waited (ms) / estimate when queued (ms)"] = [
+            rb["queue"]["waitedMs"], est]
+        c.timings[f"import queue: raw {mb} MB import (s)"] = round(rb["importSeconds"], 2)
+
+        # 3. Two queued; the first is cancelled and the second moves up.
+        ia = start(A, 2, "qc")
+        wait_for(lambda: imports()["holder"], "the third import to hold the gate")
+        ib = start(B, 3, "qd")
+        wait_for(lambda: len(imports()["queue"]) == 1, "B to queue")
+        ic = start(C, 4, "qe")
+        q = wait_for(lambda: (imports()["queue"] if len(imports()["queue"]) == 2 else None),
+                     "C to queue")
+        check([e["position"] for e in q] == [1, 2] and "agent-b" in q[0]["who"],
+              f"arrival order: {q}")
+        B.call("cancel", target=ib)
+        try:
+            B.wait(ib)
+        except c.gs.SessionError:
+            pass
+        q = imports()["queue"]
+        check(len(q) == 1 and q[0]["position"] == 1 and "agent-c" in q[0]["who"],
+              f"C did not move up: {q}")
+        est_c = q[0]["estimatedWaitMs"]
+        t_c = time.time()
+        A.wait(ia)
+        rc = C.wait(ic)
+        check(rc["imported"] is True, f"C's import: {rc}")
+        # from the estimate to C's start: until its answer, less its own load time (the open
+        # that follows the load is small)
+        actual = round((time.time() - t_c - rc["importSeconds"]) * 1000)
+        c.timings["import queue: C wait estimated / actual (ms), taken once it was next"] = [
+            est_c, actual]
+    d.stop()
+    return (f"one import at a time; queued cancel, running cancel and re-ordering ok "
+            f"(B waited {rb['queue']['waitedMs']} ms, estimated {est} ms)")
+
+
+def t_import_isolation(c: Ctx):
+    """Why imports are serialized: two ungated loads into two projects share process-wide state.
+    Runs ImportIsolationProbe in a throwaway daemon and records what it saw."""
+    a = c.a.exe
+    b = c.a.dll
+    d = c.daemon("iso")
+    shutil.copy(pathlib.Path(__file__).absolute().parent / "ImportIsolationProbe.java",
+                c.scripts / "ImportIsolationProbe.java")  # scripts run from the script path
+    probe = c.script("ImportIsolationProbe.java")
+    with d.connect("iso", "tests") as s:
+        folder = c.work / "projIso"
+        if folder.exists():
+            shutil.rmtree(folder)
+        folder.mkdir(parents=True)
+        out = s.call("script", script=probe, program=None, args=[str(folder), a, b, "6"],
+                     timeout=900, wait=600000)["output"]
+    d.stop()
+    got = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+    check(got.get("leak.pathVisibleWhileOtherProjectActive") == "true",
+          f"expected the library search path set to be shared between projects: {out}")
+    check(got.get("leak.pathInOtherProjectsSavedState") == "false",
+          f"the path unexpectedly reached the other project's state: {out}")
+    c.timings["import isolation probe"] = got
+    return ("search path set is process-wide (leaks between projects); concurrent loads: " +
+            f"{got.get('race.failures')} failures, {got.get('race.wrongProject')} misplaced, " +
+            f"{got.get('race.activeProjectNotMineAfterLoad')} loads saw a foreign active project")
+
+
+def t_caller_labels(c: Ctx):
+    """One connection, two callers: per-request labels name who holds a program or an import,
+    in busy answers, status and ownership messages, and scope cancel."""
+    gpr = c.copy_fixture("projLabels")
+    exe = pathlib.Path(c.a.exe).name
+    d = c.daemon("labels", maxLong=4)
+    with d.connect("mcp", "mcp-server") as S, d.connect("other", "tests") as T:
+        a = S.labelled(client="agent-a", harness="claude-code")
+        b = S.labelled(client="agent-b", harness="opencode")
+        S.call("open_project", path=str(gpr), writable=True)
+        T.call("open_project", path=str(gpr), writable=True)
+        info = a.call("open_program", path=exe, writable=True)
+        key = info["key"]
+        # the owner is named as agent-a opened it
+        try:
+            T.call("open_program", path=exe, writable=True, wait=300)
+            raise Fail("a second connection opened the program writable")
+        except c.gs.SessionError as e:
+            check(e.code == "not_owner" and "agent-a" in e.message, f"owner not named: {e}")
+        # agent-a holds the program exclusively; agent-b's writable open is blocked by it
+        sleep = a.send("script", script=c.script("TestSleep.java"), args=["6000"], program=key)
+        wait_for(lambda: any(p["path"] == "/" + exe and p["busy"]
+                             for p in S.call("status")["programs"]), "a's script to run")
+        try:
+            b.call("open_program", path=exe, writable=True, wait=300)
+            raise Fail("agent-b's writable open was not blocked")
+        except c.gs.SessionError as e:
+            check(e.code == "busy", f"expected busy: {e}")
+            check("agent-a" in (e.details.get("holder") or "") and "agent-b" not in e.message,
+                  f"the holder is not agent-a: {e.details}")
+        try:
+            b.call("decompile", address="0x0", program=key, wait=300)
+            raise Fail("agent-b's decompile was not blocked")
+        except c.gs.SessionError as e:
+            check(e.code == "busy" and "agent-a" in e.details.get("holder", ""),
+                  f"decompile busy answer: {e} {e.details}")
+        st = S.call("status")
+        busy = [p for p in st["programs"] if p["path"] == "/" + exe][0]
+        check("agent-a" in busy["busy"] and busy["ownerLabel"] and "agent-a" in busy["ownerLabel"],
+              f"status does not name the holder: {busy}")
+        reqs = [r for cl in st["clients"] for r in cl["requests"]]
+        check(any(r["client"] == "agent-a" and r["cmd"] == "script" for r in reqs),
+              f"status requests do not carry the label: {reqs}")
+        me = b.call("status")["youAre"]
+        check(me["client"] == "agent-b" and me["harness"] == "opencode" and me["labelled"],
+              f"youAre: {me}")
+        # cancel scoping: agent-b's cancel all does not reach agent-a's script or the other
+        # label's requests
+        sb = b.send("script", script=c.script("TestSleep.java"), args=["60000"], program=None)
+        sa2 = a.send("script", script=c.script("TestSleep.java"), args=["60000"], program=None)
+        wait_for(lambda: len([r for cl in S.call("status")["clients"] for r in cl["requests"]
+                              if r["cmd"] == "script"]) == 3, "three scripts")
+        check(b.cancel(sleep)["cancelled"] is False, "agent-b cancelled agent-a's request by id")
+        r = b.cancel_all()
+        check(r["cancelled"] == 1, f"agent-b's cancel all: {r}")
+        try:
+            b.wait(sb)
+            raise Fail("agent-b's request survived its own cancel all")
+        except c.gs.SessionError as e:
+            check(e.code == "cancelled", str(e))
+        left = {r["id"] for cl in S.call("status")["clients"] for r in cl["requests"]
+                if r["cmd"] == "script"}
+        check({str(sleep), str(sa2)} <= left, f"agent-a's requests were cancelled: {left}")
+        # an unlabelled cancel all is the connection's: everything that is left
+        r = S.call("cancel", all=True)
+        check(r["cancelled"] == 2, f"unlabelled cancel all: {r}")
+        for rid in (sleep, sa2):
+            try:
+                a.wait(rid)
+            except c.gs.SessionError as e:
+                check(e.code == "cancelled", str(e))
+    d.stop()
+    return "labels named in busy, status and owner messages; cancel scoped per label"
 
 
 def t_idle_shutdown(c: Ctx):
@@ -1184,8 +1427,9 @@ def t_overlays(c: Ctx):
 
 
 TESTS = ["two_harnesses", "two_projects", "dll_import", "client_kill", "daemon_restart",
-         "fairness", "cancel_all", "idle_shutdown", "keep_warm", "stdio", "upgrade_cache",
-         "holders", "fork", "revisions", "overlays"]
+         "fairness", "cancel_all", "import_queue", "import_isolation", "caller_labels",
+         "idle_shutdown", "keep_warm", "stdio", "upgrade_cache", "holders", "fork", "revisions",
+         "overlays"]
 
 
 def main():
@@ -1201,6 +1445,9 @@ def main():
                     help="the program in it to open (default: the first one)")
     ap.add_argument("--tmpdir", help="java.io.tmpdir for the daemons (default: <work>/tmp; "
                     "'default': leave it to the JVM)")
+    ap.add_argument("--raw-mb", dest="raw_mb", type=int, default=128,
+                    help="size of the random raw binary the import queue test imports "
+                    "(default 128): large enough that an import outlasts the polling")
     ap.add_argument("--only")
     a = ap.parse_args()
     sys.path.insert(0, str(pathlib.Path(a.ghidra) / "Ghidra" / "Features" / "HeadlessSession" /
