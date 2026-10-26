@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/RusticStack/hydra-engine/main/.github/assets/logo-dark.svg">
-    <img src="https://raw.githubusercontent.com/RusticStack/hydra-engine/main/.github/assets/logo-light.svg" width="128" alt="Hydra Engine logo: a green many-headed serpent; the middle head's face is a terminal prompt, one neck is cut short and a new dashed head is arriving">
+    <img src="https://raw.githubusercontent.com/RusticStack/hydra-engine/main/.github/assets/logo-light.svg" width="360" alt="Hydra Engine logo: the word HYDRA in green block letters with box-drawing shadows, as a terminal banner">
   </picture>
 </p>
 
