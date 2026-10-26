@@ -732,12 +732,15 @@ def t_parallel_imports(c: Ctx):
         notes.append(f"same file at once: one import, the other waited "
                      f"{rb['sameFileImport']['waitedMs']} ms and answered existing")
 
-        # 4. Cancel one of two running imports; the other completes.
-        f5, f6 = raw_file(c, "par4.bin", mb), raw_file(c, "par5.bin", mb)
+        # 4. Cancel one of two running imports; the other completes. The cancel must land
+        # during the load: once the import writes its program into the project it is no longer
+        # cancellable (a fast machine loaded a 128 MB file in about 1.5 s), so the files are
+        # larger and the cancel is sent soon after both run.
+        f5, f6 = raw_file(c, "par4.bin", mb * 4), raw_file(c, "par5.bin", mb)
         ia = A.send("import", file=f5, name="cancelme", parallel=True, **RAW_LANG)
         ib = B.send("import", file=f6, name="keep", parallel=True, project=pa, **RAW_LANG)
         wait_for(lambda: len(imports()["running"]) == 2, "two imports running", 60)
-        time.sleep(1.0)
+        time.sleep(0.3)
         check(A.call("cancel", target=ia)["cancelled"] is True, "cancel")
         expect_error("cancelled", A.wait, ia)
         rb = B.wait(ib)

@@ -767,7 +767,10 @@ program into the project (the project's file-system lock, above).
 
 **Failure.** A cancelled import (`cancel`, its client disconnecting or dying, the daemon
 stopping) stops its load at the loader's next cancellation check, releases its program (and its
-temporary database files) and leaves nothing in the project; the other imports go on. A daemon
+temporary database files) and leaves nothing in the project; the other imports go on. A cancel
+that arrives once the load is done, while the program is being written into the project, is too
+late: that write is not cancellable, and the import completes (`cancel` still answers
+`cancelled: true`, meaning the request was told). A daemon
 killed mid-import leaves no partial program: the program reaches the project only in the final
 `createFile`, and the next daemon opens the project and imports the file again
 (`daemon_tests.py import_kill`). A daemon killed during that `createFile` itself, while the

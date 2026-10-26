@@ -242,6 +242,9 @@ You need a JDK 25 and Python 3.10 or later; the install has no JDK.
   build), `orphan_shutdown` (orphaned shared-write work discarded and logged at shutdown),
   `import_write_kill` (the daemon killed during an import's final write: the program absent or
   complete, never half).
+- `parallel_imports` cancels its import during the load: on a fast CI runner its fixed 1 s
+  delay let the cancel arrive during the final write, which is not cancellable (README,
+  "Parallel imports", now says so).
 
 ## 12.3-hydra.1
 
