@@ -522,10 +522,10 @@ view and a writable project are described in "Read-only view, writable project".
 | Any number of read-only views of one project (also a Ghidra window) | in parallel | A read-only view takes no project lock and writes nothing. |
 | Writers in **different projects** | in parallel | Different projects never wait on each other (the one exception is `import`, below). |
 | Two writers of the **same program** | one wins, the other gets `not_owner` | One owner per program: the client that opened it writable. Others may read it and see its unsaved changes. |
-| Two writers on **different programs of one writable project** | allowed, but **not independent** | A writable project is one exclusive open (one project lock, held by the daemon). A second client that opens the same project writable joins that one instance (it does not get `conflict`); each program has its own owner, but the clients share the project: closing it waits for the others' running requests, it closes when its last user leaves, and a script with project access can reach every program in it. Give each writer its own working copy instead (see fork_project). |
+| Two writers on **different programs of one writable project** | allowed, but **not independent** | A writable project is one exclusive open (one project lock, held by the daemon). A second client that opens the same project writable joins that one instance (it does not get `conflict`); each program has its own owner, but the clients share the project: closing it waits for the others' running requests, it closes when its last user leaves, and a script with project access can reach every program in it. Give each writer its own working copy instead ("Working copies: `fork_project`"). |
 | A second **process** (a Ghidra window, `analyzeHeadless`, another daemon) opens a project this daemon holds writable, or the reverse | `conflict` | The project lock is held by one process; the error names the lock file. |
-| `open_project` writable while another client of this daemon uses its read-only view | `conflict` | The read-only view would change under its reader. The reverse joins: a read-only request on a writable project opens programs read-only. Reopen writable when the other readers have left, or work in a copy (see fork_project). |
-| Read-only view of a project another process has open and saves | works, but stale | It sees the project as it was when the view opened; reopen to see saved changes (see refresh). |
+| `open_project` writable while another client of this daemon uses its read-only view | `conflict` | The read-only view would change under its reader. The reverse joins: a read-only request on a writable project opens programs read-only. Reopen writable when the other readers have left, or `fork_project` the project and write the fork while they keep reading the master. |
+| Read-only view of a project another process has open and saves | works, flagged `stale` | It shows the project as it was when the view opened; its clients are told with `stale` on their next answers, and `refresh` reopens the view for all of them at once, without anyone leaving ("Revisions and `refresh`"). |
 | Concurrent `import`s | **serialized**, daemon-wide | Ghidra's loaders find libraries through one global "active project", so imports (and upgrade cache builds, which open their copy under it) run one at a time, in any project. Details of waiting and cancelling queued imports: <!-- IMPORT-QUEUE-LANE: replace this comment with the import queue's behaviour (position, holder, cancel of a queued import); do not guess. --> |
 
 What the codes mean when two clients meet:
@@ -534,19 +534,20 @@ What the codes mean when two clients meet:
   for something only its owner may do (`rename`, `comment`, `analyze`, `save`, a changing
   script, or a writable `open_program`). `details.owner` is the owner's client id (the
   `clients` list of `status` names it and its harness). Read it, wait for the owner to save and
-  close it, or work in a copy of the project (see fork_project).
+  close it, or `fork_project` the project and work in the copy (the error's `suggest` and
+  `suggestion` say so).
 - **`conflict`**: the project, not a program, cannot be given to you as asked: its lock belongs to
   another process, it is open read-only and in use by others while you asked for writable, the
   session is shutting down, a program needs a database upgrade you did not allow (`"upgrade":
-  true`), or a name is ambiguous. Nothing is waiting: retry will not help until the situation
-  changes.
+  true`), a name is ambiguous, or a `fork_project` cannot start (the source is being written,
+  the destination exists, the copy is larger than allowed: `details.reason`). Nothing is
+  waiting: retrying will not help until the situation changes.
 - **`busy`**: a slot or a lock did not come free within `wait` (default 10 s). `details` names the
   lane or the program, what wanted it, and the holder (client, harness, command) and for how
   long. Retry, or pass a longer `wait`; nothing was queued past the deadline.
 
-(see fork_project) and (see refresh) refer to the working copy and view refresh operations that
-are being added; until they are documented below, make the copy outside the daemon, with the
-project closed.
+All three carry `holderInfo` and `suggest` in `details` (see "Error codes"): who holds it, and
+whether the answer is to retry, to fork, or to open read-only.
 
 ## Scripts
 
