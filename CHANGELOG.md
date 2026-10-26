@@ -3,12 +3,33 @@
 What Hydra Engine adds on top of Ghidra. Ghidra's own changes are in its
 [change history](Ghidra/Configurations/Public_Release/src/global/docs/ChangeHistory.md).
 
-There are no releases yet. Version numbers will follow the Ghidra version a release is built on
-(for example `12.3-hydra.1`).
+A version is the Ghidra version a release is built on, then `-hydra.` and a counter (for
+example `12.3-hydra.1`); its tag is `v` and the version. Releases are on
+[GitHub](https://github.com/RusticStack/hydra-engine/releases).
 
-## Unreleased
+## 12.3-hydra.1
 
-Based on upstream Ghidra `master` (12.3 DEV) as of 2026-10-21, commit `1640030366`.
+Released 2026-10-26. The first release. Based on upstream Ghidra `master` (12.3 DEV) as of
+2026-10-26, commit `057a646233edfb21768a42a0aabc1d1a7709da19`.
+
+### Downloads
+
+One zip per platform: the headless install (`gradle zipHeadless`), Windows x64, Linux x64 and
+macOS arm64. The table under each release says which platforms ran the two test suites on the
+unzipped install. You need a JDK 25 and Python 3.10 or later; the install has no JDK.
+
+### Known limits
+
+- **Projects saved by this build cannot be opened by Ghidra 12.2 or 12.1.4.** Upstream `master`
+  writes data type databases at version 3; 12.2 and 12.1.4 read version 2. A project opened
+  read-only is not written; open older projects writable only from a copy. The
+  `legacy-12.1.4` branch serves projects that must stay on 12.1.4.
+- **Based on a development snapshot.** Upstream `master` is Ghidra's next version under work
+  (12.3 DEV), not a Ghidra release.
+- **Windows first.** The module and launcher were developed and measured on Windows; CI runs on
+  Windows on every push. Linux and macOS are built and tested only by the release workflow.
+- **Headless only.** No window, help, javadoc or Python type stubs; the full Ghidra build is
+  still `gradle buildGhidra`, from source.
 
 ### Added
 
@@ -34,6 +55,9 @@ Based on upstream Ghidra `master` (12.3 DEV) as of 2026-10-21, commit `164003036
 - **Repository**: this README (Ghidra's original is `README-GHIDRA.md`), `NOTICE-HYDRA`, a
   security policy and contributor guide in `.github/`, issue and pull request templates, and CI
   (`.github/workflows/ci.yml`) that builds the headless install and runs both test suites.
+- **Releases** (`.github/workflows/release.yml`): a tag `v<version>` builds the headless zip on
+  Windows, Linux and macOS, runs both test suites on each unzipped install, and publishes the
+  zips, `SHA256SUMS` and this file's section as a GitHub Release.
 
 ### Branches
 

@@ -169,7 +169,7 @@ conflict:
 | `.github/ISSUE_TEMPLATE/bug_report.md`, `feature_request.md` (ours), `question.md` (removed) | Upstream rarely edits its templates. | Keep ours; keep `question.md` deleted (`git rm`). |
 
 Files we only add (`gradle/hydra/`, `.github/CONTRIBUTING.md`, `.github/SECURITY.md`,
-`.github/workflows/ci.yml`, `.github/assets/`, `NOTICE-HYDRA`, `CHANGELOG.md`,
+`.github/workflows/ci.yml`, `.github/workflows/release.yml`, `.github/assets/`, `NOTICE-HYDRA`, `CHANGELOG.md`,
 `README-GHIDRA.md`, `Ghidra/Features/HeadlessSession/`) cannot conflict, unless upstream adds a
 file with the same path.
 
@@ -190,6 +190,31 @@ Things that do not conflict but can still break:
 - **The launcher** (`ghidra_session.py`) rebuilds Ghidra's classpath from the module layout;
   upstream changes to `GhidraLauncher`'s ordering or `launch.properties` need the same change
   there.
+
+## Releases
+
+A version is the Ghidra version of the build (`application.version` in
+`Ghidra/application.properties`), `-hydra.` and a counter that starts at 1 for each Ghidra
+version: `12.3-hydra.1`, `12.3-hydra.2`, then `12.4-hydra.1`. The tag is `v` and the version.
+
+1. Sync with upstream first (above), so a release is on the latest `master`, and let CI pass on
+   `main`.
+2. In `CHANGELOG.md`, turn the top section into `## <version>`: the date, what changed, the known
+   limits, and the upstream commit it is based on, written as ``commit `<40-hex sha>` ``; the
+   release workflow refuses a section without one, or with a commit that is not in the tag's
+   history. Commit it to `main`.
+3. Dry run, optional: `gh workflow run release.yml --ref main -f version=<version>` builds and
+   tests every platform and uploads the notes it would publish (`release-dry-run-notes`), without
+   publishing.
+4. Tag and push: `git tag v<version> && git push origin v<version>`. `release.yml` builds the
+   headless zip on Windows, Linux and macOS (`hydra-engine-<version>-<platform>.zip`), unzips
+   each and runs `session_smoke.py` and `daemon_tests.py` on it, and only if every platform passes
+   publishes the release with the zips, `SHA256SUMS` and the changelog section, followed by a table
+   of what was tested where.
+5. Check the release page: every asset there, and one asset's SHA-256 matching `SHA256SUMS`.
+
+A platform that fails cannot ship silently: fix it, or take it out of the matrix in `release.yml`
+and say so in the changelog section.
 
 ## Code style
 
