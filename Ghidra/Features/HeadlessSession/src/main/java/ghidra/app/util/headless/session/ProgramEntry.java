@@ -44,12 +44,68 @@ import ghidra.program.model.listing.Program;
  */
 final class ProgramEntry implements Decompilers {
 
+	/**
+	 * How the program is open: read-only; writable with one {@link #owner}; or writable and
+	 * <b>shared</b> by several {@link #writers}, whose changes are committed one at a time under
+	 * the program's exclusive lock and recorded in the {@link #journal}.
+	 */
 	enum Mode {
-		READ_ONLY, WRITABLE;
+		READ_ONLY, WRITABLE, SHARED;
 
 		String json() {
-			return this == READ_ONLY ? "read_only" : "writable";
+			return switch (this) {
+				case READ_ONLY -> "read_only";
+				case WRITABLE -> "writable";
+				case SHARED -> "shared";
+			};
 		}
+	}
+
+	/** In {@link Mode#SHARED}: the clients that may change it. Guarded by {@link #users}. */
+	final Set<Client> writers = new LinkedHashSet<>();
+	/** Who changed what, for writable programs (owner and shared mode). */
+	final Journal journal = new Journal();
+	/** The journal's {@code seq} at the last save here: later entries are unsaved. */
+	volatile long savedSeq;
+	/**
+	 * Set when the last writer of a shared program disconnected with unsaved changes: they are
+	 * kept, not discarded, until a client joins and saves or discards them.
+	 */
+	volatile long orphanedSince;
+
+	/** True when {@code c} may change it: its owner, or one of its shared writers. */
+	boolean isWriter(Client c) {
+		if (mode == Mode.WRITABLE) {
+			return owner == c;
+		}
+		if (mode == Mode.SHARED) {
+			synchronized (users) {
+				return writers.contains(c);
+			}
+		}
+		return false;
+	}
+
+	List<Integer> writerIds() {
+		List<Integer> ids = new ArrayList<>();
+		synchronized (users) {
+			writers.forEach(w -> ids.add(w.id));
+		}
+		return ids;
+	}
+
+	/** A shared program whose writers all left while it had unsaved changes. */
+	boolean holdsOrphanedWork() {
+		Program p = program;
+		if (mode != Mode.SHARED || p == null) {
+			return false;
+		}
+		synchronized (users) {
+			if (!writers.isEmpty()) {
+				return false;
+			}
+		}
+		return p.isChanged();
 	}
 
 	final ProjectEntry project;
@@ -323,6 +379,12 @@ final class ProgramEntry implements Decompilers {
 		}
 		Json.put(o, "ownerLabel", owner == null ? null : ownerLabel);
 		Json.put(o, "busy", exclusiveHolder);
+		Json.put(o, "writers", writerIds());
+		Json.put(o, "journalSeq", journal.seq());
+		Json.put(o, "unsavedEdits", Math.max(0, journal.seq() - savedSeq));
+		Json.put(o, "orphanedMs",
+			orphanedSince > 0 && holdsOrphanedWork() ? System.currentTimeMillis() - orphanedSince
+					: null);
 		Json.put(o, "revision", revision);
 		Json.put(o, "cachedUpgrade", cacheInfo != null);
 		Json.put(o, "cacheBuild", cacheBuild(uc));

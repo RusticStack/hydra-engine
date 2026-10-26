@@ -27,7 +27,8 @@ older-format part of upgrade_cache; the original is only read.
 
 Tests: two_harnesses, two_projects, dll_import, client_kill, daemon_restart, fairness, cancel_all,
 import_queue, import_isolation, caller_labels, idle_shutdown, keep_warm, stdio, upgrade_cache,
-holders, fork, revisions, overlays.
+holders, fork, revisions, overlays, multi_writer, shared,
+shared_stress.
 """
 import argparse
 import json
@@ -992,23 +993,17 @@ def t_holders(c: Ctx):
     d = c.daemon("holders", keepWarm=0)
     notes = []
     with d.connect("reader-a", "harness-a") as a, d.connect("writer-b", "harness-b") as b:
-        # a read-only view in use: a writable open is refused, naming the reader, suggesting a fork
+        # writing to a read-only view: read_only, naming the project, suggesting a fork
         pa = a.call("open_project", path=str(gpr))
-        e = expect_error("conflict", b.call, "open_project", path=str(gpr), writable=True)
+        b.call("open_project", path=str(gpr))
+        e = expect_error("read_only", b.call, "open_program", path=exe, writable=True)
         dt = e.details
-        names = [(h.get("name"), h.get("harness")) for h in dt.get("holders", [])]
-        check(("reader-a", "harness-a") in names, f"conflict does not name the reader: {dt}")
         check(dt.get("project") == pa["id"] and dt.get("gpr"), f"no project identity: {dt}")
         check(dt.get("suggest") == "fork_project" and
               dt.get("suggestion", {}).get("cmd") == "fork_project" and
-              dt["suggestion"].get("project") == pa["id"] and dt["suggestion"].get("path"),
-              f"no fork suggestion: {dt}")
-        check(all(isinstance(h.get("heldMs"), int) for h in dt["holders"]), f"no heldMs: {dt}")
-        notes.append("conflict names reader + suggests fork_project")
-        # writing to a read-only view: read_only, with the same suggestion
-        b.call("open_project", path=str(gpr))
-        e = expect_error("read_only", b.call, "open_program", path=exe, writable=True)
-        check(e.details.get("suggest") == "fork_project", f"read_only: {e.details}")
+              dt["suggestion"].get("project") == pa["id"] and dt["suggestion"].get("path") and
+              dt.get("alternative") == "open_project writable", f"no fork suggestion: {dt}")
+        notes.append("read_only names the project + suggests fork_project")
         a.call("close_project")
         b.call("close_project")
         # one writer per program: not_owner names the owner
@@ -1426,10 +1421,343 @@ def t_overlays(c: Ctx):
     return "; ".join(notes)
 
 
+COMMENTS = """// @category HeadlessSession.Test
+import ghidra.app.script.GhidraScript;
+import ghidra.program.model.address.Address;
+import ghidra.program.model.listing.CommentType;
+public class TestComments extends GhidraScript {
+    @Override protected void run() throws Exception {
+        for (String a : getScriptArgs()) {
+            Address at = currentProgram.getAddressFactory().getAddress(a);
+            String c = currentProgram.getListing().getComment(CommentType.EOL, at);
+            println("C|" + a + "|" + (c == null ? "" : c));
+        }
+    }
+}
+"""
+
+
+def comments_at(s, addresses, program=None):
+    """{address: EOL comment} through a contained script."""
+    path = s_scripts_dir / "TestComments.java"
+    if not path.exists():
+        path.write_text(COMMENTS)
+    kw = {"program": program} if program else {}
+    out = s.call("script", script=str(path), args=list(addresses), maxChars=16_000_000,
+                 wait=120000, **kw)["output"]
+    res = {}
+    for line in out.splitlines():
+        if line.startswith("C|"):
+            _, a, text = line.split("|", 2)
+            res[a] = text
+    return res
+
+
+def names_at(s, program=None):
+    kw = {"program": program} if program else {}
+    return {f["address"]: f["name"] for f in
+            s.call("functions", limit=10000, **kw)["functions"]}
+
+
+def code_functions(s, n, program=None):
+    kw = {"program": program} if program else {}
+    return [f["address"] for f in s.call("functions", limit=10000, **kw)["functions"]
+            if not f["thunk"] and not f["external"]][:n]
+
+
+def t_multi_writer(c: Ctx):
+    """Several writers in one project: a writable open while others hold the read-only view
+    reopens it writable in place (the readers keep their keys and go on); a second writable
+    open joins; two clients write two different programs of the project at the same time
+    (renames, comments, saves) independently; a writer of a program another client owns gets
+    not_owner with overlay/fork alternatives; the project reopens with both writers' work."""
+    global s_scripts_dir
+    s_scripts_dir = c.scripts
+    gpr = c.copy_fixture("projMW")
+    exe, dll = pathlib.Path(c.a.exe).name, pathlib.Path(c.a.dll).name
+    d0 = c.daemon("mw-setup")
+    with d0.connect("setup", "tests") as s:
+        s.call("open_project", path=str(gpr), writable=True)
+        s.call("import", file=c.a.dll, analyze=True, timeout=1800, wait=600000)
+        s.call("close_project")
+    d0.stop()
+    d = c.daemon("mw", keepWarm=0)
+    notes = []
+    with d.connect("reader", "tests") as r, d.connect("w1", "tests") as w1, \
+            d.connect("w2", "tests") as w2:
+        pr = r.call("open_project", path=str(gpr))
+        ri = r.call("open_program", path=exe)
+        fn = code_functions(r, 1)[0]
+        canon = r.call("decompile", address=fn)["name"]
+        p1 = w1.call("open_project", path=str(gpr), writable=True)
+        check(p1["id"] == pr["id"] and p1["writable"], f"not reopened writable in place: {p1}")
+        check(r.call("decompile", address=fn)["name"] == canon and
+              r.call("info")["key"] == ri["key"], "the reader lost its program")
+        check(r.call("project")["writable"], "the reader does not see the writable project")
+        notes.append("writable open while a reader holds the view: reopened in place")
+        p2 = w2.call("open_project", path=str(gpr), writable=True)
+        check(p2["id"] == pr["id"], f"second writable open did not join: {p2}")
+        k1 = w1.call("open_program", path=exe, writable=True)["key"]
+        k2 = w2.call("open_program", path=dll, writable=True)["key"]
+        e = expect_error("not_owner", w2.call, "open_program", path=exe, writable=True)
+        check(e.details.get("alternatives") == ["overlay", "fork_project"] and
+              e.details.get("overlaySuggestion", {}).get("overlay") and
+              (e.details.get("holderInfo") or {}).get("name") == "w1",
+              f"not_owner alternatives: {e.details}")
+        f1 = code_functions(w1, 30, k1)
+        f2 = code_functions(w2, 30, k2)
+        errs = []
+        want = {k1: {}, k2: {}}
+
+        def writer(s, key, fns, tag):
+            try:
+                for i in range(300):
+                    a = fns[i % len(fns)]
+                    name = f"{tag}_{i}"
+                    s.call("rename", program=key, address=a, name=name, wait=120000)
+                    want[key][a] = name
+                    s.call("comment", program=key, address=a, text=f"{tag} {i}", wait=120000)
+                    if i % 50 == 49:
+                        s.call("save", program=key, wait=120000)
+                    if i == 150:  # a bounded analysis of each program, at the same time
+                        s.call("analyze", program=key, ranges=[[a, a]], timeout=600,
+                               wait=600000)
+                s.call("save", program=key, wait=120000)
+            except Exception as ex:  # noqa: BLE001
+                errs.append(f"{tag}: {ex!r}")
+
+        t = time.perf_counter()
+        ths = [threading.Thread(target=writer, args=(w1, k1, f1, "w1")),
+               threading.Thread(target=writer, args=(w2, k2, f2, "w2"))]
+        for th in ths:
+            th.start()
+        for th in ths:
+            th.join()
+        c.timings["two writers, two programs: 2x(300 renames + 300 comments + 7 saves)"] = round(
+            time.perf_counter() - t, 1)
+        check(not errs, f"concurrent writers failed: {errs}")
+        notes.append(f"2 writers x 600 edits + saves on 2 programs in "
+                     f"{c.timings['two writers, two programs: 2x(300 renames + 300 comments + 7 saves)']} s")
+        for s in (r, w1, w2):
+            s.call("close_project")
+    d.stop()
+    # the project reopens clean, with both writers' work
+    d2 = c.daemon("mw-check")
+    with d2.connect("check", "tests") as s:
+        s.call("open_project", path=str(gpr))
+        for key, prog in ((k1, exe), (k2, dll)):
+            s.call("open_program", path=prog)
+            names = names_at(s)
+            bad = {a: (n, names.get(a)) for a, n in want[key].items() if names.get(a) != n}
+            check(not bad, f"{prog}: names lost after reopen: {list(bad.items())[:5]}")
+    d2.stop()
+    notes.append("project reopened with every saved name of both writers")
+    return "; ".join(notes)
+
+
+def t_shared(c: Ctx):
+    """Shared mode: several clients write the same program; every change is journalled with
+    its author; expect turns a lost update into a conflict naming the last editor; owner and
+    shared mode do not mix; discard_edits reverts one client's changes; a writer that dies
+    keeps everyone's committed work, also when it was the last writer (the work waits, unsaved,
+    for a client to save it)."""
+    global s_scripts_dir
+    s_scripts_dir = c.scripts
+    gpr = c.copy_fixture("projShared")
+    exe = pathlib.Path(c.a.exe).name
+    d = c.daemon("shared", keepWarm=0)
+    notes = []
+    with d.connect("agent-a", "harness-a") as a, d.connect("agent-b", "harness-b") as b, \
+            d.connect("agent-c", "harness-c") as x:
+        for s in (a, b, x):
+            s.call("open_project", path=str(gpr), writable=True)
+        io = a.call("open_program", path=exe, writable=True)      # owner mode first
+        check(io["mode"] == "writable" and io["mine"], f"owner open: {io}")
+        e = expect_error("not_owner", b.call, "open_program", path=exe, writable=True, share=True)
+        check(e.details.get("alternatives") == ["overlay", "fork_project"], f"{e.details}")
+        ia = a.call("open_program", path=exe, writable=True, share=True)  # the owner shares it
+        ib = b.call("open_program", path=exe, writable=True, share=True)
+        check(ia["mode"] == "shared" and ib["writers"] == [a.hello["client"], b.hello["client"]],
+              f"shared open: {ib}")
+        f = code_functions(a, 6)
+        names0 = names_at(a)
+        r1 = a.call("rename", address=f[0], name="a_first")
+        r2 = b.call("rename", address=f[1], name="b_second")
+        b.call("comment", address=f[1], text="b was here")
+        check(names_at(b)[f[0]] == "a_first" and names_at(a)[f[1]] == "b_second",
+              "writers do not see each other's changes")
+        check(r1["seq"] < r2["seq"], f"journal order: {r1} {r2}")
+        # owner and shared mode do not mix; a non-writer is told to join
+        e = expect_error("conflict", x.call, "open_program", path=exe, writable=True)
+        check(e.details.get("suggest") == "share", f"mixing modes: {e.details}")
+        x.call("open_program", path=exe)
+        e = expect_error("not_owner", x.call, "rename", address=f[0], name="x_nope")
+        check(e.details.get("suggest") == "share", f"non-writer: {e.details}")
+        # a lost update becomes a conflict naming who changed it
+        b.call("rename", address=f[0], name="b_over_a", expect="a_first")
+        e = expect_error("conflict", a.call, "rename", address=f[0], name="a_again",
+                         expect="a_first")
+        check(e.details.get("current") == "b_over_a" and
+              (e.details.get("holderInfo") or {}).get("name") == "agent-b" and
+              e.details.get("suggest") == "reread", f"expect conflict: {e.details}")
+        notes.append("expect: a lost update is a conflict naming the last editor")
+        an = b.call("analyze", ranges=[[f[5], f[5]]], timeout=600, wait=600000)
+        check(an["seq"] > 0, f"analyze by a shared writer: {an}")
+        j = a.call("journal")
+        ops = [(x_["op"], x_["name"], x_.get("address")) for x_ in j["entries"]]
+        check(("rename", "agent-a", f[0]) in ops and ("comment", "agent-b", f[1]) in ops and
+              any(o[0] == "analyze" and o[1] == "agent-b" for o in ops) and
+              j["seq"] == len(j["entries"]), f"journal: {j}")
+        # discard_edits reverts one client's changes, newest first, and keeps the others'
+        dr = a.call("discard_edits", author=b.hello["client"])
+        names = names_at(a)
+        check(names[f[0]] == "a_first" and names[f[1]] == names0[f[1]] and
+              len(dr["reverted"]) == 3, f"discard_edits: {dr} {names[f[0]]} {names[f[1]]}")
+        check(comments_at(a, [f[1]])[f[1]] == "", "b's comment was not reverted")
+        notes.append("discard_edits reverted b's 3 changes, kept a's")
+        # a writer that dies: its committed work stays
+        code = ("s = gs.connect(client='doomed', harness='crashy', state=A[0], instance='shared',"
+                " ghidra=A[1])\n"
+                "s.call('open_project', path=A[2], writable=True)\n"
+                "s.call('open_program', path=A[3], writable=True, share=True)\n"
+                "s.call('rename', address=A[4], name='doomed_kept')\n"
+                "print(json.dumps({'client': s.hello['client']}), flush=True)\n"
+                "time.sleep(3600)\n")
+        p = c.child(code, c.state, c.a.ghidra, gpr, exe, f[2])
+        line = p.stdout.readline()
+        check(line, f"child did not start: {p.stderr.read()[-2000:] if p.poll() is not None else ''}")
+        p.kill()
+        p.wait()
+        time.sleep(1.0)
+        check(names_at(a)[f[2]] == "doomed_kept", "a dead writer's committed change was lost")
+        notes.append("a dead writer's committed change stays")
+        a.call("save")
+        # the last writer dies with unsaved changes: they are kept for a client to save
+        b.call("rename", address=f[3], name="b_unsaved")
+        a.call("close_program")
+        x.call("close_program")
+        p = c.child(code.replace("'doomed_kept'", "'last_writer'"), c.state, c.a.ghidra, gpr,
+                    exe, f[4])
+        line = p.stdout.readline()
+        check(line, "second child did not start")
+        b.call("close_project")   # not the last writer: leaves fine, its change unsaved
+        p.kill()
+        p.wait()
+        for s in (a, x):
+            s.call("close_project")
+        time.sleep(2.5)  # past the reaper (keepWarm 0)
+        st = a.call("status")
+        held = [pg for pg in st["programs"] if pg["path"] == "/" + exe]
+        check(held and held[0]["mode"] == "shared" and held[0]["writers"] == [] and
+              held[0]["orphanedMs"] is not None and held[0]["unsavedEdits"] >= 2,
+              f"orphaned work not kept: {held}")
+        notes.append("the last writer died: unsaved work kept, project stays open")
+        a.call("open_project", path=str(gpr), writable=True)
+        ia = a.call("open_program", path=exe, writable=True, share=True)
+        check(ia["unsavedEdits"] >= 2 and names_at(a)[f[3]] == "b_unsaved" and
+              names_at(a)[f[4]] == "last_writer", f"adopted work: {ia}")
+        a.call("save")
+        a.call("close_project")
+    d.stop()
+    d2 = c.daemon("shared-check")
+    with d2.connect("check", "tests") as s:
+        s.call("open_project", path=str(gpr))
+        s.call("open_program", path=exe)
+        names = names_at(s)
+        check(names[f[0]] == "a_first" and names[f[2]] == "doomed_kept" and
+              names[f[3]] == "b_unsaved" and names[f[4]] == "last_writer",
+              f"after reopen: {[names[x_] for x_ in f[:5]]}")
+    d2.stop()
+    notes.append("reopened: every kept change saved")
+    return "; ".join(notes)
+
+
+def t_shared_stress(c: Ctx):
+    """4 clients x 2 threads write one shared program at once: 3200 renames and comments,
+    with saves in between. No deadlock, no failed or lost committed edit: the journal has every
+    edit once, in commit order; the program holds, per address, the value of the last edit; it
+    reopens clean with all of it."""
+    global s_scripts_dir
+    s_scripts_dir = c.scripts
+    gpr = c.copy_fixture("projStress")
+    exe = pathlib.Path(c.a.exe).name
+    d = c.daemon("stress", keepWarm=0)
+    sessions = [d.connect(f"agent-{i}", f"harness-{i}") for i in range(4)]
+    for s in sessions:
+        s.call("open_project", path=str(gpr), writable=True)
+        s.call("open_program", path=exe, writable=True, share=True)
+    fns = code_functions(sessions[0], 40)
+    done, errs = [], []
+    lock = threading.Lock()
+
+    def worker(s, cid, t):
+        try:
+            for i in range(400):
+                a = fns[(cid * 7 + t * 13 + i) % len(fns)]
+                if i % 2 == 0:
+                    r = s.call("rename", address=a, name=f"s{cid}_{t}_{i}", parallel=True,
+                               wait=300000)
+                    item = (r["seq"], a, "name", f"s{cid}_{t}_{i}")
+                else:
+                    r = s.call("comment", address=a, text=f"c{cid}_{t}_{i}", parallel=True,
+                               wait=300000)
+                    item = (r["seq"], a, "comment", f"c{cid}_{t}_{i}")
+                with lock:
+                    done.append(item)
+                if i % 50 == 49:
+                    s.call("save", parallel=True, wait=300000)
+        except Exception as ex:  # noqa: BLE001
+            errs.append(f"{cid}/{t}: {ex!r}")
+
+    t0 = time.perf_counter()
+    ths = [threading.Thread(target=worker, args=(s, cid, t)) for cid, s in enumerate(sessions)
+           for t in range(2)]
+    for th in ths:
+        th.start()
+    for th in ths:
+        th.join(timeout=1800)
+    secs = time.perf_counter() - t0
+    check(not any(th.is_alive() for th in ths), "a writer hung (deadlock?)")
+    check(not errs, f"edits failed: {errs[:5]}")
+    c.timings["shared stress: 3200 edits by 8 writers"] = round(secs, 1)
+    check(len(done) == 3200, f"{len(done)} edits done")
+    s0 = sessions[0]
+    j = s0.call("journal", limit=100000)
+    seqs = [e["seq"] for e in j["entries"]]
+    check(len(seqs) == 3200 and len(set(seqs)) == 3200 and seqs == sorted(seqs) and
+          {x[0] for x in done} == set(seqs), f"journal: {len(seqs)} entries")
+    last = {}
+    for seq, a, field, value in sorted(done):
+        last[(a, field)] = value
+    names = names_at(s0)
+    comments = comments_at(s0, fns)
+    bad = [(k, v) for k, v in last.items()
+           if (names.get(k[0]) if k[1] == "name" else comments.get(k[0])) != v]
+    check(not bad, f"the program does not hold the last edit: {bad[:5]}")
+    s0.call("save", wait=300000)
+    for s in sessions:
+        s.call("close_project")
+        s.close()
+    d.stop()
+    d2 = c.daemon("stress-check")
+    with d2.connect("check", "tests") as s:
+        s.call("open_project", path=str(gpr))
+        s.call("open_program", path=exe)
+        names = names_at(s)
+        comments = comments_at(s, fns)
+        bad = [(k, v) for k, v in last.items()
+               if (names.get(k[0]) if k[1] == "name" else comments.get(k[0])) != v]
+        check(not bad, f"after reopen: {bad[:5]}")
+    d2.stop()
+    return (f"3200 edits by 4 clients x 2 threads with 64 saves in {secs:.1f} s "
+            f"({3200 / secs:.0f}/s); journal complete and ordered; reopened with every last "
+            f"value")
+
+
 TESTS = ["two_harnesses", "two_projects", "dll_import", "client_kill", "daemon_restart",
          "fairness", "cancel_all", "import_queue", "import_isolation", "caller_labels",
          "idle_shutdown", "keep_warm", "stdio", "upgrade_cache", "holders", "fork", "revisions",
-         "overlays"]
+         "overlays", "multi_writer", "shared", "shared_stress"]
 
 
 def main():

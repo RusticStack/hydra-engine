@@ -19,7 +19,8 @@ it is based on.
   `harness`, `label`, `command`, `heldMs`; for another process, the user, host and time from
   Ghidra's project lock file and whether that process is alive), the project or program identity
   (`project`, `gpr`, `program` key, `path`, `sha256`), and `suggest`: `retry`,
-  `fork_project` (with a ready `suggestion` request) where a working copy is the answer, or
+  `fork_project` (with a ready `suggestion` request) where a working copy is the answer,
+  `share` (join a shared program), `reread` (a value changed since it was read), or
   `open_read_only`. `holder` stays a string as before; everything else is new fields.
 
 - **`fork_project`** (HeadlessSession): copies a project into a working copy for the caller
@@ -79,6 +80,24 @@ it is based on.
   `labelled(client=, harness=)` views with `cancel_all()`.
 - `daemon_tests.py`: `import_queue`, `import_isolation`, `caller_labels`; `--raw-mb`.
 
+- **Shared writing** (HeadlessSession): `open_program` with `"writable": true, "share": true`
+  lets several clients write one program at once. Each change is its own transaction,
+  committed one at a time under the program's exclusive lock and visible to all; last writer
+  wins, and `expect` on renames, labels and comments (also as `edit` operations) turns a lost update into
+  `conflict` (`reason: "changed"`) naming the last editor. Every change to a writable program
+  is journalled with its author (`journal`; `journalSeq`, `unsavedEdits`, `savedSeq`); new
+  commands `edit` (operations, all or none) and `discard_edits` (revert one author's unsaved
+  renames, labels, comments). A writer that dies loses only its uncommitted change; when it was
+  the last writer, the unsaved work is kept (program and project stay open) until a client
+  joins and saves or discards it. Owner and shared mode do not mix on one program. Tested with
+  4 clients x 2 threads, 3,200 edits and 64 saves: none lost, journal complete, reopen clean.
+- **Several writers in one project** (HeadlessSession): `open_project` writable while other
+  clients use the read-only view now reopens it writable in place (same id and keys, their
+  programs reopened, overlays rebuilt, `refreshed` once) instead of `conflict`; refused only
+  when another process holds the project lock. A second writable open joins; writers of
+  different programs of one project work in parallel (tested with concurrent renames,
+  comments, analysis and saves). `not_owner` adds `alternatives: ["overlay", "fork_project"]`
+  and an `overlaySuggestion`.
 - **Overlays** (HeadlessSession): a client's private annotation view of a shared program.
   `open_program` with `overlay` opens one: its own program object over the stored file
   (changeable, never saved), measured at 116 ms and +54 MB heap for a 243,855-function program.

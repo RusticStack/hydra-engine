@@ -325,6 +325,51 @@ executable with 243,855 functions), three runs:
 For comparison, a single 261 MB database file: 14 ms and 36 KB cloned on ReFS, 2.0 s and 262 MB
 copied to NTFS.
 
+### Shared writing: several clients write one program
+
+`open_program` with `"writable": true, "share": true` opens a program in **shared mode** (or
+joins it): every client that does so is one of its `writers` and may `rename`, `comment`,
+`edit`, `analyze`, `save`, `discard_edits` and run changing scripts on it, at the same time as the
+others. Owner mode (the default, one owner) and shared mode do not mix on one program: a
+writable open without `share` of a shared program gets `conflict` with `suggest: "share"`; an
+owner may turn its program shared by opening it again with `share`.
+
+- **One change at a time.** Each change is its own short transaction, committed under the
+  program's exclusive lock, so changes from different clients never interleave inside one
+  transaction (Ghidra joins concurrent transactions on one program into one, which would let one
+  client's rollback undo another's work). Readers share the lock between changes. A committed
+  change is visible to every client at once: they share one program object.
+- **Last writer wins** per value (a name, a comment of a type at an address, ...). To detect a
+  lost update instead, pass `"expect"` (the value you read; `null`: none) on `rename`, `comment`
+  or an `edit` operation of those kinds: if the value changed since, the change is refused with `conflict`,
+  `reason: "changed"`, the `current` value, and the last editor (`lastEdit`, `holderInfo`).
+- **`edit`** `{program?, ops}` applies the overlay operations (`rename`, `label`, `comment`,
+  `signature`, `data_type`; `rename`, `label` and `comment` take an optional `expect`) to a
+  writable program in one transaction, all or none, and journals them.
+- **Author journal.** Every committed change of a writable program (owner or shared mode) is
+  journalled: `seq` (commit order), `at`, `client` (id), the `name` and `harness` of the request
+  that made it, `cmd`, `op`, `address`, `old`, `new`, and the change's details. `journal`
+  `{program?, since: seq, author: client id, limit}` lists it; `info` and `status` show
+  `journalSeq` and `unsavedEdits` (changes after the last save, `savedSeq`). It keeps the last
+  200,000 entries per program.
+- **`discard_edits`** `{program?, author}` reverts one client's unsaved renames, labels and
+  comments, newest first, each only while the value is still what that client wrote; values
+  someone changed since, and analysis or script changes, are reported in `skipped`.
+- **Saving.** Any writer may `save` (the whole program, everyone's changes). A last writer that
+  closes it with unsaved changes gets `unsaved_changes` (save, or `"discard": true`, which
+  discards everyone's unsaved changes).
+- **A writer that dies.** Its running request is cancelled; a change it had not committed is
+  rolled back (its own transaction, nobody else's); every committed change stays. When it was the
+  last writer and changes are unsaved, the program stays open in shared mode with no writers
+  (`status`: `writers: []`, `orphanedMs`, `unsavedEdits`), and so does its project, until a
+  client joins with `share` and saves or discards; only a daemon shutdown discards it (logged).
+
+Tested: two writers and a third client (`shared`: visibility, the journal, `expect`,
+`discard_edits`, a killed writer, a killed last writer, reopen); 4 clients x 2 threads making
+3,200 renames and comments with 64 saves in 6.0 s on a small program, with no failed, lost or
+duplicated edit, the journal complete and ordered, the program holding each value's last edit,
+and the project reopening with all of it (`shared_stress`).
+
 ### Overlays: a private annotation view of a shared program
 
 **The need.** One client wants to try a name, a comment, a label, a signature or a data type
@@ -538,6 +583,10 @@ code 2). Long commands send throttled `progress` events with the request's `id`:
 | `list` | `project`?, `folder`="/", `recursive`=true, `programsOnly`=false, `metadata`=true, `sha256`, `offset`, `limit`=1000 | Folders and files, with `key`, `sha256`, `language`, `format`, `executable` and `open` (who uses it) for programs; `sha256` finds a program by its hash. Paged, with `truncated`. |
 | `open_program` / `switch` | `path` (path, unique name or key), `project`?, `writable`=false, `checkout`=false, `upgrade`=false, `wait`: `true` | Opens the program, or joins it if it is open (also a warm one nobody uses), and makes it active. Writable needs a writable project; a versioned file needs `checkout`. `"wait": true` on a read-only open of an older-format program waits for its upgrade cache copy instead of upgrading in memory (slot and lock waits keep the default). |
 | `programs` | | This client's programs (all projects) and its active ones. |
+| `open_program` + `share` | `path`, `writable`: true, `share`: true | Opens (or joins) the program in shared mode: several writers. See "Shared writing". |
+| `edit` | `program`?, `ops` [...] | Operations (`rename`, `label`, `comment`, `signature`, `data_type`; the first three with an optional `expect`) on a program this client may write, all or none, journalled. |
+| `journal` | `program`?, `since`, `author`, `limit` | Who changed what in a writable program, in commit order. |
+| `discard_edits` | `program`?, `author` | Reverts that client's unsaved renames, labels and comments. |
 | `open_program` + `overlay` | `path`, `overlay` | Opens the program read-only for this client and creates or joins its private overlay. See "Overlays". |
 | `apply_overlay` | `program`?, `overlay`, `ops` [...] | Applies operations (`rename`, `label`, `comment`, `signature`, `data_type`) to the overlay, all or none, and logs them. |
 | `drop_overlay` | `program`?, `overlay` | Drops the overlay. |
@@ -547,8 +596,8 @@ code 2). Long commands send throttled `progress` events with the request's `id`:
 | `close_program` | `program`?, `discard`=false | Drops this client's use. The owner of a changed program must `save` first or pass `discard`. |
 | `functions` | `program`?, `contains`, `regex`, `offset`, `limit`=200 (max 10000), `overlay`? | Functions by name filter, paged. |
 | `decompile` | `program`?, `address` or `name`, `timeout`=60 s, `maxChars`=200000, `overlay`? | C text and signature. Decompilers are pooled per program (and per overlay), so warm calls skip the start-up cost. |
-| `rename` | `program`?, `address`, `name`, `kind`=auto\|function\|label, `overlay`? | Renames the function at the address, or creates or renames the primary label: data labels and global names. Owner only; with `overlay`, in the client's overlay. |
-| `comment` | `program`?, `address`, `text` (null clears), `type`=eol\|pre\|post\|plate\|repeatable, `overlay`? | Owner only; with `overlay`, in the client's overlay. |
+| `rename` | `program`?, `address`, `name`, `kind`=auto\|function\|label, `expect`?, `overlay`? | Renames the function at the address, or creates or renames the primary label: data labels and global names. Owner or shared writers only; with `overlay`, in the client's overlay. Answers `old`, `created` and the journal `seq`. |
+| `comment` | `program`?, `address`, `text` (null clears), `type`=eol\|pre\|post\|plate\|repeatable, `expect`?, `overlay`? | Owner or shared writers only; with `overlay`, in the client's overlay. Answers `old` and the journal `seq`. |
 | `analyze` | `program`?, `options` {name: value}, `ranges` [[start, end], ...], `timeout` s | Sets analysis options, then runs auto-analysis on everything (or what the ranges trigger) the way `analyzeHeadless` does, and marks the program analysed. Owner only. |
 | `save` | `program`?, `comment` | Owner only. |
 | `import` | `file`, `project`?, `folder`="/", `name`, `language`, `compiler`, `analyze`=false, `duplicate`=false, `timeout` | Imports into a writable project with `ProgramLoader` (any format it accepts), saves it, opens it writable for this client, and optionally analyses and saves it. A file whose SHA-256 is already in the project returns `{"imported": false, "existing": [...]}` unless `duplicate`. Imports run one at a time across the daemon and queue in arrival order (see "The import queue"): the answer carries `queue` (`waitedMs`, `positionAtEntry`, `behind`), and a request that waits sends `progress` events "waiting behind ..." with its `queue` position and estimate. `wait` limits the time in the queue only when it is a number; by default a queued import waits until it runs or is cancelled. |
@@ -577,7 +626,7 @@ in `error.details`:
 | `holders` | `conflict` on `open_project`: every client using the project, each as a `holderInfo`. |
 | `project`, `gpr`, `name`, `writable`, `revision` | The project concerned (its revision: see "Revisions and `refresh`"). |
 | `program`, `path`, `sha256` | The program concerned: its key, its project path and its executable's SHA-256. |
-| `suggest` | What to do: `retry` (a lock that will be released: retry or raise `wait`), `fork_project` (the project or program has another writer, or is a shared read-only view: write your own working copy), `open_read_only` (another process holds the project writable), `open_program writable`. |
+| `suggest` | What to do: `retry` (a lock that will be released: retry or raise `wait`), `fork_project` (the project or program has another writer, or is a shared read-only view: write your own working copy), `open_read_only` (another process holds the project writable), `open_program writable`, `share` (the program is shared: join its writers), `reread` (`expect` failed: the value changed since you read it). `not_owner` adds `alternatives` (`overlay`, `fork_project`) and an `overlaySuggestion` request. |
 | `suggestion` | With `suggest: fork_project`: a ready request, `{"cmd": "fork_project", "project": "p1", "path": "<a folder next to the project>", "writable": true}`. The path is only a proposal. |
 
 ## Several clients
@@ -589,9 +638,11 @@ in `error.details`:
 - **Each program has a fair read/write lock.** Queries and contained scripts share it. Edits,
   analysis, saves, owner scripts and mode changes hold it alone. A request that cannot get it
   within `wait` fails with `busy`, naming the holder (client, harness, command, how long).
-- **One writer per program.** Only the client that opened a program writable may `rename`,
-  `comment`, `analyze`, `save` or run a changing script. Others get `not_owner`; they may still
-  read it and then see the owner's unsaved changes, as a second tool window would.
+- **One owner per program, or shared writers.** By default only the client that opened a
+  program writable may `rename`, `comment`, `edit`, `analyze`, `save` or run a changing script;
+  others get `not_owner` (with `alternatives`: an overlay, or a fork); they may still read it and
+  then see the owner's unsaved changes, as a second tool window would. Opened with
+  `"share": true`, a program has several writers at once ("Shared writing").
 - **Fair scheduling.** Requests take a slot in one of two lanes before any lock: **quick**
   (decompile, functions, list, open, rename; one slot per CPU) and **long** (analyze, import,
   script, save; a quarter of the CPUs). Long work can never take the slots quick queries need, so
@@ -606,8 +657,10 @@ in `error.details`:
   its requests are cancelled, its unsaved changes are discarded (and logged), and its programs go
   back to read-only for the others. Another client that asks for the program meanwhile waits for
   that release within its `wait`.
-- **Opening a project writable is refused while another client uses its read-only view**, and
-  the reverse joins: a read-only client in a writable project opens programs read-only.
+- **Opening a project writable while other clients use its read-only view reopens it writable
+  in place**: same id and keys, their programs reopened from the writable project (read-only for
+  them), their overlays rebuilt; they are told once with `refreshed`. A second writable open
+  joins. A read-only client in a writable project opens programs read-only.
 
 ## Who can do what at the same time
 
@@ -619,23 +672,25 @@ view and a writable project are described in "Read-only view, writable project".
 | Any number of readers of one program | in parallel | No project lock; they share one warm program and each decompile takes its own pooled decompiler. Queries hold the program's shared lock. |
 | Any number of read-only views of one project (also a Ghidra window) | in parallel | A read-only view takes no project lock and writes nothing. |
 | Writers in **different projects** | in parallel | Different projects never wait on each other (the one exception is `import`, below). |
-| Two writers of the **same program** | one wins, the other gets `not_owner` | One owner per program: the client that opened it writable. Others may read it and see its unsaved changes. A client that only wants to try names, comments or types uses an overlay ("Overlays"): private to it, never saved, no owner needed. |
-| Two writers on **different programs of one writable project** | allowed, but **not independent** | A writable project is one exclusive open (one project lock, held by the daemon). A second client that opens the same project writable joins that one instance (it does not get `conflict`); each program has its own owner, but the clients share the project: closing it waits for the others' running requests, it closes when its last user leaves, and a script with project access can reach every program in it. Give each writer its own working copy instead ("Working copies: `fork_project`"). |
+| Two writers of the **same program** | owner mode (default): one wins, the other gets `not_owner` with `alternatives: ["overlay", "fork_project"]`; shared mode (`"share": true`): **both write** | Owner mode: one owner, the client that opened it writable; others may read it and see its unsaved changes, or annotate their own overlay. Shared mode: every writer's change is committed in its own transaction, one at a time, under the program's exclusive lock, visible to all at once, journalled with its author; last writer wins per value, `expect` turns a lost update into `conflict` ("Shared writing"). Owner and shared mode do not mix on one program. |
+| Two writers on **different programs of one writable project** | in parallel | A second client that opens the project writable joins the daemon's one writable instance (one project lock). Each program has its own lock and owner (or shared writers), so renames, comments, analysis and saves of two programs run at the same time (tested: 2 writers x 600 edits, 14 saves and an analysis each, then the project reopens with all of them). They share the project's lifetime: it closes when its last user leaves, and a script with project access can reach every program in it. |
 | A second **process** (a Ghidra window, `analyzeHeadless`, another daemon) opens a project this daemon holds writable, or the reverse | `conflict` | The project lock is held by one process; the error names the lock file. |
-| `open_project` writable while another client of this daemon uses its read-only view | `conflict` | The read-only view would change under its reader. The reverse joins: a read-only request on a writable project opens programs read-only. Reopen writable when the other readers have left, or `fork_project` the project and write the fork while they keep reading the master. |
+| `open_project` writable while another client of this daemon uses its read-only view | reopened writable **in place** | The daemon takes the project lock, replaces the view under the project's exclusive lock (requests running on it finish first) and reopens its clients' programs from the writable project, same keys; their overlays are rebuilt; they see `refreshed` once. Refused (`conflict`, `suggest: "open_read_only"`) only when another process holds the project lock. To keep the master unchanged, `fork_project` it instead. |
 | Read-only view of a project another process has open and saves | works, flagged `stale` | It shows the project as it was when the view opened; its clients are told with `stale` on their next answers, and `refresh` reopens the view for all of them at once, without anyone leaving ("Revisions and `refresh`"). |
 | Concurrent `import`s | **serialized**, daemon-wide | Ghidra's loaders find libraries through one global "active project", so imports (and upgrade cache builds, which open their copy under it) run one at a time, in any project. Queued imports are first-come, first-served, visible in `status.imports` (holder, position, estimated wait), cancellable without touching the running one, and tell their requester who they wait behind: see "The import queue". |
 
 What the codes mean when two clients meet:
 
 - **`not_owner`**: the program is open writable by another client of this daemon, and you asked
-  for something only its owner may do (`rename`, `comment`, `analyze`, `save`, a changing
+  for something only its owner may do (`rename`, `comment`, `edit`, `analyze`, `save`, a changing
   script, or a writable `open_program`). `details.owner` is the owner's client id (the
-  `clients` list of `status` names it and its harness). Read it, wait for the owner to save and
-  close it, or `fork_project` the project and work in the copy (the error's `suggest` and
-  `suggestion` say so).
+  `clients` list of `status` names it and its harness). Read it, annotate your own overlay
+  (`overlaySuggestion`), wait for the owner to save and close it, or `fork_project` the project
+  and work in the copy (`suggest`, `suggestion`, `alternatives`). On a shared program a client
+  that is not one of its writers gets `not_owner` with `suggest: "share"`: join them.
 - **`conflict`**: the project, not a program, cannot be given to you as asked: its lock belongs to
-  another process, it is open read-only and in use by others while you asked for writable, the
+  another process, a shared program was asked for in owner mode (`suggest: "share"`), a value
+  changed since you read it (`expect`, `reason: "changed"`, naming the last editor), the
   session is shutting down, a program needs a database upgrade you did not allow (`"upgrade":
   true`), a name is ambiguous, or a `fork_project` cannot start (the source is being written,
   the destination exists, the copy is larger than allowed: `details.reason`). Nothing is
@@ -994,7 +1049,11 @@ took 7.0-7.8 s per question and needed a copy of the project.
   different names while a third client and the owners' plain view see the canonical program; an
   overlay is private; a failing operation rolls back its whole call; a signature and a data type;
   a killed owner's overlay is dropped and the shared program is untouched; `promote_overlay` into
-  a fork; a refresh rebuilds overlays; `drop_overlay`).
+  a fork; a refresh rebuilds overlays; `drop_overlay`); `multi_writer` (a writable open while a
+  reader holds the view reopens it in place; a second writable open joins; two writers rename,
+  comment, analyse and save two programs of one project at the same time; `not_owner`
+  alternatives; the project reopens with both writers' work); `shared` and `shared_stress`
+  (see "Shared writing").
 
 ```
 python examples/session_smoke.py --ghidra <install> --work <empty dir> --binary A.exe --binary B.exe

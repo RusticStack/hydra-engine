@@ -179,7 +179,8 @@ final class Session {
 		long now = System.currentTimeMillis();
 		for (ProjectEntry p : projectsById.values()) {
 			for (ProgramEntry e : p.programs.values()) {
-				if (e.userCount() == 0 && (now - e.lastUsed >= keepWarmMs || swappable(e))) {
+				if (e.userCount() == 0 && !e.holdsOrphanedWork() &&
+					(now - e.lastUsed >= keepWarmMs || swappable(e))) {
 					closeIdleProgram(p, e);
 				}
 			}
@@ -285,10 +286,19 @@ final class Session {
 					e -> functions(e.program, req));
 				case "decompile" -> withProgram(c, req, cmd, false, false,
 					e -> decompile(e.program, e, req, m));
-				case "rename" -> withProgram(c, req, cmd, true, true, e -> renameIn(e.program, req));
+				case "rename" -> withProgram(c, req, cmd, true, true,
+					e -> journal(c, e, cmd, "rename", renameIn(e.program, req)));
+				case "edit" -> withProgram(c, req, cmd, true, true,
+					e -> editProgram(c, e, ops(req, null)));
+				case "journal" -> withProgram(c, req, cmd, false, false, e -> journalOf(e, req));
+				case "discard_edits" -> withProgram(c, req, cmd, true, true,
+					e -> discardEdits(c, e, req));
 				case "comment" -> withProgram(c, req, cmd, true, true,
-					e -> commentIn(e.program, req));
-				case "analyze" -> withProgram(c, req, cmd, true, true, e -> analyze(e, req, m));
+					e -> journal(c, e, cmd, "comment", commentIn(e.program, req)));
+				case "analyze" -> withProgram(c, req, cmd, true, true, e -> {
+					JsonObject r = (JsonObject) analyze(e, req, m);
+					return journal(c, e, cmd, "analyze", Json.of("functions", r.get("functions")));
+				});
 				case "import" -> importProgram(c, req, m);
 				case "script" -> script(c, req, m);
 				default -> throw new SessionException(SessionException.UNKNOWN_COMMAND,
@@ -606,22 +616,8 @@ final class Session {
 			}
 			p = projects.get(canonical);
 			if (p != null && writable && !p.writable()) {
-				List<String> others = new ArrayList<>();
-				synchronized (p.users) {
-					p.users.stream().filter(u -> u != c).forEach(u -> others.add(u.label()));
-				}
-				if (!others.isEmpty()) {
-					JsonObject d = p.identity();
-					d.add("holders", p.holders(c));
-					throw new SessionException(SessionException.CONFLICT,
-						"project " + p.id + " is open read-only and used by " +
-							String.join(", ", others) + "; it can be reopened writable only " +
-							"when no other client uses it. To write while they read, fork it: " +
-							"fork_project makes a working copy of your own",
-						suggestFork(d, p, c));
-				}
-				closeProjectEntry(p, wait, discard);
-				p = null;
+				// readers keep using it: the view is reopened writable in place, same id
+				makeWritable(c, p, wait);
 			}
 			if (p == null) {
 				p = openProjectEntry(c, r, canonical, writable);
@@ -639,6 +635,87 @@ final class Session {
 		JsonObject info = p.info();
 		Json.put(info, "opened", opened);
 		return info;
+	}
+
+	/**
+	 * Reopens a read-only view writable in place, while its clients keep using it: the project
+	 * is opened writable (taking its lock), then under the project's exclusive lock (requests
+	 * running on it finish first) it replaces the view, and every program clients use is reopened
+	 * from it under the same key, read-only, with its overlays rebuilt. The id, the keys and the
+	 * clients' joins stay. Held: {@link #registry}.
+	 */
+	private void makeWritable(Client c, ProjectEntry p, long wait) {
+		ProjectLocator locator = new ProjectLocator(p.resolved.dir().getPath(), p.resolved.name());
+		String rev;
+		try {
+			rev = Revision.of(p.resolved);
+		}
+		catch (IOException e) {
+			rev = null;
+		}
+		SessionProject nv;
+		try {
+			nv = SessionProject.open(locator, true);
+		}
+		catch (LockException e) {
+			JsonObject d = p.identity();
+			Json.put(d, "lockFile", locator.getProjectLockFile().getPath());
+			d.add("holderInfo", ProjectLocks.holder(locator));
+			Json.put(d, "suggest", "open_read_only");
+			throw new SessionException(SessionException.CONFLICT,
+				"the project is locked by another process (a Ghidra window, analyzeHeadless or a " +
+					"writable session): keep the read-only view, or close that process",
+				d, e);
+		}
+		catch (NotOwnerException e) {
+			throw new SessionException(SessionException.CONFLICT, e.getMessage());
+		}
+		catch (NotFoundException | IOException e) {
+			throw new SessionException(SessionException.NOT_FOUND, e.getMessage(), null, e);
+		}
+		Lock l;
+		try {
+			l = lockProject(p, true, wait, "open_project writable");
+			p.exclusiveClient = c;
+		}
+		catch (RuntimeException e) {
+			nv.close();
+			throw e;
+		}
+		SessionProject old = p.project;
+		JsonArray progs;
+		try {
+			progs = swapView(p, nv, rev, new RequestMonitor(null, null));
+		}
+		finally {
+			unlockProject(p, l);
+		}
+		try {
+			old.close();
+		}
+		catch (RuntimeException e) {
+			Msg.warn(this, "could not close the read-only view of " + p.id, e);
+		}
+		Msg.info(this, c.label() + " reopened project " + p.id + " writable in place for " +
+			p.userCount() + " client(s): " + progs);
+	}
+
+	/**
+	 * Replaces a project's view with {@code nv} (from revision {@code rev}) and reopens its
+	 * programs from it. Held: the project's exclusive lock.
+	 */
+	private JsonArray swapView(ProjectEntry p, SessionProject nv, String rev, RequestMonitor m) {
+		JsonArray progs = new JsonArray();
+		p.project = nv;
+		p.previousRevision = p.openRevision;
+		p.openRevision = rev;
+		p.invalidateRevision();
+		p.generation++;
+		p.refreshedAt = System.currentTimeMillis();
+		for (ProgramEntry e : new ArrayList<>(p.programs.values())) {
+			progs.add(reopenIn(p, nv, e, m));
+		}
+		return progs;
 	}
 
 	/** Held: {@link #registry}. */
@@ -789,7 +866,8 @@ final class Session {
 				c.activeProject = firstOf(c.projects);
 			}
 			p.lastUsed = System.currentTimeMillis();
-			if (!p.closed && p.userCount() == 0 && (p.writable() || keepWarmMs == 0)) {
+			if (!p.closed && p.userCount() == 0 && (p.writable() || keepWarmMs == 0) &&
+				p.programs.values().stream().noneMatch(ProgramEntry::holdsOrphanedWork)) {
 				closeProjectEntry(p, wait, true);
 				return true;
 			}
@@ -1119,17 +1197,9 @@ final class Session {
 			throw e;
 		}
 		SessionProject old = p.project;
-		JsonArray progs = new JsonArray();
+		JsonArray progs;
 		try {
-			p.project = nv;
-			p.previousRevision = from;
-			p.openRevision = rev;
-			p.invalidateRevision();
-			p.generation++;
-			p.refreshedAt = System.currentTimeMillis();
-			for (ProgramEntry e : new ArrayList<>(p.programs.values())) {
-				progs.add(reopenIn(p, nv, e, m));
-			}
+			progs = swapView(p, nv, rev, m);
 		}
 		finally {
 			unlockProject(p, l);
@@ -1209,6 +1279,177 @@ final class Session {
 				e.lock.writeLock().unlock();
 			}
 		}
+	}
+
+	// ---- shared writing: edits, journal, discard_edits ---------------------------------
+
+	/**
+	 * Compare-and-set: when the request carries {@code "expect"}, the value it changes must still
+	 * be that (null: none), or the change is refused with {@code conflict} ({@code reason:
+	 * "changed"}). Changes to one program are serialized, so the check and the write are one step.
+	 */
+	private static void expect(JsonObject req, Address a, String field, String current) {
+		if (!req.has("expect")) {
+			return;
+		}
+		String want = req.get("expect").isJsonNull() ? null : req.get("expect").getAsString();
+		if (!Objects.equals(want, current)) {
+			throw new SessionException(SessionException.CONFLICT,
+				"the " + field + " at " + hex(a) + " is '" + current + "', not the expected '" +
+					want + "': someone changed it since you read it",
+				Json.of("reason", "changed", "address", hex(a), "field", field, "expected", want,
+					"current", current));
+		}
+	}
+
+	/** Names who last changed the value a {@code changed} conflict is about. */
+	private static SessionException withLastEditor(ProgramEntry e, SessionException ex) {
+		JsonObject d = ex.details();
+		if (!ex.code().equals(SessionException.CONFLICT) || d == null || !d.has("reason") ||
+			!"changed".equals(d.get("reason").getAsString())) {
+			return ex;
+		}
+		String f = d.get("field").getAsString();
+		JsonObject last = e.journal.lastAt(d.get("address").getAsString(),
+			f.equals("name") ? "name"
+					: "comment:" + (d.has("type") ? d.get("type").getAsString() : "eol"));
+		if (last == null && f.equals("comment")) {
+			for (String t : List.of("eol", "pre", "post", "plate", "repeatable")) {
+				last = last != null ? last
+						: e.journal.lastAt(d.get("address").getAsString(), "comment:" + t);
+			}
+		}
+		if (last != null) {
+			d.add("lastEdit", last.deepCopy());
+			d.add("holderInfo", Json.of("client", last.get("client"), "name", last.get("name"),
+				"harness", last.get("harness"), "command", last.get("cmd"), "seq",
+				last.get("seq")));
+		}
+		Json.put(d, "suggest", "reread");
+		return ex;
+	}
+
+	/** Journals a committed change by {@code c}; returns the result with its {@code seq}. */
+	private static JsonObject journal(Client c, ProgramEntry e, String cmd, String op,
+			JsonObject result) {
+		JsonObject change = result.deepCopy();
+		Json.put(change, "op", op);
+		if (change.has("name") && !change.has("new")) {
+			change.add("new", change.get("name"));
+		}
+		if (change.has("text") && !change.has("new")) {
+			change.add("new", change.get("text"));
+		}
+		long seq = e.journal.add(c, cmd, change);
+		Json.put(result, "seq", seq);
+		return result;
+	}
+
+	/**
+	 * {@code edit}: operations on a program this client may change (as owner or shared writer),
+	 * applied in one transaction, all or none, and journalled.
+	 */
+	private JsonElement editProgram(Client c, ProgramEntry e, JsonArray ops) {
+		JsonArray results = applyOps(e.program, ops);
+		JsonArray seqs = new JsonArray();
+		for (JsonElement r : results) {
+			JsonObject o = r.getAsJsonObject();
+			journal(c, e, "edit", o.get("op").getAsString(), o);
+			seqs.add(o.get("seq"));
+		}
+		return Json.of("program", e.key, "applied", ops.size(), "results", results, "seqs", seqs,
+			"unsavedEdits", e.journal.seq() - e.savedSeq);
+	}
+
+	/** {@code journal}: who changed what in a program, oldest first. */
+	private JsonElement journalOf(ProgramEntry e, JsonObject req) {
+		long after = Json.num(req, "since", 0, 0, Long.MAX_VALUE);
+		Integer client = Json.has(req, "author") ? (int) Json.num(req, "author", 0, 0,
+			Integer.MAX_VALUE) : null;
+		int limit = (int) Json.num(req, "limit", 10_000, 1, Journal.CAP);
+		JsonArray a = e.journal.since(after, client, limit);
+		return Json.of("program", e.key, "seq", e.journal.seq(), "savedSeq", e.savedSeq,
+			"dropped", e.journal.dropped(), "entries", a, "returned", a.size());
+	}
+
+	/**
+	 * {@code discard_edits}: reverts one client's unsaved changes (rename, label, comment), newest
+	 * first, each only while the value is still what that client wrote: a value someone changed
+	 * since is kept and reported. Analysis and script changes cannot be reverted one by one
+	 * (close with {@code discard}, or not at all).
+	 */
+	private JsonElement discardEdits(Client c, ProgramEntry e, JsonObject req) throws Exception {
+		if (!Json.has(req, "author")) {
+			throw new SessionException(SessionException.BAD_REQUEST,
+				"missing field: author (the client id whose changes to revert, as in the journal)");
+		}
+		int who = (int) Json.num(req, "author", 0, 0, Integer.MAX_VALUE);
+		Program p = e.program;
+		JsonArray reverted = new JsonArray();
+		JsonArray skipped = new JsonArray();
+		List<JsonObject> todo = e.journal.newestFirst(e.savedSeq);
+		Set<String> later = new HashSet<>(); // fields someone else changed after
+		for (JsonObject j : todo) {
+			String op = j.get("op").getAsString();
+			String field = Journal.fieldOf(j);
+			String addr = j.has("address") ? j.get("address").getAsString() : null;
+			boolean mine = j.get("client").getAsInt() == who;
+			if (!mine || op.equals("revert")) {
+				if (addr != null) {
+					later.add(addr + "|" + field);
+				}
+				continue;
+			}
+			long seq = j.get("seq").getAsLong();
+			if (addr == null || !(op.equals("rename") || op.equals("label") ||
+				op.equals("comment"))) {
+				skipped.add(Json.of("seq", seq, "op", op, "reason", "not revertible"));
+				continue;
+			}
+			if (later.contains(addr + "|" + field)) {
+				skipped.add(Json.of("seq", seq, "op", op, "address", addr, "reason",
+					"changed since by another client"));
+				continue;
+			}
+			later.add(addr + "|" + field);
+			Address a = address(p, addr);
+			String nv = j.has("new") && !j.get("new").isJsonNull() ? j.get("new").getAsString()
+					: null;
+			String ov = j.has("old") && !j.get("old").isJsonNull() ? j.get("old").getAsString()
+					: null;
+			JsonObject undo;
+			if (op.equals("comment")) {
+				undo = Json.of("address", addr, "type", j.get("type"), "text", ov, "expect", nv);
+				journal(c, e, "discard_edits", "comment", commentIn(p, undo));
+			}
+			else if (j.has("created") && j.get("created").getAsBoolean()) {
+				int tx = p.startTransaction("discard_edits");
+				boolean ok = false;
+				try {
+					Symbol s = p.getSymbolTable().getPrimarySymbol(a);
+					if (s == null || !s.getName().equals(nv)) {
+						skipped.add(Json.of("seq", seq, "op", op, "address", addr, "reason",
+							"the label is not there any more"));
+						ok = true;
+						continue;
+					}
+					s.delete();
+					ok = true;
+				}
+				finally {
+					p.endTransaction(tx, ok);
+				}
+				journal(c, e, "discard_edits", "label",
+					Json.of("address", addr, "old", nv, "name", ov, "deleted", true));
+			}
+			else {
+				undo = Json.of("address", addr, "name", ov, "kind", j.get("kind"), "expect", nv);
+				journal(c, e, "discard_edits", op, renameIn(p, undo));
+			}
+			reverted.add(seq);
+		}
+		return Json.of("program", e.key, "author", who, "reverted", reverted, "skipped", skipped,
+			"unsavedEdits", e.journal.seq() - e.savedSeq);
 	}
 
 	// ---- overlays --------------------------------------------------------------------------
@@ -1601,15 +1842,23 @@ final class Session {
 	private JsonObject applyOp(Program p, JsonObject op) throws Exception {
 		String kind = Json.str(op, "op");
 		switch (kind) {
-			case "rename":
-				return Json.of("op", kind, "result", renameIn(p, op));
-			case "label": {
-				JsonObject r = op.deepCopy();
-				r.addProperty("kind", "label");
-				return Json.of("op", kind, "result", renameIn(p, r));
+			case "rename": {
+				JsonObject r = renameIn(p, op);
+				Json.put(r, "op", kind);
+				return r;
 			}
-			case "comment":
-				return Json.of("op", kind, "result", commentIn(p, op));
+			case "label": {
+				JsonObject req = op.deepCopy();
+				req.addProperty("kind", "label");
+				JsonObject r = renameIn(p, req);
+				Json.put(r, "op", kind);
+				return r;
+			}
+			case "comment": {
+				JsonObject r = commentIn(p, op);
+				Json.put(r, "op", kind);
+				return r;
+			}
 			case "signature": {
 				Address a = address(p, Json.str(op, "address"));
 				Function f = p.getFunctionManager().getFunctionContaining(a);
@@ -1618,6 +1867,7 @@ final class Session {
 						"no function contains " + hex(a));
 				}
 				String text = Json.str(op, "signature");
+				String oldSig = f.getSignature().getPrototypeString();
 				ghidra.program.model.data.FunctionDefinitionDataType fd;
 				try {
 					fd = ghidra.app.util.cparser.C.CParserUtils.parseSignature(
@@ -1639,11 +1889,14 @@ final class Session {
 						"could not apply the signature: " + cmd.getStatusMsg());
 				}
 				return Json.of("op", kind, "address", hex(f.getEntryPoint()), "signature",
+					f.getSignature().getPrototypeString(), "old", oldSig, "new",
 					f.getSignature().getPrototypeString());
 			}
 			case "data_type": {
 				Address a = address(p, Json.str(op, "address"));
 				String text = Json.str(op, "type");
+				Data before = p.getListing().getDefinedDataAt(a);
+				String oldType = before == null ? null : before.getDataType().getDisplayName();
 				ghidra.program.model.data.DataType dt;
 				try {
 					dt = new ghidra.util.data.DataTypeParser(p.getDataTypeManager(),
@@ -1657,7 +1910,8 @@ final class Session {
 				Data d = ghidra.program.model.data.DataUtilities.createData(p, a, dt, -1,
 					ghidra.program.model.data.DataUtilities.ClearDataMode.CLEAR_ALL_CONFLICT_DATA);
 				return Json.of("op", kind, "address", hex(a), "type",
-					d.getDataType().getDisplayName(), "length", d.getLength());
+					d.getDataType().getDisplayName(), "length", d.getLength(), "old", oldType,
+					"new", d.getDataType().getDisplayName());
 			}
 			default:
 				throw new SessionException(SessionException.BAD_REQUEST,
@@ -1912,6 +2166,12 @@ final class Session {
 	private JsonObject openProgramIn(Client c, ProjectEntry p, String name, JsonObject req,
 			RequestMonitor m) {
 		boolean writable = Json.bool(req, "writable", false);
+		boolean share = Json.bool(req, "share", false);
+		if (share && !writable) {
+			throw new SessionException(SessionException.BAD_REQUEST,
+				"\"share\":true opens a program writable for several clients; it needs " +
+					"\"writable\":true");
+		}
 		if (writable && !p.writable()) {
 			JsonObject d = suggestFork(p.identity(), p, c);
 			Json.put(d, "alternative", "open_project writable");
@@ -1931,7 +2191,7 @@ final class Session {
 		if (!writable && waitsForCache(req)) {
 			awaitCacheCopy(p, df, m); // before any program lock: other opens are not held up
 		}
-		JsonObject joined = joinOpen(c, p, path, writable, wait);
+		JsonObject joined = share ? null : joinOpen(c, p, path, writable, wait);
 		if (joined != null) {
 			return joined;
 		}
@@ -1976,25 +2236,53 @@ final class Session {
 					if (e.program == null) {
 						e.file = df;
 						e.program = writable ? openWritable(e, df, req, m) : openReadOnly(e, df, m);
-						e.mode = writable ? ProgramEntry.Mode.WRITABLE : ProgramEntry.Mode.READ_ONLY;
+						e.mode = !writable ? ProgramEntry.Mode.READ_ONLY
+								: share ? ProgramEntry.Mode.SHARED : ProgramEntry.Mode.WRITABLE;
 						e.stampRevision();
-						e.setOwner(writable ? c : null);
+						e.setOwner(writable && !share ? c : null);
 						e.ownedSince = System.currentTimeMillis();
+						e.savedSeq = e.journal.seq();
+						if (share) {
+							addWriter(e, c);
+						}
 						e.openMs = (System.nanoTime() - t0) / 1_000_000;
 					}
 					else if (writable && e.mode == ProgramEntry.Mode.WRITABLE && e.owner != c) {
 						throw notOwner(e, c, path + " is open writable by " + e.ownerText() +
-							"; one writer per program: fork the project to write your own copy");
+							(share ? " in owner mode (owner mode and shared mode do not mix)" : "") +
+							"; one writer per program: write in an overlay or a fork");
+					}
+					else if (writable && share && e.mode == ProgramEntry.Mode.WRITABLE) {
+						// its owner opens it to others: owner mode becomes shared mode
+						e.setOwner(null);
+						e.mode = ProgramEntry.Mode.SHARED;
+						addWriter(e, c);
+					}
+					else if (writable && e.mode == ProgramEntry.Mode.SHARED) {
+						if (!share) {
+							JsonObject d = e.identity();
+							Json.put(d, "writers", e.writerIds());
+							Json.put(d, "suggest", "share");
+							throw new SessionException(SessionException.CONFLICT,
+								path + " is open in shared mode; join it with \"writable\":true, " +
+									"\"share\":true (owner mode and shared mode do not mix)",
+								d);
+						}
+						addWriter(e, c);
 					}
 					else if (writable && e.mode == ProgramEntry.Mode.READ_ONLY) {
 						Program np = openWritable(e, df, req, m);
 						e.disposeDecompilers();
 						releaseProgramObject(e);
 						e.program = np;
-						e.mode = ProgramEntry.Mode.WRITABLE;
+						e.mode = share ? ProgramEntry.Mode.SHARED : ProgramEntry.Mode.WRITABLE;
 						e.stampRevision();
-						e.setOwner(c);
+						e.setOwner(share ? null : c);
 						e.ownedSince = System.currentTimeMillis();
+						e.savedSeq = e.journal.seq();
+						if (share) {
+							addWriter(e, c);
+						}
 						e.openMs = (System.nanoTime() - t0) / 1_000_000;
 					}
 				}
@@ -2018,6 +2306,14 @@ final class Session {
 				}
 			}
 		}
+	}
+
+	/** Adds a writer to a shared program; a program kept for its orphaned work is adopted. */
+	private static void addWriter(ProgramEntry e, Client c) {
+		synchronized (e.users) {
+			e.writers.add(c);
+		}
+		e.orphanedSince = 0;
 	}
 
 	private static void sleepQuietly(long ms) {
@@ -2293,6 +2589,42 @@ final class Session {
 			synchronized (e.users) {
 				others = e.users.stream().anyMatch(u -> u != c);
 			}
+			boolean downgrade = false;
+			if (e.program != null && e.mode == ProgramEntry.Mode.SHARED && e.isWriter(c)) {
+				boolean last;
+				synchronized (e.users) {
+					e.writers.remove(c);
+					last = e.writers.isEmpty();
+				}
+				if (last && e.program.isChanged()) {
+					if (c.leaving && !shuttingDown) {
+						// a writer that died: the others' committed work is kept, unsaved,
+						// until a client joins and saves or discards it
+						e.orphanedSince = System.currentTimeMillis();
+						Msg.warn(this, c.label() + " left " + e.key + " as its last shared " +
+							"writer; its " + (e.journal.seq() - e.savedSeq) + " unsaved change(s) " +
+							"are kept until a client saves or discards them");
+					}
+					else if (!discard) {
+						synchronized (e.users) {
+							e.writers.add(c);
+						}
+						throw new SessionException(SessionException.UNSAVED_CHANGES,
+							e.path + " has unsaved changes and you are its last writer; send " +
+								"save, or close with \"discard\":true (discards every writer's " +
+								"unsaved changes)",
+							Json.of("program", e.key, "unsavedEdits",
+								e.journal.seq() - e.savedSeq));
+					}
+					else {
+						discarded = true;
+						downgrade = true;
+					}
+				}
+				else if (last) {
+					downgrade = true;
+				}
+			}
 			if (e.program != null && e.mode == ProgramEntry.Mode.WRITABLE && e.owner == c) {
 				if (e.program.isChanged()) {
 					if (!discard) {
@@ -2303,6 +2635,9 @@ final class Session {
 					}
 					discarded = true;
 				}
+				downgrade = true;
+			}
+			if (downgrade) {
 				e.disposeDecompilers();
 				releaseProgramObject(e); // releasing a changed program discards its changes
 				e.setOwner(null);
@@ -2326,8 +2661,8 @@ final class Session {
 				e.users.remove(c);
 				others = !e.users.isEmpty();
 			}
-			if (!others && (e.program == null || e.mode != ProgramEntry.Mode.READ_ONLY ||
-				keepWarmMs == 0 || e.project.closed)) {
+			if (!others && !e.holdsOrphanedWork() && (e.program == null ||
+				e.mode != ProgramEntry.Mode.READ_ONLY || keepWarmMs == 0 || e.project.closed)) {
 				disposeProgram(e);
 			}
 			c.programs.remove(e.key);
@@ -2473,7 +2808,7 @@ final class Session {
 				return work.run(e);
 			}
 			catch (SessionException ex) {
-				throw ex;
+				throw withLastEditor(e, ex);
 			}
 			catch (CancelledException ex) {
 				throw new SessionException(SessionException.CANCELLED, cmd + " was cancelled");
@@ -2493,6 +2828,18 @@ final class Session {
 	}
 
 	private static void requireOwner(Client c, ProgramEntry e, String cmd) {
+		if (e.mode == ProgramEntry.Mode.SHARED) {
+			if (e.isWriter(c)) {
+				return;
+			}
+			JsonObject d = e.identity();
+			Json.put(d, "writers", e.writerIds());
+			Json.put(d, "suggest", "share");
+			throw new SessionException(SessionException.NOT_OWNER,
+				e.key + " is shared by writers " + e.writerIds() + "; " + cmd + " needs you to " +
+					"join them: open_program with \"writable\":true, \"share\":true",
+				d);
+		}
 		if (e.mode != ProgramEntry.Mode.WRITABLE) {
 			throw new SessionException(SessionException.READ_ONLY,
 				e.key + " is open read-only; " + cmd + " needs open_program with " +
@@ -2515,8 +2862,15 @@ final class Session {
 		Json.put(d, "owner", o == null ? null : o.id);
 		Json.put(d, "holder", o == null ? null : e.ownerText());
 		d.add("holderInfo", e.ownerHolder());
-		return new SessionException(SessionException.NOT_OWNER, message,
-			suggestFork(d, e.project, c));
+		suggestFork(d, e.project, c);
+		// to annotate the same program at the same time: an overlay; to keep the work: a fork
+		JsonArray alt = new JsonArray();
+		alt.add("overlay");
+		alt.add("fork_project");
+		d.add("alternatives", alt);
+		d.add("overlaySuggestion", Json.of("cmd", "open_program", "path", e.key, "overlay",
+			c.name.isEmpty() ? "client" + c.id : c.name.replaceAll("[^A-Za-z0-9_.@-]", "_")));
+		return new SessionException(SessionException.NOT_OWNER, message, d);
 	}
 
 	private JsonObject programInfo(ProgramEntry e, Client c) {
@@ -2546,19 +2900,25 @@ final class Session {
 			}
 		}
 		Json.put(j, "overlays", mine);
+		Json.put(j, "writers", e.writerIds());
+		Json.put(j, "writer", e.isWriter(c));
+		Json.put(j, "journalSeq", e.journal.seq());
+		Json.put(j, "unsavedEdits", Math.max(0, e.journal.seq() - e.savedSeq));
 		return j;
 	}
 
 	private JsonElement save(ProgramEntry e, JsonObject req, RequestMonitor m)
 			throws IOException, CancelledException {
 		boolean changed = e.program.isChanged();
+		long upTo = e.journal.seq();
 		if (changed) {
 			e.program.save(Json.str(req, "comment", "headless session"), m);
 			e.stampRevision();
 			e.project.invalidateRevision();
+			e.savedSeq = upTo;
 		}
 		return Json.of("program", e.key, "saved", changed, "revision", e.revision,
-			"projectRevision", e.project.revision());
+			"projectRevision", e.project.revision(), "savedSeq", e.savedSeq);
 	}
 
 	// ---- queries ---------------------------------------------------------------------------
@@ -2715,6 +3075,7 @@ final class Session {
 				"kind must be auto, function or label");
 		}
 		String old = null;
+		boolean created = false;
 		int tx = p.startTransaction("session rename");
 		boolean ok = false;
 		try {
@@ -2725,6 +3086,7 @@ final class Session {
 			}
 			if (f != null && !kind.equals("label")) {
 				old = f.getName();
+				expect(req, a, "name", old);
 				f.setName(name, SourceType.USER_DEFINED);
 				kind = "function";
 			}
@@ -2732,12 +3094,15 @@ final class Session {
 				Symbol s = p.getSymbolTable().getPrimarySymbol(a);
 				if (s != null && s.getSymbolType() == SymbolType.LABEL && !s.isDynamic()) {
 					old = s.getName();
+					expect(req, a, "name", old);
 					s.setName(name, SourceType.USER_DEFINED);
 				}
 				else {
 					old = s == null ? null : s.getName();
+					expect(req, a, "name", old);
 					Symbol n = p.getSymbolTable().createLabel(a, name, SourceType.USER_DEFINED);
 					n.setPrimary();
+					created = true;
 				}
 				kind = "label";
 			}
@@ -2746,7 +3111,8 @@ final class Session {
 		finally {
 			p.endTransaction(tx, ok);
 		}
-		return Json.of("address", hex(a), "name", name, "old", old, "kind", kind);
+		return Json.of("address", hex(a), "name", name, "old", old, "kind", kind, "created",
+			created);
 	}
 
 	private JsonObject commentIn(Program p, JsonObject req) {
@@ -2761,6 +3127,8 @@ final class Session {
 				"type must be eol, pre, post, plate or repeatable");
 		};
 		String text = Json.has(req, "text") ? Json.str(req, "text") : null;
+		String old = p.getListing().getComment(ct, a);
+		expect(req, a, "comment", old);
 		int tx = p.startTransaction("session comment");
 		try {
 			p.getListing().setComment(a, ct, text);
@@ -2768,7 +3136,8 @@ final class Session {
 		finally {
 			p.endTransaction(tx, true);
 		}
-		return Json.of("address", hex(a), "type", Json.str(req, "type", "eol"));
+		return Json.of("address", hex(a), "type", Json.str(req, "type", "eol"), "old", old,
+			"text", text);
 	}
 
 	/**
@@ -3023,17 +3392,21 @@ final class Session {
 		ProjectEntry p = e.project;
 		Lock pl = lockProject(p, false, waitMs(req), "script");
 		try {
-			boolean owner = e.mode == ProgramEntry.Mode.WRITABLE && e.owner == c;
+			boolean owner = e.isWriter(c);
 			boolean exclusive = owner || Json.bool(req, "exclusive", false);
 			Lock l = e.acquire(exclusive, waitMs(req), c, "script " + name);
 			try {
 				if (e.program == null) {
 					throw new SessionException(SessionException.NO_PROGRAM, e.key + " was closed");
 				}
-				owner = e.mode == ProgramEntry.Mode.WRITABLE && e.owner == c;
+				owner = e.isWriter(c);
 				JsonObject r = runScript(src, req, p.project, e.program, e,
 					owner ? "owner" : "contained", m);
+				if (owner && Json.bool(r, "changed", false)) {
+					journal(c, e, "script", "script", Json.of("script", name));
+				}
 				if (owner && Json.bool(req, "save", false) && e.program.isChanged()) {
+					e.savedSeq = e.journal.seq();
 					e.program.save("script " + name, m);
 					e.stampRevision();
 					p.invalidateRevision();
