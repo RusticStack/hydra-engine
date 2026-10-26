@@ -61,6 +61,17 @@ it is based on.
 - **Tests**: `examples/contract_tests.py` (identity fields, client compatibility, a 600,000-line
   export with progress, cancel and shutdown), run by CI and the release workflow.
 
+- **Overlays** (HeadlessSession): a client's private annotation view of a shared program.
+  `open_program` with `overlay` opens one: its own program object over the stored file
+  (changeable, never saved), measured at 116 ms and +54 MB heap for a 243,855-function program.
+  `apply_overlay` applies `rename`, `label`, `comment`, `signature` and `data_type` operations
+  atomically and logs them; `info`, `functions`, `decompile`, `script` (contained), `rename` and
+  `comment` take `overlay`; `drop_overlay`, `overlays`; `promote_overlay` replays the log into a
+  writable copy (a project the client opened writable, or a new fork) and saves it. Each overlay
+  shows `overlayVersion`, the program's SHA-256 and revisions, in its answers, `info` and
+  `status.overlays`. A refresh rebuilds overlays from their logs; a client's disconnect drops
+  its overlays.
+
 ### Changed
 
 - The project files the upgrade cache keys and copies leave out Ghidra's transient files in a

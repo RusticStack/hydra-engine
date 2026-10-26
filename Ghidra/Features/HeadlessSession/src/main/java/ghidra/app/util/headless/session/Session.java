@@ -263,8 +263,15 @@ final class Session {
 			if (cmd.equals("script") || cmd.equals("import") || cmd.equals("analyze")) {
 				DeferredInit.await(); // the TLS context and the script framework
 			}
+			if (Json.has(req, "overlay") && overlayScoped(cmd)) {
+				return overlayCommand(c, cmd, req, m);
+			}
 			return switch (cmd) {
 				case "open_project" -> openProject(c, req);
+				case "overlays" -> listOverlays(c);
+				case "promote_overlay" -> promoteOverlay(c, req, m);
+				case "apply_overlay", "drop_overlay" -> throw new SessionException(
+					SessionException.BAD_REQUEST, "missing field: overlay");
 				case "fork_project" -> forkProject(c, req, m);
 				case "refresh", "reopen" -> refresh(c, req, m);
 				case "close_project" -> closeProject(c, req);
@@ -277,11 +284,13 @@ final class Session {
 				case "info" -> withProgram(c, req, cmd, false, false, e -> programInfo(e, c));
 				case "close_program" -> closeProgram(c, req);
 				case "save" -> withProgram(c, req, cmd, true, true, e -> save(e, req, m));
-				case "functions" -> withProgram(c, req, cmd, false, false, e -> functions(e, req));
+				case "functions" -> withProgram(c, req, cmd, false, false,
+					e -> functions(e.program, req));
 				case "decompile" -> withProgram(c, req, cmd, false, false,
-					e -> decompile(e, req, m));
-				case "rename" -> withProgram(c, req, cmd, true, true, e -> rename(e, req));
-				case "comment" -> withProgram(c, req, cmd, true, true, e -> comment(e, req));
+					e -> decompile(e.program, e, req, m));
+				case "rename" -> withProgram(c, req, cmd, true, true, e -> renameIn(e.program, req));
+				case "comment" -> withProgram(c, req, cmd, true, true,
+					e -> commentIn(e.program, req));
 				case "analyze" -> withProgram(c, req, cmd, true, true, e -> analyze(e, req, m));
 				case "import" -> importProgram(c, req, m);
 				case "script" -> script(c, req, m);
@@ -359,6 +368,11 @@ final class Session {
 			cs.add(x.describe());
 		}
 		o.add("clients", cs);
+		JsonArray ovs = new JsonArray();
+		for (Overlay x : overlays.values()) {
+			ovs.add(x.describe());
+		}
+		o.add("overlays", ovs);
 		o.add("scheduler", scheduler.describe());
 		o.add("upgradeCache", upgradeCache.describe());
 		Json.put(o, "deferredInitMs", DeferredInit.doneMs());
@@ -1165,6 +1179,7 @@ final class Session {
 				e.stampRevision();
 				Json.put(r, "action", "reopened");
 				Json.put(r, "newRevision", e.revision);
+				rebuildOverlays(e, m);
 			}
 			catch (RuntimeException ex) {
 				Msg.error(this, "refresh: could not reopen " + e.key + "; closing it", ex);
@@ -1180,6 +1195,549 @@ final class Session {
 				e.lock.writeLock().unlock();
 			}
 		}
+	}
+
+	// ---- overlays --------------------------------------------------------------------------
+
+	/** Every client's overlays, by {@link Overlay#id}. */
+	private final Map<String, Overlay> overlays = new ConcurrentHashMap<>();
+	private static final Pattern OVERLAY_NAME = Pattern.compile("[A-Za-z0-9_.@-]{1,64}");
+
+	/** Commands that act on an overlay when the request names one. */
+	private static boolean overlayScoped(String cmd) {
+		return switch (cmd) {
+			case "open_program", "switch", "info", "functions", "decompile", "rename", "comment",
+					"script", "apply_overlay", "drop_overlay" ->
+				true;
+			default -> false;
+		};
+	}
+
+	private List<Overlay> overlaysOf(ProgramEntry e) {
+		List<Overlay> out = new ArrayList<>();
+		for (Overlay o : overlays.values()) {
+			if (o.base == e) {
+				out.add(o);
+			}
+		}
+		return out;
+	}
+
+	private JsonElement listOverlays(Client c) {
+		JsonArray a = new JsonArray();
+		for (Overlay o : overlays.values()) {
+			if (o.client == c) {
+				a.add(o.describe());
+			}
+		}
+		return Json.of("overlays", a);
+	}
+
+	private static String overlayName(JsonObject req) {
+		String name = Json.str(req, "overlay");
+		if (!OVERLAY_NAME.matcher(name).matches()) {
+			throw new SessionException(SessionException.BAD_REQUEST,
+				"overlay must be 1-64 letters, digits, '.', '_', '-' or '@'");
+		}
+		return name;
+	}
+
+	/**
+	 * A command on one of this client's overlays: {@code open_program} (creates or joins it),
+	 * {@code info}, {@code functions}, {@code decompile}, {@code script} (contained),
+	 * {@code rename}, {@code comment} and {@code apply_overlay} (changes, logged),
+	 * {@code drop_overlay}.
+	 */
+	private JsonElement overlayCommand(Client c, String cmd, JsonObject req, RequestMonitor m) {
+		String name = overlayName(req);
+		if (cmd.equals("open_program") || cmd.equals("switch")) {
+			if (Json.bool(req, "writable", false)) {
+				throw new SessionException(SessionException.BAD_REQUEST,
+					"an overlay is a private view over a read-only use of the program; leave " +
+						"out \"writable\" (promote_overlay writes it into a working copy)");
+			}
+			JsonObject plain = req.deepCopy();
+			plain.remove("overlay");
+			JsonObject info = (JsonObject) openProgram(c, plain, m);
+			ProgramEntry e = entryByKey(info.get("key").getAsString());
+			if (e == null) {
+				throw new SessionException(SessionException.NO_PROGRAM,
+					info.get("key").getAsString() + " was closed meanwhile");
+			}
+			Overlay o = openOverlay(c, e, name, waitMs(req), m);
+			info.add("overlay", o.describe());
+			return info;
+		}
+		ProgramEntry e = selected(c, req);
+		ProjectEntry p = e.project;
+		Lock pl = lockProject(p, false, waitMs(req), cmd);
+		try {
+			Overlay o = overlays.get(Overlay.id(c, e.key, name));
+			if (o == null) {
+				if (cmd.equals("drop_overlay")) {
+					return Json.of("dropped", false, "overlay", name, "program", e.key);
+				}
+				throw new SessionException(SessionException.NOT_FOUND,
+					"this client has no overlay '" + name + "' on " + e.key +
+						"; open_program with \"overlay\" first",
+					Json.of("overlay", name, "program", e.key));
+			}
+			boolean write = cmd.equals("apply_overlay") || cmd.equals("rename") ||
+				cmd.equals("comment") || cmd.equals("drop_overlay");
+			Lock ol = write ? o.lock.writeLock() : o.lock.readLock();
+			boolean got = false;
+			try {
+				got = ol.tryLock(waitMs(req), TimeUnit.MILLISECONDS);
+			}
+			catch (InterruptedException ex) {
+				Thread.currentThread().interrupt();
+			}
+			if (!got) {
+				JsonObject d = e.identity();
+				Json.put(d, "overlay", name);
+				d.add("holderInfo", c.holder("overlay " + name, 0));
+				Json.put(d, "suggest", "retry");
+				throw new SessionException(SessionException.BUSY,
+					"overlay '" + name + "' is busy with another of this client's requests", d);
+			}
+			try {
+				if (cmd.equals("drop_overlay")) {
+					o.dispose();
+					overlays.remove(o.id, o);
+					Msg.info(this, c.label() + " dropped overlay " + name + " of " + e.key +
+						" (" + o.log.size() + " operations, version " + o.version + ")");
+					return Json.of("dropped", true, "overlay", name, "program", e.key, "ops",
+						o.log.size(), "overlayVersion", o.version);
+				}
+				if (o.error != null || o.program == null) {
+					JsonObject d = o.describe();
+					d.add("log", o.log.deepCopy());
+					throw new SessionException(SessionException.CONFLICT,
+						"overlay '" + name + "' is unusable: " + o.error +
+							"; drop_overlay it (its log is in details.log)",
+						d);
+				}
+				return switch (cmd) {
+					case "info" -> overlayInfo(o);
+					case "functions" -> withOverlay(o, functions(o.program, req));
+					case "decompile" -> withOverlay(o, decompile(o.program, o, req, m));
+					case "script" -> {
+						ResourceFile src = findScript(Json.str(req, "script"));
+						m.deadline(Json.num(req, "timeout", 0, 0, 7 * 86_400));
+						yield withOverlay(o,
+							runScript(src, req, p.project, o.program, null, "contained", m));
+					}
+					case "rename" -> applyOverlay(o, ops(req, "rename"));
+					case "comment" -> applyOverlay(o, ops(req, "comment"));
+					case "apply_overlay" -> applyOverlay(o, ops(req, null));
+					default -> throw new SessionException(SessionException.UNKNOWN_COMMAND,
+						cmd + " does not take an overlay");
+				};
+			}
+			finally {
+				ol.unlock();
+			}
+		}
+		finally {
+			p.lastUsed = System.currentTimeMillis();
+			pl.unlock();
+		}
+	}
+
+	private static JsonElement withOverlay(Overlay o, JsonElement r) {
+		if (r instanceof JsonObject j) {
+			j.add("overlay", o.describe());
+		}
+		return r;
+	}
+
+	/** The operations of a request: {@code ops}, or the request itself as one {@code op}. */
+	private static JsonArray ops(JsonObject req, String single) {
+		if (single != null) {
+			JsonObject op = req.deepCopy();
+			for (String k : List.of("id", "cmd", "overlay", "program", "project", "wait",
+				"parallel")) {
+				op.remove(k);
+			}
+			op.addProperty("op", single);
+			JsonArray a = new JsonArray();
+			a.add(op);
+			return a;
+		}
+		if (!Json.has(req, "ops") || !req.get("ops").isJsonArray() ||
+			req.getAsJsonArray("ops").isEmpty()) {
+			throw new SessionException(SessionException.BAD_REQUEST,
+				"ops must be a non-empty array of {\"op\": rename|label|comment|signature|" +
+					"data_type, ...}");
+		}
+		return req.getAsJsonArray("ops");
+	}
+
+	/**
+	 * Opens (or joins) a client's overlay of {@code e}: its own program object over the stored
+	 * file. Held: nothing; takes the project's and the program's shared locks.
+	 */
+	private Overlay openOverlay(Client c, ProgramEntry e, String name, long wait,
+			RequestMonitor m) {
+		String id = Overlay.id(c, e.key, name);
+		Overlay existing = overlays.get(id);
+		if (existing != null && existing.error == null) {
+			return existing;
+		}
+		ProjectEntry p = e.project;
+		Lock pl = lockProject(p, false, wait, "open_program overlay");
+		try {
+			Lock l = e.acquire(false, wait, c, "open_program overlay");
+			try {
+				if (e.program == null || p.programs.get(e.path) != e) {
+					throw new SessionException(SessionException.NO_PROGRAM, e.key + " was closed");
+				}
+				if (existing != null) {
+					// an overlay a refresh could not rebuild: start it over
+					existing.lock.writeLock().lock();
+					try {
+						existing.dispose();
+						overlays.remove(id, existing);
+					}
+					finally {
+						existing.lock.writeLock().unlock();
+					}
+				}
+				Overlay o = new Overlay(c, name, e);
+				o.lock.writeLock().lock();
+				try {
+					loadOverlay(o, m);
+				}
+				catch (RuntimeException ex) {
+					o.dispose();
+					throw ex;
+				}
+				finally {
+					o.lock.writeLock().unlock();
+				}
+				Overlay prev = overlays.putIfAbsent(id, o);
+				if (prev != null) {
+					o.lock.writeLock().lock();
+					try {
+						o.dispose();
+					}
+					finally {
+						o.lock.writeLock().unlock();
+					}
+					return prev;
+				}
+				Msg.info(this, c.label() + " opened overlay " + name + " of " + e.key + " in " +
+					o.openMs + " ms");
+				return o;
+			}
+			finally {
+				e.release(l);
+			}
+		}
+		finally {
+			pl.unlock();
+		}
+	}
+
+	/**
+	 * Opens the overlay's own program object (from the upgrade cache copy when the shared program
+	 * came from one) and replays its log. Held: the overlay's write lock and the program's lock.
+	 */
+	private void loadOverlay(Overlay o, RequestMonitor m) {
+		ProgramEntry e = o.base;
+		long t0 = System.nanoTime();
+		Program prog = null;
+		try {
+			if (e.cacheView != null && e.cachePlan != null) {
+				UpgradeCache.Opened op = upgradeCache.openReady(e.cachePlan, o, m);
+				if (op != null) {
+					prog = op.program();
+					o.view = op.view();
+					o.lease = op.lease();
+				}
+			}
+			if (prog == null) {
+				prog = (Program) e.file.getReadOnlyDomainObject(o, DomainFile.DEFAULT_VERSION, m);
+			}
+		}
+		catch (CancelledException ex) {
+			throw cancelled(m);
+		}
+		catch (VersionException ex) {
+			throw new SessionException(SessionException.CONFLICT,
+				e.path + " was saved by another Ghidra version: " + ex.getMessage());
+		}
+		catch (IOException ex) {
+			throw new SessionException(SessionException.FAILED, ex.getMessage(), null, ex);
+		}
+		o.program = prog;
+		o.openMs = (System.nanoTime() - t0) / 1_000_000;
+		o.sha256 = prog.getExecutableSHA256();
+		o.programRevision = e.revision;
+		o.projectRevision = e.project.revision();
+		o.generation = e.project.generation;
+		o.error = null;
+		if (!o.log.isEmpty()) {
+			applyOps(prog, o.log);
+		}
+	}
+
+	/** After a refresh reopened {@code e}: every overlay of it is rebuilt from its log. */
+	private void rebuildOverlays(ProgramEntry e, RequestMonitor m) {
+		for (Overlay o : overlaysOf(e)) {
+			o.lock.writeLock().lock();
+			try {
+				String sha = o.sha256;
+				o.dispose();
+				try {
+					loadOverlay(o, m);
+					if (sha != null && !sha.equalsIgnoreCase(o.sha256)) {
+						o.dispose();
+						o.error = "the program is another build after the refresh (SHA-256 " +
+							o.sha256 + ", the overlay was made over " + sha + ")";
+						o.sha256 = sha;
+					}
+				}
+				catch (RuntimeException ex) {
+					o.dispose();
+					o.error = "could not reapply the overlay after a refresh: " + ex.getMessage();
+				}
+				if (o.error != null) {
+					Msg.warn(this, "overlay " + o.name + " of " + e.key + ": " + o.error);
+				}
+			}
+			finally {
+				o.lock.writeLock().unlock();
+			}
+		}
+	}
+
+	/** Drops the overlays of {@code e} that belong to {@code c} (all of them when c is null). */
+	private void dropOverlays(Client c, ProgramEntry e) {
+		for (Overlay o : overlaysOf(e)) {
+			if (c != null && o.client != c) {
+				continue;
+			}
+			o.lock.writeLock().lock();
+			try {
+				o.dispose();
+				overlays.remove(o.id, o);
+			}
+			finally {
+				o.lock.writeLock().unlock();
+			}
+		}
+	}
+
+	/** Applies operations to the overlay as one unit, and logs them. Held: its write lock. */
+	private JsonObject applyOverlay(Overlay o, JsonArray ops) {
+		JsonArray results = applyOps(o.program, ops);
+		for (JsonElement op : ops) {
+			o.log.add(op.deepCopy());
+		}
+		o.version++;
+		return Json.of("overlay", o.describe(), "applied", ops.size(), "results", results);
+	}
+
+	/**
+	 * Applies operations in one transaction: all of them, or (on the first failure) none. The
+	 * failure names the operation's index.
+	 */
+	private JsonArray applyOps(Program p, JsonArray ops) {
+		JsonArray results = new JsonArray();
+		int tx = p.startTransaction("overlay operations");
+		boolean ok = false;
+		int i = 0;
+		try {
+			for (JsonElement el : ops) {
+				if (!el.isJsonObject()) {
+					throw new SessionException(SessionException.BAD_REQUEST,
+						"ops[" + i + "] is not an object");
+				}
+				results.add(applyOp(p, el.getAsJsonObject()));
+				i++;
+			}
+			ok = true;
+		}
+		catch (SessionException ex) {
+			JsonObject d = ex.details() == null ? new JsonObject() : ex.details().deepCopy();
+			Json.put(d, "index", i);
+			Json.put(d, "rolledBack", true);
+			throw new SessionException(ex.code(),
+				"ops[" + i + "]: " + ex.getMessage() + " (nothing was applied)", d, ex);
+		}
+		catch (Exception ex) {
+			throw new SessionException(SessionException.FAILED,
+				"ops[" + i + "]: " + ex.getClass().getSimpleName() + ": " + ex.getMessage() +
+					" (nothing was applied)",
+				Json.of("index", i, "rolledBack", true), ex);
+		}
+		finally {
+			p.endTransaction(tx, ok);
+		}
+		return results;
+	}
+
+	/**
+	 * One operation: {@code rename} (address, name, kind auto|function|label), {@code label}
+	 * (address, name), {@code comment} (address, text, type), {@code signature} (address of a
+	 * function, a C prototype), {@code data_type} (address, a data type such as {@code int},
+	 * {@code char[16]} or {@code MyStruct *}).
+	 */
+	private JsonObject applyOp(Program p, JsonObject op) throws Exception {
+		String kind = Json.str(op, "op");
+		switch (kind) {
+			case "rename":
+				return Json.of("op", kind, "result", renameIn(p, op));
+			case "label": {
+				JsonObject r = op.deepCopy();
+				r.addProperty("kind", "label");
+				return Json.of("op", kind, "result", renameIn(p, r));
+			}
+			case "comment":
+				return Json.of("op", kind, "result", commentIn(p, op));
+			case "signature": {
+				Address a = address(p, Json.str(op, "address"));
+				Function f = p.getFunctionManager().getFunctionContaining(a);
+				if (f == null) {
+					throw new SessionException(SessionException.NOT_FOUND,
+						"no function contains " + hex(a));
+				}
+				String text = Json.str(op, "signature");
+				ghidra.program.model.data.FunctionDefinitionDataType fd;
+				try {
+					fd = ghidra.app.util.cparser.C.CParserUtils.parseSignature(
+						(ghidra.app.services.DataTypeManagerService) null, p, text, false);
+				}
+				catch (ghidra.app.util.cparser.C.ParseException ex) {
+					throw new SessionException(SessionException.BAD_REQUEST,
+						"bad signature '" + text + "': " + ex.getMessage());
+				}
+				if (fd == null) {
+					throw new SessionException(SessionException.BAD_REQUEST,
+						"bad signature '" + text + "'");
+				}
+				ghidra.app.cmd.function.ApplyFunctionSignatureCmd cmd =
+					new ghidra.app.cmd.function.ApplyFunctionSignatureCmd(f.getEntryPoint(), fd,
+						SourceType.USER_DEFINED);
+				if (!cmd.applyTo(p)) {
+					throw new SessionException(SessionException.FAILED,
+						"could not apply the signature: " + cmd.getStatusMsg());
+				}
+				return Json.of("op", kind, "address", hex(f.getEntryPoint()), "signature",
+					f.getSignature().getPrototypeString());
+			}
+			case "data_type": {
+				Address a = address(p, Json.str(op, "address"));
+				String text = Json.str(op, "type");
+				ghidra.program.model.data.DataType dt;
+				try {
+					dt = new ghidra.util.data.DataTypeParser(p.getDataTypeManager(),
+						p.getDataTypeManager(), null,
+						ghidra.util.data.DataTypeParser.AllowedDataTypes.ALL).parse(text);
+				}
+				catch (ghidra.program.model.data.InvalidDataTypeException ex) {
+					throw new SessionException(SessionException.BAD_REQUEST,
+						"bad data type '" + text + "': " + ex.getMessage());
+				}
+				Data d = ghidra.program.model.data.DataUtilities.createData(p, a, dt, -1,
+					ghidra.program.model.data.DataUtilities.ClearDataMode.CLEAR_ALL_CONFLICT_DATA);
+				return Json.of("op", kind, "address", hex(a), "type",
+					d.getDataType().getDisplayName(), "length", d.getLength());
+			}
+			default:
+				throw new SessionException(SessionException.BAD_REQUEST,
+					"unknown op '" + kind + "': rename, label, comment, signature or data_type");
+		}
+	}
+
+	/** {@code info} of an overlay: the program as this overlay shows it. */
+	private JsonObject overlayInfo(Overlay o) {
+		Program p = o.program;
+		ProgramEntry e = o.base;
+		JsonObject j = Json.of("key", e.key, "project", e.project.id, "path", e.path, "name",
+			p.getName(), "mode", "overlay", "language", p.getLanguageID().getIdAsString(),
+			"compiler", p.getCompilerSpec().getCompilerSpecID().getIdAsString(), "imageBase",
+			hex(p.getImageBase()), "format", p.getExecutableFormat(), "sha256",
+			p.getExecutableSHA256(), "functions", p.getFunctionManager().getFunctionCount(),
+			"analyzed", GhidraProgramUtilities.isAnalyzed(p), "changed", p.isChanged(),
+			"revision", e.revision, "projectRevision", e.project.revision());
+		j.add("overlay", o.describe());
+		return j;
+	}
+
+	/**
+	 * {@code promote_overlay}: replays an overlay's log into a writable copy of the program, in
+	 * a project this client opened writable ({@code "project"}) or in a new fork of the overlay's
+	 * project ({@code "fork": {"path": ..., "mode": ...}}), and saves it. The target must be the
+	 * same build (SHA-256). The overlay stays as it is.
+	 */
+	private JsonElement promoteOverlay(Client c, JsonObject req, RequestMonitor m) {
+		String name = overlayName(req);
+		ProgramEntry e = selected(c, req);
+		Overlay o = overlays.get(Overlay.id(c, e.key, name));
+		if (o == null) {
+			throw new SessionException(SessionException.NOT_FOUND,
+				"this client has no overlay '" + name + "' on " + e.key);
+		}
+		JsonArray log;
+		String sha;
+		o.lock.readLock().lock();
+		try {
+			log = o.log.deepCopy();
+			sha = o.sha256;
+		}
+		finally {
+			o.lock.readLock().unlock();
+		}
+		if (log.isEmpty()) {
+			throw new SessionException(SessionException.BAD_REQUEST,
+				"overlay '" + name + "' has no changes to promote");
+		}
+		String target = Json.str(req, "project", null);
+		JsonObject fork = null;
+		if (target == null) {
+			JsonObject f = Json.obj(req, "fork");
+			if (f == null) {
+				throw new SessionException(SessionException.BAD_REQUEST,
+					"pass \"project\" (a project you opened writable, such as a fork) or " +
+						"\"fork\": {\"path\": ...} to fork " + e.project.id + " first");
+			}
+			JsonObject freq = f.deepCopy();
+			freq.addProperty("project", e.project.id);
+			freq.addProperty("writable", true);
+			fork = (JsonObject) forkProject(c, freq, m);
+			target = fork.get("project").getAsString();
+		}
+		String path = Json.str(req, "path", e.path);
+		if (!path.startsWith("/")) {
+			path = "/" + path;
+		}
+		JsonObject info =
+			(JsonObject) openProgram(c, Json.of("path", target + ":" + path, "writable", true), m);
+		String tsha = info.has("sha256") && !info.get("sha256").isJsonNull()
+				? info.get("sha256").getAsString()
+				: null;
+		if (sha != null && tsha != null && !sha.equalsIgnoreCase(tsha)) {
+			throw new SessionException(SessionException.CONFLICT,
+				"the target " + info.get("key").getAsString() + " is another build (SHA-256 " +
+					tsha + "); the overlay was made over " + sha,
+				Json.of("target", info.get("key"), "sha256", tsha, "overlaySha256", sha));
+		}
+		JsonObject areq = Json.of("program", info.get("key").getAsString());
+		JsonElement results =
+			withProgram(c, areq, "promote_overlay", true, true, t -> applyOps(t.program, log));
+		JsonElement saved = null;
+		if (Json.bool(req, "save", true)) {
+			saved = withProgram(c, areq, "save", true, true,
+				t -> save(t, Json.of("comment", "promote overlay " + name), m));
+		}
+		Msg.info(this, c.label() + " promoted overlay " + name + " of " + e.key + " (" +
+			log.size() + " operations) into " + info.get("key").getAsString());
+		JsonObject out = Json.of("promoted", log.size(), "overlay", name, "from", e.key,
+			"target", info.get("key"), "project", target, "results", results, "saved", saved);
+		out.add("fork", fork);
+		return out;
 	}
 
 	private JsonElement list(ProjectEntry p, JsonObject req) {
@@ -1715,6 +2273,7 @@ final class Session {
 	private boolean releaseUse(Client c, ProgramEntry e, boolean discard, long wait) {
 		Lock l = e.acquire(true, wait, c, "close_program");
 		try {
+			dropOverlays(c, e);
 			boolean discarded = false;
 			boolean others;
 			synchronized (e.users) {
@@ -1825,6 +2384,7 @@ final class Session {
 			return;
 		}
 		try {
+			dropOverlays(null, e);
 			synchronized (e.users) {
 				for (Client u : e.users) {
 					u.programs.remove(e.key);
@@ -1965,6 +2525,13 @@ final class Session {
 			e.users.forEach(u -> ids.add(u.id));
 			Json.put(j, "users", ids);
 		}
+		List<String> mine = new ArrayList<>();
+		for (Overlay o : overlaysOf(e)) {
+			if (o.client == c) {
+				mine.add(o.name);
+			}
+		}
+		Json.put(j, "overlays", mine);
 		return j;
 	}
 
@@ -2050,7 +2617,7 @@ final class Session {
 			"several functions are named " + name + "; pass an address", d);
 	}
 
-	private JsonElement functions(ProgramEntry e, JsonObject req) {
+	private JsonElement functions(Program prog, JsonObject req) {
 		Pattern pat = null;
 		if (Json.has(req, "regex")) {
 			try {
@@ -2067,7 +2634,7 @@ final class Session {
 		JsonArray a = new JsonArray();
 		int seen = 0;
 		boolean truncated = false;
-		for (Function f : e.program.getFunctionManager().getFunctions(true)) {
+		for (Function f : prog.getFunctionManager().getFunctions(true)) {
 			String n = f.getName(true);
 			if (pat != null && !pat.matcher(n).find()) {
 				continue;
@@ -2089,8 +2656,9 @@ final class Session {
 			truncated);
 	}
 
-	private JsonElement decompile(ProgramEntry e, JsonObject req, RequestMonitor m) {
-		Function f = function(e.program, req);
+	private JsonElement decompile(Program prog, Decompilers e, JsonObject req,
+			RequestMonitor m) {
+		Function f = function(prog, req);
 		int timeout = (int) Json.num(req, "timeout", 60, 1, 3600);
 		int cap = (int) Json.num(req, "maxChars", DEFAULT_TEXT_CAP, 1, MAX_TEXT_CAP);
 		DecompInterface d = e.borrowDecompiler();
@@ -2124,8 +2692,7 @@ final class Session {
 
 	// ---- edits -----------------------------------------------------------------------------
 
-	private JsonElement rename(ProgramEntry e, JsonObject req) throws Exception {
-		Program p = e.program;
+	private JsonObject renameIn(Program p, JsonObject req) throws Exception {
 		Address a = address(p, Json.str(req, "address"));
 		String name = Json.str(req, "name");
 		String kind = Json.str(req, "kind", "auto");
@@ -2168,8 +2735,7 @@ final class Session {
 		return Json.of("address", hex(a), "name", name, "old", old, "kind", kind);
 	}
 
-	private JsonElement comment(ProgramEntry e, JsonObject req) {
-		Program p = e.program;
+	private JsonObject commentIn(Program p, JsonObject req) {
 		Address a = address(p, Json.str(req, "address"));
 		CommentType ct = switch (Json.str(req, "type", "eol")) {
 			case "eol" -> CommentType.EOL;

@@ -26,7 +26,7 @@ read-only, to the multi-project test. --legacy-project (optional) is copied into
 older-format part of upgrade_cache; the original is only read.
 
 Tests: two_harnesses, two_projects, dll_import, client_kill, daemon_restart, fairness, cancel_all,
-idle_shutdown, keep_warm, stdio, upgrade_cache, holders, fork, revisions.
+idle_shutdown, keep_warm, stdio, upgrade_cache, holders, fork, revisions, overlays.
 """
 import argparse
 import json
@@ -1032,9 +1032,160 @@ def t_revisions(c: Ctx):
     return "; ".join(notes)
 
 
+def t_overlays(c: Ctx):
+    """Client-scoped overlays: two clients with different overlays on one shared program see
+    different names, a third (and the owners without an overlay) see the canonical program; an
+    operation that fails rolls back its whole call; killing an overlay's owner leaves the shared
+    program untouched; promote writes an overlay into a fork; a refresh rebuilds overlays."""
+    gpr = c.copy_fixture("projOverlay")
+    exe = pathlib.Path(c.a.exe).name
+    before = tree_state(gpr.parent)
+    d = c.daemon("overlay", keepWarm=0)
+    notes = []
+    with d.connect("agent-a", "harness-a") as a, d.connect("agent-b", "harness-b") as b, \
+            d.connect("plain", "harness-c") as x:
+        for s in (a, b, x):
+            s.call("open_project", path=str(gpr))
+        t = time.perf_counter()
+        ia = a.call("open_program", path=exe, overlay="agent-a")
+        c.timings["overlay open (small program, shared program already open: no)"] = round(
+            (time.perf_counter() - t) * 1000)
+        check(ia["overlay"]["name"] == "agent-a" and ia["overlay"]["overlayVersion"] == 0 and
+              ia["overlay"]["sha256"] == ia["sha256"] and ia["mode"] == "read_only",
+              f"overlay open: {ia}")
+        t = time.perf_counter()
+        ib = b.call("open_program", path=exe, overlay="agent-b")
+        c.timings["overlay open (small program, shared program open)"] = round(
+            (time.perf_counter() - t) * 1000)
+        x.call("open_program", path=exe)
+        fns = [f for f in x.call("functions", limit=50)["functions"]
+               if not f["thunk"] and not f["external"]]
+        fn, fn2 = fns[0], fns[1]
+        canon = x.call("decompile", address=fn["address"])["name"]
+        ra = a.call("apply_overlay", overlay="agent-a", ops=[
+            {"op": "rename", "address": fn["address"], "name": "a_name"},
+            {"op": "comment", "address": fn["address"], "text": "agent a was here", "type": "plate"},
+            {"op": "label", "address": fn2["address"], "name": "a_label"}])
+        check(ra["applied"] == 3 and ra["overlay"]["overlayVersion"] == 1 and
+              ra["overlay"]["ops"] == 3, f"apply_overlay: {ra}")
+        rb = b.call("rename", overlay="agent-b", address=fn["address"], name="b_name")
+        check(rb["overlay"]["overlayVersion"] == 1, f"overlay rename: {rb}")
+        # each sees its own; the plain client and the owners' plain view see the canonical one
+        check(a.call("decompile", overlay="agent-a", address=fn["address"])["name"] == "a_name",
+              "agent a does not see its name")
+        check(b.call("decompile", overlay="agent-b", address=fn["address"])["name"] == "b_name",
+              "agent b does not see its name")
+        check(x.call("decompile", address=fn["address"])["name"] == canon,
+              "the plain client sees an overlay's name")
+        check(a.call("decompile", address=fn["address"])["name"] == canon,
+              "agent a's plain view sees its overlay")
+        check(not x.call("functions", contains="a_name")["functions"] and
+              not x.call("functions", contains="b_name")["functions"],
+              "an overlay name leaked into the shared program")
+        check(a.call("functions", overlay="agent-a", contains="a_name")["functions"] and
+              not a.call("functions", overlay="agent-a", contains="b_name")["functions"],
+              "overlay functions")
+        inf = a.call("info", overlay="agent-a")
+        check(inf["mode"] == "overlay" and inf["changed"] and inf["overlay"]["overlayVersion"] == 1
+              and x.call("info")["changed"] is False, f"overlay info: {inf}")
+        check(a.call("info")["overlays"] == ["agent-a"], "info does not list the overlay")
+        notes.append("two overlays, two names; the shared program unchanged")
+        # an overlay is private to its client: another client cannot use agent-a's
+        expect_error("not_found", b.call, "decompile", overlay="agent-a", address=fn["address"])
+        # a failing operation rolls back its whole call
+        e = expect_error("bad_request", a.call, "apply_overlay", overlay="agent-a", ops=[
+            {"op": "rename", "address": fn2["address"], "name": "never_applied"},
+            {"op": "signature", "address": fn["address"], "signature": "this is ( not C"}])
+        check(e.details.get("index") == 1 and e.details.get("rolledBack") is True,
+              f"failure details: {e.details}")
+        check(not a.call("functions", overlay="agent-a", contains="never_applied")["functions"],
+              "a failed call left a change")
+        check(a.call("info", overlay="agent-a")["overlay"]["overlayVersion"] == 1,
+              "a failed call bumped the version")
+        r = a.call("apply_overlay", overlay="agent-a", ops=[
+            {"op": "signature", "address": fn["address"], "signature": "int a_name(int x)"},
+            {"op": "data_type", "address": "rva:0x3c", "type": "dword"}])
+        check("a_name(int x)" in r["results"][0]["signature"] and
+              r["results"][1]["length"] == 4 and r["overlay"]["overlayVersion"] == 2,
+              f"signature/data_type: {r}")
+        check("int x" not in x.call("decompile", address=fn["address"])["signature"] or
+              "int x" in canon, "the signature leaked")
+        notes.append("a failing op rolls back the whole call")
+        st = x.call("status")
+        ovs = {(o["client"], o["name"]) for o in st["overlays"]}
+        check((a.hello["client"], "agent-a") in ovs and (b.hello["client"], "agent-b") in ovs,
+              f"status overlays: {st['overlays']}")
+        # killing an overlay's owner drops its overlay and leaves the shared program untouched
+        code = ("s = gs.connect(client='doomed', harness='crashy', state=A[0], instance='overlay',"
+                " ghidra=A[1])\n"
+                "s.call('open_project', path=A[2])\n"
+                "s.call('open_program', path=A[3], overlay='doomed')\n"
+                "s.call('rename', overlay='doomed', address=A[4], name='doomed_name')\n"
+                "print(json.dumps({'client': s.hello['client']}), flush=True)\n"
+                "time.sleep(3600)\n")
+        p = c.child(code, c.state, c.a.ghidra, gpr, exe, fn["address"])
+        line = p.stdout.readline()
+        check(line, f"child did not start: {p.stderr.read()[-2000:] if p.poll() is not None else ''}")
+        doomed = json.loads(line)["client"]
+        p.kill()
+        p.wait()
+        for _ in range(100):
+            if all(o["client"] != doomed for o in x.call("status")["overlays"]):
+                break
+            time.sleep(0.1)
+        check(all(o["client"] != doomed for o in x.call("status")["overlays"]),
+              "the dead client's overlay is still listed")
+        check(not x.call("functions", contains="doomed_name")["functions"] and
+              x.call("decompile", address=fn["address"])["name"] == canon,
+              "the dead client's overlay touched the shared program")
+        check(b.call("decompile", overlay="agent-b", address=fn["address"])["name"] == "b_name",
+              "another overlay was disturbed")
+        notes.append("killed owner: overlay dropped, shared program untouched")
+        # promote writes the overlay into a fork; the master stays as it was
+        pr = a.call("promote_overlay", overlay="agent-a",
+                    fork={"path": str(c.work / "projOverlayFork")}, wait=600000)
+        check(pr["promoted"] == 5 and pr["fork"]["project"] == pr["project"] and
+              pr["saved"]["saved"], f"promote: {pr}")
+        fk = pr["target"]
+        check(a.call("decompile", program=fk, address=fn["address"])["name"] == "a_name" and
+              a.call("functions", program=fk, contains="a_label")["functions"],
+              "the promoted fork lacks the overlay's changes")
+        check(x.call("decompile", address=fn["address"])["name"] == canon,
+              "promote changed the master")
+        a.call("close_project", project=pr["project"])
+        notes.append("promote_overlay replayed 5 ops into a fork and saved it")
+        # a refresh rebuilds overlays from their logs
+        d2 = c.daemon("overlay-writer")
+        with d2.connect("writer", "tests") as w:
+            w.call("open_project", path=str(gpr), writable=True)
+            w.call("open_program", path=exe, writable=True)
+            w.call("rename", address=fn2["address"], name="saved_elsewhere")
+            w.call("save")
+            w.call("close_project")
+        d2.stop()
+        before = tree_state(gpr.parent)  # the master was changed on purpose by another process
+        rf = x.call("refresh")
+        check(rf["refreshed"], f"refresh: {rf}")
+        ob = b.call("info", overlay="agent-b")["overlay"]
+        check(ob["error"] is None and not ob["stale"], f"overlay after refresh: {ob}")
+        check(b.call("decompile", overlay="agent-b", address=fn["address"])["name"] == "b_name" and
+              b.call("functions", overlay="agent-b", contains="saved_elsewhere")["functions"],
+              "the rebuilt overlay lacks its change or the new save")
+        notes.append("refresh rebuilt the overlays")
+        dr = a.call("drop_overlay", overlay="agent-a")
+        check(dr["dropped"] and dr["ops"] == 5, f"drop: {dr}")
+        expect_error("not_found", a.call, "info", overlay="agent-a")
+        for s in (a, b, x):
+            s.call("close_project")
+    d.stop()
+    check(tree_state(gpr.parent) == before, "the master project changed")
+    shutil.rmtree(c.work / "projOverlayFork", ignore_errors=True)
+    return "; ".join(notes)
+
+
 TESTS = ["two_harnesses", "two_projects", "dll_import", "client_kill", "daemon_restart",
          "fairness", "cancel_all", "idle_shutdown", "keep_warm", "stdio", "upgrade_cache",
-         "holders", "fork", "revisions"]
+         "holders", "fork", "revisions", "overlays"]
 
 
 def main():

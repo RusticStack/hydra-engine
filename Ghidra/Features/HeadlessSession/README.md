@@ -233,8 +233,9 @@ holds the last one.)
 **`refresh`** (or `reopen`) `{project}` reopens a read-only view on what is saved now **without
 its clients leaving**. The new view is opened first, outside every lock; then, under the
 project's exclusive lock (requests already running finish first, new ones wait, so nobody sees
-half of the switch), every program clients use is reopened from it under the same key,
-programs nobody uses are closed, and the old view is closed:
+half of the switch), every program clients use is reopened from it under the same key (its
+overlays are rebuilt from their logs, see "Overlays"), programs nobody uses are closed, and the
+old view is closed:
 
 ```json
 {"cmd": "refresh", "project": "p1"}
@@ -323,6 +324,93 @@ executable with 243,855 functions), three runs:
 
 For comparison, a single 261 MB database file: 14 ms and 36 KB cloned on ReFS, 2.0 s and 262 MB
 copied to NTFS.
+
+### Overlays: a private annotation view of a shared program
+
+**The need.** One client wants to try a name, a comment, a label, a signature or a data type
+while other clients keep reading the same program; nobody else must see it, nothing may be saved
+unless the client decides to keep it, and a client that dies or fails must not leave anything
+behind in the shared program. A fork per hypothesis is heavier than that needs.
+
+**Why not a view of the shared program.** Ghidra has no per-client view of one `Program` object:
+a change in a program object is a change for everyone holding it, and the session shares one
+object per program among its readers. Contained scripts get isolation only by rolling everything
+back at the end, so they cannot keep a change for later requests.
+
+**What was evaluated:**
+
+| | (a) a private copy-on-write fork per overlay | (b) a private program object plus an operation log (chosen) |
+|---|---|---|
+| What | `fork_project` of the program's project, opened writable for the client behind the overlay name | A second program object over the same stored file (`DomainFile.getReadOnlyDomainObject`: Ghidra's "new domain object that is disassociated from its original domain file", changeable, never saved back), changed only through logged operations |
+| Isolation | A separate project | A separate program object; its database reads the stored file and keeps changed buffers in its own temporary file |
+| Never saved | Needs care: the fork is writable | By construction: a read-only domain object cannot be saved to its file |
+| Cost, 243,855 functions (1.49 GB project) | 455 ms fork (402-537) + 301 ms open (288-366) + 468 ms first decompile; a project on disk to delete; a full copy (8.5 s, 1.56 GB) where the file system does not clone | **116 ms open (110-213), +54 MB heap**, 252 ms first decompile, then 9 ms decompiles and 1.2 ms per rename; nothing on disk |
+| Cost, 174 functions | 102 ms fork + 30 ms open | 26 ms open, +3 MB heap |
+| Promote | It is already a project | Replay the log into a fork |
+
+(Windows 11, ReFS, JDK 25; medians of 3 rounds for the large program and 5 for the small one,
+min-max in brackets; the shared program was already open and warm, as it is when other clients
+use it.)
+
+So an overlay is (b): **its own program object over the shared program's stored file**, and a
+**log** of the operations applied to it, which `promote_overlay` replays into a working copy and a
+`refresh` replays into a rebuilt overlay.
+
+```json
+{"cmd": "open_program", "path": "p1:/game.exe", "overlay": "agent-a"}
+{"cmd": "apply_overlay", "program": "p1:/game.exe", "overlay": "agent-a", "ops": [
+  {"op": "rename", "address": "rva:0x67bc40", "name": "PlayerTick"},
+  {"op": "comment", "address": "rva:0x67bc40", "type": "plate", "text": "hypothesis: per-frame update"},
+  {"op": "label", "address": "rva:0x1a2b30", "name": "g_playerList"},
+  {"op": "signature", "address": "rva:0x67bc40", "signature": "void PlayerTick(void *self, float dt)"},
+  {"op": "data_type", "address": "rva:0x1a2b30", "type": "void *[64]"}]}
+{"cmd": "decompile", "program": "p1:/game.exe", "overlay": "agent-a", "address": "rva:0x67bc40"}
+{"cmd": "promote_overlay", "program": "p1:/game.exe", "overlay": "agent-a", "fork": {"path": "C:/work/agent-a"}}
+{"cmd": "drop_overlay", "program": "p1:/game.exe", "overlay": "agent-a"}
+```
+
+- **Scope.** An overlay belongs to one client and one program, by name (`overlay`: 1-64 letters,
+  digits, `.`, `_`, `-`, `@`). Another client's overlay of the same name is a different one; no
+  other client can use or see it. `open_program` with `overlay` opens the shared program
+  read-only for the client (as without it) and creates or joins the overlay. The same client
+  still reads the canonical program by leaving `overlay` out.
+- **Reads** with `overlay`: `info` (`mode: "overlay"`), `functions`, `decompile` (the overlay's own
+  pooled decompilers) and `script` (contained: rolled back, as on a shared program).
+- **Changes** go through operations only, so that they can be replayed: `apply_overlay` with
+  `ops` (`rename` {address, name, kind}, `label` {address, name}, `comment` {address, text,
+  type}, `signature` {address, a C prototype}, `data_type` {address, type such as `int`,
+  `char[16]` or `MyStruct *`}), and `rename` / `comment` with `overlay`. A call is atomic: one
+  transaction, and the first failing operation rolls the whole call back (the error names its
+  `index`; `rolledBack: true`); the overlay is unchanged and its version stays.
+- **`overlayVersion`** is bumped by every successful call. Each overlay is described (in its
+  answers, in `info` and under `overlays` in `status`) as `name`, `program`, `client`,
+  `overlayVersion`, `ops`, `sha256` (the program's executable), `programRevision`,
+  `projectRevision`, `gpr`, `stale`, `error`, `changed`, `openMs`, `ageMs`. `info` without
+  `overlay` lists the client's overlays of the program; `overlays` lists all of the client's.
+- **Never saved.** Nothing in an overlay reaches the stored program. `promote_overlay` replays its
+  log into a writable copy of the program, in a project the client opened writable (`project`)
+  or in a new fork of the overlay's project (`fork`: the `fork_project` fields), checks the
+  target is the same build (SHA-256), and saves it unless `"save": false`. The overlay stays.
+- **Lifetime.** `drop_overlay`, `close_program`, `close_project`, the client's disconnect or
+  death, and the program closing for everyone drop it. A `refresh` of the project rebuilds it from
+  its log over the new revision; if the program is another build then (another SHA-256) or an
+  operation no longer applies, the overlay is marked with `error` and is unusable until dropped
+  (its log comes back in the error's details).
+- **Failures stay inside.** An overlay is a different program object: nothing done to it, and no
+  failure in it, reaches the shared program or other overlays.
+
+**Limits, and when a fork is the better tool.**
+
+- An overlay costs a program object's memory (measured +54 MB for 243,855 functions, mostly
+  caches that grow with use) and pays its own first decompile (about 250 ms); many overlays of
+  a large program add up. For long, heavy work on one program, a fork costs disk instead of heap.
+- Only the five operations above change an overlay. Bulk type imports, structure creation,
+  analysis, version tracking or any script that must keep its changes need a working copy:
+  `fork_project` (or `promote_overlay` into a fork, then work there).
+- An overlay of a program in an older database format opens from the upgrade cache copy when the
+  shared program came from it; otherwise it is upgraded in memory, as slowly as that program's
+  first open (21-24 s for the large program above).
+- Promotion replays operations by address; it does not merge with other changes in the target.
 
 ### Programs saved by an older Ghidra
 
@@ -436,7 +524,7 @@ code 2). Long commands send throttled `progress` events with the request's `id`:
 |---|---|---|
 | `hello` | `client`, `harness`, `clientVersion`, `token` (socket) | Names the client. On a socket it must be the first request, with the endpoint's `token`. Answers the session's identity: `protocol`, `minClient`, `hydraVersion`, `ghidraVersion`, `installId`, `startedAt`, `pid` (see "Pinning and upgrading"), then what `status` lists. |
 | `ping` | | `{"pong": true}` |
-| `status` | | Session identity (as `hello`), launch info, memory, projects, programs (mode, owner, users, what holds each lock, idle time), clients (`name`, `harness`, `clientVersion`, and their unanswered `requests`: `id`, `cmd`, `artifact`, `ms`, `message`, `progress`, `maximum`), scheduler lanes, upgrade cache builds. |
+| `status` | | Session identity (as `hello`), launch info, memory, projects, programs (mode, owner, users, what holds each lock, idle time), clients (`name`, `harness`, `clientVersion`, and their unanswered `requests`: `id`, `cmd`, `artifact`, `ms`, `message`, `progress`, `maximum`), overlays, scheduler lanes, upgrade cache builds. |
 | `projects` | | Open projects, which ones this client joined, its active project. |
 | `open_project` | `path`, `writable`=false, `discard`=false | Joins the project, opening it if needed. `path` is a `.gpr`, its folder, a `.rep`, or a parent folder with exactly one project at most two levels below. A read-only view is reopened writable only when no other client uses it; a read-only request on a writable project joins it. |
 | `fork_project` | `project` (id or path), `path`, `name`?, `writable`=true, `mode`=auto\|copy-on-write\|full, `maxCopyMb`? | Copies the project into a working copy of this client's, opened and joined; the source and its read-only views are untouched. See "Working copies". |
@@ -446,12 +534,17 @@ code 2). Long commands send throttled `progress` events with the request's `id`:
 | `list` | `project`?, `folder`="/", `recursive`=true, `programsOnly`=false, `metadata`=true, `sha256`, `offset`, `limit`=1000 | Folders and files, with `key`, `sha256`, `language`, `format`, `executable` and `open` (who uses it) for programs; `sha256` finds a program by its hash. Paged, with `truncated`. |
 | `open_program` / `switch` | `path` (path, unique name or key), `project`?, `writable`=false, `checkout`=false, `upgrade`=false, `wait`: `true` | Opens the program, or joins it if it is open (also a warm one nobody uses), and makes it active. Writable needs a writable project; a versioned file needs `checkout`. `"wait": true` on a read-only open of an older-format program waits for its upgrade cache copy instead of upgrading in memory (slot and lock waits keep the default). |
 | `programs` | | This client's programs (all projects) and its active ones. |
-| `info` | `program`? | Key, language, compiler, image base, format, executable path, SHA-256, MD5, functions, analysed, changed, mode, owner, users, `revision`, `projectRevision`, `generation`. |
+| `open_program` + `overlay` | `path`, `overlay` | Opens the program read-only for this client and creates or joins its private overlay. See "Overlays". |
+| `apply_overlay` | `program`?, `overlay`, `ops` [...] | Applies operations (`rename`, `label`, `comment`, `signature`, `data_type`) to the overlay, all or none, and logs them. |
+| `drop_overlay` | `program`?, `overlay` | Drops the overlay. |
+| `promote_overlay` | `program`?, `overlay`, `project` or `fork` {`path`, `mode`, ...}, `path`?, `save`=true | Replays the overlay's log into a writable copy of the program (a project this client opened writable, or a new fork) and saves it. |
+| `overlays` | | This client's overlays. |
+| `info` | `program`?, `overlay`? | Key, language, compiler, image base, format, executable path, SHA-256, MD5, functions, analysed, changed, mode, owner, users, `revision`, `projectRevision`, `generation`, `overlays` (this client's). With `overlay`: the program as the overlay shows it. |
 | `close_program` | `program`?, `discard`=false | Drops this client's use. The owner of a changed program must `save` first or pass `discard`. |
-| `functions` | `program`?, `contains`, `regex`, `offset`, `limit`=200 (max 10000) | Functions by name filter, paged. |
-| `decompile` | `program`?, `address` or `name`, `timeout`=60 s, `maxChars`=200000 | C text and signature. Decompilers are pooled per program, so warm calls skip the start-up cost. |
-| `rename` | `program`?, `address`, `name`, `kind`=auto\|function\|label | Renames the function at the address, or creates or renames the primary label: data labels and global names. Owner only. |
-| `comment` | `program`?, `address`, `text` (null clears), `type`=eol\|pre\|post\|plate\|repeatable | Owner only. |
+| `functions` | `program`?, `contains`, `regex`, `offset`, `limit`=200 (max 10000), `overlay`? | Functions by name filter, paged. |
+| `decompile` | `program`?, `address` or `name`, `timeout`=60 s, `maxChars`=200000, `overlay`? | C text and signature. Decompilers are pooled per program (and per overlay), so warm calls skip the start-up cost. |
+| `rename` | `program`?, `address`, `name`, `kind`=auto\|function\|label, `overlay`? | Renames the function at the address, or creates or renames the primary label: data labels and global names. Owner only; with `overlay`, in the client's overlay. |
+| `comment` | `program`?, `address`, `text` (null clears), `type`=eol\|pre\|post\|plate\|repeatable, `overlay`? | Owner only; with `overlay`, in the client's overlay. |
 | `analyze` | `program`?, `options` {name: value}, `ranges` [[start, end], ...], `timeout` s | Sets analysis options, then runs auto-analysis on everything (or what the ranges trigger) the way `analyzeHeadless` does, and marks the program analysed. Owner only. |
 | `save` | `program`?, `comment` | Owner only. |
 | `import` | `file`, `project`?, `folder`="/", `name`, `language`, `compiler`, `analyze`=false, `duplicate`=false, `timeout` | Imports into a writable project with `ProgramLoader` (any format it accepts), saves it, opens it writable for this client, and optionally analyses and saves it. A file whose SHA-256 is already in the project returns `{"imported": false, "existing": [...]}` unless `duplicate`. |
@@ -818,7 +911,11 @@ took 7.0-7.8 s per question and needed a copy of the project.
   stays byte-identical); `revisions` (revisions in `open_project`, `open_program`, `info` and
   `status`; another process saves: `stale` on the readers' next answers; one reader's `refresh`
   switches both, the other is told once with `refreshed`; a fork starts at its source's revision;
-  a writable project needs no refresh).
+  a writable project needs no refresh); `overlays` (two clients' overlays of one program show
+  different names while a third client and the owners' plain view see the canonical program; an
+  overlay is private; a failing operation rolls back its whole call; a signature and a data type;
+  a killed owner's overlay is dropped and the shared program is untouched; `promote_overlay` into
+  a fork; a refresh rebuilds overlays; `drop_overlay`).
 
 ```
 python examples/session_smoke.py --ghidra <install> --work <empty dir> --binary A.exe --binary B.exe

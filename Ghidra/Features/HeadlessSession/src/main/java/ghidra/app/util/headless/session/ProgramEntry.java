@@ -42,7 +42,7 @@ import ghidra.program.model.listing.Program;
  * saves and mode changes hold it exclusively. A request that cannot get it within its
  * {@code wait} fails with {@code busy} and the current holder, instead of queueing forever.
  */
-final class ProgramEntry {
+final class ProgramEntry implements Decompilers {
 
 	enum Mode {
 		READ_ONLY, WRITABLE;
@@ -200,13 +200,19 @@ final class ProgramEntry {
 		return o == null ? null : o.holder("open_program writable", ownedSince);
 	}
 
-	DecompInterface borrowDecompiler() {
+	@Override
+	public DecompInterface borrowDecompiler() {
 		synchronized (decompilers) {
 			DecompInterface d = decompilers.poll();
 			if (d != null) {
 				return d;
 			}
 		}
+		return newDecompiler(program, path);
+	}
+
+	/** A decompiler opened on {@code program}, set up the way every session decompile runs. */
+	static DecompInterface newDecompiler(Program program, String path) {
 		DecompInterface d = new DecompInterface();
 		DecompileOptions options = new DecompileOptions();
 		options.grabFromProgram(program);
@@ -223,7 +229,8 @@ final class ProgramEntry {
 		return d;
 	}
 
-	void returnDecompiler(DecompInterface d, boolean healthy) {
+	@Override
+	public void returnDecompiler(DecompInterface d, boolean healthy) {
 		if (!healthy || d.getProgram() != program) {
 			d.dispose();
 			return;
