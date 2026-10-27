@@ -4,7 +4,7 @@
 #   .github/scripts/package-client.sh <version> <output dir>
 #
 # The zip holds one folder, hydra-client-<version>/, with ghidra_session.py (standard library only,
-# its HYDRA_RELEASE stamped with <version>), LICENSE and a short README.txt. The release workflow
+# its HYDRA_RELEASE stamped with <version>), LICENSE, NOTICE, NOTICE-HYDRA and a short README.txt. The release workflow
 # runs it; it can be run locally with the same arguments.
 set -euo pipefail
 
@@ -31,7 +31,7 @@ if [ "$(grep -c '^HYDRA_RELEASE = ' "$src")" -ne 1 ]; then
   echo "expected exactly one HYDRA_RELEASE line in $src" >&2; exit 1
 fi
 sed "s/^HYDRA_RELEASE = .*/HYDRA_RELEASE = \"$version\"/" "$src" > "$work/$name/ghidra_session.py"
-cp "$root/LICENSE" "$work/$name/LICENSE"
+cp "$root/LICENSE" "$root/NOTICE" "$root/NOTICE-HYDRA" "$work/$name/"
 
 client=$(sed -n 's/^CLIENT_VERSION = "\(.*\)"/\1/p' "$work/$name/ghidra_session.py")
 protocol=$(sed -n 's/^PROTOCOL = \([0-9]*\)/\1/p' "$work/$name/ghidra_session.py")
@@ -56,7 +56,8 @@ protocol, or that requires a newer client than $client (minClient), with a clear
 release, and upgrade the client and the engine together. Details: the "Pinning and upgrading"
 section of Ghidra/Features/HeadlessSession/README.md in the Hydra Engine repository.
 
-Apache License 2.0 (LICENSE). Verify the zip against SHA256SUMS of the release.
+Apache License 2.0 (LICENSE; NOTICE is Ghidra's own notice and NOTICE-HYDRA lists what Hydra
+Engine changed in Ghidra). Verify the zip against SHA256SUMS of the release.
 TXT
 
 # A zip with a fixed layout and modification times, so the same inputs give the same file
