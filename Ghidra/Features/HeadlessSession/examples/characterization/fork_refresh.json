@@ -1,0 +1,1663 @@
+{
+ "scenario": "fork_refresh",
+ "steps": [
+  {
+   "step": 1,
+   "who": "a",
+   "cmd": "open_project",
+   "request": {
+    "path": "<WORK>/src/Fixture.gpr"
+   },
+   "response": {
+    "id": 2,
+    "ok": true,
+    "result": {
+     "id": "p1",
+     "name": "Fixture",
+     "dir": "<WORK>/src",
+     "gpr": "<WORK>/src/Fixture.gpr",
+     "writable": false,
+     "openMs": "<masked>",
+     "idleMs": "<masked>",
+     "files": 2,
+     "users": [
+      1
+     ],
+     "programs": 0,
+     "revision": "<rev1>",
+     "diskRevision": "<rev1>",
+     "stale": false,
+     "generation": 1,
+     "fork": null,
+     "opened": true
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 2,
+   "who": "b",
+   "cmd": "open_project",
+   "request": {
+    "path": "<WORK>/src/Fixture.gpr"
+   },
+   "response": {
+    "id": 2,
+    "ok": true,
+    "result": {
+     "id": "p1",
+     "name": "Fixture",
+     "dir": "<WORK>/src",
+     "gpr": "<WORK>/src/Fixture.gpr",
+     "writable": false,
+     "openMs": "<masked>",
+     "idleMs": "<masked>",
+     "files": 2,
+     "users": [
+      1,
+      2
+     ],
+     "programs": 0,
+     "revision": "<rev1>",
+     "diskRevision": "<rev1>",
+     "stale": false,
+     "generation": 1,
+     "fork": null,
+     "opened": false
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 3,
+   "who": "a",
+   "cmd": "open_program",
+   "request": {
+    "path": "/alpha.exe"
+   },
+   "response": {
+    "id": 3,
+    "ok": true,
+    "result": {
+     "key": "p1:/alpha.exe",
+     "project": "p1",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "read_only",
+     "owner": null,
+     "mine": false,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": false,
+     "revision": "<rev2>",
+     "projectRevision": "<rev1>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1
+     ],
+     "overlays": [],
+     "writers": [],
+     "writer": false,
+     "journalSeq": 0,
+     "unsavedEdits": 0,
+     "openMs": "<masked>"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 4,
+   "who": "b",
+   "cmd": "open_program",
+   "request": {
+    "path": "/alpha.exe"
+   },
+   "response": {
+    "id": 3,
+    "ok": true,
+    "result": {
+     "key": "p1:/alpha.exe",
+     "project": "p1",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "read_only",
+     "owner": null,
+     "mine": false,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": false,
+     "revision": "<rev2>",
+     "projectRevision": "<rev1>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1,
+      2
+     ],
+     "overlays": [],
+     "writers": [],
+     "writer": false,
+     "journalSeq": 0,
+     "unsavedEdits": 0,
+     "openMs": "<masked>"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 5,
+   "who": "a",
+   "cmd": "fork_project",
+   "request": {
+    "path": "<WORK>/f0",
+    "mode": "bogus"
+   },
+   "response": {
+    "id": 4,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "mode must be auto, copy-on-write or full"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 6,
+   "who": "a",
+   "cmd": "fork_project",
+   "request": {
+    "path": "<WORK>/f0",
+    "name": "bad/name"
+   },
+   "response": {
+    "id": 5,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "bad project name: bad/name"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 7,
+   "who": "a",
+   "cmd": "fork_project",
+   "request": {
+    "path": "<WORK>/src/Fixture.rep/f"
+   },
+   "response": {
+    "id": 6,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "the fork must not be the source or inside its .rep: <WORK>/src/Fixture.rep/f"
+    },
+    "ms": "<masked>"
+   },
+   "note": "inside the source's .rep"
+  },
+  {
+   "step": 8,
+   "who": "a",
+   "cmd": "fork_project",
+   "request": {
+    "path": "<WORK>/src"
+   },
+   "response": {
+    "id": 7,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "the fork must not be the source or inside its .rep: <WORK>/src"
+    },
+    "ms": "<masked>"
+   },
+   "note": "the source itself"
+  },
+  {
+   "step": 9,
+   "who": "a",
+   "cmd": "fork_project",
+   "request": {
+    "project": "p1"
+   },
+   "response": {
+    "id": 8,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "missing field: path"
+    },
+    "ms": "<masked>"
+   },
+   "note": "no path"
+  },
+  {
+   "step": 10,
+   "who": "a",
+   "cmd": "fork_project",
+   "request": {
+    "path": "<WORK>/fork1",
+    "mode": "full",
+    "project": "p1"
+   },
+   "response": {
+    "id": 9,
+    "ok": true,
+    "result": {
+     "project": "p2",
+     "path": "<WORK>/fork1",
+     "gpr": "<WORK>/fork1/Fixture.gpr",
+     "name": "Fixture",
+     "writable": true,
+     "source": {
+      "project": "p1",
+      "gpr": "<WORK>/src/Fixture.gpr",
+      "canonical": "<WORK>/src/Fixture.gpr",
+      "name": "Fixture",
+      "revision": "<rev1>",
+      "writable": false,
+      "fork": false
+     },
+     "baseRevision": "<rev1>",
+     "mode": "full",
+     "method": "<masked>",
+     "cloned": "<masked>",
+     "clonedBy": "<masked>",
+     "bytes": 4425400,
+     "files": 14,
+     "copyMs": "<masked>",
+     "freeSpaceUsedBytes": "<masked>",
+     "depth": 1,
+     "sidecar": "<WORK>/fork1/Fixture.fork.json",
+     "ms": "<masked>",
+     "info": {
+      "id": "p2",
+      "name": "Fixture",
+      "dir": "<WORK>/fork1",
+      "gpr": "<WORK>/fork1/Fixture.gpr",
+      "writable": true,
+      "openMs": "<masked>",
+      "idleMs": "<masked>",
+      "files": 2,
+      "users": [
+       1
+      ],
+      "programs": 0,
+      "revision": "<rev1>",
+      "diskRevision": "<rev1>",
+      "stale": false,
+      "generation": 1,
+      "fork": {
+       "source": {
+        "project": "p1",
+        "gpr": "<WORK>/src/Fixture.gpr",
+        "canonical": "<WORK>/src/Fixture.gpr",
+        "name": "Fixture",
+        "revision": "<rev1>",
+        "writable": false,
+        "fork": false
+       },
+       "baseRevision": "<rev1>",
+       "created": "<time>",
+       "createdAt": "<masked>",
+       "by": {
+        "client": 1,
+        "name": "char-a",
+        "harness": "harness-a",
+        "label": "client 1 (char-a, harness-a)"
+       },
+       "mode": "full",
+       "method": "<masked>",
+       "cloned": "<masked>",
+       "bytes": 4425400,
+       "depth": 1
+      },
+      "opened": true
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 11,
+   "who": "a",
+   "cmd": "fork_project",
+   "request": {
+    "path": "<WORK>/fork1",
+    "mode": "full",
+    "project": "p1"
+   },
+   "response": {
+    "id": 10,
+    "ok": false,
+    "error": {
+     "code": "conflict",
+     "message": "a project named Fixture already exists in <WORK>/fork1; pick another path (forks are never overwritten)",
+     "details": {
+      "path": "<WORK>/fork1/Fixture.gpr",
+      "suggest": "another path"
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "forks are never overwritten"
+  },
+  {
+   "step": 12,
+   "who": "a",
+   "cmd": "fork_project",
+   "request": {
+    "path": "<WORK>/fork2/Named.gpr",
+    "mode": "full",
+    "writable": false
+   },
+   "response": {
+    "id": 11,
+    "ok": true,
+    "result": {
+     "project": "p3",
+     "path": "<WORK>/fork2",
+     "gpr": "<WORK>/fork2/Named.gpr",
+     "name": "Named",
+     "writable": false,
+     "source": {
+      "project": "p2",
+      "gpr": "<WORK>/fork1/Fixture.gpr",
+      "canonical": "<WORK>/fork1/Fixture.gpr",
+      "name": "Fixture",
+      "revision": "<rev1>",
+      "writable": true,
+      "fork": true
+     },
+     "baseRevision": "<rev1>",
+     "mode": "full",
+     "method": "<masked>",
+     "cloned": "<masked>",
+     "clonedBy": "<masked>",
+     "bytes": 4425400,
+     "files": 14,
+     "copyMs": "<masked>",
+     "freeSpaceUsedBytes": "<masked>",
+     "depth": 2,
+     "sidecar": "<WORK>/fork2/Named.fork.json",
+     "ms": "<masked>",
+     "info": {
+      "id": "p3",
+      "name": "Named",
+      "dir": "<WORK>/fork2",
+      "gpr": "<WORK>/fork2/Named.gpr",
+      "writable": false,
+      "openMs": "<masked>",
+      "idleMs": "<masked>",
+      "files": 2,
+      "users": [
+       1
+      ],
+      "programs": 0,
+      "revision": "<rev3>",
+      "diskRevision": "<rev3>",
+      "stale": false,
+      "generation": 1,
+      "fork": {
+       "source": {
+        "project": "p2",
+        "gpr": "<WORK>/fork1/Fixture.gpr",
+        "canonical": "<WORK>/fork1/Fixture.gpr",
+        "name": "Fixture",
+        "revision": "<rev1>",
+        "writable": true,
+        "fork": true
+       },
+       "baseRevision": "<rev1>",
+       "created": "<time>",
+       "createdAt": "<masked>",
+       "by": {
+        "client": 1,
+        "name": "char-a",
+        "harness": "harness-a",
+        "label": "client 1 (char-a, harness-a)"
+       },
+       "mode": "full",
+       "method": "<masked>",
+       "cloned": "<masked>",
+       "bytes": 4425400,
+       "depth": 2
+      },
+      "opened": true
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "a read-only fork, named by its .gpr"
+  },
+  {
+   "step": 13,
+   "who": "a",
+   "cmd": "projects",
+   "request": {},
+   "response": {
+    "id": 12,
+    "ok": true,
+    "result": {
+     "activeProject": "p3",
+     "projects": [
+      {
+       "id": "p1",
+       "name": "Fixture",
+       "dir": "<WORK>/src",
+       "gpr": "<WORK>/src/Fixture.gpr",
+       "writable": false,
+       "openMs": "<masked>",
+       "idleMs": "<masked>",
+       "files": 2,
+       "users": [
+        1,
+        2
+       ],
+       "programs": 1,
+       "revision": "<rev1>",
+       "diskRevision": "<rev1>",
+       "stale": false,
+       "generation": 1,
+       "fork": null,
+       "joined": true,
+       "active": false
+      },
+      {
+       "id": "p2",
+       "name": "Fixture",
+       "dir": "<WORK>/fork1",
+       "gpr": "<WORK>/fork1/Fixture.gpr",
+       "writable": true,
+       "openMs": "<masked>",
+       "idleMs": "<masked>",
+       "files": 2,
+       "users": [
+        1
+       ],
+       "programs": 0,
+       "revision": "<rev1>",
+       "diskRevision": "<rev1>",
+       "stale": false,
+       "generation": 1,
+       "fork": {
+        "source": {
+         "project": "p1",
+         "gpr": "<WORK>/src/Fixture.gpr",
+         "canonical": "<WORK>/src/Fixture.gpr",
+         "name": "Fixture",
+         "revision": "<rev1>",
+         "writable": false,
+         "fork": false
+        },
+        "baseRevision": "<rev1>",
+        "created": "<time>",
+        "createdAt": "<masked>",
+        "by": {
+         "client": 1,
+         "name": "char-a",
+         "harness": "harness-a",
+         "label": "client 1 (char-a, harness-a)"
+        },
+        "mode": "full",
+        "method": "<masked>",
+        "cloned": "<masked>",
+        "bytes": 4425400,
+        "depth": 1
+       },
+       "joined": true,
+       "active": false
+      },
+      {
+       "id": "p3",
+       "name": "Named",
+       "dir": "<WORK>/fork2",
+       "gpr": "<WORK>/fork2/Named.gpr",
+       "writable": false,
+       "openMs": "<masked>",
+       "idleMs": "<masked>",
+       "files": 2,
+       "users": [
+        1
+       ],
+       "programs": 0,
+       "revision": "<rev3>",
+       "diskRevision": "<rev3>",
+       "stale": false,
+       "generation": 1,
+       "fork": {
+        "source": {
+         "project": "p2",
+         "gpr": "<WORK>/fork1/Fixture.gpr",
+         "canonical": "<WORK>/fork1/Fixture.gpr",
+         "name": "Fixture",
+         "revision": "<rev1>",
+         "writable": true,
+         "fork": true
+        },
+        "baseRevision": "<rev1>",
+        "created": "<time>",
+        "createdAt": "<masked>",
+        "by": {
+         "client": 1,
+         "name": "char-a",
+         "harness": "harness-a",
+         "label": "client 1 (char-a, harness-a)"
+        },
+        "mode": "full",
+        "method": "<masked>",
+        "cloned": "<masked>",
+        "bytes": 4425400,
+        "depth": 2
+       },
+       "joined": true,
+       "active": true
+      }
+     ]
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 14,
+   "who": "a",
+   "cmd": "open_program",
+   "request": {
+    "path": "p2:/alpha.exe",
+    "writable": true
+   },
+   "response": {
+    "id": 13,
+    "ok": true,
+    "result": {
+     "key": "p2:/alpha.exe",
+     "project": "p2",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "writable",
+     "owner": 1,
+     "mine": true,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": false,
+     "revision": "<rev2>",
+     "projectRevision": "<rev1>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1
+     ],
+     "overlays": [],
+     "writers": [],
+     "writer": true,
+     "journalSeq": 0,
+     "unsavedEdits": 0,
+     "openMs": "<masked>"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 15,
+   "who": "a",
+   "cmd": "rename",
+   "request": {
+    "address": "0x140001020",
+    "name": "forked_name"
+   },
+   "response": {
+    "id": 14,
+    "ok": true,
+    "result": {
+     "address": "0x140001020",
+     "name": "forked_name",
+     "old": "FUN_140001020",
+     "kind": "function",
+     "created": false,
+     "seq": 1
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 16,
+   "who": "a",
+   "cmd": "save",
+   "request": {},
+   "response": {
+    "id": 15,
+    "ok": true,
+    "result": {
+     "program": "p2:/alpha.exe",
+     "saved": true,
+     "revision": "<rev4>",
+     "projectRevision": "<rev5>",
+     "savedSeq": 1
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 17,
+   "who": "a",
+   "cmd": "refresh",
+   "request": {
+    "project": "p2"
+   },
+   "response": {
+    "id": 16,
+    "ok": true,
+    "result": {
+     "project": "p2",
+     "refreshed": false,
+     "reason": "writable: this daemon holds the project lock, so it always shows what is saved",
+     "revision": "<rev5>",
+     "generation": 1
+    },
+    "ms": "<masked>"
+   },
+   "note": "writable: always current"
+  },
+  {
+   "step": 18,
+   "who": "a",
+   "cmd": "fork_project",
+   "request": {
+    "project": "p2",
+    "path": "<WORK>/fork3",
+    "mode": "full"
+   },
+   "response": {
+    "id": 17,
+    "ok": true,
+    "result": {
+     "project": "p4",
+     "path": "<WORK>/fork3",
+     "gpr": "<WORK>/fork3/Fixture.gpr",
+     "name": "Fixture",
+     "writable": true,
+     "source": {
+      "project": "p2",
+      "gpr": "<WORK>/fork1/Fixture.gpr",
+      "canonical": "<WORK>/fork1/Fixture.gpr",
+      "name": "Fixture",
+      "revision": "<rev5>",
+      "writable": true,
+      "fork": true
+     },
+     "baseRevision": "<rev5>",
+     "mode": "full",
+     "method": "<masked>",
+     "cloned": "<masked>",
+     "clonedBy": "<masked>",
+     "bytes": 4572856,
+     "files": 14,
+     "copyMs": "<masked>",
+     "freeSpaceUsedBytes": "<masked>",
+     "depth": 2,
+     "sidecar": "<WORK>/fork3/Fixture.fork.json",
+     "ms": "<masked>",
+     "info": {
+      "id": "p4",
+      "name": "Fixture",
+      "dir": "<WORK>/fork3",
+      "gpr": "<WORK>/fork3/Fixture.gpr",
+      "writable": true,
+      "openMs": "<masked>",
+      "idleMs": "<masked>",
+      "files": 2,
+      "users": [
+       1
+      ],
+      "programs": 0,
+      "revision": "<rev5>",
+      "diskRevision": "<rev5>",
+      "stale": false,
+      "generation": 1,
+      "fork": {
+       "source": {
+        "project": "p2",
+        "gpr": "<WORK>/fork1/Fixture.gpr",
+        "canonical": "<WORK>/fork1/Fixture.gpr",
+        "name": "Fixture",
+        "revision": "<rev5>",
+        "writable": true,
+        "fork": true
+       },
+       "baseRevision": "<rev5>",
+       "created": "<time>",
+       "createdAt": "<masked>",
+       "by": {
+        "client": 1,
+        "name": "char-a",
+        "harness": "harness-a",
+        "label": "client 1 (char-a, harness-a)"
+       },
+       "mode": "full",
+       "method": "<masked>",
+       "cloned": "<masked>",
+       "bytes": 4572856,
+       "depth": 2
+      },
+      "opened": true
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "a fork of a fork: depth 2, no other user"
+  },
+  {
+   "step": 19,
+   "who": "a",
+   "cmd": "info",
+   "request": {
+    "program": "p1:/alpha.exe"
+   },
+   "response": {
+    "id": 18,
+    "ok": true,
+    "result": {
+     "key": "p1:/alpha.exe",
+     "project": "p1",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "read_only",
+     "owner": null,
+     "mine": false,
+     "active": false,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": false,
+     "revision": "<rev2>",
+     "projectRevision": "<rev1>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1,
+      2
+     ],
+     "overlays": [],
+     "writers": [],
+     "writer": false,
+     "journalSeq": 0,
+     "unsavedEdits": 0
+    },
+    "ms": "<masked>"
+   },
+   "note": "the source is untouched"
+  },
+  {
+   "step": 20,
+   "who": "a",
+   "cmd": "refresh",
+   "request": {
+    "project": "p1"
+   },
+   "response": {
+    "id": 19,
+    "ok": true,
+    "result": {
+     "project": "p1",
+     "refreshed": false,
+     "reason": "unchanged",
+     "revision": "<rev1>",
+     "generation": 1
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 21,
+   "who": "w",
+   "cmd": "open_project",
+   "request": {
+    "path": "<WORK>/src/Fixture.gpr",
+    "writable": true
+   },
+   "response": {
+    "id": 2,
+    "ok": true,
+    "result": {
+     "id": "p1",
+     "name": "Fixture",
+     "dir": "<WORK>/src",
+     "gpr": "<WORK>/src/Fixture.gpr",
+     "writable": true,
+     "openMs": "<masked>",
+     "idleMs": "<masked>",
+     "files": 2,
+     "users": [
+      1
+     ],
+     "programs": 0,
+     "revision": "<rev1>",
+     "diskRevision": "<rev1>",
+     "stale": false,
+     "generation": 1,
+     "fork": null,
+     "opened": true
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 22,
+   "who": "w",
+   "cmd": "open_program",
+   "request": {
+    "path": "/alpha.exe",
+    "writable": true
+   },
+   "response": {
+    "id": 3,
+    "ok": true,
+    "result": {
+     "key": "p1:/alpha.exe",
+     "project": "p1",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "writable",
+     "owner": 1,
+     "mine": true,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": false,
+     "revision": "<rev2>",
+     "projectRevision": "<rev1>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1
+     ],
+     "overlays": [],
+     "writers": [],
+     "writer": true,
+     "journalSeq": 0,
+     "unsavedEdits": 0,
+     "openMs": "<masked>"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 23,
+   "who": "w",
+   "cmd": "rename",
+   "request": {
+    "address": "0x140001020",
+    "name": "saved_elsewhere"
+   },
+   "response": {
+    "id": 4,
+    "ok": true,
+    "result": {
+     "address": "0x140001020",
+     "name": "saved_elsewhere",
+     "old": "FUN_140001020",
+     "kind": "function",
+     "created": false,
+     "seq": 1
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 24,
+   "who": "w",
+   "cmd": "save",
+   "request": {},
+   "response": {
+    "id": 5,
+    "ok": true,
+    "result": {
+     "program": "p1:/alpha.exe",
+     "saved": true,
+     "revision": "<rev6>",
+     "projectRevision": "<rev7>",
+     "savedSeq": 1
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 25,
+   "who": "w",
+   "cmd": "close_project",
+   "request": {},
+   "response": {
+    "id": 6,
+    "ok": true,
+    "result": {
+     "project": "p1",
+     "left": true,
+     "closed": true,
+     "activeProject": null
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 26,
+   "who": "a",
+   "cmd": "functions",
+   "request": {
+    "contains": "saved_elsewhere"
+   },
+   "response": {
+    "id": 20,
+    "ok": true,
+    "result": {
+     "functions": [],
+     "offset": 0,
+     "returned": 0,
+     "truncated": false
+    },
+    "ms": "<masked>",
+    "stale": [
+     {
+      "project": "p1",
+      "revision": "<rev1>",
+      "diskRevision": "<rev8>",
+      "suggest": "refresh"
+     }
+    ]
+   },
+   "note": "the old view; marked stale"
+  },
+  {
+   "step": 27,
+   "who": "a",
+   "cmd": "project",
+   "request": {
+    "project": "p1"
+   },
+   "response": {
+    "id": 21,
+    "ok": true,
+    "result": {
+     "id": "p1",
+     "name": "Fixture",
+     "dir": "<WORK>/src",
+     "gpr": "<WORK>/src/Fixture.gpr",
+     "writable": false,
+     "openMs": "<masked>",
+     "idleMs": "<masked>",
+     "files": 2,
+     "users": [
+      1,
+      2
+     ],
+     "programs": 1,
+     "revision": "<rev1>",
+     "diskRevision": "<rev8>",
+     "stale": true,
+     "generation": 1,
+     "fork": null
+    },
+    "ms": "<masked>",
+    "stale": [
+     {
+      "project": "p1",
+      "revision": "<rev1>",
+      "diskRevision": "<rev8>",
+      "suggest": "refresh"
+     }
+    ]
+   }
+  },
+  {
+   "step": 28,
+   "who": "a",
+   "cmd": "status",
+   "request": {},
+   "response": {
+    "id": 22,
+    "ok": true,
+    "result": {
+     "protocol": 2,
+     "minClient": "<masked>",
+     "hydraVersion": "<masked>",
+     "ghidraVersion": "<masked>",
+     "installId": "<masked>",
+     "startedAt": "<masked>",
+     "ghidra": "<masked>",
+     "install": "<masked>",
+     "java": "<masked>",
+     "pid": "<masked>",
+     "uptimeMs": "<masked>",
+     "listen": {
+      "host": "<masked>",
+      "port": "<masked>"
+     },
+     "launch": {
+      "mode": "fast",
+      "aot": null,
+      "classCache": "hit",
+      "readyMs": "<masked>",
+      "jvmToReadyMs": "<masked>"
+     },
+     "keepWarmS": 600,
+     "memory": {
+      "usedMb": "<masked>",
+      "committedMb": "<masked>",
+      "maxMb": "<masked>"
+     },
+     "projects": [
+      {
+       "id": "p1",
+       "name": "Fixture",
+       "dir": "<WORK>/src",
+       "gpr": "<WORK>/src/Fixture.gpr",
+       "writable": false,
+       "openMs": "<masked>",
+       "idleMs": "<masked>",
+       "files": 2,
+       "users": [
+        1,
+        2
+       ],
+       "programs": 1,
+       "revision": "<rev1>",
+       "diskRevision": "<rev8>",
+       "stale": true,
+       "generation": 1,
+       "fork": null
+      },
+      {
+       "id": "p2",
+       "name": "Fixture",
+       "dir": "<WORK>/fork1",
+       "gpr": "<WORK>/fork1/Fixture.gpr",
+       "writable": true,
+       "openMs": "<masked>",
+       "idleMs": "<masked>",
+       "files": 2,
+       "users": [
+        1
+       ],
+       "programs": 1,
+       "revision": "<rev5>",
+       "diskRevision": "<rev5>",
+       "stale": false,
+       "generation": 1,
+       "fork": {
+        "source": {
+         "project": "p1",
+         "gpr": "<WORK>/src/Fixture.gpr",
+         "canonical": "<WORK>/src/Fixture.gpr",
+         "name": "Fixture",
+         "revision": "<rev1>",
+         "writable": false,
+         "fork": false
+        },
+        "baseRevision": "<rev1>",
+        "created": "<time>",
+        "createdAt": "<masked>",
+        "by": {
+         "client": 1,
+         "name": "char-a",
+         "harness": "harness-a",
+         "label": "client 1 (char-a, harness-a)"
+        },
+        "mode": "full",
+        "method": "<masked>",
+        "cloned": "<masked>",
+        "bytes": 4425400,
+        "depth": 1
+       }
+      },
+      {
+       "id": "p3",
+       "name": "Named",
+       "dir": "<WORK>/fork2",
+       "gpr": "<WORK>/fork2/Named.gpr",
+       "writable": false,
+       "openMs": "<masked>",
+       "idleMs": "<masked>",
+       "files": 2,
+       "users": [
+        1
+       ],
+       "programs": 0,
+       "revision": "<rev3>",
+       "diskRevision": "<rev3>",
+       "stale": false,
+       "generation": 1,
+       "fork": {
+        "source": {
+         "project": "p2",
+         "gpr": "<WORK>/fork1/Fixture.gpr",
+         "canonical": "<WORK>/fork1/Fixture.gpr",
+         "name": "Fixture",
+         "revision": "<rev1>",
+         "writable": true,
+         "fork": true
+        },
+        "baseRevision": "<rev1>",
+        "created": "<time>",
+        "createdAt": "<masked>",
+        "by": {
+         "client": 1,
+         "name": "char-a",
+         "harness": "harness-a",
+         "label": "client 1 (char-a, harness-a)"
+        },
+        "mode": "full",
+        "method": "<masked>",
+        "cloned": "<masked>",
+        "bytes": 4425400,
+        "depth": 2
+       }
+      },
+      {
+       "id": "p4",
+       "name": "Fixture",
+       "dir": "<WORK>/fork3",
+       "gpr": "<WORK>/fork3/Fixture.gpr",
+       "writable": true,
+       "openMs": "<masked>",
+       "idleMs": "<masked>",
+       "files": 2,
+       "users": [
+        1
+       ],
+       "programs": 0,
+       "revision": "<rev5>",
+       "diskRevision": "<rev5>",
+       "stale": false,
+       "generation": 1,
+       "fork": {
+        "source": {
+         "project": "p2",
+         "gpr": "<WORK>/fork1/Fixture.gpr",
+         "canonical": "<WORK>/fork1/Fixture.gpr",
+         "name": "Fixture",
+         "revision": "<rev5>",
+         "writable": true,
+         "fork": true
+        },
+        "baseRevision": "<rev5>",
+        "created": "<time>",
+        "createdAt": "<masked>",
+        "by": {
+         "client": 1,
+         "name": "char-a",
+         "harness": "harness-a",
+         "label": "client 1 (char-a, harness-a)"
+        },
+        "mode": "full",
+        "method": "<masked>",
+        "cloned": "<masked>",
+        "bytes": 4572856,
+        "depth": 2
+       }
+      }
+     ],
+     "you": 1,
+     "programs": [
+      {
+       "project": "p1",
+       "path": "/alpha.exe",
+       "mode": "read_only",
+       "owner": null,
+       "idleMs": "<masked>",
+       "users": [
+        1,
+        2
+       ],
+       "ownerLabel": null,
+       "busy": null,
+       "writers": [],
+       "journalSeq": 0,
+       "unsavedEdits": 0,
+       "orphanedMs": null,
+       "revision": "<rev2>",
+       "cachedUpgrade": false,
+       "cacheBuild": "none"
+      },
+      {
+       "project": "p2",
+       "path": "/alpha.exe",
+       "mode": "writable",
+       "owner": 1,
+       "idleMs": "<masked>",
+       "users": [
+        1
+       ],
+       "ownerLabel": "client 1 (char-a, harness-a)",
+       "busy": null,
+       "writers": [],
+       "journalSeq": 1,
+       "unsavedEdits": 0,
+       "orphanedMs": null,
+       "revision": "<rev4>",
+       "cachedUpgrade": false,
+       "cacheBuild": "none"
+      }
+     ],
+     "clients": [
+      {
+       "id": 1,
+       "name": "char-a",
+       "harness": "harness-a",
+       "transport": "socket",
+       "launcher": false,
+       "clientVersion": "1.0.0",
+       "activeProject": "p4",
+       "active": "p2:/alpha.exe",
+       "connectedMs": "<masked>",
+       "projects": [
+        "p1",
+        "p2",
+        "p3",
+        "p4"
+       ],
+       "programs": [
+        "p1:/alpha.exe",
+        "p2:/alpha.exe"
+       ],
+       "running": [],
+       "requests": []
+      },
+      {
+       "id": 2,
+       "name": "char-b",
+       "harness": "harness-b",
+       "transport": "socket",
+       "launcher": false,
+       "clientVersion": "1.0.0",
+       "activeProject": "p1",
+       "active": "p1:/alpha.exe",
+       "connectedMs": "<masked>",
+       "projects": [
+        "p1"
+       ],
+       "programs": [
+        "p1:/alpha.exe"
+       ],
+       "running": [],
+       "requests": []
+      }
+     ],
+     "overlays": [],
+     "scheduler": {
+      "quick": {
+       "slots": 24,
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 7,
+       "everQueued": 0,
+       "backgroundQueued": 0
+      },
+      "long": {
+       "slots": 6,
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 12,
+       "everQueued": 0,
+       "backgroundQueued": 0
+      }
+     },
+     "imports": {
+      "maxImports": 4,
+      "holder": null,
+      "running": [],
+      "queue": [],
+      "history": {
+       "count": 0,
+       "completed": 0,
+       "meanMs": null,
+       "msPerMb": null,
+       "peakRunning": 0
+      }
+     },
+     "youAre": {
+      "client": "char-a",
+      "harness": "harness-a",
+      "labelled": false
+     },
+     "upgradeCache": {
+      "enabled": true,
+      "dir": "<WORK>/state/upgrade-cache",
+      "buildsStarted": 0,
+      "builds": []
+     },
+     "deferredInitMs": "<masked>"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 29,
+   "who": "b",
+   "cmd": "refresh",
+   "request": {
+    "project": "p1"
+   },
+   "response": {
+    "id": 4,
+    "ok": true,
+    "result": {
+     "project": "p1",
+     "refreshed": true,
+     "from": "<rev1>",
+     "revision": "<rev8>",
+     "generation": 2,
+     "programs": [
+      {
+       "program": "p1:/alpha.exe",
+       "revision": "<rev2>",
+       "action": "reopened",
+       "newRevision": "<rev6>"
+      }
+     ],
+     "ms": "<masked>",
+     "info": {
+      "id": "p1",
+      "name": "Fixture",
+      "dir": "<WORK>/src",
+      "gpr": "<WORK>/src/Fixture.gpr",
+      "writable": false,
+      "openMs": "<masked>",
+      "idleMs": "<masked>",
+      "files": 2,
+      "users": [
+       1,
+       2
+      ],
+      "programs": 1,
+      "revision": "<rev8>",
+      "diskRevision": "<rev8>",
+      "stale": false,
+      "generation": 2,
+      "refreshedMsAgo": "<masked>",
+      "fork": null
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "b refreshes; a is told once"
+  },
+  {
+   "step": 30,
+   "who": "b",
+   "cmd": "functions",
+   "request": {
+    "contains": "saved_elsewhere"
+   },
+   "response": {
+    "id": 5,
+    "ok": true,
+    "result": {
+     "functions": [
+      {
+       "name": "saved_elsewhere",
+       "address": "0x140001020",
+       "size": 6,
+       "thunk": false,
+       "external": false
+      }
+     ],
+     "offset": 0,
+     "returned": 1,
+     "truncated": false
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 31,
+   "who": "a",
+   "cmd": "functions",
+   "request": {
+    "contains": "saved_elsewhere"
+   },
+   "response": {
+    "id": 23,
+    "ok": true,
+    "result": {
+     "functions": [],
+     "offset": 0,
+     "returned": 0,
+     "truncated": false
+    },
+    "ms": "<masked>",
+    "refreshed": [
+     {
+      "project": "p1",
+      "generation": 2,
+      "from": "<rev1>",
+      "revision": "<rev8>"
+     }
+    ]
+   },
+   "note": "a is told it was refreshed"
+  },
+  {
+   "step": 32,
+   "who": "a",
+   "cmd": "info",
+   "request": {
+    "program": "p1:/alpha.exe"
+   },
+   "response": {
+    "id": 24,
+    "ok": true,
+    "result": {
+     "key": "p1:/alpha.exe",
+     "project": "p1",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "read_only",
+     "owner": null,
+     "mine": false,
+     "active": false,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": false,
+     "revision": "<rev6>",
+     "projectRevision": "<rev8>",
+     "generation": 2,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1,
+      2
+     ],
+     "overlays": [],
+     "writers": [],
+     "writer": false,
+     "journalSeq": 0,
+     "unsavedEdits": 0
+    },
+    "ms": "<masked>"
+   },
+   "note": "and only once"
+  },
+  {
+   "step": 33,
+   "who": "a",
+   "cmd": "decompile",
+   "request": {
+    "address": "0x140001020",
+    "maxChars": 60
+   },
+   "response": {
+    "id": 25,
+    "ok": true,
+    "result": {
+     "name": "forked_name",
+     "entry": "0x140001020",
+     "completed": true,
+     "signature": "int forked_name(int param_1);",
+     "chars": 65,
+     "truncated": true,
+     "c": "\r\nint forked_name(int param_1)\r\n\r\n{\r\n  return param_1 + 7;\r\n"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 34,
+   "who": "a",
+   "cmd": "refresh",
+   "request": {
+    "project": "p1"
+   },
+   "response": {
+    "id": 26,
+    "ok": true,
+    "result": {
+     "project": "p1",
+     "refreshed": false,
+     "reason": "unchanged",
+     "revision": "<rev8>",
+     "generation": 2
+    },
+    "ms": "<masked>"
+   },
+   "note": "unchanged now"
+  },
+  {
+   "step": 35,
+   "who": "a",
+   "cmd": "reopen",
+   "request": {
+    "project": "p1",
+    "force": true
+   },
+   "response": {
+    "id": 27,
+    "ok": true,
+    "result": {
+     "project": "p1",
+     "refreshed": true,
+     "from": "<rev8>",
+     "revision": "<rev8>",
+     "generation": 3,
+     "programs": [
+      {
+       "program": "p1:/alpha.exe",
+       "revision": "<rev6>",
+       "action": "reopened",
+       "newRevision": "<rev6>"
+      }
+     ],
+     "ms": "<masked>",
+     "info": {
+      "id": "p1",
+      "name": "Fixture",
+      "dir": "<WORK>/src",
+      "gpr": "<WORK>/src/Fixture.gpr",
+      "writable": false,
+      "openMs": "<masked>",
+      "idleMs": "<masked>",
+      "files": 2,
+      "users": [
+       1,
+       2
+      ],
+      "programs": 1,
+      "revision": "<rev8>",
+      "diskRevision": "<rev8>",
+      "stale": false,
+      "generation": 3,
+      "refreshedMsAgo": "<masked>",
+      "fork": null
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 36,
+   "who": "a",
+   "cmd": "close_project",
+   "request": {
+    "project": "p2"
+   },
+   "response": {
+    "id": 28,
+    "ok": true,
+    "result": {
+     "project": "p2",
+     "left": true,
+     "closed": true,
+     "activeProject": "p4"
+    },
+    "ms": "<masked>"
+   }
+  }
+ ]
+}

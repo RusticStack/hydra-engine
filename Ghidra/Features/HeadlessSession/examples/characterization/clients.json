@@ -1,0 +1,1865 @@
+{
+ "scenario": "clients",
+ "steps": [
+  {
+   "step": 1,
+   "who": "a",
+   "cmd": "open_project",
+   "request": {
+    "path": "<WORK>/clients/Fixture.gpr",
+    "writable": true
+   },
+   "response": {
+    "id": 2,
+    "ok": true,
+    "result": {
+     "id": "p1",
+     "name": "Fixture",
+     "dir": "<WORK>/clients",
+     "gpr": "<WORK>/clients/Fixture.gpr",
+     "writable": true,
+     "openMs": "<masked>",
+     "idleMs": "<masked>",
+     "files": 2,
+     "users": [
+      1
+     ],
+     "programs": 0,
+     "revision": "<rev1>",
+     "diskRevision": "<rev1>",
+     "stale": false,
+     "generation": 1,
+     "fork": null,
+     "opened": true
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 2,
+   "who": "b",
+   "cmd": "open_project",
+   "request": {
+    "path": "<WORK>/clients/Fixture.gpr",
+    "writable": true
+   },
+   "response": {
+    "id": 2,
+    "ok": true,
+    "result": {
+     "id": "p1",
+     "name": "Fixture",
+     "dir": "<WORK>/clients",
+     "gpr": "<WORK>/clients/Fixture.gpr",
+     "writable": true,
+     "openMs": "<masked>",
+     "idleMs": "<masked>",
+     "files": 2,
+     "users": [
+      1,
+      2
+     ],
+     "programs": 0,
+     "revision": "<rev1>",
+     "diskRevision": "<rev1>",
+     "stale": false,
+     "generation": 1,
+     "fork": null,
+     "opened": false
+    },
+    "ms": "<masked>"
+   },
+   "note": "joins the writable project"
+  },
+  {
+   "step": 3,
+   "who": "a",
+   "cmd": "open_program",
+   "request": {
+    "path": "/alpha.exe",
+    "writable": true
+   },
+   "response": {
+    "id": 3,
+    "ok": true,
+    "result": {
+     "key": "p1:/alpha.exe",
+     "project": "p1",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "writable",
+     "owner": 1,
+     "mine": true,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": false,
+     "revision": "<rev2>",
+     "projectRevision": "<rev1>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1
+     ],
+     "overlays": [],
+     "writers": [],
+     "writer": true,
+     "journalSeq": 0,
+     "unsavedEdits": 0,
+     "openMs": "<masked>"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 4,
+   "who": "b",
+   "cmd": "open_program",
+   "request": {
+    "path": "/alpha.exe"
+   },
+   "response": {
+    "id": 3,
+    "ok": true,
+    "result": {
+     "key": "p1:/alpha.exe",
+     "project": "p1",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "writable",
+     "owner": 1,
+     "mine": false,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": false,
+     "revision": "<rev2>",
+     "projectRevision": "<rev1>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1,
+      2
+     ],
+     "overlays": [],
+     "writers": [],
+     "writer": false,
+     "journalSeq": 0,
+     "unsavedEdits": 0,
+     "openMs": "<masked>"
+    },
+    "ms": "<masked>"
+   },
+   "note": "reads what a writes"
+  },
+  {
+   "step": 5,
+   "who": "b",
+   "cmd": "info",
+   "request": {},
+   "response": {
+    "id": 4,
+    "ok": true,
+    "result": {
+     "key": "p1:/alpha.exe",
+     "project": "p1",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "writable",
+     "owner": 1,
+     "mine": false,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": false,
+     "revision": "<rev2>",
+     "projectRevision": "<rev1>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1,
+      2
+     ],
+     "overlays": [],
+     "writers": [],
+     "writer": false,
+     "journalSeq": 0,
+     "unsavedEdits": 0
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 6,
+   "who": "b",
+   "cmd": "open_program",
+   "request": {
+    "path": "/alpha.exe",
+    "writable": true
+   },
+   "response": {
+    "id": 5,
+    "ok": false,
+    "error": {
+     "code": "not_owner",
+     "message": "/alpha.exe is open writable by client 1 (char-a, harness-a); one writer per program: write in an overlay or a fork",
+     "details": {
+      "program": "p1:/alpha.exe",
+      "path": "/alpha.exe",
+      "project": "p1",
+      "gpr": "<WORK>/clients/Fixture.gpr",
+      "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+      "owner": 1,
+      "holder": "client 1 (char-a, harness-a)",
+      "holderInfo": {
+       "client": 1,
+       "name": "char-a",
+       "harness": "harness-a",
+       "label": "client 1 (char-a, harness-a)",
+       "command": "open_program writable",
+       "heldMs": "<masked>"
+      },
+      "suggest": "fork_project",
+      "suggestion": {
+       "cmd": "fork_project",
+       "project": "p1",
+       "path": "<WORK>/clients-fork-char-b",
+       "writable": true
+      },
+      "alternatives": [
+       "overlay",
+       "fork_project"
+      ],
+      "overlaySuggestion": {
+       "cmd": "open_program",
+       "path": "p1:/alpha.exe",
+       "overlay": "char-b"
+      }
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 7,
+   "who": "b",
+   "cmd": "open_program",
+   "request": {
+    "path": "/alpha.exe",
+    "writable": true,
+    "share": true
+   },
+   "response": {
+    "id": 6,
+    "ok": false,
+    "error": {
+     "code": "not_owner",
+     "message": "/alpha.exe is open writable by client 1 (char-a, harness-a) in owner mode (owner mode and shared mode do not mix); one writer per program: write in an overlay or a fork",
+     "details": {
+      "program": "p1:/alpha.exe",
+      "path": "/alpha.exe",
+      "project": "p1",
+      "gpr": "<WORK>/clients/Fixture.gpr",
+      "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+      "owner": 1,
+      "holder": "client 1 (char-a, harness-a)",
+      "holderInfo": {
+       "client": 1,
+       "name": "char-a",
+       "harness": "harness-a",
+       "label": "client 1 (char-a, harness-a)",
+       "command": "open_program writable",
+       "heldMs": "<masked>"
+      },
+      "suggest": "fork_project",
+      "suggestion": {
+       "cmd": "fork_project",
+       "project": "p1",
+       "path": "<WORK>/clients-fork-char-b",
+       "writable": true
+      },
+      "alternatives": [
+       "overlay",
+       "fork_project"
+      ],
+      "overlaySuggestion": {
+       "cmd": "open_program",
+       "path": "p1:/alpha.exe",
+       "overlay": "char-b"
+      }
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 8,
+   "who": "b",
+   "cmd": "rename",
+   "request": {
+    "address": "0x140001020",
+    "name": "x"
+   },
+   "response": {
+    "id": 7,
+    "ok": false,
+    "error": {
+     "code": "not_owner",
+     "message": "p1:/alpha.exe is owned by client 1 (char-a, harness-a); only the owner may rename (fork the project to write your own copy)",
+     "details": {
+      "program": "p1:/alpha.exe",
+      "path": "/alpha.exe",
+      "project": "p1",
+      "gpr": "<WORK>/clients/Fixture.gpr",
+      "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+      "owner": 1,
+      "holder": "client 1 (char-a, harness-a)",
+      "holderInfo": {
+       "client": 1,
+       "name": "char-a",
+       "harness": "harness-a",
+       "label": "client 1 (char-a, harness-a)",
+       "command": "open_program writable",
+       "heldMs": "<masked>"
+      },
+      "suggest": "fork_project",
+      "suggestion": {
+       "cmd": "fork_project",
+       "project": "p1",
+       "path": "<WORK>/clients-fork-char-b",
+       "writable": true
+      },
+      "alternatives": [
+       "overlay",
+       "fork_project"
+      ],
+      "overlaySuggestion": {
+       "cmd": "open_program",
+       "path": "p1:/alpha.exe",
+       "overlay": "char-b"
+      }
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 9,
+   "who": "b",
+   "cmd": "comment",
+   "request": {
+    "address": "0x140001020",
+    "text": "x"
+   },
+   "response": {
+    "id": 8,
+    "ok": false,
+    "error": {
+     "code": "not_owner",
+     "message": "p1:/alpha.exe is owned by client 1 (char-a, harness-a); only the owner may comment (fork the project to write your own copy)",
+     "details": {
+      "program": "p1:/alpha.exe",
+      "path": "/alpha.exe",
+      "project": "p1",
+      "gpr": "<WORK>/clients/Fixture.gpr",
+      "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+      "owner": 1,
+      "holder": "client 1 (char-a, harness-a)",
+      "holderInfo": {
+       "client": 1,
+       "name": "char-a",
+       "harness": "harness-a",
+       "label": "client 1 (char-a, harness-a)",
+       "command": "open_program writable",
+       "heldMs": "<masked>"
+      },
+      "suggest": "fork_project",
+      "suggestion": {
+       "cmd": "fork_project",
+       "project": "p1",
+       "path": "<WORK>/clients-fork-char-b",
+       "writable": true
+      },
+      "alternatives": [
+       "overlay",
+       "fork_project"
+      ],
+      "overlaySuggestion": {
+       "cmd": "open_program",
+       "path": "p1:/alpha.exe",
+       "overlay": "char-b"
+      }
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 10,
+   "who": "b",
+   "cmd": "edit",
+   "request": {
+    "ops": [
+     {
+      "op": "rename",
+      "address": "0x140001020",
+      "name": "x"
+     }
+    ]
+   },
+   "response": {
+    "id": 9,
+    "ok": false,
+    "error": {
+     "code": "not_owner",
+     "message": "p1:/alpha.exe is owned by client 1 (char-a, harness-a); only the owner may edit (fork the project to write your own copy)",
+     "details": {
+      "program": "p1:/alpha.exe",
+      "path": "/alpha.exe",
+      "project": "p1",
+      "gpr": "<WORK>/clients/Fixture.gpr",
+      "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+      "owner": 1,
+      "holder": "client 1 (char-a, harness-a)",
+      "holderInfo": {
+       "client": 1,
+       "name": "char-a",
+       "harness": "harness-a",
+       "label": "client 1 (char-a, harness-a)",
+       "command": "open_program writable",
+       "heldMs": "<masked>"
+      },
+      "suggest": "fork_project",
+      "suggestion": {
+       "cmd": "fork_project",
+       "project": "p1",
+       "path": "<WORK>/clients-fork-char-b",
+       "writable": true
+      },
+      "alternatives": [
+       "overlay",
+       "fork_project"
+      ],
+      "overlaySuggestion": {
+       "cmd": "open_program",
+       "path": "p1:/alpha.exe",
+       "overlay": "char-b"
+      }
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 11,
+   "who": "b",
+   "cmd": "save",
+   "request": {},
+   "response": {
+    "id": 10,
+    "ok": false,
+    "error": {
+     "code": "not_owner",
+     "message": "p1:/alpha.exe is owned by client 1 (char-a, harness-a); only the owner may save (fork the project to write your own copy)",
+     "details": {
+      "program": "p1:/alpha.exe",
+      "path": "/alpha.exe",
+      "project": "p1",
+      "gpr": "<WORK>/clients/Fixture.gpr",
+      "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+      "owner": 1,
+      "holder": "client 1 (char-a, harness-a)",
+      "holderInfo": {
+       "client": 1,
+       "name": "char-a",
+       "harness": "harness-a",
+       "label": "client 1 (char-a, harness-a)",
+       "command": "open_program writable",
+       "heldMs": "<masked>"
+      },
+      "suggest": "fork_project",
+      "suggestion": {
+       "cmd": "fork_project",
+       "project": "p1",
+       "path": "<WORK>/clients-fork-char-b",
+       "writable": true
+      },
+      "alternatives": [
+       "overlay",
+       "fork_project"
+      ],
+      "overlaySuggestion": {
+       "cmd": "open_program",
+       "path": "p1:/alpha.exe",
+       "overlay": "char-b"
+      }
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 12,
+   "who": "b",
+   "cmd": "discard_edits",
+   "request": {
+    "author": 1
+   },
+   "response": {
+    "id": 11,
+    "ok": false,
+    "error": {
+     "code": "not_owner",
+     "message": "p1:/alpha.exe is owned by client 1 (char-a, harness-a); only the owner may discard_edits (fork the project to write your own copy)",
+     "details": {
+      "program": "p1:/alpha.exe",
+      "path": "/alpha.exe",
+      "project": "p1",
+      "gpr": "<WORK>/clients/Fixture.gpr",
+      "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+      "owner": 1,
+      "holder": "client 1 (char-a, harness-a)",
+      "holderInfo": {
+       "client": 1,
+       "name": "char-a",
+       "harness": "harness-a",
+       "label": "client 1 (char-a, harness-a)",
+       "command": "open_program writable",
+       "heldMs": "<masked>"
+      },
+      "suggest": "fork_project",
+      "suggestion": {
+       "cmd": "fork_project",
+       "project": "p1",
+       "path": "<WORK>/clients-fork-char-b",
+       "writable": true
+      },
+      "alternatives": [
+       "overlay",
+       "fork_project"
+      ],
+      "overlaySuggestion": {
+       "cmd": "open_program",
+       "path": "p1:/alpha.exe",
+       "overlay": "char-b"
+      }
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 13,
+   "who": "b",
+   "cmd": "analyze",
+   "request": {},
+   "response": {
+    "id": 12,
+    "ok": false,
+    "error": {
+     "code": "not_owner",
+     "message": "p1:/alpha.exe is owned by client 1 (char-a, harness-a); only the owner may analyze (fork the project to write your own copy)",
+     "details": {
+      "program": "p1:/alpha.exe",
+      "path": "/alpha.exe",
+      "project": "p1",
+      "gpr": "<WORK>/clients/Fixture.gpr",
+      "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+      "owner": 1,
+      "holder": "client 1 (char-a, harness-a)",
+      "holderInfo": {
+       "client": 1,
+       "name": "char-a",
+       "harness": "harness-a",
+       "label": "client 1 (char-a, harness-a)",
+       "command": "open_program writable",
+       "heldMs": "<masked>"
+      },
+      "suggest": "fork_project",
+      "suggestion": {
+       "cmd": "fork_project",
+       "project": "p1",
+       "path": "<WORK>/clients-fork-char-b",
+       "writable": true
+      },
+      "alternatives": [
+       "overlay",
+       "fork_project"
+      ],
+      "overlaySuggestion": {
+       "cmd": "open_program",
+       "path": "p1:/alpha.exe",
+       "overlay": "char-b"
+      }
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 14,
+   "who": "a",
+   "cmd": "rename",
+   "request": {
+    "address": "0x140001020",
+    "name": "by_a"
+   },
+   "response": {
+    "id": 4,
+    "ok": true,
+    "result": {
+     "address": "0x140001020",
+     "name": "by_a",
+     "old": "FUN_140001020",
+     "kind": "function",
+     "created": false,
+     "seq": 1
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 15,
+   "who": "b",
+   "cmd": "functions",
+   "request": {
+    "contains": "by_a"
+   },
+   "response": {
+    "id": 13,
+    "ok": true,
+    "result": {
+     "functions": [
+      {
+       "name": "by_a",
+       "address": "0x140001020",
+       "size": 6,
+       "thunk": false,
+       "external": false
+      }
+     ],
+     "offset": 0,
+     "returned": 1,
+     "truncated": false
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 16,
+   "who": "b",
+   "cmd": "fork_project",
+   "request": {
+    "path": "<WORK>/clients-fork"
+   },
+   "response": {
+    "id": 14,
+    "ok": false,
+    "error": {
+     "code": "conflict",
+     "message": "project p1 is open writable and used by another client; a fork copies the saved state, which its writer may change meanwhile. Fork a read-only master instead, or retry once its writer has saved and left",
+     "details": {
+      "project": "p1",
+      "name": "Fixture",
+      "gpr": "<WORK>/clients/Fixture.gpr",
+      "writable": true,
+      "revision": "<rev1>",
+      "holders": [
+       {
+        "client": 1,
+        "name": "char-a",
+        "harness": "harness-a",
+        "label": "client 1 (char-a, harness-a)",
+        "command": "open_project writable",
+        "heldMs": "<masked>"
+       }
+      ],
+      "suggest": "retry"
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "the writable project is used by another client"
+  },
+  {
+   "step": 17,
+   "who": "b",
+   "cmd": "decompile",
+   "request": {
+    "name": "entry",
+    "wait": 150,
+    "program": "p1:/alpha.exe"
+   },
+   "response": {
+    "id": 15,
+    "ok": false,
+    "error": {
+     "code": "busy",
+     "message": "/alpha.exe is busy (client 1 (char-a, harness-a) script <WORK>/scripts/CharSleep.java); retry, or pass a longer \"wait\"",
+     "details": {
+      "program": "p1:/alpha.exe",
+      "path": "/alpha.exe",
+      "project": "p1",
+      "gpr": "<WORK>/clients/Fixture.gpr",
+      "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+      "wanted": "shared",
+      "waitedMs": "<masked>",
+      "holder": "client 1 (char-a, harness-a) script <WORK>/scripts/CharSleep.java",
+      "holderInfo": {
+       "client": 1,
+       "name": "char-a",
+       "harness": "harness-a",
+       "label": "client 1 (char-a, harness-a)",
+       "command": "script <WORK>/scripts/CharSleep.java",
+       "heldMs": "<masked>"
+      },
+      "heldMs": "<masked>",
+      "suggest": "retry"
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "the holder is named"
+  },
+  {
+   "step": 18,
+   "who": "a",
+   "cmd": "script",
+   "request": {
+    "script": "CharSleep.java",
+    "args": [
+     "1500"
+    ],
+    "program": "p1:/alpha.exe"
+   },
+   "response": {
+    "id": 5,
+    "ok": true,
+    "result": {
+     "script": "<WORK>/scripts/CharSleep.java",
+     "mode": "owner",
+     "program": "p1:/alpha.exe",
+     "seconds": "<masked>",
+     "chars": 7,
+     "truncated": false,
+     "output": "slept\r\n",
+     "changed": false,
+     "unsaved": true,
+     "artifact": null
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 19,
+   "who": "a",
+   "cmd": "open_project",
+   "request": {
+    "path": "<WORK>/clients/Fixture.gpr",
+    "writable": "yes"
+   },
+   "response": {
+    "id": 6,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "writable must be true or false"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 20,
+   "who": "x",
+   "cmd": "open_project",
+   "request": {
+    "path": "<WORK>/clients/Fixture.gpr",
+    "writable": true
+   },
+   "response": {
+    "id": 2,
+    "ok": false,
+    "error": {
+     "code": "conflict",
+     "message": "the project is locked by another process (a Ghidra window, analyzeHeadless or a writable session): open it read-only, or close that process",
+     "details": {
+      "gpr": "<WORK>/clients/Fixture.gpr",
+      "name": "Fixture",
+      "lockFile": "<masked>",
+      "holderInfo": {
+       "label": "another process",
+       "lockFile": "<masked>",
+       "user": "<masked>",
+       "host": "<masked>",
+       "since": "<masked>",
+       "os": "Windows 11",
+       "live": true
+      },
+      "suggest": "open_read_only"
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "locked by another process"
+  },
+  {
+   "step": 21,
+   "who": "x",
+   "cmd": "open_project",
+   "request": {
+    "path": "<WORK>/clients/Fixture.gpr"
+   },
+   "response": {
+    "id": 3,
+    "ok": true,
+    "result": {
+     "id": "p1",
+     "name": "Fixture",
+     "dir": "<WORK>/clients",
+     "gpr": "<WORK>/clients/Fixture.gpr",
+     "writable": false,
+     "openMs": "<masked>",
+     "idleMs": "<masked>",
+     "files": 2,
+     "users": [
+      1
+     ],
+     "programs": 0,
+     "revision": "<rev1>",
+     "diskRevision": "<rev1>",
+     "stale": false,
+     "generation": 1,
+     "fork": null,
+     "opened": true
+    },
+    "ms": "<masked>"
+   },
+   "note": "read-only is allowed"
+  },
+  {
+   "step": 22,
+   "who": "x",
+   "cmd": "fork_project",
+   "request": {
+    "path": "<WORK>/clients-fork-x"
+   },
+   "response": {
+    "id": 4,
+    "ok": false,
+    "error": {
+     "code": "conflict",
+     "message": "another process holds project Fixture writable (its lock file is held); a fork copies the saved state, which that process may change meanwhile. Retry once it has closed the project",
+     "details": {
+      "gpr": "<WORK>/clients/Fixture.gpr",
+      "name": "Fixture",
+      "holderInfo": {
+       "label": "another process",
+       "lockFile": "<masked>",
+       "user": "<masked>",
+       "host": "<masked>",
+       "since": "<masked>",
+       "os": "Windows 11",
+       "live": true
+      },
+      "suggest": "retry"
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "another process holds the project writable"
+  },
+  {
+   "step": 23,
+   "who": "a",
+   "cmd": "open_program",
+   "request": {
+    "path": "/alpha.exe",
+    "writable": true,
+    "share": true
+   },
+   "response": {
+    "id": 7,
+    "ok": true,
+    "result": {
+     "key": "p1:/alpha.exe",
+     "project": "p1",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "shared",
+     "owner": null,
+     "mine": false,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": true,
+     "revision": "<rev2>",
+     "projectRevision": "<rev1>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1,
+      2
+     ],
+     "overlays": [],
+     "writers": [
+      1
+     ],
+     "writer": true,
+     "journalSeq": 1,
+     "unsavedEdits": 1,
+     "openMs": "<masked>"
+    },
+    "ms": "<masked>"
+   },
+   "note": "the owner opens it to others"
+  },
+  {
+   "step": 24,
+   "who": "b",
+   "cmd": "open_program",
+   "request": {
+    "path": "/alpha.exe",
+    "writable": true
+   },
+   "response": {
+    "id": 16,
+    "ok": false,
+    "error": {
+     "code": "conflict",
+     "message": "/alpha.exe is open in shared mode; join it with \"writable\":true, \"share\":true (owner mode and shared mode do not mix)",
+     "details": {
+      "program": "p1:/alpha.exe",
+      "path": "/alpha.exe",
+      "project": "p1",
+      "gpr": "<WORK>/clients/Fixture.gpr",
+      "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+      "writers": [
+       1
+      ],
+      "suggest": "share"
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "owner mode and shared mode do not mix"
+  },
+  {
+   "step": 25,
+   "who": "b",
+   "cmd": "open_program",
+   "request": {
+    "path": "/alpha.exe",
+    "writable": true,
+    "share": true
+   },
+   "response": {
+    "id": 17,
+    "ok": true,
+    "result": {
+     "key": "p1:/alpha.exe",
+     "project": "p1",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "shared",
+     "owner": null,
+     "mine": false,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": true,
+     "revision": "<rev2>",
+     "projectRevision": "<rev1>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1,
+      2
+     ],
+     "overlays": [],
+     "writers": [
+      1,
+      2
+     ],
+     "writer": true,
+     "journalSeq": 1,
+     "unsavedEdits": 1,
+     "openMs": "<masked>"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 26,
+   "who": "b",
+   "cmd": "info",
+   "request": {},
+   "response": {
+    "id": 18,
+    "ok": true,
+    "result": {
+     "key": "p1:/alpha.exe",
+     "project": "p1",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "shared",
+     "owner": null,
+     "mine": false,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": true,
+     "revision": "<rev2>",
+     "projectRevision": "<rev1>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1,
+      2
+     ],
+     "overlays": [],
+     "writers": [
+      1,
+      2
+     ],
+     "writer": true,
+     "journalSeq": 1,
+     "unsavedEdits": 1
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 27,
+   "who": "a",
+   "cmd": "rename",
+   "request": {
+    "address": "0x140001040",
+    "name": "shared_by_a"
+   },
+   "response": {
+    "id": 8,
+    "ok": true,
+    "result": {
+     "address": "0x140001040",
+     "name": "shared_by_a",
+     "old": "FUN_140001040",
+     "kind": "function",
+     "created": false,
+     "seq": 2
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 28,
+   "who": "b",
+   "cmd": "comment",
+   "request": {
+    "address": "0x140001020",
+    "text": "by b"
+   },
+   "response": {
+    "id": 19,
+    "ok": true,
+    "result": {
+     "address": "0x140001020",
+     "type": "eol",
+     "old": null,
+     "text": "by b",
+     "seq": 3
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 29,
+   "who": "b",
+   "cmd": "rename",
+   "request": {
+    "address": "0x140001040",
+    "name": "shared_by_b",
+    "expect": "stale_name"
+   },
+   "response": {
+    "id": 20,
+    "ok": false,
+    "error": {
+     "code": "conflict",
+     "message": "the name at 0x140001040 is 'shared_by_a', not the expected 'stale_name': someone changed it since you read it",
+     "details": {
+      "reason": "changed",
+      "address": "0x140001040",
+      "field": "name",
+      "expected": "stale_name",
+      "current": "shared_by_a",
+      "lastEdit": {
+       "seq": 2,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "harness-a",
+       "cmd": "rename",
+       "address": "0x140001040",
+       "old": "FUN_140001040",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "new": "shared_by_a"
+      },
+      "holderInfo": {
+       "client": 1,
+       "name": "char-a",
+       "harness": "harness-a",
+       "command": "rename",
+       "seq": 2
+      },
+      "suggest": "reread"
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "names who last changed it"
+  },
+  {
+   "step": 30,
+   "who": "b",
+   "cmd": "comment",
+   "request": {
+    "address": "0x140001040",
+    "text": "x",
+    "expect": "nothing there"
+   },
+   "response": {
+    "id": 21,
+    "ok": false,
+    "error": {
+     "code": "conflict",
+     "message": "the comment at 0x140001040 is 'null', not the expected 'nothing there': someone changed it since you read it",
+     "details": {
+      "reason": "changed",
+      "address": "0x140001040",
+      "field": "comment",
+      "expected": "nothing there",
+      "current": null,
+      "suggest": "reread"
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "a comment conflict"
+  },
+  {
+   "step": 31,
+   "who": "b",
+   "cmd": "edit",
+   "request": {
+    "ops": [
+     {
+      "op": "rename",
+      "address": "0x140001040",
+      "name": "shared_by_b",
+      "expect": "shared_by_a"
+     }
+    ]
+   },
+   "response": {
+    "id": 22,
+    "ok": true,
+    "result": {
+     "program": "p1:/alpha.exe",
+     "applied": 1,
+     "results": [
+      {
+       "address": "0x140001040",
+       "name": "shared_by_b",
+       "old": "shared_by_a",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "seq": 4
+      }
+     ],
+     "seqs": [
+      4
+     ],
+     "unsavedEdits": 4
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 32,
+   "who": "a",
+   "cmd": "journal",
+   "request": {},
+   "response": {
+    "id": 9,
+    "ok": true,
+    "result": {
+     "program": "p1:/alpha.exe",
+     "seq": 4,
+     "savedSeq": 0,
+     "dropped": 0,
+     "entries": [
+      {
+       "seq": 1,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "harness-a",
+       "cmd": "rename",
+       "address": "0x140001020",
+       "old": "FUN_140001020",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "new": "by_a"
+      },
+      {
+       "seq": 2,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "harness-a",
+       "cmd": "rename",
+       "address": "0x140001040",
+       "old": "FUN_140001040",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "new": "shared_by_a"
+      },
+      {
+       "seq": 3,
+       "at": "<masked>",
+       "client": 2,
+       "name": "char-b",
+       "harness": "harness-b",
+       "cmd": "comment",
+       "address": "0x140001020",
+       "type": "eol",
+       "old": null,
+       "text": "by b",
+       "op": "comment",
+       "new": "by b"
+      },
+      {
+       "seq": 4,
+       "at": "<masked>",
+       "client": 2,
+       "name": "char-b",
+       "harness": "harness-b",
+       "cmd": "edit",
+       "address": "0x140001040",
+       "old": "shared_by_a",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "new": "shared_by_b"
+      }
+     ],
+     "returned": 4
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 33,
+   "who": "a",
+   "cmd": "journal",
+   "request": {
+    "author": 2
+   },
+   "response": {
+    "id": 10,
+    "ok": true,
+    "result": {
+     "program": "p1:/alpha.exe",
+     "seq": 4,
+     "savedSeq": 0,
+     "dropped": 0,
+     "entries": [
+      {
+       "seq": 3,
+       "at": "<masked>",
+       "client": 2,
+       "name": "char-b",
+       "harness": "harness-b",
+       "cmd": "comment",
+       "address": "0x140001020",
+       "type": "eol",
+       "old": null,
+       "text": "by b",
+       "op": "comment",
+       "new": "by b"
+      },
+      {
+       "seq": 4,
+       "at": "<masked>",
+       "client": 2,
+       "name": "char-b",
+       "harness": "harness-b",
+       "cmd": "edit",
+       "address": "0x140001040",
+       "old": "shared_by_a",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "new": "shared_by_b"
+      }
+     ],
+     "returned": 2
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 34,
+   "who": "a",
+   "cmd": "status",
+   "request": {},
+   "response": {
+    "id": 11,
+    "ok": true,
+    "result": {
+     "protocol": 2,
+     "minClient": "<masked>",
+     "hydraVersion": "<masked>",
+     "ghidraVersion": "<masked>",
+     "installId": "<masked>",
+     "startedAt": "<masked>",
+     "ghidra": "<masked>",
+     "install": "<masked>",
+     "java": "<masked>",
+     "pid": "<masked>",
+     "uptimeMs": "<masked>",
+     "listen": {
+      "host": "<masked>",
+      "port": "<masked>"
+     },
+     "launch": {
+      "mode": "fast",
+      "aot": null,
+      "classCache": "hit",
+      "readyMs": "<masked>",
+      "jvmToReadyMs": "<masked>"
+     },
+     "keepWarmS": 600,
+     "memory": {
+      "usedMb": "<masked>",
+      "committedMb": "<masked>",
+      "maxMb": "<masked>"
+     },
+     "projects": [
+      {
+       "id": "p1",
+       "name": "Fixture",
+       "dir": "<WORK>/clients",
+       "gpr": "<WORK>/clients/Fixture.gpr",
+       "writable": true,
+       "openMs": "<masked>",
+       "idleMs": "<masked>",
+       "files": 2,
+       "users": [
+        1,
+        2
+       ],
+       "programs": 1,
+       "revision": "<rev1>",
+       "diskRevision": "<rev1>",
+       "stale": false,
+       "generation": 1,
+       "fork": null
+      }
+     ],
+     "you": 1,
+     "programs": [
+      {
+       "project": "p1",
+       "path": "/alpha.exe",
+       "mode": "shared",
+       "owner": null,
+       "idleMs": "<masked>",
+       "users": [
+        1,
+        2
+       ],
+       "ownerLabel": null,
+       "busy": null,
+       "writers": [
+        1,
+        2
+       ],
+       "journalSeq": 4,
+       "unsavedEdits": 4,
+       "orphanedMs": null,
+       "revision": "<rev2>",
+       "cachedUpgrade": false,
+       "cacheBuild": "none"
+      }
+     ],
+     "clients": [
+      {
+       "id": 1,
+       "name": "char-a",
+       "harness": "harness-a",
+       "transport": "socket",
+       "launcher": false,
+       "clientVersion": "1.0.0",
+       "activeProject": "p1",
+       "active": "p1:/alpha.exe",
+       "connectedMs": "<masked>",
+       "projects": [
+        "p1"
+       ],
+       "programs": [
+        "p1:/alpha.exe"
+       ],
+       "running": [],
+       "requests": []
+      },
+      {
+       "id": 2,
+       "name": "char-b",
+       "harness": "harness-b",
+       "transport": "socket",
+       "launcher": false,
+       "clientVersion": "1.0.0",
+       "activeProject": "p1",
+       "active": "p1:/alpha.exe",
+       "connectedMs": "<masked>",
+       "projects": [
+        "p1"
+       ],
+       "programs": [
+        "p1:/alpha.exe"
+       ],
+       "running": [],
+       "requests": []
+      }
+     ],
+     "overlays": [],
+     "scheduler": {
+      "quick": {
+       "slots": 24,
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 19,
+       "everQueued": 0,
+       "backgroundQueued": 0
+      },
+      "long": {
+       "slots": 6,
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 4,
+       "everQueued": 0,
+       "backgroundQueued": 0
+      }
+     },
+     "imports": {
+      "maxImports": 4,
+      "holder": null,
+      "running": [],
+      "queue": [],
+      "history": {
+       "count": 0,
+       "completed": 0,
+       "meanMs": null,
+       "msPerMb": null,
+       "peakRunning": 0
+      }
+     },
+     "youAre": {
+      "client": "char-a",
+      "harness": "harness-a",
+      "labelled": false
+     },
+     "upgradeCache": {
+      "enabled": true,
+      "dir": "<WORK>/state/upgrade-cache",
+      "buildsStarted": 0,
+      "builds": []
+     },
+     "deferredInitMs": "<masked>"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 35,
+   "who": "a",
+   "cmd": "discard_edits",
+   "request": {
+    "author": 2
+   },
+   "response": {
+    "id": 12,
+    "ok": true,
+    "result": {
+     "program": "p1:/alpha.exe",
+     "author": 2,
+     "reverted": [
+      4,
+      3
+     ],
+     "skipped": [],
+     "unsavedEdits": 6
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 36,
+   "who": "b",
+   "cmd": "journal",
+   "request": {
+    "since": "<masked>"
+   },
+   "response": {
+    "id": 23,
+    "ok": true,
+    "result": {
+     "program": "p1:/alpha.exe",
+     "seq": 6,
+     "savedSeq": 0,
+     "dropped": 0,
+     "entries": [
+      {
+       "seq": 1,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "harness-a",
+       "cmd": "rename",
+       "address": "0x140001020",
+       "old": "FUN_140001020",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "new": "by_a"
+      },
+      {
+       "seq": 2,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "harness-a",
+       "cmd": "rename",
+       "address": "0x140001040",
+       "old": "FUN_140001040",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "new": "shared_by_a"
+      },
+      {
+       "seq": 3,
+       "at": "<masked>",
+       "client": 2,
+       "name": "char-b",
+       "harness": "harness-b",
+       "cmd": "comment",
+       "address": "0x140001020",
+       "type": "eol",
+       "old": null,
+       "text": "by b",
+       "op": "comment",
+       "new": "by b"
+      },
+      {
+       "seq": 4,
+       "at": "<masked>",
+       "client": 2,
+       "name": "char-b",
+       "harness": "harness-b",
+       "cmd": "edit",
+       "address": "0x140001040",
+       "old": "shared_by_a",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "new": "shared_by_b"
+      },
+      {
+       "seq": 5,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "harness-a",
+       "cmd": "discard_edits",
+       "address": "0x140001040",
+       "old": "shared_by_b",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "new": "shared_by_a"
+      },
+      {
+       "seq": 6,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "harness-a",
+       "cmd": "discard_edits",
+       "address": "0x140001020",
+       "type": "eol",
+       "old": "by b",
+       "text": null,
+       "op": "comment",
+       "new": null
+      }
+     ],
+     "returned": 6
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 37,
+   "who": "b",
+   "cmd": "close_program",
+   "request": {},
+   "response": {
+    "id": 24,
+    "ok": true,
+    "result": {
+     "closed": "p1:/alpha.exe",
+     "discarded": false,
+     "active": null
+    },
+    "ms": "<masked>"
+   },
+   "note": "not the last writer"
+  },
+  {
+   "step": 38,
+   "who": "a",
+   "cmd": "close_program",
+   "request": {},
+   "response": {
+    "id": 13,
+    "ok": false,
+    "error": {
+     "code": "unsaved_changes",
+     "message": "/alpha.exe has unsaved changes and you are its last writer; send save, or close with \"discard\":true (discards every writer's unsaved changes)",
+     "details": {
+      "program": "p1:/alpha.exe",
+      "unsavedEdits": 6
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "the last writer"
+  },
+  {
+   "step": 39,
+   "who": "a",
+   "cmd": "save",
+   "request": {
+    "comment": "shared"
+   },
+   "response": {
+    "id": 14,
+    "ok": true,
+    "result": {
+     "program": "p1:/alpha.exe",
+     "saved": true,
+     "revision": "<rev3>",
+     "projectRevision": "<rev4>",
+     "savedSeq": 6
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 40,
+   "who": "a",
+   "cmd": "close_program",
+   "request": {},
+   "response": {
+    "id": 15,
+    "ok": true,
+    "result": {
+     "closed": "p1:/alpha.exe",
+     "discarded": false,
+     "active": null
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 41,
+   "who": "a",
+   "cmd": "projects",
+   "request": {},
+   "response": {
+    "id": 16,
+    "ok": true,
+    "result": {
+     "activeProject": "p1",
+     "projects": [
+      {
+       "id": "p1",
+       "name": "Fixture",
+       "dir": "<WORK>/clients",
+       "gpr": "<WORK>/clients/Fixture.gpr",
+       "writable": true,
+       "openMs": "<masked>",
+       "idleMs": "<masked>",
+       "files": 2,
+       "users": [
+        1,
+        2
+       ],
+       "programs": 0,
+       "revision": "<rev4>",
+       "diskRevision": "<rev4>",
+       "stale": false,
+       "generation": 1,
+       "fork": null,
+       "joined": true,
+       "active": true
+      }
+     ]
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 42,
+   "who": "a",
+   "cmd": "close_project",
+   "request": {},
+   "response": {
+    "id": 17,
+    "ok": true,
+    "result": {
+     "project": "p1",
+     "left": true,
+     "closed": false,
+     "activeProject": null
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 43,
+   "who": "b",
+   "cmd": "projects",
+   "request": {},
+   "response": {
+    "id": 25,
+    "ok": true,
+    "result": {
+     "activeProject": "p1",
+     "projects": [
+      {
+       "id": "p1",
+       "name": "Fixture",
+       "dir": "<WORK>/clients",
+       "gpr": "<WORK>/clients/Fixture.gpr",
+       "writable": true,
+       "openMs": "<masked>",
+       "idleMs": "<masked>",
+       "files": 2,
+       "users": [
+        2
+       ],
+       "programs": 0,
+       "revision": "<rev4>",
+       "diskRevision": "<rev4>",
+       "stale": false,
+       "generation": 1,
+       "fork": null,
+       "joined": true,
+       "active": true
+      }
+     ]
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 44,
+   "who": "b",
+   "cmd": "close_project",
+   "request": {},
+   "response": {
+    "id": 26,
+    "ok": true,
+    "result": {
+     "project": "p1",
+     "left": true,
+     "closed": true,
+     "activeProject": null
+    },
+    "ms": "<masked>"
+   }
+  }
+ ]
+}

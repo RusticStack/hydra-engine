@@ -1,0 +1,1835 @@
+{
+ "scenario": "overlays",
+ "steps": [
+  {
+   "step": 1,
+   "who": "a",
+   "cmd": "open_project",
+   "request": {
+    "path": "<WORK>/ov/Fixture.gpr"
+   },
+   "response": {
+    "id": 2,
+    "ok": true,
+    "result": {
+     "id": "p1",
+     "name": "Fixture",
+     "dir": "<WORK>/ov",
+     "gpr": "<WORK>/ov/Fixture.gpr",
+     "writable": false,
+     "openMs": "<masked>",
+     "idleMs": "<masked>",
+     "files": 2,
+     "users": [
+      1
+     ],
+     "programs": 0,
+     "revision": "<rev1>",
+     "diskRevision": "<rev1>",
+     "stale": false,
+     "generation": 1,
+     "fork": null,
+     "opened": true
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 2,
+   "who": "b",
+   "cmd": "open_project",
+   "request": {
+    "path": "<WORK>/ov/Fixture.gpr"
+   },
+   "response": {
+    "id": 2,
+    "ok": true,
+    "result": {
+     "id": "p1",
+     "name": "Fixture",
+     "dir": "<WORK>/ov",
+     "gpr": "<WORK>/ov/Fixture.gpr",
+     "writable": false,
+     "openMs": "<masked>",
+     "idleMs": "<masked>",
+     "files": 2,
+     "users": [
+      1,
+      2
+     ],
+     "programs": 0,
+     "revision": "<rev1>",
+     "diskRevision": "<rev1>",
+     "stale": false,
+     "generation": 1,
+     "fork": null,
+     "opened": false
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 3,
+   "who": "a",
+   "cmd": "open_program",
+   "request": {
+    "path": "/alpha.exe"
+   },
+   "response": {
+    "id": 3,
+    "ok": true,
+    "result": {
+     "key": "p1:/alpha.exe",
+     "project": "p1",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "read_only",
+     "owner": null,
+     "mine": false,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": false,
+     "revision": "<rev2>",
+     "projectRevision": "<rev1>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1
+     ],
+     "overlays": [],
+     "writers": [],
+     "writer": false,
+     "journalSeq": 0,
+     "unsavedEdits": 0,
+     "openMs": "<masked>"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 4,
+   "who": "a",
+   "cmd": "overlays",
+   "request": {},
+   "response": {
+    "id": 4,
+    "ok": true,
+    "result": {
+     "overlays": []
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 5,
+   "who": "a",
+   "cmd": "open_program",
+   "request": {
+    "path": "/alpha.exe",
+    "overlay": "bad name!"
+   },
+   "response": {
+    "id": 5,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "overlay must be 1-64 letters, digits, '.', '_', '-' or '@'"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 6,
+   "who": "a",
+   "cmd": "open_program",
+   "request": {
+    "path": "/alpha.exe",
+    "overlay": "mine",
+    "writable": true
+   },
+   "response": {
+    "id": 6,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "an overlay is a private view over a read-only use of the program; leave out \"writable\" (promote_overlay writes it into a working copy)"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 7,
+   "who": "a",
+   "cmd": "open_program",
+   "request": {
+    "path": "/alpha.exe",
+    "overlay": "mine"
+   },
+   "response": {
+    "id": 7,
+    "ok": true,
+    "result": {
+     "key": "p1:/alpha.exe",
+     "project": "p1",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "read_only",
+     "owner": null,
+     "mine": false,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": false,
+     "revision": "<rev2>",
+     "projectRevision": "<rev1>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1
+     ],
+     "overlays": [],
+     "writers": [],
+     "writer": false,
+     "journalSeq": 0,
+     "unsavedEdits": 0,
+     "openMs": "<masked>",
+     "overlay": {
+      "name": "mine",
+      "program": "p1:/alpha.exe",
+      "client": 1,
+      "overlayVersion": 0,
+      "ops": 0,
+      "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+      "programRevision": "<rev2>",
+      "projectRevision": "<rev1>",
+      "gpr": "<WORK>/ov/Fixture.gpr",
+      "openMs": "<masked>",
+      "ageMs": "<masked>",
+      "stale": false,
+      "error": null,
+      "changed": false
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 8,
+   "who": "a",
+   "cmd": "open_program",
+   "request": {
+    "path": "/alpha.exe",
+    "overlay": "mine"
+   },
+   "response": {
+    "id": 8,
+    "ok": true,
+    "result": {
+     "key": "p1:/alpha.exe",
+     "project": "p1",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "read_only",
+     "owner": null,
+     "mine": false,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": false,
+     "revision": "<rev2>",
+     "projectRevision": "<rev1>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1
+     ],
+     "overlays": [
+      "mine"
+     ],
+     "writers": [],
+     "writer": false,
+     "journalSeq": 0,
+     "unsavedEdits": 0,
+     "openMs": "<masked>",
+     "overlay": {
+      "name": "mine",
+      "program": "p1:/alpha.exe",
+      "client": 1,
+      "overlayVersion": 0,
+      "ops": 0,
+      "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+      "programRevision": "<rev2>",
+      "projectRevision": "<rev1>",
+      "gpr": "<WORK>/ov/Fixture.gpr",
+      "openMs": "<masked>",
+      "ageMs": "<masked>",
+      "stale": false,
+      "error": null,
+      "changed": false
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "joins the same overlay"
+  },
+  {
+   "step": 9,
+   "who": "a",
+   "cmd": "info",
+   "request": {
+    "overlay": "mine"
+   },
+   "response": {
+    "id": 9,
+    "ok": true,
+    "result": {
+     "key": "p1:/alpha.exe",
+     "project": "p1",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "overlay",
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "functions": 3,
+     "analyzed": true,
+     "changed": false,
+     "revision": "<rev2>",
+     "projectRevision": "<rev1>",
+     "overlay": {
+      "name": "mine",
+      "program": "p1:/alpha.exe",
+      "client": 1,
+      "overlayVersion": 0,
+      "ops": 0,
+      "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+      "programRevision": "<rev2>",
+      "projectRevision": "<rev1>",
+      "gpr": "<WORK>/ov/Fixture.gpr",
+      "openMs": "<masked>",
+      "ageMs": "<masked>",
+      "stale": false,
+      "error": null,
+      "changed": false
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 10,
+   "who": "a",
+   "cmd": "info",
+   "request": {},
+   "response": {
+    "id": 10,
+    "ok": true,
+    "result": {
+     "key": "p1:/alpha.exe",
+     "project": "p1",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "read_only",
+     "owner": null,
+     "mine": false,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": false,
+     "revision": "<rev2>",
+     "projectRevision": "<rev1>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1
+     ],
+     "overlays": [
+      "mine"
+     ],
+     "writers": [],
+     "writer": false,
+     "journalSeq": 0,
+     "unsavedEdits": 0
+    },
+    "ms": "<masked>"
+   },
+   "note": "the shared program, with its overlay names"
+  },
+  {
+   "step": 11,
+   "who": "a",
+   "cmd": "rename",
+   "request": {
+    "overlay": "mine",
+    "address": "0x140001020",
+    "name": "ov_helper"
+   },
+   "response": {
+    "id": 11,
+    "ok": true,
+    "result": {
+     "overlay": {
+      "name": "mine",
+      "program": "p1:/alpha.exe",
+      "client": 1,
+      "overlayVersion": 1,
+      "ops": 1,
+      "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+      "programRevision": "<rev2>",
+      "projectRevision": "<rev1>",
+      "gpr": "<WORK>/ov/Fixture.gpr",
+      "openMs": "<masked>",
+      "ageMs": "<masked>",
+      "stale": false,
+      "error": null,
+      "changed": true
+     },
+     "applied": 1,
+     "results": [
+      {
+       "address": "0x140001020",
+       "name": "ov_helper",
+       "old": "FUN_140001020",
+       "kind": "function",
+       "created": false,
+       "op": "rename"
+      }
+     ]
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 12,
+   "who": "a",
+   "cmd": "comment",
+   "request": {
+    "overlay": "mine",
+    "address": "0x140001020",
+    "text": "overlay comment"
+   },
+   "response": {
+    "id": 12,
+    "ok": true,
+    "result": {
+     "overlay": {
+      "name": "mine",
+      "program": "p1:/alpha.exe",
+      "client": 1,
+      "overlayVersion": 2,
+      "ops": 2,
+      "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+      "programRevision": "<rev2>",
+      "projectRevision": "<rev1>",
+      "gpr": "<WORK>/ov/Fixture.gpr",
+      "openMs": "<masked>",
+      "ageMs": "<masked>",
+      "stale": false,
+      "error": null,
+      "changed": true
+     },
+     "applied": 1,
+     "results": [
+      {
+       "address": "0x140001020",
+       "type": "eol",
+       "old": null,
+       "text": "overlay comment",
+       "op": "comment"
+      }
+     ]
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 13,
+   "who": "a",
+   "cmd": "apply_overlay",
+   "request": {
+    "overlay": "mine",
+    "ops": [
+     {
+      "op": "rename",
+      "address": "0x140001040",
+      "name": "ov_two"
+     },
+     {
+      "op": "comment",
+      "address": "0x140001040",
+      "text": "two",
+      "type": "plate"
+     }
+    ]
+   },
+   "response": {
+    "id": 13,
+    "ok": true,
+    "result": {
+     "overlay": {
+      "name": "mine",
+      "program": "p1:/alpha.exe",
+      "client": 1,
+      "overlayVersion": 3,
+      "ops": 4,
+      "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+      "programRevision": "<rev2>",
+      "projectRevision": "<rev1>",
+      "gpr": "<WORK>/ov/Fixture.gpr",
+      "openMs": "<masked>",
+      "ageMs": "<masked>",
+      "stale": false,
+      "error": null,
+      "changed": true
+     },
+     "applied": 2,
+     "results": [
+      {
+       "address": "0x140001040",
+       "name": "ov_two",
+       "old": "FUN_140001040",
+       "kind": "function",
+       "created": false,
+       "op": "rename"
+      },
+      {
+       "address": "0x140001040",
+       "type": "plate",
+       "old": null,
+       "text": "two",
+       "op": "comment"
+      }
+     ]
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 14,
+   "who": "a",
+   "cmd": "apply_overlay",
+   "request": {
+    "overlay": "mine",
+    "ops": []
+   },
+   "response": {
+    "id": 14,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "ops must be a non-empty array of {\"op\": rename|label|comment|signature|data_type, ...}"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 15,
+   "who": "a",
+   "cmd": "apply_overlay",
+   "request": {
+    "overlay": "mine",
+    "ops": [
+     {
+      "op": "rename",
+      "address": "0x140001020",
+      "name": "z",
+      "expect": "wrong"
+     }
+    ]
+   },
+   "response": {
+    "id": 15,
+    "ok": false,
+    "error": {
+     "code": "conflict",
+     "message": "ops[0]: the name at 0x140001020 is 'ov_helper', not the expected 'wrong': someone changed it since you read it (nothing was applied)",
+     "details": {
+      "reason": "changed",
+      "address": "0x140001020",
+      "field": "name",
+      "expected": "wrong",
+      "current": "ov_helper",
+      "index": 0,
+      "rolledBack": true
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "nothing applied"
+  },
+  {
+   "step": 16,
+   "who": "a",
+   "cmd": "functions",
+   "request": {
+    "overlay": "mine",
+    "contains": "ov_"
+   },
+   "response": {
+    "id": 16,
+    "ok": true,
+    "result": {
+     "functions": [
+      {
+       "name": "ov_helper",
+       "address": "0x140001020",
+       "size": 6,
+       "thunk": false,
+       "external": false
+      },
+      {
+       "name": "ov_two",
+       "address": "0x140001040",
+       "size": 17,
+       "thunk": false,
+       "external": false
+      }
+     ],
+     "offset": 0,
+     "returned": 2,
+     "truncated": false,
+     "overlay": {
+      "name": "mine",
+      "program": "p1:/alpha.exe",
+      "client": 1,
+      "overlayVersion": 3,
+      "ops": 4,
+      "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+      "programRevision": "<rev2>",
+      "projectRevision": "<rev1>",
+      "gpr": "<WORK>/ov/Fixture.gpr",
+      "openMs": "<masked>",
+      "ageMs": "<masked>",
+      "stale": false,
+      "error": null,
+      "changed": true
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 17,
+   "who": "a",
+   "cmd": "functions",
+   "request": {
+    "contains": "ov_"
+   },
+   "response": {
+    "id": 17,
+    "ok": true,
+    "result": {
+     "functions": [],
+     "offset": 0,
+     "returned": 0,
+     "truncated": false
+    },
+    "ms": "<masked>"
+   },
+   "note": "the shared program is unchanged"
+  },
+  {
+   "step": 18,
+   "who": "a",
+   "cmd": "decompile",
+   "request": {
+    "overlay": "mine",
+    "address": "0x140001040",
+    "maxChars": 80
+   },
+   "response": {
+    "id": 18,
+    "ok": true,
+    "result": {
+     "name": "ov_two",
+     "entry": "0x140001040",
+     "completed": true,
+     "signature": "int ov_two(int param_1);",
+     "chars": 120,
+     "truncated": true,
+     "c": "\r\n/* two */\r\n\r\nint ov_two(int param_1)\r\n\r\n{\r\n  int iVar1;\r\n  \r\n  iVar1 = ov_help",
+     "overlay": {
+      "name": "mine",
+      "program": "p1:/alpha.exe",
+      "client": 1,
+      "overlayVersion": 3,
+      "ops": 4,
+      "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+      "programRevision": "<rev2>",
+      "projectRevision": "<rev1>",
+      "gpr": "<WORK>/ov/Fixture.gpr",
+      "openMs": "<masked>",
+      "ageMs": "<masked>",
+      "stale": false,
+      "error": null,
+      "changed": true
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 19,
+   "who": "a",
+   "cmd": "script",
+   "request": {
+    "overlay": "mine",
+    "script": "CharPrint.java",
+    "args": [
+     "ov"
+    ]
+   },
+   "response": {
+    "id": 19,
+    "ok": true,
+    "result": {
+     "script": "<WORK>/scripts/CharPrint.java",
+     "mode": "contained",
+     "program": null,
+     "seconds": "<masked>",
+     "chars": 54,
+     "truncated": false,
+     "output": "program alpha.exe\r\nfunctions 3\r\nentry entry\r\nargs ov\r\n",
+     "changed": false,
+     "unsaved": true,
+     "artifact": null,
+     "overlay": {
+      "name": "mine",
+      "program": "p1:/alpha.exe",
+      "client": 1,
+      "overlayVersion": 3,
+      "ops": 4,
+      "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+      "programRevision": "<rev2>",
+      "projectRevision": "<rev1>",
+      "gpr": "<WORK>/ov/Fixture.gpr",
+      "openMs": "<masked>",
+      "ageMs": "<masked>",
+      "stale": false,
+      "error": null,
+      "changed": true
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 20,
+   "who": "a",
+   "cmd": "script",
+   "request": {
+    "overlay": "mine",
+    "script": "CharWrite.java"
+   },
+   "response": {
+    "id": 20,
+    "ok": true,
+    "result": {
+     "script": "<WORK>/scripts/CharWrite.java",
+     "mode": "contained",
+     "program": null,
+     "seconds": "<masked>",
+     "chars": 10,
+     "truncated": false,
+     "output": "labelled\r\n",
+     "changed": false,
+     "unsaved": true,
+     "artifact": null,
+     "overlay": {
+      "name": "mine",
+      "program": "p1:/alpha.exe",
+      "client": 1,
+      "overlayVersion": 3,
+      "ops": 4,
+      "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+      "programRevision": "<rev2>",
+      "projectRevision": "<rev1>",
+      "gpr": "<WORK>/ov/Fixture.gpr",
+      "openMs": "<masked>",
+      "ageMs": "<masked>",
+      "stale": false,
+      "error": null,
+      "changed": true
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "contained: rolled back"
+  },
+  {
+   "step": 21,
+   "who": "a",
+   "cmd": "overlays",
+   "request": {},
+   "response": {
+    "id": 21,
+    "ok": true,
+    "result": {
+     "overlays": [
+      {
+       "name": "mine",
+       "program": "p1:/alpha.exe",
+       "client": 1,
+       "overlayVersion": 3,
+       "ops": 4,
+       "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+       "programRevision": "<rev2>",
+       "projectRevision": "<rev1>",
+       "gpr": "<WORK>/ov/Fixture.gpr",
+       "openMs": "<masked>",
+       "ageMs": "<masked>",
+       "stale": false,
+       "error": null,
+       "changed": true
+      }
+     ]
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 22,
+   "who": "a",
+   "cmd": "status",
+   "request": {},
+   "response": {
+    "id": 22,
+    "ok": true,
+    "result": {
+     "protocol": 2,
+     "minClient": "<masked>",
+     "hydraVersion": "<masked>",
+     "ghidraVersion": "<masked>",
+     "installId": "<masked>",
+     "startedAt": "<masked>",
+     "ghidra": "<masked>",
+     "install": "<masked>",
+     "java": "<masked>",
+     "pid": "<masked>",
+     "uptimeMs": "<masked>",
+     "listen": {
+      "host": "<masked>",
+      "port": "<masked>"
+     },
+     "launch": {
+      "mode": "fast",
+      "aot": null,
+      "classCache": "hit",
+      "readyMs": "<masked>",
+      "jvmToReadyMs": "<masked>"
+     },
+     "keepWarmS": 600,
+     "memory": {
+      "usedMb": "<masked>",
+      "committedMb": "<masked>",
+      "maxMb": "<masked>"
+     },
+     "projects": [
+      {
+       "id": "p1",
+       "name": "Fixture",
+       "dir": "<WORK>/ov",
+       "gpr": "<WORK>/ov/Fixture.gpr",
+       "writable": false,
+       "openMs": "<masked>",
+       "idleMs": "<masked>",
+       "files": 2,
+       "users": [
+        1,
+        2
+       ],
+       "programs": 1,
+       "revision": "<rev1>",
+       "diskRevision": "<rev1>",
+       "stale": false,
+       "generation": 1,
+       "fork": null
+      }
+     ],
+     "you": 1,
+     "programs": [
+      {
+       "project": "p1",
+       "path": "/alpha.exe",
+       "mode": "read_only",
+       "owner": null,
+       "idleMs": "<masked>",
+       "users": [
+        1
+       ],
+       "ownerLabel": null,
+       "busy": null,
+       "writers": [],
+       "journalSeq": 0,
+       "unsavedEdits": 0,
+       "orphanedMs": null,
+       "revision": "<rev2>",
+       "cachedUpgrade": false,
+       "cacheBuild": "none"
+      }
+     ],
+     "clients": [
+      {
+       "id": 1,
+       "name": "char-a",
+       "harness": "harness-a",
+       "transport": "socket",
+       "launcher": false,
+       "clientVersion": "1.0.0",
+       "activeProject": "p1",
+       "active": "p1:/alpha.exe",
+       "connectedMs": "<masked>",
+       "projects": [
+        "p1"
+       ],
+       "programs": [
+        "p1:/alpha.exe"
+       ],
+       "running": [],
+       "requests": []
+      },
+      {
+       "id": 2,
+       "name": "char-b",
+       "harness": "harness-b",
+       "transport": "socket",
+       "launcher": false,
+       "clientVersion": "1.0.0",
+       "activeProject": "p1",
+       "active": null,
+       "connectedMs": "<masked>",
+       "projects": [
+        "p1"
+       ],
+       "programs": [],
+       "running": [],
+       "requests": []
+      }
+     ],
+     "overlays": [
+      {
+       "name": "mine",
+       "program": "p1:/alpha.exe",
+       "client": 1,
+       "overlayVersion": 3,
+       "ops": 4,
+       "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+       "programRevision": "<rev2>",
+       "projectRevision": "<rev1>",
+       "gpr": "<WORK>/ov/Fixture.gpr",
+       "openMs": "<masked>",
+       "ageMs": "<masked>",
+       "stale": false,
+       "error": null,
+       "changed": true
+      }
+     ],
+     "scheduler": {
+      "quick": {
+       "slots": 24,
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 12,
+       "everQueued": 0,
+       "backgroundQueued": 0
+      },
+      "long": {
+       "slots": 6,
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 2,
+       "everQueued": 0,
+       "backgroundQueued": 0
+      }
+     },
+     "imports": {
+      "maxImports": 4,
+      "holder": null,
+      "running": [],
+      "queue": [],
+      "history": {
+       "count": 0,
+       "completed": 0,
+       "meanMs": null,
+       "msPerMb": null,
+       "peakRunning": 0
+      }
+     },
+     "youAre": {
+      "client": "char-a",
+      "harness": "harness-a",
+      "labelled": false
+     },
+     "upgradeCache": {
+      "enabled": true,
+      "dir": "<WORK>/state/upgrade-cache",
+      "buildsStarted": 0,
+      "builds": []
+     },
+     "deferredInitMs": "<masked>"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 23,
+   "who": "a",
+   "cmd": "info",
+   "request": {
+    "overlay": "nope"
+   },
+   "response": {
+    "id": 23,
+    "ok": false,
+    "error": {
+     "code": "not_found",
+     "message": "this client has no overlay 'nope' on p1:/alpha.exe; open_program with \"overlay\" first",
+     "details": {
+      "overlay": "nope",
+      "program": "p1:/alpha.exe"
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 24,
+   "who": "a",
+   "cmd": "rename",
+   "request": {
+    "overlay": "nope",
+    "address": "0x140001020",
+    "name": "x"
+   },
+   "response": {
+    "id": 24,
+    "ok": false,
+    "error": {
+     "code": "not_found",
+     "message": "this client has no overlay 'nope' on p1:/alpha.exe; open_program with \"overlay\" first",
+     "details": {
+      "overlay": "nope",
+      "program": "p1:/alpha.exe"
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 25,
+   "who": "a",
+   "cmd": "drop_overlay",
+   "request": {
+    "overlay": "nope"
+   },
+   "response": {
+    "id": 25,
+    "ok": true,
+    "result": {
+     "dropped": false,
+     "overlay": "nope",
+     "program": "p1:/alpha.exe"
+    },
+    "ms": "<masked>"
+   },
+   "note": "nothing to drop"
+  },
+  {
+   "step": 26,
+   "who": "b",
+   "cmd": "info",
+   "request": {
+    "overlay": "mine",
+    "program": "p1:/alpha.exe"
+   },
+   "response": {
+    "id": 3,
+    "ok": false,
+    "error": {
+     "code": "no_program",
+     "message": "p1:/alpha.exe is not open for this client; send open_program first",
+     "details": {
+      "program": "p1:/alpha.exe"
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "b has not opened the program"
+  },
+  {
+   "step": 27,
+   "who": "b",
+   "cmd": "open_program",
+   "request": {
+    "path": "/alpha.exe",
+    "overlay": "mine"
+   },
+   "response": {
+    "id": 4,
+    "ok": true,
+    "result": {
+     "key": "p1:/alpha.exe",
+     "project": "p1",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "read_only",
+     "owner": null,
+     "mine": false,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": false,
+     "revision": "<rev2>",
+     "projectRevision": "<rev1>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1,
+      2
+     ],
+     "overlays": [],
+     "writers": [],
+     "writer": false,
+     "journalSeq": 0,
+     "unsavedEdits": 0,
+     "openMs": "<masked>",
+     "overlay": {
+      "name": "mine",
+      "program": "p1:/alpha.exe",
+      "client": 2,
+      "overlayVersion": 0,
+      "ops": 0,
+      "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+      "programRevision": "<rev2>",
+      "projectRevision": "<rev1>",
+      "gpr": "<WORK>/ov/Fixture.gpr",
+      "openMs": "<masked>",
+      "ageMs": "<masked>",
+      "stale": false,
+      "error": null,
+      "changed": false
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "b's own overlay"
+  },
+  {
+   "step": 28,
+   "who": "b",
+   "cmd": "overlays",
+   "request": {},
+   "response": {
+    "id": 5,
+    "ok": true,
+    "result": {
+     "overlays": [
+      {
+       "name": "mine",
+       "program": "p1:/alpha.exe",
+       "client": 2,
+       "overlayVersion": 0,
+       "ops": 0,
+       "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+       "programRevision": "<rev2>",
+       "projectRevision": "<rev1>",
+       "gpr": "<WORK>/ov/Fixture.gpr",
+       "openMs": "<masked>",
+       "ageMs": "<masked>",
+       "stale": false,
+       "error": null,
+       "changed": false
+      }
+     ]
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 29,
+   "who": "a",
+   "cmd": "promote_overlay",
+   "request": {
+    "overlay": "mine"
+   },
+   "response": {
+    "id": 26,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "pass \"project\" (a project you opened writable, such as a fork) or \"fork\": {\"path\": ...} to fork p1 first"
+    },
+    "ms": "<masked>"
+   },
+   "note": "neither project nor fork"
+  },
+  {
+   "step": 30,
+   "who": "a",
+   "cmd": "promote_overlay",
+   "request": {
+    "overlay": "unknown"
+   },
+   "response": {
+    "id": 27,
+    "ok": false,
+    "error": {
+     "code": "not_found",
+     "message": "this client has no overlay 'unknown' on p1:/alpha.exe"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 31,
+   "who": "b",
+   "cmd": "promote_overlay",
+   "request": {
+    "overlay": "mine"
+   },
+   "response": {
+    "id": 6,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "overlay 'mine' has no changes to promote"
+    },
+    "ms": "<masked>"
+   },
+   "note": "b's overlay is empty"
+  },
+  {
+   "step": 32,
+   "who": "a",
+   "cmd": "promote_overlay",
+   "request": {
+    "overlay": "mine",
+    "project": "p9"
+   },
+   "response": {
+    "id": 28,
+    "ok": false,
+    "error": {
+     "code": "no_project",
+     "message": "project p9 is not open; send open_project",
+     "details": {
+      "project": "p9"
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 33,
+   "who": "a",
+   "cmd": "promote_overlay",
+   "request": {
+    "overlay": "mine",
+    "fork": {
+     "path": "<WORK>/ov-fork",
+     "mode": "full"
+    }
+   },
+   "response": {
+    "id": 29,
+    "ok": true,
+    "result": {
+     "promoted": 4,
+     "overlay": "mine",
+     "from": "p1:/alpha.exe",
+     "target": "p2:/alpha.exe",
+     "project": "p2",
+     "results": [
+      {
+       "address": "0x140001020",
+       "name": "ov_helper",
+       "old": "FUN_140001020",
+       "kind": "function",
+       "created": false,
+       "op": "rename"
+      },
+      {
+       "address": "0x140001020",
+       "type": "eol",
+       "old": null,
+       "text": "overlay comment",
+       "op": "comment"
+      },
+      {
+       "address": "0x140001040",
+       "name": "ov_two",
+       "old": "FUN_140001040",
+       "kind": "function",
+       "created": false,
+       "op": "rename"
+      },
+      {
+       "address": "0x140001040",
+       "type": "plate",
+       "old": null,
+       "text": "two",
+       "op": "comment"
+      }
+     ],
+     "saved": {
+      "program": "p2:/alpha.exe",
+      "saved": true,
+      "revision": "<rev3>",
+      "projectRevision": "<rev4>",
+      "savedSeq": 0
+     },
+     "fork": {
+      "project": "p2",
+      "path": "<WORK>/ov-fork",
+      "gpr": "<WORK>/ov-fork/Fixture.gpr",
+      "name": "Fixture",
+      "writable": true,
+      "source": {
+       "project": "p1",
+       "gpr": "<WORK>/ov/Fixture.gpr",
+       "canonical": "<WORK>/ov/Fixture.gpr",
+       "name": "Fixture",
+       "revision": "<rev1>",
+       "writable": false,
+       "fork": false
+      },
+      "baseRevision": "<rev1>",
+      "mode": "full",
+      "method": "<masked>",
+      "cloned": "<masked>",
+      "clonedBy": "<masked>",
+      "bytes": 4425400,
+      "files": 14,
+      "copyMs": "<masked>",
+      "freeSpaceUsedBytes": "<masked>",
+      "depth": 1,
+      "sidecar": "<WORK>/ov-fork/Fixture.fork.json",
+      "ms": "<masked>",
+      "info": {
+       "id": "p2",
+       "name": "Fixture",
+       "dir": "<WORK>/ov-fork",
+       "gpr": "<WORK>/ov-fork/Fixture.gpr",
+       "writable": true,
+       "openMs": "<masked>",
+       "idleMs": "<masked>",
+       "files": 2,
+       "users": [
+        1
+       ],
+       "programs": 0,
+       "revision": "<rev1>",
+       "diskRevision": "<rev1>",
+       "stale": false,
+       "generation": 1,
+       "fork": {
+        "source": {
+         "project": "p1",
+         "gpr": "<WORK>/ov/Fixture.gpr",
+         "canonical": "<WORK>/ov/Fixture.gpr",
+         "name": "Fixture",
+         "revision": "<rev1>",
+         "writable": false,
+         "fork": false
+        },
+        "baseRevision": "<rev1>",
+        "created": "<time>",
+        "createdAt": "<masked>",
+        "by": {
+         "client": 1,
+         "name": "char-a",
+         "harness": "harness-a",
+         "label": "client 1 (char-a, harness-a)"
+        },
+        "mode": "full",
+        "method": "<masked>",
+        "cloned": "<masked>",
+        "bytes": 4425400,
+        "depth": 1
+       },
+       "opened": true
+      }
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 34,
+   "who": "a",
+   "cmd": "info",
+   "request": {
+    "program": "p2:/alpha.exe"
+   },
+   "response": {
+    "id": 30,
+    "ok": true,
+    "result": {
+     "key": "p2:/alpha.exe",
+     "project": "p2",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "writable",
+     "owner": 1,
+     "mine": true,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": false,
+     "revision": "<rev3>",
+     "projectRevision": "<rev4>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1
+     ],
+     "overlays": [],
+     "writers": [],
+     "writer": true,
+     "journalSeq": 0,
+     "unsavedEdits": 0
+    },
+    "ms": "<masked>"
+   },
+   "note": "the promoted program in the fork"
+  },
+  {
+   "step": 35,
+   "who": "a",
+   "cmd": "functions",
+   "request": {
+    "program": "p2:/alpha.exe",
+    "contains": "ov_"
+   },
+   "response": {
+    "id": 31,
+    "ok": true,
+    "result": {
+     "functions": [
+      {
+       "name": "ov_helper",
+       "address": "0x140001020",
+       "size": 6,
+       "thunk": false,
+       "external": false
+      },
+      {
+       "name": "ov_two",
+       "address": "0x140001040",
+       "size": 17,
+       "thunk": false,
+       "external": false
+      }
+     ],
+     "offset": 0,
+     "returned": 2,
+     "truncated": false
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 36,
+   "who": "a",
+   "cmd": "projects",
+   "request": {},
+   "response": {
+    "id": 32,
+    "ok": true,
+    "result": {
+     "activeProject": "p2",
+     "projects": [
+      {
+       "id": "p1",
+       "name": "Fixture",
+       "dir": "<WORK>/ov",
+       "gpr": "<WORK>/ov/Fixture.gpr",
+       "writable": false,
+       "openMs": "<masked>",
+       "idleMs": "<masked>",
+       "files": 2,
+       "users": [
+        1,
+        2
+       ],
+       "programs": 1,
+       "revision": "<rev1>",
+       "diskRevision": "<rev1>",
+       "stale": false,
+       "generation": 1,
+       "fork": null,
+       "joined": true,
+       "active": false
+      },
+      {
+       "id": "p2",
+       "name": "Fixture",
+       "dir": "<WORK>/ov-fork",
+       "gpr": "<WORK>/ov-fork/Fixture.gpr",
+       "writable": true,
+       "openMs": "<masked>",
+       "idleMs": "<masked>",
+       "files": 2,
+       "users": [
+        1
+       ],
+       "programs": 1,
+       "revision": "<rev4>",
+       "diskRevision": "<rev4>",
+       "stale": false,
+       "generation": 1,
+       "fork": {
+        "source": {
+         "project": "p1",
+         "gpr": "<WORK>/ov/Fixture.gpr",
+         "canonical": "<WORK>/ov/Fixture.gpr",
+         "name": "Fixture",
+         "revision": "<rev1>",
+         "writable": false,
+         "fork": false
+        },
+        "baseRevision": "<rev1>",
+        "created": "<time>",
+        "createdAt": "<masked>",
+        "by": {
+         "client": 1,
+         "name": "char-a",
+         "harness": "harness-a",
+         "label": "client 1 (char-a, harness-a)"
+        },
+        "mode": "full",
+        "method": "<masked>",
+        "cloned": "<masked>",
+        "bytes": 4425400,
+        "depth": 1
+       },
+       "joined": true,
+       "active": true
+      }
+     ]
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 37,
+   "who": "a",
+   "cmd": "drop_overlay",
+   "request": {
+    "overlay": "mine"
+   },
+   "response": {
+    "id": 33,
+    "ok": true,
+    "result": {
+     "dropped": false,
+     "overlay": "mine",
+     "program": "p2:/alpha.exe"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 38,
+   "who": "a",
+   "cmd": "overlays",
+   "request": {},
+   "response": {
+    "id": 34,
+    "ok": true,
+    "result": {
+     "overlays": [
+      {
+       "name": "mine",
+       "program": "p1:/alpha.exe",
+       "client": 1,
+       "overlayVersion": 3,
+       "ops": 4,
+       "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+       "programRevision": "<rev2>",
+       "projectRevision": "<rev1>",
+       "gpr": "<WORK>/ov/Fixture.gpr",
+       "openMs": "<masked>",
+       "ageMs": "<masked>",
+       "stale": false,
+       "error": null,
+       "changed": true
+      }
+     ]
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 39,
+   "who": "a",
+   "cmd": "info",
+   "request": {},
+   "response": {
+    "id": 35,
+    "ok": true,
+    "result": {
+     "key": "p2:/alpha.exe",
+     "project": "p2",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "writable",
+     "owner": 1,
+     "mine": true,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": false,
+     "revision": "<rev3>",
+     "projectRevision": "<rev4>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1
+     ],
+     "overlays": [],
+     "writers": [],
+     "writer": true,
+     "journalSeq": 0,
+     "unsavedEdits": 0
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 40,
+   "who": "a",
+   "cmd": "open_program",
+   "request": {
+    "path": "/alpha.exe",
+    "overlay": "again"
+   },
+   "response": {
+    "id": 36,
+    "ok": true,
+    "result": {
+     "key": "p2:/alpha.exe",
+     "project": "p2",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "writable",
+     "owner": 1,
+     "mine": true,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": false,
+     "revision": "<rev3>",
+     "projectRevision": "<rev4>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1
+     ],
+     "overlays": [],
+     "writers": [],
+     "writer": true,
+     "journalSeq": 0,
+     "unsavedEdits": 0,
+     "openMs": "<masked>",
+     "overlay": {
+      "name": "again",
+      "program": "p2:/alpha.exe",
+      "client": 1,
+      "overlayVersion": 0,
+      "ops": 0,
+      "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+      "programRevision": "<rev3>",
+      "projectRevision": "<rev4>",
+      "gpr": "<WORK>/ov-fork/Fixture.gpr",
+      "openMs": "<masked>",
+      "ageMs": "<masked>",
+      "stale": false,
+      "error": null,
+      "changed": false
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 41,
+   "who": "a",
+   "cmd": "rename",
+   "request": {
+    "overlay": "again",
+    "address": "0x140001020",
+    "name": "again_name"
+   },
+   "response": {
+    "id": 37,
+    "ok": true,
+    "result": {
+     "overlay": {
+      "name": "again",
+      "program": "p2:/alpha.exe",
+      "client": 1,
+      "overlayVersion": 1,
+      "ops": 1,
+      "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+      "programRevision": "<rev3>",
+      "projectRevision": "<rev4>",
+      "gpr": "<WORK>/ov-fork/Fixture.gpr",
+      "openMs": "<masked>",
+      "ageMs": "<masked>",
+      "stale": false,
+      "error": null,
+      "changed": true
+     },
+     "applied": 1,
+     "results": [
+      {
+       "address": "0x140001020",
+       "name": "again_name",
+       "old": "ov_helper",
+       "kind": "function",
+       "created": false,
+       "op": "rename"
+      }
+     ]
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 42,
+   "who": "a",
+   "cmd": "close_program",
+   "request": {},
+   "response": {
+    "id": 38,
+    "ok": true,
+    "result": {
+     "closed": "p2:/alpha.exe",
+     "discarded": false,
+     "active": "p1:/alpha.exe"
+    },
+    "ms": "<masked>"
+   },
+   "note": "drops the client's overlays with it"
+  },
+  {
+   "step": 43,
+   "who": "a",
+   "cmd": "overlays",
+   "request": {},
+   "response": {
+    "id": 39,
+    "ok": true,
+    "result": {
+     "overlays": [
+      {
+       "name": "mine",
+       "program": "p1:/alpha.exe",
+       "client": 1,
+       "overlayVersion": 3,
+       "ops": 4,
+       "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+       "programRevision": "<rev2>",
+       "projectRevision": "<rev1>",
+       "gpr": "<WORK>/ov/Fixture.gpr",
+       "openMs": "<masked>",
+       "ageMs": "<masked>",
+       "stale": false,
+       "error": null,
+       "changed": true
+      }
+     ]
+    },
+    "ms": "<masked>"
+   }
+  }
+ ]
+}

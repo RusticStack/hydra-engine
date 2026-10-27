@@ -1,0 +1,2463 @@
+{
+ "scenario": "edits",
+ "steps": [
+  {
+   "step": 1,
+   "who": "a",
+   "cmd": "open_project",
+   "request": {
+    "path": "<WORK>/edits/Fixture.gpr",
+    "writable": true
+   },
+   "response": {
+    "id": 2,
+    "ok": true,
+    "result": {
+     "id": "p1",
+     "name": "Fixture",
+     "dir": "<WORK>/edits",
+     "gpr": "<WORK>/edits/Fixture.gpr",
+     "writable": true,
+     "openMs": "<masked>",
+     "idleMs": "<masked>",
+     "files": 2,
+     "users": [
+      1
+     ],
+     "programs": 0,
+     "revision": "<rev1>",
+     "diskRevision": "<rev1>",
+     "stale": false,
+     "generation": 1,
+     "fork": null,
+     "opened": true
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 2,
+   "who": "a",
+   "cmd": "open_program",
+   "request": {
+    "path": "/alpha.exe",
+    "writable": true
+   },
+   "response": {
+    "id": 3,
+    "ok": true,
+    "result": {
+     "key": "p1:/alpha.exe",
+     "project": "p1",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "writable",
+     "owner": 1,
+     "mine": true,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": false,
+     "revision": "<rev2>",
+     "projectRevision": "<rev1>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1
+     ],
+     "overlays": [],
+     "writers": [],
+     "writer": true,
+     "journalSeq": 0,
+     "unsavedEdits": 0,
+     "openMs": "<masked>"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 3,
+   "who": "a",
+   "cmd": "info",
+   "request": {},
+   "response": {
+    "id": 4,
+    "ok": true,
+    "result": {
+     "key": "p1:/alpha.exe",
+     "project": "p1",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "writable",
+     "owner": 1,
+     "mine": true,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": false,
+     "revision": "<rev2>",
+     "projectRevision": "<rev1>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1
+     ],
+     "overlays": [],
+     "writers": [],
+     "writer": true,
+     "journalSeq": 0,
+     "unsavedEdits": 0
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 4,
+   "who": "a",
+   "cmd": "journal",
+   "request": {},
+   "response": {
+    "id": 5,
+    "ok": true,
+    "result": {
+     "program": "p1:/alpha.exe",
+     "seq": 0,
+     "savedSeq": 0,
+     "dropped": 0,
+     "entries": [],
+     "returned": 0
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 5,
+   "who": "a",
+   "cmd": "rename",
+   "request": {
+    "address": "0x140001020",
+    "name": "char_helper"
+   },
+   "response": {
+    "id": 6,
+    "ok": true,
+    "result": {
+     "address": "0x140001020",
+     "name": "char_helper",
+     "old": "FUN_140001020",
+     "kind": "function",
+     "created": false,
+     "seq": 1
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 6,
+   "who": "a",
+   "cmd": "rename",
+   "request": {
+    "address": "0x140001020",
+    "name": "char_helper2",
+    "expect": "char_helper"
+   },
+   "response": {
+    "id": 7,
+    "ok": true,
+    "result": {
+     "address": "0x140001020",
+     "name": "char_helper2",
+     "old": "char_helper",
+     "kind": "function",
+     "created": false,
+     "seq": 2
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 7,
+   "who": "a",
+   "cmd": "rename",
+   "request": {
+    "address": "0x140001020",
+    "name": "char_helper3",
+    "expect": "not_it"
+   },
+   "response": {
+    "id": 8,
+    "ok": false,
+    "error": {
+     "code": "conflict",
+     "message": "the name at 0x140001020 is 'char_helper2', not the expected 'not_it': someone changed it since you read it",
+     "details": {
+      "reason": "changed",
+      "address": "0x140001020",
+      "field": "name",
+      "expected": "not_it",
+      "current": "char_helper2",
+      "lastEdit": {
+       "seq": 2,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "rename",
+       "address": "0x140001020",
+       "old": "char_helper",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "new": "char_helper2"
+      },
+      "holderInfo": {
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "command": "rename",
+       "seq": 2
+      },
+      "suggest": "reread"
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 8,
+   "who": "a",
+   "cmd": "rename",
+   "request": {
+    "address": "0x140001010",
+    "name": "char_label",
+    "kind": "label"
+   },
+   "response": {
+    "id": 9,
+    "ok": true,
+    "result": {
+     "address": "0x140001010",
+     "name": "char_label",
+     "old": null,
+     "kind": "label",
+     "created": true,
+     "seq": 3
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 9,
+   "who": "a",
+   "cmd": "rename",
+   "request": {
+    "address": "0x140001011",
+    "name": "x",
+    "kind": "function"
+   },
+   "response": {
+    "id": 10,
+    "ok": false,
+    "error": {
+     "code": "not_found",
+     "message": "no function starts at 0x140001011"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 10,
+   "who": "a",
+   "cmd": "rename",
+   "request": {
+    "address": "0x140001020",
+    "name": "x",
+    "kind": "other"
+   },
+   "response": {
+    "id": 11,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "kind must be auto, function or label"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 11,
+   "who": "a",
+   "cmd": "rename",
+   "request": {
+    "address": "nonsense",
+    "name": "x"
+   },
+   "response": {
+    "id": 12,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "bad address 'nonsense': use 0x<hex>, va:0x<hex>, rva:0x<hex> or space:offset"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 12,
+   "who": "a",
+   "cmd": "rename",
+   "request": {
+    "address": "0x140001020"
+   },
+   "response": {
+    "id": 13,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "missing field: name"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 13,
+   "who": "a",
+   "cmd": "comment",
+   "request": {
+    "address": "0x140001020",
+    "text": "first"
+   },
+   "response": {
+    "id": 14,
+    "ok": true,
+    "result": {
+     "address": "0x140001020",
+     "type": "eol",
+     "old": null,
+     "text": "first",
+     "seq": 4
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 14,
+   "who": "a",
+   "cmd": "comment",
+   "request": {
+    "address": "0x140001020",
+    "text": "plate text",
+    "type": "plate"
+   },
+   "response": {
+    "id": 15,
+    "ok": true,
+    "result": {
+     "address": "0x140001020",
+     "type": "plate",
+     "old": null,
+     "text": "plate text",
+     "seq": 5
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 15,
+   "who": "a",
+   "cmd": "comment",
+   "request": {
+    "address": "0x140001020",
+    "text": "second",
+    "expect": "first"
+   },
+   "response": {
+    "id": 16,
+    "ok": true,
+    "result": {
+     "address": "0x140001020",
+     "type": "eol",
+     "old": "first",
+     "text": "second",
+     "seq": 6
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 16,
+   "who": "a",
+   "cmd": "comment",
+   "request": {
+    "address": "0x140001020",
+    "text": "third",
+    "expect": "first"
+   },
+   "response": {
+    "id": 17,
+    "ok": false,
+    "error": {
+     "code": "conflict",
+     "message": "the comment at 0x140001020 is 'second', not the expected 'first': someone changed it since you read it",
+     "details": {
+      "reason": "changed",
+      "address": "0x140001020",
+      "field": "comment",
+      "expected": "first",
+      "current": "second",
+      "lastEdit": {
+       "seq": 6,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "comment",
+       "address": "0x140001020",
+       "type": "eol",
+       "old": "first",
+       "text": "second",
+       "op": "comment",
+       "new": "second"
+      },
+      "holderInfo": {
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "command": "comment",
+       "seq": 6
+      },
+      "suggest": "reread"
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 17,
+   "who": "a",
+   "cmd": "comment",
+   "request": {
+    "address": "0x140001020",
+    "text": "x",
+    "type": "bogus"
+   },
+   "response": {
+    "id": 18,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "type must be eol, pre, post, plate or repeatable"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 18,
+   "who": "a",
+   "cmd": "comment",
+   "request": {
+    "address": "0x140001040",
+    "text": null
+   },
+   "response": {
+    "id": 19,
+    "ok": true,
+    "result": {
+     "address": "0x140001040",
+     "type": "eol",
+     "old": null,
+     "text": null,
+     "seq": 7
+    },
+    "ms": "<masked>"
+   },
+   "note": "no comment there: still an edit"
+  },
+  {
+   "step": 19,
+   "who": "a",
+   "cmd": "edit",
+   "request": {
+    "ops": [
+     {
+      "op": "rename",
+      "address": "0x140001040",
+      "name": "char_two"
+     },
+     {
+      "op": "label",
+      "address": "0x140001018",
+      "name": "char_pad"
+     },
+     {
+      "op": "comment",
+      "address": "0x140001040",
+      "text": "edit comment",
+      "type": "pre"
+     },
+     {
+      "op": "signature",
+      "address": "0x140001020",
+      "signature": "int char_helper2(int a)"
+     },
+     {
+      "op": "data_type",
+      "address": "0x140001060",
+      "type": "int"
+     }
+    ]
+   },
+   "response": {
+    "id": 20,
+    "ok": true,
+    "result": {
+     "program": "p1:/alpha.exe",
+     "applied": 5,
+     "results": [
+      {
+       "address": "0x140001040",
+       "name": "char_two",
+       "old": "FUN_140001040",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "seq": 8
+      },
+      {
+       "address": "0x140001018",
+       "name": "char_pad",
+       "old": null,
+       "kind": "label",
+       "created": true,
+       "op": "label",
+       "seq": 9
+      },
+      {
+       "address": "0x140001040",
+       "type": "pre",
+       "old": null,
+       "text": "edit comment",
+       "op": "comment",
+       "seq": 10
+      },
+      {
+       "op": "signature",
+       "address": "0x140001020",
+       "signature": "int char_helper2(int a)",
+       "old": "int char_helper2(int param_1)",
+       "new": "int char_helper2(int a)",
+       "seq": 11
+      },
+      {
+       "op": "data_type",
+       "address": "0x140001060",
+       "type": "int",
+       "length": 4,
+       "old": null,
+       "new": "int",
+       "seq": 12
+      }
+     ],
+     "seqs": [
+      8,
+      9,
+      10,
+      11,
+      12
+     ],
+     "unsavedEdits": 12
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 20,
+   "who": "a",
+   "cmd": "edit",
+   "request": {
+    "ops": [
+     {
+      "op": "rename",
+      "address": "0x140001040",
+      "name": "must_not_stick"
+     },
+     {
+      "op": "rename",
+      "address": "0x140001020",
+      "name": "x",
+      "expect": "wrong"
+     }
+    ]
+   },
+   "response": {
+    "id": 21,
+    "ok": false,
+    "error": {
+     "code": "conflict",
+     "message": "ops[1]: the name at 0x140001020 is 'char_helper2', not the expected 'wrong': someone changed it since you read it (nothing was applied)",
+     "details": {
+      "reason": "changed",
+      "address": "0x140001020",
+      "field": "name",
+      "expected": "wrong",
+      "current": "char_helper2",
+      "index": 1,
+      "rolledBack": true,
+      "lastEdit": {
+       "seq": 2,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "rename",
+       "address": "0x140001020",
+       "old": "char_helper",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "new": "char_helper2"
+      },
+      "holderInfo": {
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "command": "rename",
+       "seq": 2
+      },
+      "suggest": "reread"
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "the second operation fails: nothing is applied"
+  },
+  {
+   "step": 21,
+   "who": "a",
+   "cmd": "edit",
+   "request": {
+    "ops": [
+     {
+      "op": "unknown"
+     }
+    ]
+   },
+   "response": {
+    "id": 22,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "ops[0]: unknown op 'unknown': rename, label, comment, signature or data_type (nothing was applied)",
+     "details": {
+      "index": 0,
+      "rolledBack": true
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 22,
+   "who": "a",
+   "cmd": "edit",
+   "request": {
+    "ops": []
+   },
+   "response": {
+    "id": 23,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "ops must be a non-empty array of {\"op\": rename|label|comment|signature|data_type, ...}"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 23,
+   "who": "a",
+   "cmd": "edit",
+   "request": {
+    "ops": [
+     "not an object"
+    ]
+   },
+   "response": {
+    "id": 24,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "ops[0]: ops[0] is not an object (nothing was applied)",
+     "details": {
+      "index": 0,
+      "rolledBack": true
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 24,
+   "who": "a",
+   "cmd": "edit",
+   "request": {
+    "ops": [
+     {
+      "op": "data_type",
+      "address": "0x140001020",
+      "type": "no_type"
+     }
+    ]
+   },
+   "response": {
+    "id": 25,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "ops[0]: bad data type 'no_type': Unrecognized data type of \"no_type\" (nothing was applied)",
+     "details": {
+      "index": 0,
+      "rolledBack": true
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 25,
+   "who": "a",
+   "cmd": "edit",
+   "request": {
+    "ops": [
+     {
+      "op": "signature",
+      "address": "0x140001020",
+      "signature": "((("
+     }
+    ]
+   },
+   "response": {
+    "id": 26,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "ops[0]: bad signature '(((' (nothing was applied)",
+     "details": {
+      "index": 0,
+      "rolledBack": true
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 26,
+   "who": "a",
+   "cmd": "edit",
+   "request": {
+    "ops": [
+     {
+      "op": "signature",
+      "address": "0x140001018",
+      "signature": "int f(int a)"
+     }
+    ]
+   },
+   "response": {
+    "id": 27,
+    "ok": false,
+    "error": {
+     "code": "not_found",
+     "message": "ops[0]: no function contains 0x140001018 (nothing was applied)",
+     "details": {
+      "index": 0,
+      "rolledBack": true
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 27,
+   "who": "a",
+   "cmd": "functions",
+   "request": {},
+   "response": {
+    "id": 28,
+    "ok": true,
+    "result": {
+     "functions": [
+      {
+       "name": "entry",
+       "address": "0x140001000",
+       "size": 19,
+       "thunk": false,
+       "external": false
+      },
+      {
+       "name": "char_helper2",
+       "address": "0x140001020",
+       "size": 6,
+       "thunk": false,
+       "external": false
+      },
+      {
+       "name": "char_two",
+       "address": "0x140001040",
+       "size": 17,
+       "thunk": false,
+       "external": false
+      }
+     ],
+     "offset": 0,
+     "returned": 3,
+     "truncated": false
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 28,
+   "who": "a",
+   "cmd": "decompile",
+   "request": {
+    "address": "0x140001040"
+   },
+   "response": {
+    "id": 29,
+    "ok": true,
+    "result": {
+     "name": "char_two",
+     "entry": "0x140001040",
+     "completed": true,
+     "signature": "int char_two(int param_1);",
+     "chars": 152,
+     "truncated": false,
+     "c": "\r\nint char_two(int param_1)\r\n\r\n{\r\n  int iVar1;\r\n  \r\n                    /* edit comment */\r\n  iVar1 = char_helper2(param_1);\r\n  return iVar1 + 1;\r\n}\r\n\r\n"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 29,
+   "who": "a",
+   "cmd": "journal",
+   "request": {},
+   "response": {
+    "id": 30,
+    "ok": true,
+    "result": {
+     "program": "p1:/alpha.exe",
+     "seq": 12,
+     "savedSeq": 0,
+     "dropped": 0,
+     "entries": [
+      {
+       "seq": 1,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "rename",
+       "address": "0x140001020",
+       "old": "FUN_140001020",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "new": "char_helper"
+      },
+      {
+       "seq": 2,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "rename",
+       "address": "0x140001020",
+       "old": "char_helper",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "new": "char_helper2"
+      },
+      {
+       "seq": 3,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "rename",
+       "address": "0x140001010",
+       "old": null,
+       "kind": "label",
+       "created": true,
+       "op": "rename",
+       "new": "char_label"
+      },
+      {
+       "seq": 4,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "comment",
+       "address": "0x140001020",
+       "type": "eol",
+       "old": null,
+       "text": "first",
+       "op": "comment",
+       "new": "first"
+      },
+      {
+       "seq": 5,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "comment",
+       "address": "0x140001020",
+       "type": "plate",
+       "old": null,
+       "text": "plate text",
+       "op": "comment",
+       "new": "plate text"
+      },
+      {
+       "seq": 6,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "comment",
+       "address": "0x140001020",
+       "type": "eol",
+       "old": "first",
+       "text": "second",
+       "op": "comment",
+       "new": "second"
+      },
+      {
+       "seq": 7,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "comment",
+       "address": "0x140001040",
+       "type": "eol",
+       "old": null,
+       "text": null,
+       "op": "comment",
+       "new": null
+      },
+      {
+       "seq": 8,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "edit",
+       "address": "0x140001040",
+       "old": "FUN_140001040",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "new": "char_two"
+      },
+      {
+       "seq": 9,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "edit",
+       "address": "0x140001018",
+       "old": null,
+       "kind": "label",
+       "created": true,
+       "op": "label",
+       "new": "char_pad"
+      },
+      {
+       "seq": 10,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "edit",
+       "address": "0x140001040",
+       "type": "pre",
+       "old": null,
+       "text": "edit comment",
+       "op": "comment",
+       "new": "edit comment"
+      },
+      {
+       "seq": 11,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "edit",
+       "op": "signature",
+       "address": "0x140001020",
+       "signature": "int char_helper2(int a)",
+       "old": "int char_helper2(int param_1)",
+       "new": "int char_helper2(int a)"
+      },
+      {
+       "seq": 12,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "edit",
+       "op": "data_type",
+       "address": "0x140001060",
+       "type": "int",
+       "length": 4,
+       "old": null,
+       "new": "int"
+      }
+     ],
+     "returned": 12
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 30,
+   "who": "a",
+   "cmd": "journal",
+   "request": {
+    "since": "<masked>",
+    "limit": 2
+   },
+   "response": {
+    "id": 31,
+    "ok": true,
+    "result": {
+     "program": "p1:/alpha.exe",
+     "seq": 12,
+     "savedSeq": 0,
+     "dropped": 0,
+     "entries": [
+      {
+       "seq": 4,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "comment",
+       "address": "0x140001020",
+       "type": "eol",
+       "old": null,
+       "text": "first",
+       "op": "comment",
+       "new": "first"
+      },
+      {
+       "seq": 5,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "comment",
+       "address": "0x140001020",
+       "type": "plate",
+       "old": null,
+       "text": "plate text",
+       "op": "comment",
+       "new": "plate text"
+      }
+     ],
+     "returned": 2
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 31,
+   "who": "a",
+   "cmd": "journal",
+   "request": {
+    "author": 1
+   },
+   "response": {
+    "id": 32,
+    "ok": true,
+    "result": {
+     "program": "p1:/alpha.exe",
+     "seq": 12,
+     "savedSeq": 0,
+     "dropped": 0,
+     "entries": [
+      {
+       "seq": 1,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "rename",
+       "address": "0x140001020",
+       "old": "FUN_140001020",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "new": "char_helper"
+      },
+      {
+       "seq": 2,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "rename",
+       "address": "0x140001020",
+       "old": "char_helper",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "new": "char_helper2"
+      },
+      {
+       "seq": 3,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "rename",
+       "address": "0x140001010",
+       "old": null,
+       "kind": "label",
+       "created": true,
+       "op": "rename",
+       "new": "char_label"
+      },
+      {
+       "seq": 4,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "comment",
+       "address": "0x140001020",
+       "type": "eol",
+       "old": null,
+       "text": "first",
+       "op": "comment",
+       "new": "first"
+      },
+      {
+       "seq": 5,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "comment",
+       "address": "0x140001020",
+       "type": "plate",
+       "old": null,
+       "text": "plate text",
+       "op": "comment",
+       "new": "plate text"
+      },
+      {
+       "seq": 6,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "comment",
+       "address": "0x140001020",
+       "type": "eol",
+       "old": "first",
+       "text": "second",
+       "op": "comment",
+       "new": "second"
+      },
+      {
+       "seq": 7,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "comment",
+       "address": "0x140001040",
+       "type": "eol",
+       "old": null,
+       "text": null,
+       "op": "comment",
+       "new": null
+      },
+      {
+       "seq": 8,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "edit",
+       "address": "0x140001040",
+       "old": "FUN_140001040",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "new": "char_two"
+      },
+      {
+       "seq": 9,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "edit",
+       "address": "0x140001018",
+       "old": null,
+       "kind": "label",
+       "created": true,
+       "op": "label",
+       "new": "char_pad"
+      },
+      {
+       "seq": 10,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "edit",
+       "address": "0x140001040",
+       "type": "pre",
+       "old": null,
+       "text": "edit comment",
+       "op": "comment",
+       "new": "edit comment"
+      },
+      {
+       "seq": 11,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "edit",
+       "op": "signature",
+       "address": "0x140001020",
+       "signature": "int char_helper2(int a)",
+       "old": "int char_helper2(int param_1)",
+       "new": "int char_helper2(int a)"
+      },
+      {
+       "seq": 12,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "edit",
+       "op": "data_type",
+       "address": "0x140001060",
+       "type": "int",
+       "length": 4,
+       "old": null,
+       "new": "int"
+      }
+     ],
+     "returned": 12
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 32,
+   "who": "a",
+   "cmd": "journal",
+   "request": {
+    "author": 2
+   },
+   "response": {
+    "id": 33,
+    "ok": true,
+    "result": {
+     "program": "p1:/alpha.exe",
+     "seq": 12,
+     "savedSeq": 0,
+     "dropped": 0,
+     "entries": [],
+     "returned": 0
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 33,
+   "who": "a",
+   "cmd": "info",
+   "request": {},
+   "response": {
+    "id": 34,
+    "ok": true,
+    "result": {
+     "key": "p1:/alpha.exe",
+     "project": "p1",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "writable",
+     "owner": 1,
+     "mine": true,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": true,
+     "revision": "<rev2>",
+     "projectRevision": "<rev1>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1
+     ],
+     "overlays": [],
+     "writers": [],
+     "writer": true,
+     "journalSeq": 12,
+     "unsavedEdits": 12
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 34,
+   "who": "a",
+   "cmd": "discard_edits",
+   "request": {},
+   "response": {
+    "id": 35,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "missing field: author (the client id whose changes to revert, as in the journal)"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 35,
+   "who": "a",
+   "cmd": "discard_edits",
+   "request": {
+    "author": 1
+   },
+   "response": {
+    "id": 36,
+    "ok": true,
+    "result": {
+     "program": "p1:/alpha.exe",
+     "author": 1,
+     "reverted": [
+      10,
+      9,
+      8,
+      7,
+      6,
+      5,
+      3,
+      2
+     ],
+     "skipped": [
+      {
+       "seq": 12,
+       "op": "data_type",
+       "reason": "not revertible"
+      },
+      {
+       "seq": 11,
+       "op": "signature",
+       "reason": "not revertible"
+      },
+      {
+       "seq": 4,
+       "op": "comment",
+       "address": "0x140001020",
+       "reason": "changed since by another client"
+      },
+      {
+       "seq": 1,
+       "op": "rename",
+       "address": "0x140001020",
+       "reason": "changed since by another client"
+      }
+     ],
+     "unsavedEdits": 20
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 36,
+   "who": "a",
+   "cmd": "journal",
+   "request": {},
+   "response": {
+    "id": 37,
+    "ok": true,
+    "result": {
+     "program": "p1:/alpha.exe",
+     "seq": 20,
+     "savedSeq": 0,
+     "dropped": 0,
+     "entries": [
+      {
+       "seq": 1,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "rename",
+       "address": "0x140001020",
+       "old": "FUN_140001020",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "new": "char_helper"
+      },
+      {
+       "seq": 2,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "rename",
+       "address": "0x140001020",
+       "old": "char_helper",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "new": "char_helper2"
+      },
+      {
+       "seq": 3,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "rename",
+       "address": "0x140001010",
+       "old": null,
+       "kind": "label",
+       "created": true,
+       "op": "rename",
+       "new": "char_label"
+      },
+      {
+       "seq": 4,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "comment",
+       "address": "0x140001020",
+       "type": "eol",
+       "old": null,
+       "text": "first",
+       "op": "comment",
+       "new": "first"
+      },
+      {
+       "seq": 5,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "comment",
+       "address": "0x140001020",
+       "type": "plate",
+       "old": null,
+       "text": "plate text",
+       "op": "comment",
+       "new": "plate text"
+      },
+      {
+       "seq": 6,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "comment",
+       "address": "0x140001020",
+       "type": "eol",
+       "old": "first",
+       "text": "second",
+       "op": "comment",
+       "new": "second"
+      },
+      {
+       "seq": 7,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "comment",
+       "address": "0x140001040",
+       "type": "eol",
+       "old": null,
+       "text": null,
+       "op": "comment",
+       "new": null
+      },
+      {
+       "seq": 8,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "edit",
+       "address": "0x140001040",
+       "old": "FUN_140001040",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "new": "char_two"
+      },
+      {
+       "seq": 9,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "edit",
+       "address": "0x140001018",
+       "old": null,
+       "kind": "label",
+       "created": true,
+       "op": "label",
+       "new": "char_pad"
+      },
+      {
+       "seq": 10,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "edit",
+       "address": "0x140001040",
+       "type": "pre",
+       "old": null,
+       "text": "edit comment",
+       "op": "comment",
+       "new": "edit comment"
+      },
+      {
+       "seq": 11,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "edit",
+       "op": "signature",
+       "address": "0x140001020",
+       "signature": "int char_helper2(int a)",
+       "old": "int char_helper2(int param_1)",
+       "new": "int char_helper2(int a)"
+      },
+      {
+       "seq": 12,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "edit",
+       "op": "data_type",
+       "address": "0x140001060",
+       "type": "int",
+       "length": 4,
+       "old": null,
+       "new": "int"
+      },
+      {
+       "seq": 13,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "discard_edits",
+       "address": "0x140001040",
+       "type": "pre",
+       "old": "edit comment",
+       "text": null,
+       "op": "comment",
+       "new": null
+      },
+      {
+       "seq": 14,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "discard_edits",
+       "address": "0x140001018",
+       "old": "char_pad",
+       "deleted": true,
+       "op": "label",
+       "new": null
+      },
+      {
+       "seq": 15,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "discard_edits",
+       "address": "0x140001040",
+       "old": "char_two",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "new": "FUN_140001040"
+      },
+      {
+       "seq": 16,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "discard_edits",
+       "address": "0x140001040",
+       "type": "eol",
+       "old": null,
+       "text": null,
+       "op": "comment",
+       "new": null
+      },
+      {
+       "seq": 17,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "discard_edits",
+       "address": "0x140001020",
+       "type": "eol",
+       "old": "second",
+       "text": "first",
+       "op": "comment",
+       "new": "first"
+      },
+      {
+       "seq": 18,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "discard_edits",
+       "address": "0x140001020",
+       "type": "plate",
+       "old": "plate text",
+       "text": null,
+       "op": "comment",
+       "new": null
+      },
+      {
+       "seq": 19,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "discard_edits",
+       "address": "0x140001010",
+       "old": "char_label",
+       "deleted": true,
+       "op": "label",
+       "new": null
+      },
+      {
+       "seq": 20,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "discard_edits",
+       "address": "0x140001020",
+       "old": "char_helper2",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "new": "char_helper"
+      }
+     ],
+     "returned": 20
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 37,
+   "who": "a",
+   "cmd": "functions",
+   "request": {},
+   "response": {
+    "id": 38,
+    "ok": true,
+    "result": {
+     "functions": [
+      {
+       "name": "entry",
+       "address": "0x140001000",
+       "size": 19,
+       "thunk": false,
+       "external": false
+      },
+      {
+       "name": "char_helper",
+       "address": "0x140001020",
+       "size": 6,
+       "thunk": false,
+       "external": false
+      },
+      {
+       "name": "FUN_140001040",
+       "address": "0x140001040",
+       "size": 17,
+       "thunk": false,
+       "external": false
+      }
+     ],
+     "offset": 0,
+     "returned": 3,
+     "truncated": false
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 38,
+   "who": "a",
+   "cmd": "analyze",
+   "request": {
+    "options": {
+     "No Such Option": true
+    }
+   },
+   "response": {
+    "id": 39,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "no analysis option named 'No Such Option'"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 39,
+   "who": "a",
+   "cmd": "analyze",
+   "request": {
+    "timeout": 300
+   },
+   "response": {
+    "id": 40,
+    "ok": true,
+    "result": {
+     "functions": 3,
+     "seq": 21
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 40,
+   "who": "a",
+   "cmd": "script",
+   "request": {
+    "script": "CharPrint.java",
+    "args": [
+     "one",
+     "two"
+    ]
+   },
+   "response": {
+    "id": 41,
+    "ok": true,
+    "result": {
+     "script": "<WORK>/scripts/CharPrint.java",
+     "mode": "owner",
+     "program": "p1:/alpha.exe",
+     "seconds": "<masked>",
+     "chars": 59,
+     "truncated": false,
+     "output": "program alpha.exe\r\nfunctions 3\r\nentry entry\r\nargs one,two\r\n",
+     "changed": false,
+     "unsaved": true,
+     "artifact": null
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 41,
+   "who": "a",
+   "cmd": "script",
+   "request": {
+    "script": "CharWrite.java"
+   },
+   "response": {
+    "id": 42,
+    "ok": true,
+    "result": {
+     "script": "<WORK>/scripts/CharWrite.java",
+     "mode": "owner",
+     "program": "p1:/alpha.exe",
+     "seconds": "<masked>",
+     "chars": 10,
+     "truncated": false,
+     "output": "labelled\r\n",
+     "changed": true,
+     "unsaved": true,
+     "artifact": null
+    },
+    "ms": "<masked>"
+   },
+   "note": "owner: the change stays"
+  },
+  {
+   "step": 42,
+   "who": "a",
+   "cmd": "journal",
+   "request": {
+    "since": "<masked>",
+    "limit": 1000
+   },
+   "response": {
+    "id": 43,
+    "ok": true,
+    "result": {
+     "program": "p1:/alpha.exe",
+     "seq": 22,
+     "savedSeq": 0,
+     "dropped": 0,
+     "entries": [
+      {
+       "seq": 1,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "rename",
+       "address": "0x140001020",
+       "old": "FUN_140001020",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "new": "char_helper"
+      },
+      {
+       "seq": 2,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "rename",
+       "address": "0x140001020",
+       "old": "char_helper",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "new": "char_helper2"
+      },
+      {
+       "seq": 3,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "rename",
+       "address": "0x140001010",
+       "old": null,
+       "kind": "label",
+       "created": true,
+       "op": "rename",
+       "new": "char_label"
+      },
+      {
+       "seq": 4,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "comment",
+       "address": "0x140001020",
+       "type": "eol",
+       "old": null,
+       "text": "first",
+       "op": "comment",
+       "new": "first"
+      },
+      {
+       "seq": 5,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "comment",
+       "address": "0x140001020",
+       "type": "plate",
+       "old": null,
+       "text": "plate text",
+       "op": "comment",
+       "new": "plate text"
+      },
+      {
+       "seq": 6,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "comment",
+       "address": "0x140001020",
+       "type": "eol",
+       "old": "first",
+       "text": "second",
+       "op": "comment",
+       "new": "second"
+      },
+      {
+       "seq": 7,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "comment",
+       "address": "0x140001040",
+       "type": "eol",
+       "old": null,
+       "text": null,
+       "op": "comment",
+       "new": null
+      },
+      {
+       "seq": 8,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "edit",
+       "address": "0x140001040",
+       "old": "FUN_140001040",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "new": "char_two"
+      },
+      {
+       "seq": 9,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "edit",
+       "address": "0x140001018",
+       "old": null,
+       "kind": "label",
+       "created": true,
+       "op": "label",
+       "new": "char_pad"
+      },
+      {
+       "seq": 10,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "edit",
+       "address": "0x140001040",
+       "type": "pre",
+       "old": null,
+       "text": "edit comment",
+       "op": "comment",
+       "new": "edit comment"
+      },
+      {
+       "seq": 11,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "edit",
+       "op": "signature",
+       "address": "0x140001020",
+       "signature": "int char_helper2(int a)",
+       "old": "int char_helper2(int param_1)",
+       "new": "int char_helper2(int a)"
+      },
+      {
+       "seq": 12,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "edit",
+       "op": "data_type",
+       "address": "0x140001060",
+       "type": "int",
+       "length": 4,
+       "old": null,
+       "new": "int"
+      },
+      {
+       "seq": 13,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "discard_edits",
+       "address": "0x140001040",
+       "type": "pre",
+       "old": "edit comment",
+       "text": null,
+       "op": "comment",
+       "new": null
+      },
+      {
+       "seq": 14,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "discard_edits",
+       "address": "0x140001018",
+       "old": "char_pad",
+       "deleted": true,
+       "op": "label",
+       "new": null
+      },
+      {
+       "seq": 15,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "discard_edits",
+       "address": "0x140001040",
+       "old": "char_two",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "new": "FUN_140001040"
+      },
+      {
+       "seq": 16,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "discard_edits",
+       "address": "0x140001040",
+       "type": "eol",
+       "old": null,
+       "text": null,
+       "op": "comment",
+       "new": null
+      },
+      {
+       "seq": 17,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "discard_edits",
+       "address": "0x140001020",
+       "type": "eol",
+       "old": "second",
+       "text": "first",
+       "op": "comment",
+       "new": "first"
+      },
+      {
+       "seq": 18,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "discard_edits",
+       "address": "0x140001020",
+       "type": "plate",
+       "old": "plate text",
+       "text": null,
+       "op": "comment",
+       "new": null
+      },
+      {
+       "seq": 19,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "discard_edits",
+       "address": "0x140001010",
+       "old": "char_label",
+       "deleted": true,
+       "op": "label",
+       "new": null
+      },
+      {
+       "seq": 20,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "discard_edits",
+       "address": "0x140001020",
+       "old": "char_helper2",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "new": "char_helper"
+      },
+      {
+       "seq": 21,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "analyze",
+       "functions": 3,
+       "op": "analyze"
+      },
+      {
+       "seq": 22,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "cmd": "script",
+       "script": "CharWrite.java",
+       "op": "script"
+      }
+     ],
+     "returned": 22
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 43,
+   "who": "a",
+   "cmd": "close_program",
+   "request": {},
+   "response": {
+    "id": 44,
+    "ok": false,
+    "error": {
+     "code": "unsaved_changes",
+     "message": "/alpha.exe has unsaved changes; send save, or close with \"discard\":true",
+     "details": {
+      "program": "p1:/alpha.exe"
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 44,
+   "who": "a",
+   "cmd": "close_project",
+   "request": {},
+   "response": {
+    "id": 45,
+    "ok": false,
+    "error": {
+     "code": "unsaved_changes",
+     "message": "/alpha.exe has unsaved changes; send save, or close with \"discard\":true",
+     "details": {
+      "program": "p1:/alpha.exe"
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 45,
+   "who": "a",
+   "cmd": "save",
+   "request": {
+    "comment": "characterization"
+   },
+   "response": {
+    "id": 46,
+    "ok": true,
+    "result": {
+     "program": "p1:/alpha.exe",
+     "saved": true,
+     "revision": "<rev3>",
+     "projectRevision": "<rev4>",
+     "savedSeq": 22
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 46,
+   "who": "a",
+   "cmd": "save",
+   "request": {},
+   "response": {
+    "id": 47,
+    "ok": true,
+    "result": {
+     "program": "p1:/alpha.exe",
+     "saved": false,
+     "revision": "<rev3>",
+     "projectRevision": "<rev4>",
+     "savedSeq": 22
+    },
+    "ms": "<masked>"
+   },
+   "note": "nothing to save"
+  },
+  {
+   "step": 47,
+   "who": "a",
+   "cmd": "script",
+   "request": {
+    "script": "CharWrite.java",
+    "save": true
+   },
+   "response": {
+    "id": 48,
+    "ok": true,
+    "result": {
+     "script": "<WORK>/scripts/CharWrite.java",
+     "mode": "owner",
+     "program": "p1:/alpha.exe",
+     "seconds": "<masked>",
+     "chars": 10,
+     "truncated": false,
+     "output": "labelled\r\n",
+     "changed": false,
+     "unsaved": false,
+     "artifact": null
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 48,
+   "who": "a",
+   "cmd": "rename",
+   "request": {
+    "address": "0x140001020",
+    "name": "char_after_save"
+   },
+   "response": {
+    "id": 49,
+    "ok": true,
+    "result": {
+     "address": "0x140001020",
+     "name": "char_after_save",
+     "old": "char_helper",
+     "kind": "function",
+     "created": false,
+     "seq": 23
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 49,
+   "who": "a",
+   "cmd": "close_program",
+   "request": {
+    "discard": true
+   },
+   "response": {
+    "id": 50,
+    "ok": true,
+    "result": {
+     "closed": "p1:/alpha.exe",
+     "discarded": true,
+     "active": null
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 50,
+   "who": "a",
+   "cmd": "open_program",
+   "request": {
+    "path": "/alpha.exe",
+    "writable": true
+   },
+   "response": {
+    "id": 51,
+    "ok": true,
+    "result": {
+     "key": "p1:/alpha.exe",
+     "project": "p1",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "writable",
+     "owner": 1,
+     "mine": true,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": false,
+     "revision": "<rev3>",
+     "projectRevision": "<rev4>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1
+     ],
+     "overlays": [],
+     "writers": [],
+     "writer": true,
+     "journalSeq": 0,
+     "unsavedEdits": 0,
+     "openMs": "<masked>"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 51,
+   "who": "a",
+   "cmd": "info",
+   "request": {},
+   "response": {
+    "id": 52,
+    "ok": true,
+    "result": {
+     "key": "p1:/alpha.exe",
+     "project": "p1",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "writable",
+     "owner": 1,
+     "mine": true,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": false,
+     "revision": "<rev3>",
+     "projectRevision": "<rev4>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1
+     ],
+     "overlays": [],
+     "writers": [],
+     "writer": true,
+     "journalSeq": 0,
+     "unsavedEdits": 0
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 52,
+   "who": "a",
+   "cmd": "functions",
+   "request": {},
+   "response": {
+    "id": 53,
+    "ok": true,
+    "result": {
+     "functions": [
+      {
+       "name": "entry",
+       "address": "0x140001000",
+       "size": 19,
+       "thunk": false,
+       "external": false
+      },
+      {
+       "name": "char_helper",
+       "address": "0x140001020",
+       "size": 6,
+       "thunk": false,
+       "external": false
+      },
+      {
+       "name": "FUN_140001040",
+       "address": "0x140001040",
+       "size": 17,
+       "thunk": false,
+       "external": false
+      }
+     ],
+     "offset": 0,
+     "returned": 3,
+     "truncated": false
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 53,
+   "who": "a",
+   "cmd": "close_project",
+   "request": {},
+   "response": {
+    "id": 54,
+    "ok": true,
+    "result": {
+     "project": "p1",
+     "left": true,
+     "closed": true,
+     "activeProject": null
+    },
+    "ms": "<masked>"
+   }
+  }
+ ]
+}
