@@ -1,106 +1,140 @@
 """Writes the Hydra Engine architecture diagram (light and dark SVG).
 
-Left: the heads (clients). Middle: the body (one daemon JVM). Right: projects opened in place.
-"""
-import pathlib, sys
+    python make_diagram.py <out dir>
 
-out = pathlib.Path(sys.argv[1])
+The same picture as the website's "How it works": on the left the heads (agent harnesses, MCP
+servers, scripts), each busy at the same moment; in the middle the engine, one daemon whose
+quick lane answers in milliseconds while its long lane runs imports and analyses; on the right
+programs in several projects, each opened in place. Wires take the colour of the lane their
+request runs in: green for quick, blue for long. The numbers are measured ones (module README,
+"Performance").
+"""
+import pathlib
+import sys
+
+W, H = 960, 400
+SANS = "font-family=\"ui-sans-serif,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif\""
+MONO = "font-family=\"ui-monospace,SFMono-Regular,'Cascadia Code',Consolas,monospace\""
 
 PAL = {
-    "light": dict(bg="#ffffff", fg="#1f2328", mute="#59636e", line="#d1d9e0", card="#f6f8fa",
-                  acc="#15803d", accbg="#dcfce7", warn="#b91c1c", body="#14532d", bodyfg="#ecfdf5",
-                  lane="#166534", lane2="#1e3a8a", lanefg="#ffffff"),
-    "dark": dict(bg="#0d1117", fg="#e6edf3", mute="#9198a1", line="#3d444d", card="#151b23",
-                 acc="#4ade80", accbg="#0f2a1a", warn="#f87171", body="#14532d", bodyfg="#ecfdf5",
-                 lane="#22c55e", lane2="#60a5fa", lanefg="#0d1117"),
+    "dark": dict(bg="#000000", fg="#eef2f5", soft="#c3ccd5", mute="#7f8c9b", faint="#4a5866", row="#0b0d0d",
+                 rowline="#1d2522", quick="#4ade80", quickbg="#041913", quickline="#1f9a4c", slotoff_q="#14321f",
+                 long="#60a5fa", longbg="#04142a", longline="#2f6fe0", slotoff_l="#132744", card="#030806", cardline="#4ade80"),
+    "light": dict(bg="#ffffff", fg="#1f2328", soft="#3d444d", mute="#59636e", faint="#8c959f", row="#f6f8fa",
+                  rowline="#d1d9e0", quick="#15803d", quickbg="#ecfdf3", quickline="#16a34a", slotoff_q="#cfe9d8",
+                  long="#1d4ed8", longbg="#eff4ff", longline="#3b82f6", slotoff_l="#cdd9f5", card="#fbfdfb", cardline="#16a34a"),
 }
 
-CLIENTS = [
-    ("Claude Code", "harness", False),
-    ("Codex", "harness", False),
-    ("OpenCode", "harness", False),
-    ("QoderCLI", "harness", False),
-    ("RusticRE", "MCP server", False),
-    ("your script", "connect()", False),
-    ("killed client", "", True),          # the cut head
+# (name, what it is doing now, lane)
+HEADS = [
+    ("Claude Code", "decompile · 7 ms", "quick"),
+    ("Codex", "import driver.sys", "long"),
+    ("OpenCode", "overlay · 116 ms", "quick"),
+    ("QoderCLI", "decompile · 6.7 ms", "quick"),
+    ("RusticRE  MCP", "join · 0.9 ms", "quick"),
+    ("your script", "analyze libnet.so", "long"),
 ]
-PROJECTS = [
-    ("game.gpr", "read-only view, no lock", ["game.exe", "engine.dll"]),
-    ("tools.gpr", "writable, one owner", ["patcher.exe"]),
-    ("work.gpr", "imports, dedup by SHA-256", ["new.bin"]),
+# (program, project, what runs on it, lane or None)
+PROGRAMS = [
+    ("arena.exe", "p1 /re/arena", "decompile", "quick"),
+    ("racer.exe", "p2 /re/racer", "overlay", "quick"),
+    ("boot.bin", "p3 /re/firmware", "decompile", "quick"),
+    ("libnet.so", "p4 /re/server", "analyze", "long"),
+    ("driver.sys", "p5 /re/drivers", "import", "long"),
 ]
+# head index -> program index
+WIRES = {0: 0, 1: 4, 2: 1, 3: 2, 4: 0, 5: 3}
 
-FONT = "font-family=\"ui-sans-serif,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif\""
-MONO = "font-family=\"ui-monospace,SFMono-Regular,'Cascadia Code',Consolas,monospace\""
+
+def esc(s):
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def svg(p):
-    W, H = 920, 430
     s = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" height="{H}">',
-         '<title>Many clients, one daemon, many projects</title>',
-         f'<rect width="{W}" height="{H}" rx="14" fill="{p["bg"]}"/>']
-    # column titles
-    for x, t in ((110, "HEADS: clients"), (460, "BODY: one daemon per user"), (790, "PROJECTS: opened in place")):
-        s.append(f'<text x="{x}" y="34" text-anchor="middle" {FONT} font-size="13" font-weight="700" '
-                 f'letter-spacing="1.2" fill="{p["mute"]}">{t}</text>')
-    # daemon body
-    bx, by, bw, bh = 330, 56, 260, 344
-    s.append(f'<rect x="{bx}" y="{by}" width="{bw}" height="{bh}" rx="18" fill="{p["body"]}"/>')
-    s.append(f'<text x="{bx + bw / 2}" y="{by + 34}" text-anchor="middle" {FONT} font-size="18" font-weight="700" '
-             f'fill="{p["bodyfg"]}">Hydra Engine daemon</text>')
-    s.append(f'<text x="{bx + bw / 2}" y="{by + 56}" text-anchor="middle" {MONO} font-size="12" '
-             f'fill="{p["bodyfg"]}" opacity=".85">one JVM · loopback + token</text>')
-    rows = [("quick lane", "decompile · functions · list", p["lane"]),
-            ("long lane", "analyze · import · script", p["lane2"])]
-    for i, (a, b, c) in enumerate(rows):
-        y = by + 80 + i * 62
-        s.append(f'<rect x="{bx + 18}" y="{y}" width="{bw - 36}" height="50" rx="10" fill="{c}"/>')
-        s.append(f'<text x="{bx + 34}" y="{y + 21}" {FONT} font-size="13" font-weight="700" fill="{p["lanefg"]}">{a}</text>')
-        s.append(f'<text x="{bx + 34}" y="{y + 39}" {MONO} font-size="11.5" fill="{p["lanefg"]}">{b}</text>')
-    facts = ["round-robin by client", "1 writer, many readers / program", "per-client cancel",
-             "warm decompilers, shared", "dead client: locks freed"]
-    for i, f in enumerate(facts):
-        s.append(f'<text x="{bx + 26}" y="{by + 234 + i * 21}" {FONT} font-size="13" fill="{p["bodyfg"]}">'
-                 f'<tspan fill="{p["acc"] if p is PAL["dark"] else "#86efac"}">●</tspan> {f}</text>')
-    # clients
-    cy0, step = 60, 49
-    for i, (name, kind, cut) in enumerate(CLIENTS):
-        y = cy0 + i * step
-        stroke = p["warn"] if cut else p["line"]
-        dash = ' stroke-dasharray="5 4"' if cut else ""
-        s.append(f'<rect x="20" y="{y}" width="180" height="40" rx="10" fill="{p["card"]}" stroke="{stroke}"{dash}/>')
-        s.append(f'<text x="36" y="{y + 26}" {MONO} font-size="13" fill="{p["acc"]}">&gt;_</text>')
-        s.append(f'<text x="62" y="{y + 19}" {FONT} font-size="14" font-weight="600" fill="{p["fg"]}">{name}</text>')
-        s.append(f'<text x="62" y="{y + 34}" {FONT} font-size="11.5" fill="{p["mute"]}">'
-                 f'{"locks freed, edits dropped" if cut else kind}</text>')
-        x1, y1 = 200, y + 21
-        x2, y2 = bx, by + 110 + (i - 3) * 20
-        if cut:
-            mx = (x1 + x2) / 2 - 20
-            s.append(f'<path d="M{x1} {y1} C{x1 + 40} {y1} {mx - 30} {y2} {mx} {(y1 + y2) / 2 + 6}" fill="none" '
-                     f'stroke="{p["warn"]}" stroke-width="2.5" stroke-dasharray="5 4"/>')
-            s.append(f'<text x="{mx + 4}" y="{(y1 + y2) / 2 + 12}" {FONT} font-size="16" fill="{p["warn"]}">✂</text>')
-        else:
-            s.append(f'<path d="M{x1} {y1} C{x1 + 70} {y1} {x2 - 70} {y2} {x2} {y2}" fill="none" '
-                     f'stroke="{p["acc"]}" stroke-width="2.5"/>')
-    # projects
-    py0 = 66
-    for i, (name, mode, progs) in enumerate(PROJECTS):
-        y = py0 + i * 112
-        h = 96
-        s.append(f'<rect x="680" y="{y}" width="220" height="{h}" rx="12" fill="{p["card"]}" stroke="{p["line"]}"/>')
-        s.append(f'<text x="696" y="{y + 24}" {MONO} font-size="14" font-weight="700" fill="{p["fg"]}">{name}</text>')
-        s.append(f'<text x="696" y="{y + 42}" {FONT} font-size="11.5" fill="{p["mute"]}">{mode}</text>')
-        for j, prog in enumerate(progs):
-            s.append(f'<rect x="{696 + j * 100}" y="{y + 54}" width="92" height="28" rx="7" fill="{p["accbg"]}"/>')
-            s.append(f'<text x="{742 + j * 100}" y="{y + 72}" text-anchor="middle" {MONO} font-size="11.5" '
-                     f'fill="{p["fg"]}">{prog}</text>')
-        x1, y1 = bx + bw, by + 120 + (i - 1) * 60
-        s.append(f'<path d="M{x1} {y1} C{x1 + 50} {y1} {680 - 50} {y + h / 2} 680 {y + h / 2}" fill="none" '
-                 f'stroke="{p["acc"]}" stroke-width="2.5"/>')
+         "<title>Many heads at work at once, one engine, many projects</title>",
+         f'<rect width="{W}" height="{H}" rx="12" fill="{p["bg"]}"/>']
+
+    def text(x, y, t, size=12, fill=p["fg"], font=SANS, weight=400, anchor="start", ls=0):
+        s.append(f'<text x="{x}" y="{y}" {font} font-size="{size}" font-weight="{weight}" fill="{fill}" '
+                 f'text-anchor="{anchor}" letter-spacing="{ls}">{esc(t)}</text>')
+
+    # Column headings.
+    text(28, 40, "HEADS", 11, p["mute"], MONO, 600, ls=2)
+    text(84, 40, "/ any harness, at once", 11, p["faint"], MONO)
+    text(668, 40, "PROJECTS", 11, p["mute"], MONO, 600, ls=2)
+    text(746, 40, "/ any number, at once", 11, p["faint"], MONO)
+
+    # Engine card.
+    cx, cy, cw, ch = 360, 62, 248, 300
+    s.append(f'<rect x="{cx}" y="{cy}" width="{cw}" height="{ch}" rx="8" fill="{p["card"]}" stroke="{p["cardline"]}" stroke-width="1.6"/>')
+    s.append(f'<rect x="{cx + 6}" y="{cy + 6}" width="{cw - 12}" height="{ch - 12}" rx="5" fill="none" stroke="{p["cardline"]}" stroke-opacity="0.4" stroke-dasharray="4 3"/>')
+    s.append(f'<rect x="{cx + cw / 2 - 62}" y="{cy - 9}" width="124" height="18" fill="{p["bg"]}"/>')
+    text(cx + cw / 2, cy + 4, "HYDRA ENGINE", 11, p["quick"], MONO, 700, "middle", 3)
+    text(cx + cw / 2, cy + 46, "one daemon · one warm Ghidra", 12, p["soft"], SANS, 400, "middle")
+    text(cx + cw / 2, cy + 64, "projects, programs and decompilers stay open", 10.5, p["mute"], SANS, 400, "middle")
+
+    lanes = [("quick", "QUICK LANE", 24, 4, "decompile · functions · rename", "answers in milliseconds"),
+             ("long", "LONG LANE", 6, 2, "import · analyze · script · save", "runs alongside, never blocks")]
+    for i, (k, name, slots, used, runs, note) in enumerate(lanes):
+        lx, ly, lw, lh = cx + 18, cy + 92 + i * 102, cw - 36, 88
+        s.append(f'<rect x="{lx}" y="{ly}" width="{lw}" height="{lh}" rx="6" fill="{p[k + "bg"]}" stroke="{p[k + "line"]}" stroke-width="1.4"/>')
+        text(lx + 12, ly + 20, name, 11, p[k], MONO, 700, ls=1.5)
+        text(lx + lw - 12, ly + 20, f"{used}/{slots} slots", 10, p["mute"], MONO, 400, "end")
+        gap, sw = 2, (lw - 24 - (slots - 1) * 2) / slots
+        for j in range(slots):
+            fill = p[k] if j < used else p["slotoff_q" if k == "quick" else "slotoff_l"]
+            s.append(f'<rect x="{lx + 12 + j * (sw + gap):.1f}" y="{ly + 30}" width="{sw:.1f}" height="5" rx="1" fill="{fill}"/>')
+        text(lx + 12, ly + 54, note, 11, p["soft"], SANS)
+        text(lx + 12, ly + 74, runs, 10, p["mute"], MONO)
+
+    # Heads.
+    hx, hw, hh = 28, 250, 34
+    head_y = [62 + i * 50 for i in range(len(HEADS))]
+    for (name, doing, lane), y in zip(HEADS, head_y):
+        mcp = "MCP" in name
+        s.append(f'<rect x="{hx}" y="{y}" width="{hw}" height="{hh}" rx="6" fill="{p["row"]}" stroke="{p[lane] if mcp else p["rowline"]}" stroke-opacity="{0.8 if mcp else 1}"/>')
+        text(hx + 12, y + 22, name.replace("  MCP", ""), 13, p["fg"], SANS, 600 if mcp else 400)
+        if mcp:
+            s.append(f'<rect x="{hx + 84}" y="{y + 10}" width="32" height="15" rx="7.5" fill="{p["quick"]}"/>')
+            text(hx + 100, y + 21, "MCP", 9, p["bg"], MONO, 700, "middle")
+        text(hx + hw - 12, y + 22, ("› " if lane == "long" else "✓ ") + doing, 11, p[lane], MONO, 400, "end")
+        s.append(f'<circle cx="{hx + hw}" cy="{y + hh / 2}" r="4" fill="{p["bg"]}" stroke="{p[lane]}" stroke-width="1.5"/>')
+
+    # Programs.
+    px, pw = 668, 264
+    prog_y = [70 + i * 58 for i in range(len(PROGRAMS))]
+    for (prog, proj, op, lane), y in zip(PROGRAMS, prog_y):
+        s.append(f'<rect x="{px}" y="{y}" width="{pw}" height="38" rx="6" fill="{p["row"]}" stroke="{p[lane] if lane else p["rowline"]}" stroke-opacity="0.75"/>')
+        text(px + 12, y + 17, prog, 12.5, p["fg"], MONO, 600)
+        text(px + 12, y + 31, proj, 10, p["faint"], MONO)
+        text(px + pw - 12, y + 24, op, 10.5, p[lane], MONO, 400, "end")
+
+    # Wires: head -> engine (spread down its left edge) -> program (spread down its right edge).
+    def curve(x1, y1, x2, y2):
+        d = (x2 - x1) * 0.5
+        return f"M{x1:.1f},{y1:.1f} C{x1 + d:.1f},{y1:.1f} {x2 - d:.1f},{y2:.1f} {x2:.1f},{y2:.1f}"
+
+    for i, y in enumerate(head_y):
+        lane = HEADS[i][2]
+        ey = cy + 40 + i * (ch - 80) / (len(HEADS) - 1)
+        s.append(f'<path d="{curve(hx + hw + 4, y + hh / 2, cx, ey)}" fill="none" stroke="{p[lane]}" stroke-opacity="0.75" stroke-width="1.5"/>')
+    for i, y in enumerate(prog_y):
+        lane = PROGRAMS[i][3]
+        ey = cy + 40 + i * (ch - 80) / (len(PROGRAMS) - 1)
+        s.append(f'<path d="{curve(cx + cw, ey, px, y + 19)}" fill="none" stroke="{p[lane]}" stroke-opacity="0.75" stroke-width="1.5" stroke-dasharray="4 3"/>')
+
+    # Legend.
+    text(28, H - 18, "● quick lane: decompile, list, rename, open", 11, p["quick"], MONO)
+    text(352, H - 18, "● long lane: import, analyze, script, save", 11, p["long"], MONO)
+    text(W - 28, H - 18, "measured: warm decompile 6.7–7.1 ms", 11, p["mute"], MONO, 400, "end")
+
     s.append("</svg>")
     return "\n".join(s) + "\n"
 
 
-for k, p in PAL.items():
-    (out / f"architecture-{k}.svg").write_text(svg(p), encoding="utf-8", newline="\n")
+if __name__ == "__main__":
+    out = pathlib.Path(sys.argv[1])
+    out.mkdir(parents=True, exist_ok=True)
+    for name, pal in PAL.items():
+        (out / f"architecture-{name}.svg").write_text(svg(pal), encoding="utf-8", newline="\n")

@@ -1,5 +1,11 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Showcase a project you built
+    url: https://github.com/RusticStack/hydra-re-showcase/issues/new?template=project.yml
+    about: Projects made with Hydra Engine or RusticRE go to the showcase repository.
+  - name: Documentation
+    url: https://www.hydrare.dev/docs/quick-start
+    about: How to install, connect and use Hydra Engine; many questions are answered there.
   - name: Report a security vulnerability
     url: https://github.com/RusticStack/hydra-engine/security/advisories/new
     about: Report security problems privately, never in a public issue.
