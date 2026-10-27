@@ -259,7 +259,12 @@ final class Connection {
 		}
 	}
 
-	private static JsonObject error(JsonElement id, SessionException e, long t0) {
+	/**
+	 * The failure reply. A protocol 3 connection also gets {@code error.next} and
+	 * {@code error.retryAfterMs} when the exception carries them (conditional C10); a protocol 2
+	 * connection never does, so its replies are byte-identical to protocol 2's.
+	 */
+	private JsonObject error(JsonElement id, SessionException e, long t0) {
 		JsonObject resp = new JsonObject();
 		if (id != null) {
 			resp.add("id", id);
@@ -268,6 +273,14 @@ final class Connection {
 		JsonObject err = Json.of("code", e.code(), "message", String.valueOf(e.getMessage()));
 		if (e.details() != null) {
 			err.add("details", e.details());
+		}
+		if (client.v3()) {
+			if (e.next() != null) {
+				err.add("next", e.next());
+			}
+			if (e.retryAfterMs() != null) {
+				err.addProperty("retryAfterMs", e.retryAfterMs());
+			}
 		}
 		if (e.getCause() != null && e.code().equals(SessionException.FAILED)) {
 			StringWriter sw = new StringWriter();
