@@ -175,7 +175,7 @@ final class ImportCommands {
 			if (req.has("wait")) {
 				openReq.add("wait", req.get("wait"));
 			}
-			JsonObject info = (JsonObject) s.openProgram(c, openReq, m);
+			JsonObject info = (JsonObject) s.programCmds.openProgram(c, openReq, m);
 			JsonObject r = Json.of("imported", true, "project", p.id, "path", saved, "key",
 				p.id + ":" + saved, "sha256", sha, "importSeconds", importS, "program", info);
 			Json.put(r, "queue", gate.describeWait());

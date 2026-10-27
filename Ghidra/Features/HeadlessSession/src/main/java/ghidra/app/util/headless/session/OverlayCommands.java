@@ -110,7 +110,7 @@ final class OverlayCommands {
 			}
 			JsonObject plain = req.deepCopy();
 			plain.remove("overlay");
-			JsonObject info = (JsonObject) s.openProgram(c, plain, m);
+			JsonObject info = (JsonObject) s.programCmds.openProgram(c, plain, m);
 			ProgramEntry e = s.access.entryByKey(info.get("key").getAsString());
 			if (e == null) {
 				throw new SessionException(SessionException.NO_PROGRAM,
@@ -432,7 +432,7 @@ final class OverlayCommands {
 			path = "/" + path;
 		}
 		JsonObject info =
-			(JsonObject) s.openProgram(c, Json.of("path", target + ":" + path, "writable", true), m);
+			(JsonObject) s.programCmds.openProgram(c, Json.of("path", target + ":" + path, "writable", true), m);
 		String tsha = info.has("sha256") && !info.get("sha256").isJsonNull()
 				? info.get("sha256").getAsString()
 				: null;
