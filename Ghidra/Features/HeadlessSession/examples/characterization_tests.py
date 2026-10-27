@@ -42,7 +42,12 @@ goldens are ``characterization/`` for 2 and ``characterization/v3/`` for 3, so a
 changes because a v3 one is recorded. An engine without v3 answers 2 to a request for 3: at
 ``--protocol 3`` the run then says so, runs and records nothing, and exits 0 (``--require-v3`` makes
 that an exit 2), because a golden recorded from such an engine would be a v2 golden in the v3
-directory.
+directory. That exit 0 is a SKIP, not a pass: the run prints ``SKIP ...`` and a summary line that
+starts ``*** SKIPPED ***`` and says NOT VERIFIED. ``--require-v3`` and the environment variable
+``HYDRA_REQUIRE_V3=1`` are the same switch (the flag wins when given, the variable is the default).
+**Gate 9.3 (PROTOCOL-3.md) must set ``HYDRA_REQUIRE_V3=1`` (or pass ``--require-v3``) as soon as a v3
+engine exists**: without it a CI whose engine lost v3, or whose path points at a v2 engine, passes
+this check silently while verifying nothing.
 
 More scenarios live in ``char_<package>.py`` files next to this one: each exposes ``SCENARIOS =
 {name: fn}`` (``fn(ctx, rec)``, like the ones here), and may expose ``PROTOCOLS = (3,)`` (the
@@ -62,6 +67,7 @@ import argparse
 import difflib
 import importlib.util
 import json
+import os
 import pathlib
 import re
 import shutil
@@ -70,6 +76,7 @@ import sys
 import time
 
 HERE = pathlib.Path(__file__).resolve().parent
+REQUIRE_V3_ENV = "HYDRA_REQUIRE_V3"  # =1 is --require-v3 (see the docstring)
 
 # ---- the fixture: two tiny x64 PE files ----------------------------------------------------
 
@@ -898,8 +905,11 @@ def main():
     ap.add_argument("--protocol", type=int, choices=(2, 3), default=2,
                     help="the protocol every connection asks for in hello (default 2)")
     ap.add_argument("--require-v3", dest="require_v3", action="store_true",
+                    default=os.environ.get(REQUIRE_V3_ENV, "").strip().lower()
+                    in ("1", "true", "yes", "on"),
                     help="with --protocol 3: exit 2 when the engine does not serve protocol 3 "
-                    "(default: say so and exit 0)")
+                    f"(default: a loud SKIP and exit 0; the environment variable "
+                    f"{REQUIRE_V3_ENV}=1 is the same as this flag)")
     ap.add_argument("--record", action="store_true", help="write the golden files")
     ap.add_argument("--out", help="also write this run's masked replies here")
     ap.add_argument("--only", help="comma-separated scenario names")
@@ -939,10 +949,19 @@ def main():
         finally:
             c.cleanup()
         if got is None or got < a.protocol:
-            print(f"SKIP protocol {a.protocol}: the engine answered protocol {got} to a hello "
-                  f"asking for {a.protocol} (protocolMax {hello.get('protocolMax')}); "
-                  f"nothing was run, compared or recorded")
-            return 2 if a.require_v3 else (1 if failed else 0)
+            why = (f"the engine answered protocol {got} to a hello asking for {a.protocol} "
+                   f"(protocolMax {hello.get('protocolMax')})")
+            if a.require_v3:
+                print(f"FAIL protocol {a.protocol} REQUIRED (--require-v3 or {REQUIRE_V3_ENV}=1): "
+                      f"{why}")
+                print(f"0/{len(names)} scenarios identical at protocol {a.protocol}: FAILED, "
+                      f"the required v3 engine is missing; nothing was run, compared or recorded")
+                return 2
+            print(f"SKIP protocol {a.protocol}: {why}; nothing was run, compared or recorded")
+            print(f"*** SKIPPED *** 0/{len(names)} scenarios run at protocol {a.protocol}: NOT "
+                  f"VERIFIED, no v3 engine (this exit code is NOT a pass; set {REQUIRE_V3_ENV}=1 "
+                  f"or pass --require-v3 to make it a failure)")
+            return 1 if failed else 0
     if a.record:
         c.golden.mkdir(parents=True, exist_ok=True)
     try:

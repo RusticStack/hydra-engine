@@ -48,6 +48,7 @@ import daemon_tests as dt
 SLEEP = 8000          # ms: how long the long-lane occupiers of lane_starvation run
 QUICK_BOUND_MS = 3000  # a quick script must start and finish within this, long lane or not
 TRANSIENT_NAME = "baseline_transient"
+QUEUED_THIRD_MIN_MS = 19000  # import_wait: the queued import's 10 s gate wait + 10 s scheduler wait
 
 QUICK = """// @category HeadlessSession.Test
 import ghidra.app.script.GhidraScript;
@@ -331,12 +332,33 @@ def t_import_wait(c):
             d.stop(force=True)
             return (f"three imports waited for the occupied long lane and succeeded "
                     f"({ev['importsMs']} ms)")
-        signature = all(r["ok"] or (busy_long(r) and r["details"].get("waitedMs") == 10000)
-                        for r in res) and any(not r["ok"] for r in res)
+        # Two observations are told apart. The weaker one: each failing import is busy on the long
+        # lane after the 10 s default wait. The premise needs the stronger one: the queued third
+        # import (admitted to the gate only when an earlier one left it, 10 s in) fails busy about
+        # 10 s *after* that, so about 20 s in total (10 s gate wait + 10 s scheduler wait). Two
+        # imports failing at 10 s alone only show that they were admitted at once.
+        ms = sorted(r["ms"] for r in res)
+        busy10 = all(r["ok"] or (busy_long(r) and r["details"].get("waitedMs") == 10000)
+                     for r in res) and any(not r["ok"] for r in res)
+        queued_third = busy10 and ms[-1] >= QUEUED_THIRD_MIN_MS
+        ev["observation"] = ("queued third import failed busy ~10 s after reaching the front"
+                             if queued_third else
+                             "failures at the 10 s default wait only; no import showed the extra "
+                             "gate wait" if busy10 else "no busy/long/10000 signature")
+        ev["queuedThirdMs"] = ms[-1]
+        ev["admittedAtOnceMs"] = ms[:-1]
+        ev["queuedThirdMinMs"] = QUEUED_THIRD_MIN_MS
         what = (f"imports ended {ev['codes']} after {ev['importsMs']} ms (occupiers hold the lane "
                 f"{occupy_ms} ms; total {total:.1f} s)")
-        raise (dt.PremiseFail(what + ": busy after the default 10 s wait, not the wait of "
-                              "the queue", ev) if signature else dt.Fail(what))
+        if queued_third:
+            raise dt.PremiseFail(what + f": the queued import failed busy {ms[-1]} ms in (10 s "
+                                 "gate wait + the default 10 s scheduler wait), not the wait of "
+                                 "the queue", ev)
+        if busy10:
+            raise dt.Fail(what + f": only the weaker observation (busy at the 10 s default wait); "
+                          f"the premise needs the slowest import at >= {QUEUED_THIRD_MIN_MS} ms "
+                          f"(10 s gate wait + 10 s scheduler wait), saw {ms[-1]} ms")
+        raise dt.Fail(what)
 
 
 def t_script_shared_visibility(c):

@@ -31,10 +31,13 @@ It reads the matrix and the wave plan from the spec (``../PROTOCOL-3.md``, or ``
 Besides its matrix rows a package may change, without a row (8.1: "Tests: ``dt_*``, ``char_*`` and
 ``cc_*`` files, vectors and fixtures belong to the package whose name they carry and appear in its
 package text"): its own ``examples/dt_<id>.py``, ``examples/char_<id>.py`` and
-``examples/cc_<id>.py``; the test and fixture files, and directories, its package text in section 8
-names (a backticked path under ``examples/``, ``tests/`` or ``characterization/``); and
-``certification.manifest``, which every package appends to (the one stated exception). A file that
-is a row of the matrix is changed only by the packages of its cells, whatever the package text says.
+``examples/cc_<id>.py``; the test and fixture paths its own package paragraph in section 8 names in
+backticks, and only these three kinds: ``examples/(dt|char|cc)_*.py`` (Hydra), ``characterization/v3/**``
+(Hydra, also written ``examples/characterization/v3/...``) and ``tests/**``; and
+``certification.manifest``, which every package appends to (the one stated exception). Any other
+path the paragraph names (another example or tool, the v2 goldens in ``characterization/``, a
+source file) is not accepted by being named: it must be a row of the matrix. A file that is a row of
+the matrix is changed only by the packages of its cells, whatever the package text says.
 The spec itself is not a package file: nobody edits it.
 
 Hydra paths are relative to ``Ghidra/Features/HeadlessSession`` (``S/`` is the session source
@@ -201,18 +204,36 @@ def ownership(spec):
     return owners
 
 
+TEST_FILE = re.compile(r"examples/(dt|char|cc)_[A-Za-z0-9_]+\.py")
+
+
+def accepted_text_token(kind, t):
+    """The repository-relative form (inside the module for Hydra) of a backticked path of a package
+    paragraph when it is one of the three kinds the paragraph may name without a matrix row, else
+    None: ``examples/(dt|char|cc)_*.py`` (Hydra), ``characterization/v3/**`` (Hydra; also written
+    ``examples/characterization/v3/...``) and ``tests/**``. Anything else it names (another example
+    or tool, the v2 goldens, a Java file) must be a row of the matrix."""
+    if ".." in t.split("/"):
+        return None
+    if kind == "hydra":
+        t = re.sub(r"^examples/(?=characterization/)", "", t)
+        if TEST_FILE.fullmatch(t):
+            return t
+        if t.startswith("characterization/v3/"):
+            return "examples/" + t
+    return t if t.startswith("tests/") else None
+
+
 def package_text_files(spec, kind, pkg):
-    """(files, directory prefixes) the package's own paragraph names under examples/, tests/ or
-    characterization/ (test and fixture files)."""
+    """(files, directory prefixes) the package's own paragraph names as test and fixture files
+    (see ``accepted_text_token``); every other path it names is left to the matrix rows."""
     files, dirs = set(), set()
     for tok in re.findall(r"`([^`]+)`", spec.text.get(pkg, "")):
         if re.search(r"[\s*<>(){}]", tok):
             continue
-        t = re.sub(r":\d+(-\d+)?$", "", tok)
-        if not t.startswith(("examples/", "tests/", "characterization/")):
+        t = accepted_text_token(kind, re.sub(r":\d+(-\d+)?$", "", tok))
+        if t is None:
             continue
-        if kind == "hydra" and t.startswith("characterization/"):
-            t = "examples/" + t
         for path in resolve(kind, t):
             (dirs if path.endswith("/") else files).add(path)
     return files, dirs
@@ -238,8 +259,8 @@ def check_changes(spec, kind, pkg, changed):
             continue
         if path in tfiles or any(path.startswith(d) for d in tdirs):
             continue
-        bad.append(f"{path}: in no row of 8.1 for {pkg} and not a test or fixture file its "
-                   "package text names")
+        bad.append(f"{path}: in no row of 8.1 for {pkg} and not an examples/(dt|char|cc)_*.py, "
+                   "characterization/v3/** or tests/** path its package text names")
     return bad
 
 
@@ -291,8 +312,11 @@ SYNTHETIC = """
 ### W0
 
 **E0 (Hydra, M): tests.** Files: `examples/runner.py`, new `examples/dt_base.py`, goldens `characterization/v3/`.
+Also named: `examples/helper.py`, `examples/dt_named.py`, `characterization/old.json`, `tests/t.py`,
+`examples/characterization/v3/deep/`, `characterization/v3/../old.json`, `examples/dt_a/b.py`.
 
-**Y0a (Hydralysis, M): durable.** Files: new `durable.py`, new `tests/test_durable.py`.
+**Y0a (Hydralysis, M): durable.** Files: new `durable.py`, new `tests/test_durable.py`, `tests/data/`,
+`examples/dt_y.py`, `hydra.py`.
 
 ## 9. Release gates
 """
@@ -329,6 +353,34 @@ def selftest():
     expect("Y0a changes a file in no row",
            len(check_changes(spec, "hydralysis", "Y0a", ["src/hydralysis/hydra.py"])), 1)
     expect("an unknown package", len(check_changes(spec, "hydra", "E9", ["x"])), 1)
+    E = MODULE + "/"
+    expect("E0 changes a named dt_*.py and a named v3 directory's file",
+           check_changes(spec, "hydra", "E0", [E + "examples/dt_named.py",
+                                               E + "examples/characterization/v3/deep/a.json"]), [])
+    expect("E0 changes an examples/ file its paragraph names that is not dt|char|cc_*.py",
+           len(check_changes(spec, "hydra", "E0", [E + "examples/helper.py"])), 1)
+    expect("E0 changes a v2 golden its paragraph names (characterization/ outside v3/)",
+           len(check_changes(spec, "hydra", "E0", [E + "examples/characterization/old.json"])), 1)
+    expect("E0 changes a dt_*.py its paragraph does not name",
+           len(check_changes(spec, "hydra", "E0", [E + "examples/dt_unnamed.py"])), 1)
+    expect("E0 changes a tests/ file its paragraph names",
+           check_changes(spec, "hydra", "E0", [E + "tests/t.py"]), [])
+    expect("a '..' path or a nested name in the paragraph accepts nothing",
+           len(check_changes(spec, "hydra", "E0", [E + "examples/characterization/old.json",
+                                                   E + "examples/dt_a/b.py"])), 2)
+    expect("Y0a changes tests/ under a named directory",
+           check_changes(spec, "hydralysis", "Y0a", ["tests/data/x.bin"]), [])
+    expect("Y0a: a named examples/dt_y.py or a named non-tests file is not accepted",
+           len(check_changes(spec, "hydralysis", "Y0a", ["src/hydralysis/examples/dt_y.py",
+                                                         "src/hydralysis/hydra.py"])), 2)
+    expect("accepted_text_token: the three kinds only",
+           [accepted_text_token("hydra", t) for t in
+            ("examples/dt_x.py", "examples/char_x.py", "examples/cc_x.py", "examples/x.py",
+             "characterization/v3/", "examples/characterization/v3/a.json", "characterization/",
+             "characterization/v3/../a", "tests/a/b.py", "S/Session.java")],
+           ["examples/dt_x.py", "examples/char_x.py", "examples/cc_x.py", None,
+            "examples/characterization/v3/", "examples/characterization/v3/a.json", None, None,
+            "tests/a/b.py", None])
     two = parse_spec(SYNTHETIC.replace("| `S/Session.java` | | E1 (hello) |",
                                        "| `S/Session.java` | E0, Y0a | E1 (hello) |"))
     expect("a cell with two packages fails", len(check_matrix(two)), 1)

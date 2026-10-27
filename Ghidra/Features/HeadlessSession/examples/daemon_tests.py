@@ -130,20 +130,35 @@ def client_protocol(gs, n):
     """Makes the launcher library send ``protocol: n`` in ``hello`` and accept an engine that
     answers any protocol from 2 to ``n`` (an engine without v3 answers 2 to a request for 3: the
     spec's rule, PROTOCOL-3.md 3.1). The library file is not edited; this works for the 1.0.0
-    client (``PROTOCOL = 2``) and for one that already ranges over 2..3."""
+    client (``PROTOCOL = 2``) and for one that already ranges over 2..3.
+
+    Only the protocol *equality* is relaxed to the range 2..n. Everything else the library checks
+    stays in force by delegation to the original functions: ``check_compatible`` still enforces
+    ``minClient`` (a future bump is visible to every ``Ctx.connect`` test) and its error messages;
+    ``_check_install`` still enforces the install directory and, for a protocol outside 2..n, the
+    protocol too. The patch is process-wide, so it holds ``_SHIM`` for the whole ``with`` body
+    (re-entrant: nesting restores the outer values) and puts back exactly what it replaced, also
+    when the body raises."""
+    def in_range(p):
+        return isinstance(p, int) and not isinstance(p, bool) and 2 <= p <= n
+
     with _SHIM:
         saved = (gs.PROTOCOL, gs.check_compatible, gs.Daemon._check_install)
+        orig_check, orig_install = saved[1], saved[2]
 
-        def check(info, *args, **kw):
-            p = info.get("protocol")
-            if not isinstance(p, int) or not 2 <= p <= n:
-                raise gs.IncompatibleError(f"the engine answered protocol {p}; this test "
-                                           f"client asks for {n} and accepts 2..{n}")
+        def check(info, client_version=None, protocol=None):
+            kw = {} if client_version is None else {"client_version": client_version}
+            if protocol is None:
+                # an answer inside 2..n is compared with itself, so the original keeps its
+                # minClient check; anything else is compared with n and fails with its message
+                p = info.get("protocol")
+                protocol = p if in_range(p) else n
+            return orig_check(info, protocol=protocol, **kw)
 
         def check_install(self, ep, install):
-            if ep.get("install") and pathlib.Path(ep["install"]).resolve() != install.dir:
-                raise gs.LaunchError(f"the {self.instance!r} daemon runs {ep['install']}, "
-                                     f"not {install.dir}")
+            if in_range(ep.get("protocol")):
+                ep = dict(ep, protocol=gs.PROTOCOL)  # the original compares with PROTOCOL == n
+            return orig_install(self, ep, install)
 
         gs.PROTOCOL, gs.check_compatible, gs.Daemon._check_install = n, check, check_install
         try:
