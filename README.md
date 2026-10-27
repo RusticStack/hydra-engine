@@ -27,10 +27,7 @@ Many agents work in it at the same time, on any number of projects. Warm decompi
 </p>
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/architecture-dark.gif">
-    <img src=".github/assets/architecture-light.gif" width="860" alt="Animated diagram: four agent harnesses (Claude Code, Codex, OpenCode, QoderCLI) send requests through the RusticRE MCP server into one Hydra Engine daemon. Its quick lane answers decompiles, renames and lookups in milliseconds while its long lane runs an import and an analysis at the same time; on the right, programs in five projects light up with the operation and the harness working on them, and long jobs fill a progress bar.">
-  </picture>
+  <img src=".github/assets/how-it-works.gif" width="900" alt="Animated: the website's How it works. Claude Code, Codex, OpenCode and QoderCLI, each through the RusticRE MCP server, send requests along their own wires into one Hydra Engine daemon. Its quick lane fills with millisecond decompiles and renames while its long lane runs an import, an analysis and an export at the same time. On the right, programs in five projects light up with the operation and the harness working on them, long jobs counting up their measured time.">
 </p>
 
 <p align="center"><i>Every head at work at once. One body holds them all.</i><br>
