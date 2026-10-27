@@ -42,9 +42,12 @@ clients: agent harnesses, MCP servers, scripts. They all work at the same time. 
 same programs in parallel, each with its own pooled decompiler; they write through working
 copies, private overlays or shared writing with an author journal (writes are serialized and never
 corrupt a program; [what that does not promise](#platform-and-limits) is spelled out below); and one
-head's import or whole-program analysis runs in the long lane while the others' millisecond
-queries keep flowing in the quick lane. Heads come and go; the body stays. If one crashes, its locks
-are freed and its unsaved edits dropped, and the others carry on.
+head's import or whole-program analysis runs in the long lane while the others' native
+millisecond commands (decompile, functions, list) keep flowing in the quick lane. A `script`
+runs in the long lane, so a query sent as a script can queue behind long work
+([measured, and what is planned](#platform-and-limits)). Heads come and go; the body stays. If a
+client disconnects, its unsaved edits are dropped and its locks are released when its running
+request ends; the others carry on.
 
 **Hydra Engine is the project name; inside, it's Ghidra:** the same packages, modules, Gradle
 projects and paths (`ghidra.*`, `Ghidra/Features/...`, `ghidra_12.3_DEV`), so Ghidra scripts and
@@ -146,6 +149,20 @@ Several at once (same machine; the module README has the method):
   mode (`"share": true`) the last writer wins per value; optimistic concurrency is opt-in per call
   (`expect`, in the module README's "Shared writing"). In owner mode one client writes and the
   rest get `not_owner`.
+- **The quick lane protects native commands, not scripts.** `decompile`, `functions`, `list`,
+  `open_program` and the like take a quick slot; `analyze`, `import`, `script`, `save` and
+  `fork_project` take a long slot (a quarter of the CPUs, at least two). A client that sends its
+  reads as `script` requests, as Hydralysis does today, shares those slots with imports and
+  analysis. Measured on 12.3-hydra.3 with two 8 s scripts holding a two-slot long lane: ten
+  short scripts that asked for the quick lane all succeeded but took 8.05 to 8.27 s each, and
+  `save` and `fork_project` answered `busy` after their 5 s wait. Admission by lane hint is
+  planned (see `PROTOCOL-3.md`), not shipped.
+- **A client that dies while waiting for a lock stays registered until the lock frees.** The
+  engine cancels its request when the connection closes, but a lock wait does not end on cancel,
+  and a script that does not poll for cancellation runs to its own end. Measured: a client killed
+  while blocked in a 1-hour `wait` was still registered 40 s later and left 0.5 s after the
+  holder was cancelled. Java cannot stop a non-cooperative thread; this is a documented limit, and
+  a bounded release for lock waits is planned.
 - **Changes are kept only by `save`.** Until a client saves, they live in the daemon's memory.
 - **Projects upgrade one way.** Ghidra 12.1.4 projects open read-only, unchanged; writing one
   with this build (it asks for `"upgrade": true`) moves its databases to a format that Ghidra
@@ -300,7 +317,7 @@ are in the [docs](https://www.hydrare.dev/docs/quick-start).
 | Re-import of the same file | a second copy | refused by SHA-256 |
 | Scripts | pre/post scripts per run | any time, contained or as owner, with arguments |
 | Launcher | `.bat` / `.sh` + `LaunchSupport` | one Python file, standard library only |
-| A client crashes | the run dies | its locks are freed, the rest carry on |
+| A client crashes | the run dies | its locks are released when its running request ends, the rest carry on |
 
 `analyzeHeadless` is still in the install and still the right tool for a one-shot batch
 import.

@@ -665,8 +665,11 @@ in `error.details`:
   `"share": true`, a program has several writers at once ("Shared writing").
 - **Fair scheduling.** Requests take a slot in one of two lanes before any lock: **quick**
   (decompile, functions, list, open, rename; one slot per CPU) and **long** (analyze, import,
-  script, save; a quarter of the CPUs). Long work can never take the slots quick queries need, so
-  one client's whole-program export or analysis does not delay another's 10 ms decompile. When a
+  script, save; a quarter of the CPUs). Long work can never take the slots the quick native
+  commands need, so one client's whole-program export or analysis does not delay another's
+  10 ms decompile. This protects the native commands only: a `script` takes a long slot, so a
+  query sent as a script waits behind long work (measured: 8.05 to 8.27 s behind two 8 s scripts
+  on a two-slot long lane; see the root README, "Platform and limits"). When a
   lane is full, waiting requests are admitted round-robin by client, so a client that sends a
   hundred requests cannot starve one that sends one. The daemon's own background work (upgrade
   cache builds) takes a long slot only while no client waits for one. `status` shows each lane's

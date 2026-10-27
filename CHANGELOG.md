@@ -12,6 +12,15 @@ example `12.3-hydra.1`); its tag is `v` and the version. Releases are on
 Not yet released; a release renames this heading to its version and names the upstream commit
 it is based on.
 
+### Documentation
+
+- The README and the module README no longer say that queries always flow in the quick lane or
+  that a crashed client's locks are always freed. A `script` takes a long slot, so a query sent
+  as a script queues behind long work (measured: 8.05 to 8.27 s behind two 8 s scripts on a
+  two-slot long lane), and a client killed while waiting for a lock stays registered until the lock
+  frees (measured: still registered 40 s later). Both are documented under "Platform and limits".
+  The fixes are designed in `PROTOCOL-3.md`, not shipped.
+
 ## 12.3-hydra.3
 
 Based on upstream Ghidra `master` (12.3 DEV) as of 2026-10-27,
