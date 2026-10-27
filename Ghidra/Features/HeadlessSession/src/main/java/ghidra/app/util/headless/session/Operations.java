@@ -38,6 +38,7 @@ final class Operations {
 
 	Operations(Session s) {
 		this.s = s;
+		Advertised.capability("expectAll", 1);
 	}
 
 	/**
@@ -51,12 +52,38 @@ final class Operations {
 		}
 		String want = req.get("expect").isJsonNull() ? null : req.get("expect").getAsString();
 		if (!Objects.equals(want, current)) {
-			throw new SessionException(SessionException.CONFLICT,
-				"the " + field + " at " + hex(a) + " is '" + current + "', not the expected '" +
-					want + "': someone changed it since you read it",
-				Json.of("reason", "changed", "address", hex(a), "field", field, "expected", want,
-					"current", current));
+			throw changed(a, field, want, current);
 		}
+	}
+
+	/**
+	 * The same compare-and-set for {@code signature} and {@code data_type} (protocol 3 only,
+	 * behaviour gate 1: a protocol 2 connection never calls this, so an {@code expect} on those two
+	 * ops stays ignored for it as it always was). The conflict has the shape of the one for names
+	 * and comments; {@code next} (may be null) is the request that rereads the value.
+	 */
+	private static void expectV3(JsonObject op, Address a, String field, String current,
+			JsonObject next) {
+		if (!op.has("expect")) {
+			return;
+		}
+		JsonElement e = op.get("expect");
+		if (!e.isJsonNull() && !(e.isJsonPrimitive() && e.getAsJsonPrimitive().isString())) {
+			throw SessionException.badRequest(true,
+				"expect must be a string, or null for \"none\"", "expect", null);
+		}
+		String want = e.isJsonNull() ? null : e.getAsString();
+		if (!Objects.equals(want, current)) {
+			throw changed(a, field, want, current).withNext(next);
+		}
+	}
+
+	private static SessionException changed(Address a, String field, String want, String current) {
+		return new SessionException(SessionException.CONFLICT,
+			"the " + field + " at " + hex(a) + " is '" + current + "', not the expected '" + want +
+				"': someone changed it since you read it",
+			Json.of("reason", "changed", "address", hex(a), "field", field, "expected", want,
+				"current", current));
 	}
 
 	/** The operations of a request: {@code ops}, or the request itself as one {@code op}. */
@@ -86,6 +113,14 @@ final class Operations {
 	 * failure names the operation's index.
 	 */
 	JsonArray applyOps(Program p, JsonArray ops) {
+		return applyOps(p, ops, false);
+	}
+
+	/**
+	 * Like {@link #applyOps(Program, JsonArray)}; {@code v3} turns on what only a protocol 3
+	 * request may have: {@code expect} on {@code signature} and {@code data_type}.
+	 */
+	JsonArray applyOps(Program p, JsonArray ops, boolean v3) {
 		JsonArray results = new JsonArray();
 		int tx = p.startTransaction("overlay operations");
 		boolean ok = false;
@@ -96,7 +131,7 @@ final class Operations {
 					throw new SessionException(SessionException.BAD_REQUEST,
 						"ops[" + i + "] is not an object");
 				}
-				results.add(applyOp(p, el.getAsJsonObject()));
+				results.add(applyOp(p, el.getAsJsonObject(), v3));
 				i++;
 			}
 			ok = true;
@@ -105,8 +140,7 @@ final class Operations {
 			JsonObject d = ex.details() == null ? new JsonObject() : ex.details().deepCopy();
 			Json.put(d, "index", i);
 			Json.put(d, "rolledBack", true);
-			throw new SessionException(ex.code(),
-				"ops[" + i + "]: " + ex.getMessage() + " (nothing was applied)", d, ex);
+			throw ex.rewrap("ops[" + i + "]: " + ex.getMessage() + " (nothing was applied)", d);
 		}
 		catch (Exception ex) {
 			throw new SessionException(SessionException.FAILED,
@@ -126,7 +160,7 @@ final class Operations {
 	 * function, a C prototype), {@code data_type} (address, a data type such as {@code int},
 	 * {@code char[16]} or {@code MyStruct *}).
 	 */
-	private JsonObject applyOp(Program p, JsonObject op) throws Exception {
+	private JsonObject applyOp(Program p, JsonObject op, boolean v3) throws Exception {
 		String kind = Json.str(op, "op");
 		switch (kind) {
 			case "rename": {
@@ -168,6 +202,10 @@ final class Operations {
 					throw new SessionException(SessionException.BAD_REQUEST,
 						"bad signature '" + text + "'");
 				}
+				if (v3) {
+					expectV3(op, f.getEntryPoint(), "signature", oldSig,
+						Json.of("cmd", "decompile", "address", hex(f.getEntryPoint())));
+				}
 				ghidra.app.cmd.function.ApplyFunctionSignatureCmd cmd =
 					new ghidra.app.cmd.function.ApplyFunctionSignatureCmd(f.getEntryPoint(), fd,
 						SourceType.USER_DEFINED);
@@ -193,6 +231,9 @@ final class Operations {
 				catch (ghidra.program.model.data.InvalidDataTypeException ex) {
 					throw new SessionException(SessionException.BAD_REQUEST,
 						"bad data type '" + text + "': " + ex.getMessage());
+				}
+				if (v3) {
+					expectV3(op, a, "type", oldType, null);
 				}
 				Data d = ghidra.program.model.data.DataUtilities.createData(p, a, dt, -1,
 					ghidra.program.model.data.DataUtilities.ClearDataMode.CLEAR_ALL_CONFLICT_DATA);

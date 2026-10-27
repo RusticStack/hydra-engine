@@ -282,15 +282,15 @@ final class Session {
 				case "decompile" -> access.withProgram(c, req, cmd, false, false,
 					e -> queries.decompile(e.program, e, req, m));
 				case "rename" -> access.withProgram(c, req, cmd, true, true,
-					e -> journal(c, e, cmd, "rename", operations.renameIn(e.program, req)));
+					e -> edits.single(c, e, cmd, req));
 				case "edit" -> access.withProgram(c, req, cmd, true, true,
-					e -> edits.editProgram(c, e, ops(req, null)));
+					e -> edits.editProgram(c, e, ops(req, null), req));
 				case "journal" -> access.withProgram(c, req, cmd, false, false,
 					e -> edits.journalOf(e, req));
 				case "discard_edits" -> access.withProgram(c, req, cmd, true, true,
 					e -> edits.discardEdits(c, e, req));
 				case "comment" -> access.withProgram(c, req, cmd, true, true,
-					e -> journal(c, e, cmd, "comment", operations.commentIn(e.program, req)));
+					e -> edits.single(c, e, cmd, req));
 				case "analyze" -> access.withProgram(c, req, cmd, true, true, e -> {
 					JsonObject r = (JsonObject) edits.analyze(e, req, m);
 					return journal(c, e, cmd, "analyze", Json.of("functions", r.get("functions")));

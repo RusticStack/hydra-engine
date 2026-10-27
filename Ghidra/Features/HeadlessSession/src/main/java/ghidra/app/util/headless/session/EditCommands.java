@@ -43,6 +43,7 @@ final class EditCommands {
 
 	EditCommands(Session s) {
 		this.s = s;
+		Advertised.capability("idempotency", 1);
 	}
 
 	/** Names who last changed the value a {@code changed} conflict is about. */
@@ -53,9 +54,12 @@ final class EditCommands {
 			return ex;
 		}
 		String f = d.get("field").getAsString();
+		// the journal's own name for the field (Journal.fieldOf): signature and data_type edits
+		// (protocol 3 conflicts) have their own, everything else that conflicts is a name or a comment
 		JsonObject last = e.journal.lastAt(d.get("address").getAsString(),
-			f.equals("name") ? "name"
-					: "comment:" + (d.has("type") ? d.get("type").getAsString() : "eol"));
+			f.equals("name") ? "name" : f.equals("signature") ? "signature"
+					: f.equals("type") ? "data_type"
+							: "comment:" + (d.has("type") ? d.get("type").getAsString() : "eol"));
 		if (last == null && f.equals("comment")) {
 			for (String t : List.of("eol", "pre", "post", "plate", "repeatable")) {
 				last = last != null ? last
@@ -75,8 +79,21 @@ final class EditCommands {
 	/** Journals a committed change by {@code c}; returns the result with its {@code seq}. */
 	static JsonObject journal(Client c, ProgramEntry e, String cmd, String op,
 			JsonObject result) {
+		return journal(c, e, cmd, op, result, null);
+	}
+
+	/**
+	 * Journals a committed change by {@code c}, carrying the idempotency key {@code rk} of its
+	 * request (protocol 3; null for none). The key goes into the journal entry only, never into
+	 * the reply.
+	 */
+	static JsonObject journal(Client c, ProgramEntry e, String cmd, String op, JsonObject result,
+			String rk) {
 		JsonObject change = result.deepCopy();
 		Json.put(change, "op", op);
+		if (rk != null) {
+			Json.put(change, "rk", rk);
+		}
 		if (change.has("name") && !change.has("new")) {
 			change.add("new", change.get("name"));
 		}
@@ -92,16 +109,131 @@ final class EditCommands {
 	 * {@code edit}: operations on a program this client may change (as owner or shared writer),
 	 * applied in one transaction, all or none, and journalled.
 	 */
-	JsonElement editProgram(Client c, ProgramEntry e, JsonArray ops) {
-		JsonArray results = s.operations.applyOps(e.program, ops);
+	JsonElement editProgram(Client c, ProgramEntry e, JsonArray ops, JsonObject req) {
+		boolean v3 = c.v3();
+		String rk = null;
+		if (v3) { // behaviour gate 1: rk and requireExpect exist for a protocol 3 connection only
+			rk = rkOf(req);
+			if (rk != null) {
+				List<JsonObject> done = e.journal.byRk(rk);
+				if (!done.isEmpty()) {
+					return replayed(e, rk, done, ops.size(), true);
+				}
+			}
+			requireExpect(e, ops);
+		}
+		JsonArray results = s.operations.applyOps(e.program, ops, v3);
 		JsonArray seqs = new JsonArray();
 		for (JsonElement r : results) {
 			JsonObject o = r.getAsJsonObject();
-			journal(c, e, "edit", o.get("op").getAsString(), o);
+			journal(c, e, "edit", o.get("op").getAsString(), o, rk);
 			seqs.add(o.get("seq"));
 		}
 		return Json.of("program", e.key, "applied", ops.size(), "results", results, "seqs", seqs,
 			"unsavedEdits", e.journal.seq() - e.savedSeq);
+	}
+
+	/**
+	 * {@code rename} and {@code comment}: one operation, journalled. A protocol 3 request may carry
+	 * an idempotency key {@code rk} and, when {@code requireExpect} is set, must carry
+	 * {@code expect} on a program with shared writers.
+	 */
+	JsonElement single(Client c, ProgramEntry e, String cmd, JsonObject req) throws Exception {
+		String rk = null;
+		if (c.v3()) {
+			rk = rkOf(req);
+			if (rk != null) {
+				List<JsonObject> done = e.journal.byRk(rk);
+				if (!done.isEmpty()) {
+					return replayed(e, rk, done, 1, false);
+				}
+			}
+			JsonArray one = new JsonArray();
+			JsonObject op = req.deepCopy();
+			op.addProperty("op", cmd);
+			one.add(op);
+			requireExpect(e, one);
+		}
+		JsonObject r = cmd.equals("rename") ? s.operations.renameIn(e.program, req)
+				: s.operations.commentIn(e.program, req);
+		return journal(c, e, cmd, cmd, r, rk);
+	}
+
+	/**
+	 * The idempotency key of a request: a string of 1 to 64 characters, or null when the request
+	 * has none (a JSON null is none). Anything else is {@code bad_request}. Called for protocol 3
+	 * requests only.
+	 */
+	static String rkOf(JsonObject req) {
+		if (!Json.has(req, "rk")) {
+			return null;
+		}
+		JsonElement k = req.get("rk");
+		if (!k.isJsonPrimitive() || !k.getAsJsonPrimitive().isString() ||
+			k.getAsString().isEmpty() || k.getAsString().length() > 64) {
+			throw SessionException.badRequest(true,
+				"rk must be a string of 1 to 64 characters", "rk", null);
+		}
+		return k.getAsString();
+	}
+
+	/**
+	 * A request whose {@code rk} the journal already holds is not applied again: the answer is
+	 * <i>reconstructed</i> from the stored per-op results (the journal keeps the entries, not the
+	 * reply envelope), so it promises those fields and not byte equality with the first reply. If
+	 * fewer entries are held than the request has operations, part of them was evicted, and the
+	 * whole key is refused ({@code rk_expired}), never partly replayed.
+	 */
+	private static JsonElement replayed(ProgramEntry e, String rk, List<JsonObject> done,
+			int expectedOf, boolean multi) {
+		if (done.size() < expectedOf) {
+			throw new SessionException(SessionException.BAD_REQUEST,
+				"the idempotency key " + rk + " was applied, but only " + done.size() + " of its " +
+					expectedOf + " journal entries are still held (the journal drops the oldest " +
+					"entries): it cannot be replayed",
+				Json.of("reason", "rk_expired", "rk", rk, "foundOf", done.size(), "expectedOf",
+					expectedOf));
+		}
+		if (!multi) {
+			JsonObject first = done.get(0);
+			return Json.of("replayed", true, "seq", first.get("seq"), "result", first);
+		}
+		JsonArray results = new JsonArray();
+		JsonArray seqs = new JsonArray();
+		for (JsonObject d : done) {
+			results.add(d);
+			seqs.add(d.get("seq"));
+		}
+		return Json.of("replayed", true, "program", e.key, "applied", done.size(), "seqs", seqs,
+			"results", results, "unsavedEdits", e.journal.seq() - e.savedSeq);
+	}
+
+	/**
+	 * {@code requireExpect} (the {@code -set requireExpect=true} policy, protocol 3 only): an edit
+	 * of a program that has shared writers must say what it expects to replace, on every
+	 * {@code rename}, {@code label}, {@code comment}, {@code signature} and {@code data_type}.
+	 * A program with one owner needs none: there is nobody to collide with.
+	 */
+	private static void requireExpect(ProgramEntry e, JsonArray ops) {
+		if (e.mode != ProgramEntry.Mode.SHARED || !Settings.bool("requireExpect", false)) {
+			return;
+		}
+		int i = 0;
+		for (JsonElement el : ops) {
+			if (el.isJsonObject() && !el.getAsJsonObject().has("expect") && el.getAsJsonObject()
+					.has("op") && el.getAsJsonObject().get("op").isJsonPrimitive() &&
+				List.of("rename", "label", "comment", "signature", "data_type")
+						.contains(el.getAsJsonObject().get("op").getAsString())) {
+				SessionException ex = SessionException.badRequest(true,
+					"ops[" + i + "]: " + e.key + " has shared writers and this daemon requires " +
+						"\"expect\" on every edit (requireExpect): say what you expect to replace" +
+						" (null for nothing)",
+					"expect", null);
+				Json.put(ex.details(), "index", i);
+				throw ex;
+			}
+			i++;
+		}
 	}
 
 	/** {@code journal}: who changed what in a program, oldest first. */

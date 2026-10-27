@@ -35,6 +35,8 @@ final class Journal {
 	static final int CAP = 200_000;
 
 	private final ArrayDeque<JsonObject> entries = new ArrayDeque<>();
+	/** How many entries in {@link #entries} carry each {@code rk}, so a lookup of an unseen one is O(1). */
+	private final Map<String, Integer> rkCount = new HashMap<>();
 	private long seq;
 	private long dropped;
 
@@ -50,11 +52,36 @@ final class Journal {
 			}
 		}
 		entries.add(e);
+		if (e.has("rk")) {
+			rkCount.merge(e.get("rk").getAsString(), 1, Integer::sum);
+		}
 		if (entries.size() > CAP) {
-			entries.poll();
+			JsonObject old = entries.poll();
+			if (old != null && old.has("rk")) {
+				rkCount.merge(old.get("rk").getAsString(), -1, Integer::sum);
+				rkCount.remove(old.get("rk").getAsString(), 0);
+			}
 			dropped++;
 		}
 		return seq;
+	}
+
+	/**
+	 * The entries that carry the idempotency key {@code rk} (v3 {@code edit}, {@code rename} and
+	 * {@code comment}), oldest first, as copies. The window is this in-memory journal: an entry
+	 * that was dropped is gone, and so is the whole journal after a restart.
+	 */
+	synchronized List<JsonObject> byRk(String rk) {
+		List<JsonObject> out = new ArrayList<>();
+		if (!rkCount.containsKey(rk)) {
+			return out;
+		}
+		for (JsonObject e : entries) {
+			if (e.has("rk") && rk.equals(e.get("rk").getAsString())) {
+				out.add(e.deepCopy());
+			}
+		}
+		return out;
 	}
 
 	synchronized long seq() {
