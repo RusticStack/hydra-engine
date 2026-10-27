@@ -12,16 +12,20 @@ Evidence conventions. Every `File.java:line` below was read on branch `feat/sess
 Hydralysis branch `feat/hydralysis-0.5` (commit `d0466bc`, package `src/hydralysis`, formerly
 RusticRE), unless the sentence says `@589432e`: that is the W0 integration tip on `feat/w0-integration`, a
 descendant of `d0466bc`, which holds `durable.py`, `tests/test_durable.py` and Y0b's widened `EngineError`
-(the write-gate counts of D14, 8.2 and Appendix A and the test files of 8.1 were read there). The `hydra.py`
+(the write-gate counts of D14, 8.2 and Appendix A and the test files of 8.1 were read there). A third base,
+`@f46788b`, is the tip of that branch after the W0 follow-ups and polish (`2bf90c7`, `33cb5ee`, `49d5bb6`,
+`1584f6e`, `b0b947b`, `f45821b`, `5018367`, `f46788b`), and `@8e696e2` is Y0e on `feat/w1-hydralysis`; where
+the code at those bases differs from what revision 4 said, revision 5 says what the code does (8.2, 7.6, 7.7).
+The `hydra.py`
 lines differ between the two bases, so 7.6 and Appendix A give both; the `query.py` lines are the same at
 both. The one exception is `README.md`: its line numbers are those of the design branch tip
 (`design/protocol-3`), where a two-line pointer to this file was inserted at `README.md:538`, so
 every README citation below that point is two lines later than at `b6df709e1e` (where it helps, the
 cited README phrase is quoted so the line can be found again after the branch moves). Three further
 kinds of evidence are cited by path: the characterization and baseline runs of the engine packages
-(`D:/Projects/Hydra/_logs/<stream>/`), the review runs (`.../spec-review/`, `.../review-spec-rev3/`) and the
-experiments of revisions 3 and 4 (`.../spec-rev3/`, `.../spec-rev4/`: scripts and their recorded output, 3.8
-and 7.6). Anything not
+(`D:/Projects/Hydra/_logs/<stream>/`), the review runs (`.../spec-review/`, `.../review-spec-rev3/`, `.../review-spec-rev4/`) and the
+experiments of revisions 3, 4 and 5 (`.../spec-rev3/`, `.../spec-rev4/`, `.../spec-rev5/`: scripts and their
+recorded output, 3.5, 3.8 and 7.6). Anything not
 marked that way is a proposal. A number marked *unmeasured* has no
 measurement behind it on this machine: it is a starting value to be replaced by the measurements in
 [Release gates](#9-release-gates). Appendix A lists the code facts the design depends on and where
@@ -105,13 +109,13 @@ ergonomics) and the investigation's critic.
 | D16 | Lanes: where `save` goes; explicit hint versus inference | New **MAINT** lane for `fork_project`, `refresh`, `reopen`, `promote_overlay` and `save`. `script` is `quick` **only with an explicit `lane:"quick"` and a `timeout` of at most `quickScriptMaxS`**; no inference from the timeout or from the script's directory. The lane move is **gated on v3** (a v2 connection keeps `save` and the others in `long`, 5.1). | RusticRE 0.4.x already sends `timeout_s+5` (`query.py:91`) but pins hydra.2 and refuses hydra.4, so inference would help no one it could reach; and silent lane changes for unknown clients are not worth a hidden behaviour. (Judges disagreed; this is the safer reading.) |
 | D17 | Replace `Scheduler`/`ImportGate` with an `AdmissionController` (B, C), or extend | **Extend.** Fair key, caps, queue info, MAINT lane and the import wait fix are changes inside `Scheduler` and `ImportCommands`. | `laneOf(String)` is static and cmd-only (`Scheduler.java:59-69`), and `Scheduler.admit(c, cmd, m, waitMs)` (`Scheduler.java:138`) is called from two places, `Session.execute` (`Session.java:248`) and `ImportCommands` (`ImportCommands.java:112`). Lane-by-request and validate-before-wait therefore change **two** signatures, `laneOf(cmd, req)` and `admit(c, cmd, req, m, waitMs)`, and both call sites. E1 makes those edits first, as behaviour-free seams (8.1), so that no later package edits `Session.java` for them. |
 | D18 | Validate before queueing (C) | **Validate-before-wait:** the request-shape checks run only when the request would otherwise have to wait for a slot, and only for a v3 connection (5.1). | A request that is admitted at once keeps today's order of errors, so no existing golden changes; a v3 request that would sit in a queue for a minute and then fail `bad_request` fails at once instead. A v2 request keeps today's order and timing exactly. |
-| D19 | Dead-client release | One design, owned by E3b: bounded wait, interrupt (and cancel delivered to lock waits by interrupting the registered waiting thread, 3.5), then release regardless, **including the 600 s waits in `leaveProject`/`releaseUse`** (found in the code, in none of the designs): `Session.disconnect` passes `CLEANUP_WAIT_MS` (600 000 ms, `Session.java:52,121`) to `leaveProject`, which takes the project lock and the program's exclusive lock with that wait (`ProjectCommands.java:286-322`, `ProgramCommands.java:480-520`). A stuck holder therefore blocks `disconnect` for 10 minutes per program even if `Connection.run` stops waiting. | A bounded `awaitTermination` alone would not release anything. |
+| D19 | Dead-client release | One design, owned by E3b: bounded wait, interrupt (and cancel delivered to lock waits by interrupting the registered waiting thread, 3.5), then release regardless, **including the 600 s waits in `leaveProject`/`releaseUse`** (found in the code, in none of the designs): `Session.disconnect` passes `CLEANUP_WAIT_MS` (600 000 ms, `Session.java:52,121`) to `leaveProject`, which takes the project lock and the program's exclusive lock with that wait (`ProjectCommands.java:286-322`, `ProgramCommands.java:480-520`). A stuck holder therefore blocks `disconnect` for 10 minutes per program even if `Connection.run` stops waiting. **Revision 5 adds the other half, measured:** the leave of a plain reader takes that exclusive lock too, and while it waits behind a running reader every new shared acquirer waits behind it (fair lock), so E3b also makes the leave of a client that is neither owner nor writer and not the last user take no exclusive lock (3.5). | A bounded `awaitTermination` alone would not release anything. |
 | D20 | Script isolation: exclusive by default (import-export item), private instance, or trust by directory (C) | Per-request `isolation: shared|private|exclusive`, default `shared` (today). RusticQuery stays `shared`. User `ghidra_run` uses `private` **only when the working copy has nothing unsaved**, else `exclusive`. RusticQuery is pinned by an optional `scriptSha256`. No trust by directory. | `private` reads the **stored** file (`getReadOnlyDomainObject`), so it cannot see unsaved shared edits. Hydralysis working copies hold their edits unsaved in the daemon until a saver runs (`workcopy.py:352-359`), so a private run on an edited view would silently answer from the master. Found in the code, in none of the designs. |
 | D21 | Wedge detection and registry | `health` inline from a watchdog snapshot; wedge decided by the client after three probes. The daemon registry is launcher-side Python; an entry is live iff the instance lock is held (`Daemon.jvm_alive`, `ghidra_session.py:969-979`). | Pid reuse cannot fool a held OS lock. No Java registry class. |
 | D22 | Fault injection compiled into the engine (B, C) | **No Java fault layer.** Engine tests kill and suspend processes from outside. One test hook is allowed: a launch property `-Dghidra.session.testHooks=true` registering `debug_stall`, advertised in `hello.platform.testHooks` and turning `health.state` to `degraded`. Hydralysis commit fault points are Python (`durable.fault(name)`, a no-op unless `HYDRALYSIS_TEST_FAULT` is set). | A `Runtime.halt` in a release binary is a hazard larger than the bug it finds. |
 | D23 | Doctor in five places | One module (`doctor.py`), read-only, never starts a JVM. The engine supplies `hello.paths/platform/analysisIdentity`, `format`, `health`. | |
 | D24 | Ergonomics scope (C) against the correctness spec | Adopted because each is tied to a verified defect: error `next`/`retryAfterMs`, validate-before-wait, queue info, `applied` on cancel, widened `EngineError` (`hydra.py:61-63` drops `holderInfo`, `heldMs`, queue), a fast/engine tool pool split (`mcp.py:22-23`: four workers, eight outstanding). **Not adopted:** call detach/patience as a new state next to jobs (a bounded wait that returns the engine's structured `busy` achieves "never block long" without it), reply diet, a catalog-hash freeze beyond the one epoch in Y0d. | |
-| D25 | 20 tools | A target, not a cap. Nothing here needs a 21st tool. One catalog epoch (Y0d) adds `backend.action` values `doctor` and `backups` and an `options` bag to `backend`, `ghidra_run`, `job`; every other feature rides existing `options` bags (`type_edit` kinds, `status` `show`). Section 7.7. | Running sessions cache tool lists (`mcp.py:45`, `listChanged: False`): schema changes must happen once. |
+| D25 | 20 tools | A target, not a cap. Nothing here needs a 21st tool. One catalog epoch (Y0d; the number that ships is **2**, because epoch 1 never left the branch and its follow-up changed one description, 7.7) adds `backend.action` values `doctor` and `backups` and an `options` bag to `backend`, `ghidra_run`, `job`; every other feature rides existing `options` bags (`type_edit` kinds, `status` `show`). Section 7.7. | Running sessions cache tool lists (`mcp.py:45`, `listChanged: False`): schema changes must happen once. |
 | D26 | Per-agent default views | Not in this train. `shared` stays the default. Precondition list in Y5. | Needs publish/merge to have soaked, a stable agent id (`rusticre:<pid>` today) and a measured named-view cost (the 1.4 s figure is a single unreproduced run). |
 | D27 | In-place replace / restore-replace | Not built. If ever: its own capability, own fault matrix on the owner's volumes, owner decision. | Directory renames over open handles are the Windows failure the generation design avoids. |
 | D28 | Retention | **No automatic deletion** of backups, generations or candidates in this train. Unfinished candidates are invisible (no valid manifest) and listed by `backend action=backups` for manual removal. | Every automatic delete is a data-loss surface; the disk cost of keeping is bounded by the 50 GB ask-first rule. |
@@ -119,7 +123,7 @@ ergonomics) and the investigation's critic.
 | D30 | Test-file collisions | `daemon_tests.py` and `characterization_tests.py` get an extension loader in E0 (`examples/dt_*.py`, `examples/char_*.py`), so every later package adds its tests in its own file. | Lets packages in one wave touch disjoint files. |
 | D31 | Seams: which package may edit the cross-cutting files | **Seams first, then features.** E1 (W1) builds four small registries and makes the two signature changes of D17, so that later packages in one wave never edit the same shared file: `Advertised` (capabilities, limits, policy, 3.1), `Settings` (config keys, 3.7), `Preflight` (per-command request validators, 3.5), `DbVersions` (the constants behind `dbVersions`, 3.2). Ownership per file and wave is the matrix in 8.1. | The v1 plan said `Session.java` is edited by one package per wave while E2 and E3a both needed it in W2, and E1 needed a constant that only E2 could edit (review B4). |
 | D32 | Commit state: watermark or ids | **A committed-id set, not a watermark.** A record is committed iff its id is in the `ids` of a live (not reverted) commit entry; the replay set is every other record, in `seq` order (4.2). `commit` can take a subset (`only`) and `on_drift:"skip"` leaves records pending, so a single `committed_through` number could mark a skipped record as committed. | Review B2. |
-| D33 | Deadline on a stalled call against a hydra.2/3 engine (revision 2 said: `session.close()` on a timer) | **Half-close and abandon, chosen by experiment** (7.6): a worker thread owns `send`/`wait`, the caller waits on its own event, `cancel` goes through the same session, then `shutdown(SHUT_WR)`, never `close()`, and the thread and connection are abandoned (at most 8 for user calls, 3 for the supervisor probe, counted apart). Each call runs on its own pool entry, a connection plus the project and program it joined (a fresh connection answers `no_project`; re-establishing the context costs about 6 ms, measured), and nothing else shares an entry, because the FIN ends every request of a connection. The client never relies on an EOF or a reply coming back on hydra.3. | `SocketSession.close()` hangs when another thread is in `wait()` (it closes the file objects before it shuts the socket down), measured on the real 1.0.0 object on Python 3.14.7 and 3.15.0; `shutdown(SHUT_WR)` delivers the FIN and `Connection.run` cancels the request, but hydra.3 then waits in `awaitTermination(1, HOURS)`, so only a cooperative request answers; abandoning without the FIN leaks the engine-side client for good. P1b/E3b change this on hydra.4. |
+| D33 | Deadline on a stalled call against a hydra.2/3 engine (revision 2 said: `session.close()` on a timer; revision 3: half-close with a FIN) | **Abandon the connection with nothing more sent, and close it late, through a leave gate** (7.6): a worker thread owns `send`/`wait`, the caller waits on its own event, `cancel` goes through the same session, then the worker and the connection are abandoned (at most 8 for user calls, 3 for the supervisor probe, counted apart); when the engine's answer arrives the worker closes the session itself, but only when this process has no read in flight on a program that entry joined. Each attempt runs on its own pool entry, a connection plus the project and program it joined (a fresh connection answers `no_project`; re-establishing the context costs about 6 ms on a quiet daemon, measured), and nothing else shares an entry. The client never relies on an EOF or a reply coming back on hydra.3, and never sends a FIN to an entry that has joined a program. | `SocketSession.close()` hangs when another thread is in `wait()` (it closes the file objects before it shuts the socket down), measured on the real 1.0.0 object on Python 3.14.7 and 3.15.0. Revision 3 chose `shutdown(SHUT_WR)`; **revision 5 withdraws it**: a FIN adds nothing the `cancel` had not done (`Connection.run` calls the same `RequestMonitor.cancel()`), and its one distinct effect is that the engine **leaves** the program when the request ends, taking the program's exclusive lock, which makes every other reader of that program wait behind a running reader (measured: a new entry's `open_program` and an already-joined entry's script fail `busy` after their wait, 3.5, 7.6). Without the FIN the same release happens when the worker closes the session after the reply (measured), at a moment the client chooses. P1b/E3b change this on hydra.4: the deadline is the library's, and a plain reader's leave takes no exclusive lock. |
 | D34 | Where each Python catalog stub gets its handler (Y0d left `not_available` stubs in `api.py`; the matrix gave `api.py` to Y2 and Y4b only, two packages in W6 needed it) | **A handler registry in `api.py`, built once by Y2 (W2)**; `backups.py`, `commits.py`, `doctor.py` and `userscripts.py` register their handlers and no later package edits `api.py` (8.2). | The seams-first rule of D31 applied to the Python side; it removes the one cell that two W6 packages would have shared. |
 
 ## 3. The engine contract
@@ -832,10 +836,45 @@ keeps everything else running. The only hard remedy is a helper JVM for user scr
 of scope and said so in the README. `RusticQuery` calls `monitor.checkCancelled()` at 17 sites
 (`RusticQuery.java:126, 254, ...`); new loops must call it.
 
-A client that ends a stalled call by half-closing its connection (the hydra.2/3 deadline of 7.6) is
-such a dead client from the engine's side: on hydra.3 it is released only when its requests end
-(measured in 7.6, because `Connection.run` waits in `awaitTermination(1, HOURS)`), on hydra.4 by this
-rule after about `cleanupGraceS + abandonWaitS`.
+A client that abandons a stalled call without closing its connection (the hydra.2/3 deadline of 7.6) is
+such a client from the engine's side until its worker closes the session: on hydra.3 it is released when its
+request ends and the worker closes (measured in 7.6), on hydra.4 by this rule after about
+`cleanupGraceS + abandonWaitS` once the connection is closed or has sent a FIN.
+
+**A reader's leave takes no exclusive lock (E3b; all protocols, declared with V3 in 5.1; revision 5,
+BLOCKING 3).** `ProgramCommands.releaseUse` (`:480`, called by `close_program`, by `leaveProject` and so by
+`Session.disconnect`) takes the program's **exclusive** lock for every leave (`e.acquire(true, wait, ...)`),
+although a plain reader has nothing to dispose, downgrade or discard. The program lock is a fair
+`ReentrantReadWriteLock` (`ProgramEntry.java:115`), so while that exclusive waits behind a running reader every
+**new** shared acquirer (an `open_program`, a script, a decompile) waits behind it. Measured on the real
+daemon (hydra-3-candidate and the refactor build, same results): with one 6 s read running, a clean `close()`
+of an entry that had joined the program, a FIN of such an entry, and the end of an abandoned entry's request
+after a FIN each made a **new** entry's `open_program` and an **already-joined** entry's script fail `busy`
+(`wanted:"shared"`, `readers:1`) after their 1.5 s wait, and did not before the leave (join 3 ms, script
+36 ms); an entry abandoned with no FIN and never closed caused nothing (`exp11_rerun`, `exp12_rerun`,
+`exp13` A, C, E in `D:/Projects/Hydra/_logs/spec-rev5/exp/`). The stall lasts until the running readers end
+(at most the longest `timeout`), and a waiter whose own `wait` is shorter gets `busy`. It is not new with the
+pool in kind (any client that leaves, and Hydralysis's own `close_program` in `stop`, does it today); the pool
+makes it frequent.
+
+E3b therefore adds a **fast path** to `releaseUse`: a client that is neither the owner nor a shared writer of
+the program, has no overlay of its own on it and is **not the last user** is removed from `e.users` and from
+its own bookkeeping (`c.programs`, `c.active`) and the call returns **without the program lock**. The
+check and the removal are one step under `synchronized (e.users)`, so two concurrent leavers can never both
+conclude that the other remains: the last user always takes today's exclusive path and disposes (or keeps
+warm) exactly as before; owners, writers, overlay holders and `discard` are unchanged. It is not gated on v3:
+it changes how long *others* wait, no reply shape (V3). **Measured** with this one change compiled over the
+same engine (`D:/Projects/Hydra/_engines/hydra-spec-rev5-patched`, one class in `Ghidra/patch/`; source
+`D:/Projects/Hydra/_logs/spec-rev5/patch/src/ProgramCommands.java`; an experiment, not a package): the three
+freezing scenarios show no stall (join 3 ms, script 44 / 42 / 189 ms), and `exp14` gives identical `users`
+lists and dispose behaviour on the patched and the unpatched engine (six entries closed concurrently, five
+rounds; the sole user; a second user; each ending with the same `users` and a program that still reads).
+Tests (E3b): `reader_leave_no_freeze` (the three scenarios as assertions: during a running read a clean close, a
+FIN, and the end of an abandoned request each leave the next join and the next script of a joined entry
+answered within their `wait`; it must **fail on hydra.3**, the premise check of E0's convention),
+`last_user_leave_disposes` (N concurrent leavers: nobody registered afterwards, the program disposed or kept
+warm as before) and, with the stock 1.0.0 client, `cc_e3b` `reader_leave`. Until E3b ships, the client avoids
+its own leaves while its own reads run (the leave gate, 7.6) and the rest is a limit (6).
 
 **Orphan TTL (E3b, optional, default off).** With `orphanKeepS > 0`, `Session.reap` ages the
 unsaved edits of a shared program whose last writer died (`ProgramEntry.holdsOrphanedWork`,
@@ -903,8 +942,8 @@ them in the README. No new environment variable is added.
   1.1.0 library that ships with hydra.4: the hydra.2/3 install ships 1.0.0, whose `call` waits
   without a limit, and Hydralysis loads the session module **from the engine install**
   (`hydra.py:48` `SESSION_MODULE`, `:229-233` `Engine.module()` and its use in `_connect`), so against a hydra.2/3 engine it cannot
-  use P1b and runs the deadline helper of 7.6 instead (half-close and abandon, tested there; **not**
-  `session.close()`, which hangs on 1.0.0). Structured
+  use P1b and runs the deadline helper of 7.6 instead (abandon without a FIN and a gated close, tested
+  there; **not** `session.close()`, which hangs on 1.0.0). Structured
   `LaunchError` (`:89`, stays a `RuntimeError`) with `code` in `no_jdk | jdk_too_old | bad_install |
   lock_held | heap_too_large | exited_early | no_answer | duplicate_daemon` and `details`
   (`javaMin`, `tried[]`, `logTail`, `holder`, `suggest`). `Daemon.health()`; `Daemon.attach()`
@@ -960,16 +999,23 @@ A new `src/hydralysis/durable.py` is the only way record-bearing state is writte
    (`torn_tail:{offset, bytes}` in `status` and the doctor). An invalid line **followed by a valid
    one** is corruption (4.4).
 
-   *Writers* repair before they append, **on every acquisition of the log's writer lock** (the
-   rule that was missing: without it the next append lands after a fragment that has no LF, merges
-   into one line, fails its CRC and the commit point is lost, while starting a fresh line instead
-   would make the fragment an invalid line before a valid one, which the reader rule calls
-   corruption). The trigger is **not** "the first append in a process": a long-lived writer process
-   (an MCP process doing `commit_revert`, a rollback, a `recover` or `backups.log` appends) has long
-   since made its first append, and if a second process is killed in the middle of an append after
-   the first released the lock, the long-lived process takes the lock again, would not rescan and
-   would append after the unterminated fragment, losing the commit point exactly as above. Only
-   the commit job (a new worker process per commit, 4.6) would be safe by accident. So, under the
+   *Writers* repair before they append, **on every acquisition of the log's writer lock**. The
+   trigger is **not** "the first append in a process": a long-lived writer process (an MCP process
+   doing `commit_revert`, a rollback, a `recover` or `backups.log` appends) has long since made its
+   first append, and a second process can damage the log after the first released the lock. **What the
+   rule adds, corrected in revision 5** (found by the Y0a polish review, which ran the tests against
+   `589432e`): that first code already repaired a fragment **without a final LF** on every append
+   (`_clean_tail()`, `durable.py:466`, tested in `_append_locked`, `:531-548`, which also ran the repair on
+   the first append of a process and after a failed append), so a second process killed mid-line was already handled, and appending
+   after such a fragment would have merged two lines into one that fails its CRC (the commit point
+   lost) or, were a fresh line started instead, made the fragment an invalid line before a valid one,
+   which the reader rule calls corruption. What the first code did **not** see is **LF-terminated
+   damage left by another process** (a complete but invalid line): the long-lived writer appended
+   behind it, the invalid line then sat before a valid one and every reader called it corruption
+   (`LineageCorrupt: invalid line at byte 17 followed by a valid line`, measured on `589432e`). The
+   size comparison below is what catches that, so the rule is new for LF-terminated damage, and the
+   no-LF case is covered by both versions. Only the commit job (a new worker process per commit, 4.6)
+   would have been safe by accident. So, under the
    log's writer lock (`.commit.lock` for `CURRENT.log` and the intent logs, the log's own `.lock`
    for `backups.log`), on **every acquisition**, the writer first makes the **cheap check**: the
    file ends in LF **and** its size equals the end of the last valid line it knows (the end it
@@ -997,27 +1043,31 @@ A new `src/hydralysis/durable.py` is the only way record-bearing state is writte
    **valid** line). Truncating loses nothing acknowledged, because only a fully written, fsynced
    line is ever acknowledged.
 
-   *Reading budget.* The Y0a code of `589432e` reads a whole log through `localio.read_bytes`
-   (`durable.py`, `AppendLog.scan`, `repair`, `last`), which has a hard 32 MiB budget
-   (`localio.DEFAULT_MAX_BYTES`): a `CURRENT.log` or `backups.log` past 32 MiB would make every
-   reader and every writer raise `ValueError`, and every read is O(n). Required: logs are read by
-   streaming (no `localio` budget), a reader needs only the tail window (the last valid line) and
-   a full scan runs only where the whole log matters (the lineage open, `verify`, the doctor), with a
-   rotation or checkpoint policy owned by Y2 (`lineage.py` is its file; until it exists a log of
-   that size is a recorded limit, section 6). The removal of the `localio` read from `AppendLog` is
-   owned by Y0e (8.2), because `durable.py` is Y0a's file and Y0a is closed.
+   *Reading budget (done; revision 5).* The Y0a code of `589432e` read a whole log through
+   `localio.read_bytes` (`durable.py`, `AppendLog.scan`, `repair`, `last`), which has a hard 32 MiB budget
+   (`localio.DEFAULT_MAX_BYTES`). The W0 follow-up `2bf90c7` streams logs in 1 MiB chunks, with no
+   `localio` budget (a test builds a log of about 34.8 MB); `last()` reads a bounded tail window by
+   default and does **not** look for earlier corruption (`last(strict=True)` scans the whole log), and
+   nothing in `src` calls `AppendLog` yet. **Y2 chooses the strictness each caller needs** (a reader needs
+   only the last valid line; the lineage open, `verify` and the doctor scan everything) and owns any
+   rotation or checkpoint policy (`lineage.py`, 6). No Y0e task remains here (8.2).
 
    *Tests* (`tests/test_durable.py`): for every byte offset of the last line of a log, cut the file
    there, read (the valid prefix, `torn_tail` reported, no error), append (the repair is recorded, the
    copy exists, the log is clean) and read again (the prefix plus the new line, never
    `lineage_corrupt`); a mid-log invalid line followed by a valid one is refused by the writer and
    by the reader; a crash injected inside the repair (`durable.fault`) heals on the next append;
-   a log larger than 32 MiB is appended to and read without error. **Two-process test (the
-   trigger):** process A appends a line and releases the lock **and stays alive**; process B appends
-   through a fault (`torn:<n>`, for `n` at 1, mid-line and every byte but the LF) and is killed
-   mid-line; process A appends again: a `.repairs` record and a `.torn-*` copy exist, the log is
-   clean and holds A's two lines and no fragment, and **no `lineage_corrupt`** is raised by A or by a
-   reader. The same test with a rollback append (`reason:"rollback"`) and a `backups.log` append.
+   a log larger than 32 MiB is appended to and read without error. **Two-process tests**
+   (`TwoProcessWriters`, black box over the public API; Y0a's polish `b0b947b` and Y0e's `8e696e2`): process A
+   appends a line, releases the lock **and stays alive**; then (1) process B appends through a fault
+   (`torn:<n>`) and is killed mid-line, and A appends again: a `.repairs` record and a `.torn-*` copy
+   exist, the log is clean and holds A's two lines and no fragment, and **no `lineage_corrupt`** is raised
+   by A or by a reader (**a contract guard**: it passes on `589432e` too, because `_clean_tail` already
+   repaired a no-LF tail); (2) process B writes an **LF-terminated invalid line** and A appends again: the
+   repair is recorded, the invalid line is kept aside, no `lineage_corrupt` (**the discriminating test**:
+   on `589432e` it fails with `LineageCorrupt`, on the follow-up it passes); (3) a control in which B
+   appends a valid line (no repair). The same with a rollback append (`reason:"rollback"`) and a
+   `backups.log` append.
    The commit-level test is `publish_torn` followed by a successful new commit (4.6).
 4. Routed through `durable`: `workcopy._save_store`, `backends.write_json` (and so `targets.register`,
    `working/state.json`, job records in `overlayjobs`), and every new file of 4.4-4.6. A write gate in the
@@ -1458,10 +1508,22 @@ generation. Cross-build address mapping stays in `crossbuild.py` and is out of s
 **Train.** hydra.3: the upstream merge only (branch `sync/upstream-2026-10-27`, `6d266ebcff`, golden gate
 PASS). hydra.4: this design. Inside hydra.4 the engine packages E1 to E5, E6 and the client packages P1a,
 P1b each merge to one integration branch, each gated by the characterization run, `daemon_tests`,
-`contract_tests` and `session_smoke`; one tag; one Hydralysis pin bump (`hydra.py` `RELEASE`,
-`PROTOCOL`, `ASSETS`, `tests/fakehydra.py`) generated by a new `tools/bump_hydra.py` (it does not exist
+`contract_tests` and `session_smoke`; one tag; one Hydralysis pin bump generated by a new `tools/bump_hydra.py` (it does not exist
 in the Hydralysis tree today; the source designs assumed it). **R1 owns the script** (writes and
-tests it); Y4a only runs it to produce the pin bump and owns the files it edits. The release workflow gets a
+tests it); Y4a only runs it to produce the pin bump and **owns the files it edits, which are exactly these
+(8.1 gives each a W6 cell for Y4a; `tests/test_bump_hydra.py` asserts that the script edits no other file;
+the proof's pinned-literal scan finds every `12.3-hydra.<n>` in the tree and requires it to be in this list
+or in the historical list below)**: `hydra.py` (`RELEASE`, `PROTOCOL`, `ASSETS` with the SHA-256 and sizes);
+`tests/fakehydra.py` (the release, protocol and capability constants of the fake daemon); and the three
+pin statements of the Hydralysis documents, one sentence each: `README.md` (`backend install` paragraph),
+`THIRD_PARTY.md` (the engine row) and `docs/upstream-setup.md`. **Frozen tests never carry the literal**:
+`tests/test_backends.py` (`:21`, `:101`) and `tests/test_query.py` (`:285-296`) hard-code `12.3-hydra.2`
+and `12.3-hydra.3` today, and `hydra.py` builds the message the first one asserts from `RELEASE`
+(`:29`, `:190-191` at `589432e`; `:30`, `:216-217` at `f46788b`), so Y4a rewrites them **once**, in W6,
+to read the release from `hydra.RELEASE` and from the fake daemon's own constant (decided: derive, not
+edit per bump), after which no bump touches a test. **Historical, not edited by the script**:
+`docs/golden-harness.md`, `docs/verification-nct-2.5.md` and `docs/verification-fixtures.md` (dated
+reports of the hydra.2 baseline). The release workflow gets a
 `workflow_dispatch` dry run first (the hydra.2 release failed once before succeeding, per the critic).
 
 **Matrix** (what "keeps working" means, exactly):
@@ -1505,7 +1567,7 @@ first and must pass unchanged on the hydra.4 candidate.
 | G8 | the upgrade gate's refusal code (3.3) | a new error code | **Gated**: v2 gets the existing `conflict` with `details.reason:"backup_required"`; v3 gets `backup_required` | `cc_e2` (E2) |
 | V1 | the upgrade gate (3.4) | `open_program writable upgrade:true` on a canonical older-format project without a valid `backup` is refused, where it succeeded | **Visible to v2, by design.** The gate exists to stop a one-way upgrade of a project that is not a copy; gating it on v3 would protect nothing from the clients least likely to know. `README.md:1011-1014` already tells people to do it in a copy | `cc_e2` on the legacy fixture (`--legacy-project`): refused for v2 with `conflict`, allowed on a fork and with a valid `backup` (E2) |
 | V2 | import wait fix (3.5) | **both directions** (revision 3 corrected "can only gain"): (1) an import without a `wait` field no longer fails `busy` ten seconds after reaching the front; it waits unlimited for the slot and the project lock, as it already does for the gate; (2) an import with an explicit numeric `wait` that spent most of it in the gate now fails `busy` when that one budget is used up, where today its slot and lock waits each got a fresh full `wait` and it could succeed | **Visible to v2**: (1) is a defect fix, (2) makes `wait` the total a caller asked for; no client can depend on either behaviour (a 10-second failure after an hour is not a contract) | `cc_e3a` `import_wait` (no `wait`) and `import_wait_explicit` (a numeric `wait` spent in the gate) on a v2 connection (E3a); `import_wait` fails on hydra.3 by E0's premise test |
-| V3 | bounded release of a dead client (3.5): `shutdownNow()` after `cleanupGraceS`, `disconnect` bounded by `abandonWaitS` | other clients get a dead client's slots and locks after about 20 s instead of after an hour (`awaitTermination(1, HOURS)`) or 10 minutes per program (`CLEANUP_WAIT_MS`) | **Visible to v2**: it changes how long *others* wait, no reply shape | `cc_e3b` `dead_client_lock_wait` with a 1.0.0 client killed while blocked (E3b) |
+| V3 | bounded release of a dead client (3.5): `shutdownNow()` after `cleanupGraceS`, `disconnect` bounded by `abandonWaitS`; **and (revision 5) the leave of a plain reader that is not the last user takes no exclusive program lock** | other clients get a dead client's slots and locks after about 20 s instead of after an hour (`awaitTermination(1, HOURS)`) or 10 minutes per program (`CLEANUP_WAIT_MS`); and no reader of a program waits behind another client's leave (today a leave queues an exclusive lock behind the running readers and every new reader waits behind it, measured, 3.5) | **Visible to v2**: it changes how long *others* wait, no reply shape | `cc_e3b` `dead_client_lock_wait` with a 1.0.0 client killed while blocked, and `reader_leave` (a 1.0.0 client closes its connection while another client's read runs: the next join and script are answered within their `wait`) (E3b) |
 | V4 | a request for a program held by an **abandoned** request answers `busy` at once (3.5) | `busy` immediately, with the existing `holder`/`holderInfo` keys saying "abandoned", instead of waiting out `wait` | **Visible to v2**: waiting for a holder that is gone helps nobody; `details.reason` is v3 only | `cc_e3b` `abandoned_holder` (E3b) |
 | V5 | `cancel` (and a `timeout` deadline) now ends a lock wait (3.5) | a cancelled request that waits for a program, project or overlay lock answers `cancelled` within a second; today it keeps waiting until its `wait` ends in `busy` | **Visible to v2**: it is what `cancel` is documented to do. The single timed `tryLock` and its FIFO order are unchanged | `cc_e3b` `cancel_while_waiting` (E3b) |
 | V6 | endpoint file and `ready` event gain `protocolMin`, `protocolMax` (3.1) | two extra keys in a file and an event; `protocol` stays 2 | **Visible, additive**: needed for negotiation (D3); the 1.0.0 client reads `protocol` and `minClient` and ignores the rest | `cc_e1` (first test): the 1.0.0 client against the E1 engine connects and works (E1; the harness is P1a's) |
@@ -1547,12 +1609,21 @@ V7).
   (`OverlayCommands.java:228, 238, 251, 319, 352, 404`). `cancel`, a `timeout` deadline and the
   dead-client release do not reach a request blocked there (3.5); the three request-bound timed
   waits are what E3b converts.
-- **A stalled call on hydra.2/3 is abandoned, not ended.** The client's deadline half-closes its
-  connection and abandons a worker thread (7.6); the engine keeps the request, its slot and any lock
-  until it ends by itself, and a request in a script that never polls its monitor can hold them for as
-  long as it runs. At most 8 abandoned user connections per process are tolerated (the supervisor probe has
-  its own budget of 3), and each is also a `users` entry of the programs it joined until its request ends
-  (7.6); the real remedy is E3b's bounded release on hydra.4.
+- **A stalled call on hydra.2/3 is abandoned, not ended.** The client's deadline sends `cancel`, then
+  abandons a worker thread and its connection with nothing more sent (7.6); the engine keeps the request,
+  its slot and any lock until it ends by itself, and a request in a script that never polls its monitor can
+  hold them for as long as it runs. At most 8 abandoned user connections per process are tolerated (the
+  supervisor probe has its own budget of 3), and each is also a `users` entry of the programs it joined
+  until its request ends and its worker closes it (7.6); the real remedy is E3b's bounded release on hydra.4.
+- **A leave can stall the other readers of a program (revision 5, measured).** On hydra.2 and 3, and on
+  hydra.4 until E3b's fast path (3.5), the engine's release of a client takes the program's exclusive lock;
+  while it waits behind a running read, every new `open_program`, script or decompile of that program waits
+  behind it, up to the longest running read (at most its `timeout`), and a waiter whose own `wait` is
+  shorter gets `busy`. Hydralysis avoids **its own** leaves while its own reads run on the program (the
+  leave gate, 7.6, which is why entries are not closed early and no FIN is sent); it cannot avoid another
+  process's leave (another agent, a harness exit) or a `close_program` from anyone, and it cannot see
+  another process's reads. The stall is bounded and visible (`busy` with the engine's holder details), never
+  a hang or a loss; on hydra.4 it does not occur for a plain reader.
 - **The `lane:"quick"` hint is trust-based.** The engine cannot know that a script is quick. It
   honours the hint for `0 < timeout <= quickScriptMaxS`, and the `timeout` only sets the request's
   cancel flag (`m.deadline`, `ScriptCommands.java:75`): a script that never polls
@@ -1564,10 +1635,11 @@ V7).
   are archived (4.2), but a store with 4096 pending records, or 20 MiB of them (`effects` make a
   record larger than a v2 one), cannot take another edit until some are committed (a subset commit
   works) or exported as a bundle; nothing is dropped automatically.
-- **An append log is bounded by what Y2 builds.** Until the Y0e/Y2 change of 4.1 (streamed reads, tail
-  window, rotation) lands, a `CURRENT.log` or `backups.log` of more than 32 MiB (`localio` budget)
-  makes readers and writers raise. At one line per commit or backup this is far from any realistic
-  size, and it fails loudly, never silently.
+- **An append log has no rotation yet.** The streamed reads and the bounded tail window of 4.1 landed in
+  the W0 follow-up `2bf90c7` (no 32 MiB `localio` budget any more); what remains for Y2 is the strictness
+  each caller needs and a rotation or checkpoint policy. A `CURRENT.log` or `backups.log` is read in full
+  by the lineage open, `verify` and the doctor, which is linear in its size; at one line per commit or
+  backup this is far from any realistic size.
 - **Copy-on-write is ReFS only** (`ProjectFork.clones`: Windows and ReFS). On NTFS a fork is a full
   copy bounded by `forkCopyLimitMb`; NTFS CI cannot validate ReFS clone claims, so those tests run on
   the owner's Dev Drive and are recorded as manual gate evidence. A clone backup is not protection
@@ -1625,9 +1697,11 @@ protocol. Default output is findings only.
 
 - **Probe** `health` every 5 s while the engine is in use, on **its own connection** (outside the entries
   of user calls, 7.6) and with a
-  deadline: P1b's `deadline` on a hydra.4 client library, the deadline helper of 7.6 (half-close and
-  abandon) against a hydra.2/3 engine (where `health` does not exist either and the probe is `ping`,
-  7.5). A probe that expires abandons its connection and the next probe opens a new one. Abandoned probes
+  deadline: P1b's `deadline` on a hydra.4 client library, the deadline helper of 7.6 (abandon, no FIN)
+  against a hydra.2/3 engine (where `health` does not exist either and the probe is `ping`,
+  7.5). A probe that expires abandons its connection and the next probe opens a new one; that connection
+  has joined no project or program, so closing it when its answer arrives takes no program lock and needs
+  no gate. Abandoned probes
   have **their own budget of 3** (7.6, step 5), separate from the 8 of user calls: eight stuck lock waits
   of user calls on a program held by a long analysis must not make a busy but healthy daemon look as if
   it did not answer `ping` (which is answered inline, outside the scheduler), and a user-call cap is never
@@ -1676,8 +1750,8 @@ is a test failure.
 | `format` | treated as **unknown**: the commit always needs the one-way confirmation |
 | backup | Python-written manifest (`writer:"hydralysis"`) over a plain fork |
 | `ghidra_run` isolation | stays today's contained mode, no `private` |
-| `health` | `ping` with a deadline (the deadline helper of 7.6, one pool entry per call, which a `ping` needs no context for: P1b is not available there); wedge detection needs the pid and the lock only |
-| deadlines (`deadline_s`) | the 7.6 helper (worker thread, `cancel`, half-close, abandon); P1b's `deadline` only when the engine ships library 1.1.0 |
+| `health` | `ping` with a deadline (the deadline helper of 7.6 on the **probe's own connection**, which is not one of the pool entries: a `ping` needs no project or program, so there is no context to re-establish; P1b is not available there); wedge detection needs the pid and the lock only |
+| deadlines (`deadline_s`) | the 7.6 helper (worker thread, `cancel`, abandon, gated close; one deadline per attempt); P1b's `deadline` only when the engine ships library 1.1.0 |
 | `rk`, `expect` on signature/type | not used; Hydralysis does not rely on them |
 
 ### 7.6 Lane hints, deadlines, error contract (Y4a, Y0b)
@@ -1690,36 +1764,47 @@ is a test failure.
   - *hydra.4 (library 1.1.0, P1b):* `call(cmd, deadline=...)`; on expiry the library sends `cancel
     target=<id>` and raises `deadline_exceeded`, and the connection stays usable. Nothing is
     abandoned.
-  - *hydra.2/3 (library 1.0.0): half-close and abandon.* Revision 2 specified `session.close()` on a
+  - *hydra.2/3 (library 1.0.0): abandon, close late.* Revision 2 specified `session.close()` on a
     timer; **that does not work on 1.0.0** (it hangs and sends nothing, shown below) and is withdrawn.
-    The mechanism that replaces it was chosen by experiment against the real 1.0.0 library and a
-    real hydra.3 daemon and is the sub-section that follows. In one line: the deadline is a
-    worker-thread `send`/`wait` that the **caller** never enters; on expiry send `cancel` through
-    the same session, wait a grace, then `shutdown(SHUT_WR)` the socket, **never** `close()` or touch
-    the library's file objects, and abandon the worker thread and the connection; the engine's view
-    on hydra.3 is that the request goes on until it ends by itself, so the client **never relies on
-    an EOF or a reply coming back**. A lock wait (case L below) is not left to this mechanism: the
-    client sends `wait` below `deadline_s` and the engine answers `busy` itself (measured, below).
+    Revision 3 replaced it by a half-close (`shutdown(SHUT_WR)`); **revision 5 withdraws that too**: the
+    FIN makes the engine leave the program when the request ends, which stalls every other reader of
+    the program ("Leaving a program", below). The mechanism was chosen by experiment against the real
+    1.0.0 library and a real hydra.3 daemon and is the sub-section that follows. In one line: the
+    deadline is a worker-thread `send`/`wait` that the **caller** never enters; on expiry send `cancel`
+    through the same session, wait a grace, then **abandon** the worker thread and the connection with
+    nothing more sent (no `shutdown`, no `close()`, no touching the library's file objects); the worker
+    closes the session itself when the engine's answer arrives, through the leave gate. The engine's
+    view on hydra.3 is that the request goes on until it ends by itself, so the client **never relies on
+    an EOF or a reply coming back** to end its own wait. A lock wait (case L below) is not left to this
+    mechanism: the client sends `wait` below `deadline_s` and the engine answers `busy` itself
+    (measured, below).
 - Waits: `BUSY_WAIT_MS` (180 s, `query.py:29`) and `SYNC_LOCK_S` (900 s, `workcopy.py:33`) shrink to a
   patience budget (default 25 s) once the engine reports queue information; beyond it the tool call
   returns the engine's structured `busy` (queue position, `retryAfterMs`, `next`), not a hang. No
   detached-call state is introduced (D24). On hydra.2/3, which report no queue information, a
-  quick-lane read sends `wait = min(25 s, deadline_s / 2)` instead (7.6, "A lock wait needs no
-  abandon"); a call without a deadline keeps today's budgets.
-- `EngineError` (`hydra.py:51-63`) keeps `holder`, `holderInfo`, `heldMs`, `queue`, `retryAfterMs`,
-  `current`, `next`, with the **informational lists** (`queue`, `running`, `alternatives`, the holder
-  lists) capped at 5 entries plus `more`. The cap never applies to `next`: it is a ready request and
-  must stay complete (the Y0b review showed a recursive cap cutting `next.args` to 5 entries; Y0b's
-  code is to be corrected in W1 by Y0e, 8.2).
+  quick-lane read sends `wait = min(25 s, remaining / 2)` on **each call of its attempt**, the two opens
+  included, instead (7.6, "The unit of the pool is the attempt" and "A lock wait needs no abandon"); a call
+  without a deadline keeps today's budgets.
+- `EngineError` (`hydra.py:51-63` at `d0466bc`; `:121-177` at `f46788b`) keeps `holder`, `holderInfo`, `heldMs`,
+  `queue`, `retryAfterMs`, `current`, `next`. **What shipped (Y0b follow-up `33cb5ee` and polish `5018367`), and
+  so what this section decides:** the **informational lists** (the holder lists, `running`, `alternatives`,
+  and every other list in the payload) are capped at `LIST_CAP` = 5 entries plus a `more` map; **`next` and
+  `retryAfterMs` are never capped** (`UNCAPPED`: a ready request must reach the caller exactly as the engine
+  sent it; the first Y0b code cut `next.args` to 5 entries); **the lists inside `queue`**, the engine's own
+  queue structure, are capped at `QUEUE_CAP` = 64 entries, with the count left out in `more["queue.waiting"]`
+  (or `queue.<key>`), because that the structure is small by construction was never verified against a real
+  engine. `EngineError.queue` keeps the structure as the engine sent it; only the JSON text of `str()` is
+  bounded. Y0e has no task here (8.2).
 - Pools: the MCP server splits PE-only tools (`fingerprint`, `imports`, `disasm`, `inspect`, `xrefs`,
   `callers`, `callees`, `function`, `bytes`, `strings`, `sigscan`, `prologue`, `evidence_*`) from tools
   that talk to the daemon, so four blocked engine calls (`TOOL_WORKERS = 4`, `mcp.py:22`) cannot starve
   them (Y0c). **`MAX_OUTSTANDING` is per lane** (decided; it is what Y0c shipped): each pool has its
   own budget of 8 accepted calls and its own 4 workers, so the total outstanding can reach 16 and a
   saturated engine lane never makes a local tool answer `busy`. The `busy` answer of the MCP layer
-  names the lane and carries its retry hint as **text** (`retryAfterMs=2000` in the message) until the
-  engine's structured `busy` (queue position, `retryAfterMs`) exists; a client cannot parse the MCP
-  text and does not need to. Known edge: `prologue` with `checks` and a `session` can call the
+  names the lane and carries its retry hint **twice**: as text (`retryAfterMs=2000` in the message) and as
+  `structuredContent {error:"busy", lane, outstanding, retryAfterMs}` (Y0c follow-up `49d5bb6`; a client that
+  predates `structuredContent` ignores the field and still has the text), until the engine's structured
+  `busy` (queue position, `retryAfterMs`) exists. Known edge: `prologue` with `checks` and a `session` can call the
   runtime runner on the fast lane (`api.py`, a runtime call that may block outside the engine lane);
   it stays on the fast lane because the PE-only list above names `prologue`, and enough hung live-session
   prologue calls could occupy the four fast workers: a follow-up for Y4b's doctor to report, not a
@@ -1773,6 +1858,13 @@ the effect of the FIN alone); an observer connection reads `status` every few se
 | (b) `SHUT_WR` | `status.requests[].cancelled` false then true within 1 s of the FIN (run 2); the request stays registered with its lock wait until the holder ends, released 0.5 s later; the reply `cancelled` reaches the client then (after 21.3 s) | cancelled flag set, the script runs on, released when it ends (40.1 s), reply `cancelled` | **released 0.1 s after the FIN; the reply reached the client's waiter 0.01 s after it** |
 | (c) abort | as (b); the daemon log says `client N (...): Connection reset` | as (b) | released 0.1 s after the RST; the waiter raised `ConnectionAbortedError` |
 
+*Revision 5 note on the rows above.* Row (a), "never released", was measured with a worker that never closed its
+session, which is why revision 3 added the FIN. The mechanism that ships keeps (a) and adds what that experiment
+lacked: the worker closes its session itself when the engine's answer arrives (every request ends in a reply), through
+the leave gate. Measured in 7.6 ("Leaving a program", `exp13` D): the entry is released at that moment and nothing else
+is disturbed. The FIN of row (b) released the client at the moment the request ended, which is exactly when the release
+stalled the other readers of the program (`exp13` C).
+
 **What the engine sees on hydra.3, in words.** A FIN (or RST) ends `Connection.run`'s read loop; its
 `finally` sets `client.leaving`, calls `cancel()` on every running monitor (seen: the request's
 `cancelled` goes false to true within a second) and then waits in `awaitTermination(1, HOURS)`
@@ -1799,10 +1891,28 @@ deadline that abandons (4.3). Citations in this sub-section read `hydra.py` at b
 (`:318`), `call` `:268` (`:385`), `EngineError` `:51` (`:102`); `query.py` is identical at both
 (`_keys` `:33`, `open_program` `:46`, `forget` `:70`, `run_script` `:76`, `_ask` `:184`).
 
+*The unit of the pool is the attempt, not the call (N1, N2; revision 5).* One `QueryRunner._ask` attempt
+acquires **one entry** and runs on it, in order, `open_project` and `open_program` (when the `_keys` cache
+misses: a new or replacement entry always does) and then the `script`: up to three engine calls
+(`query.py:54`, `:58`, `:90`). **`deadline_s` (default 60 s) is the deadline of the attempt, not of each
+call**: one clock starts when the entry is acquired, the caller waits for the attempt on its own event, and
+every engine call of the attempt takes what is left. The two opens are deadline-bound like the script: they
+send `wait = min(25 s, remaining / 2)` instead of today's `wait=BUSY_WAIT_MS` (180 s, `query.py:29`, `:54`,
+`:58`), where `remaining` is `deadline_s` minus the time the attempt has spent when the call is sent, so
+that an open that has to wait for a held lock (a save, another client's leave, 3.5) is answered `busy` by the
+engine before the deadline instead of abandoning a freshly made entry (measured: both opens with
+`wait=1500` on a program whose lock was queued behind a leave were answered `busy` after 1,509 ms,
+`exp13`, `exp11_rerun`). A call still in flight when the clock runs out gets `cancel`, the grace, and then
+the abandon of step 4, and takes its entry with it. `_ask`'s second attempt (I3) starts a new clock on
+another entry, so a stuck call can cost the caller up to two deadlines and two graces (about 130 s with the
+defaults); that is the existing retry rule, not a new one. The `script`'s own `timeout` (`timeout_s + 5`) is
+unchanged: the engine's cancel flag for the script.
+
 *A lock wait needs no abandon (measured).* Hydralysis already sends `wait=` (`query.py:90-91`, with
 `BUSY_WAIT_MS` 180 s at `:29`), and the engine returns `busy` itself when that wait ends. `deadline_s`
 is 60 s, so today a read blocked on a lock gives up at the deadline and abandons a connection for up to
-120 s more. On hydra.2/3 a quick-lane read therefore sends `wait = min(25 s, deadline_s / 2)` (the 25 s
+120 s more. On hydra.2/3 a quick-lane attempt therefore sends `wait = min(25 s, remaining / 2)` on each of its calls
+(`remaining` is `deadline_s` minus what the attempt has already spent, above; the 25 s
 patience budget of the Waits rule above; the value is an *unmeasured policy*): the engine's own bound
 ends case L on a healthy connection and leaves abandonment to the running cases (S, C). Measured on the
 real hydra.3 (`D:/Projects/Hydra/_logs/spec-rev4/exp6_wait_and_collateral.py`, `exp6_out.txt`, section
@@ -1847,6 +1957,19 @@ an unused program, exactly as today. While **any** client holds the program (`us
 abandoned one joins a warm program. (Python 3.15.0 only; the figures are one machine, one run per
 fixture.)
 
+**Quiet and busy (N4; revision 5).** Every figure above was measured on a **quiet** daemon. On a busy one
+(another script running on the program) the join does not change (`open_project` 3.1 ms and `open_program`
+1.3 ms with an 8 s script running, `exp15`, three runs of the same experiment as the third review's
+`exp9.py`) and the first script of a new entry costs 46.6 ms when the script file is already warm in the
+daemon (42.1 ms quiet; its second script 41.2 ms; `exp16`). One cost is **not per entry**: the **first-ever**
+run of a script file in a daemon, while another instance of it is still running, is slow, 1,626 to
+2,157 ms for the first new entry in three runs (`exp15`: 1,813, 2,157, 1,626) and 2,130 ms in `exp16c`
+(a cold script), while the **next** new entry's first script took 37.7 ms in the same run: it is paid once
+per script file and daemon. The third review's 325 ms and 1.70 s and the one 1.55 s KotOR outlier of the
+table above are consistent with it but were not diagnosed. RusticQuery is compiled once per daemon, so a
+replacement entry does not pay it; this is another reason the four live entries are never closed for being
+idle (rule L3 below).
+
 An **entry** is therefore a connection **plus its context**: `{session (from `module.connect`, which
 sends `hello`), key = "<root>|<role>|<serial>", the projects it joined, the programs it opened
 read-only}`. Nothing in the context is shared between entries. Rules:
@@ -1877,8 +2000,9 @@ read-only}`. Nothing in the context is shared between entries. Rules:
   never a writer, so closing it discards no unsaved changes: the discard paths of `releaseUse` concern a
   writer or the owner (`ProgramCommands.java:473-540`). `releaseUse` does take the program's **exclusive**
   lock (`e.acquire(true, ...)`, `:480`), so the engine's release of an entry waits behind running requests
-  on that program; the client does not wait for it (measured: `close()` of an idle entry returned in
-  0.1 ms).
+  on that program. The client does not wait for it (`close()` of an idle entry returned in 0.1 ms), but
+  revision 4's conclusion that the release is therefore harmless to everyone else was **wrong**: while the
+  release waits, every new reader of the program waits behind it ("Leaving a program", below).
 - *Pool size.* At most `TOOL_WORKERS` = 4 live entries per role (the MCP engine pool never has more calls
   in flight, `mcp.py:22`; this connection pool is not the two tool pools of the Pools rule above, only its
   size follows their workers), plus the probe's one connection, which needs no context (`ping`). An entry
@@ -1888,115 +2012,207 @@ read-only}`. Nothing in the context is shared between entries. Rules:
   the project). Measured on hydra.3 (`exp5`, part D, identical rows for both fixtures): the first
   connection alone `[2]`; with an idle entry open `[2, 14]`; **after a clean `close()` of that entry
   `[2]` again** (sampled 1 s later); an idle entry that sent the FIN (`SHUT_WR`) left in the same way (1.5 s);
-  an entry **abandoned with no FIN stays** (`[2, 16]` 3 s later and at the end of the run; 30 s in revision
-  3); an entry with a cooperative 6 s script that got the FIN after 1 s was gone 1.5 s later and its waiter
-  raised `SessionError`; twelve entries open on one program at once listed fourteen ids with no refusal, and
-  all twelve left when closed cleanly. So the abandoned-connection leak is the one the half-close of
-  step 4 already prevents (a FIN is always sent, so the entry leaves when its request ends:
-  `Connection.run` then calls `disconnect`, `leaveProject` and `releaseUse`, `Connection.java:93-108`),
-  and the **cap of 8 is the bound on it**: the `users` entries that one Hydralysis process holds on a
-  program are at most 1 (the shared connection) + 4 (live entries) + 8 (abandoned) = **13**, each gone when
-  its request ends or its entry is closed. `leaveProject` and `releaseUse` still wait up to
+  an entry **abandoned with no FIN and never closed stays** (`[2, 16]` 3 s later and at the end of the run; 30 s in
+  revision 3); an entry with a cooperative 6 s script that got the FIN after 1 s was gone 1.5 s later and its
+  waiter raised `SessionError`; twelve entries open on one program at once listed fourteen ids with no
+  refusal, and all twelve left when closed cleanly. Revision 5 adds the case the design now relies on
+  (`exp13` D): an entry abandoned with **no FIN** whose worker received the reply and closed the session
+  afterwards left, and `users` returned to the live entries. So the abandoned-connection leak is prevented
+  by the **worker closing its session once the engine has answered** (step 5), not by a FIN; abandoning an
+  entry and never closing it is the one leak, and **the cap of 8 abandoned requests, with the closing list
+  of 8 (rule L3), is the bound on it**: the `users` entries that **one Hydralysis process** holds on a
+  program are at most 1 (the shared connection) + 4 (live entries) + 8 (abandoned, request still running) + 8
+  (closing list) = **21**, each gone when its request has ended and the gate has let its worker close. The
+  engine has **no cap** of its own (a `LinkedHashSet`; twelve entries listed fourteen ids with no refusal), and
+  other processes and agents add their own. `leaveProject` and `releaseUse` still wait up to
   `CLEANUP_WAIT_MS` (600 s, D19) for the locks of a held program, so an abandoned entry of a program under a
-  long exclusive hold can stay listed for as long; E3b bounds it on hydra.4. `QueryRunner.stop`
-  (`query.py:220`) releases **all** of a process's entries: it closes the idle entries of the role
-  cleanly (that releases their `users`) and marks the checked-out ones to close when they are returned, in
-  addition to `close_program` on the shared connection as today.
+  long exclusive hold can stay listed for as long; E3b bounds it on hydra.4.
+  **`QueryRunner.stop` (`query.py:220-251`; N7)** releases this process's use of **the target's** programs.
+  Today it sends `close_program` on the shared connection for each daemon program key found in the `_keys`
+  rows of the shared `Engine` (`released` lists those keys, `failed` the ones that raised `EngineError`, `ok`
+  is `not failed`). After the pool: (1) it waits for the leave gate for the target's programs, at most
+  `deadline_grace_s` (5 s); (2) it sends `close_program` for each daemon program key of the target on the
+  shared connection (as today) **and on every pool entry that joined it** (an idle entry at once; a
+  checked-out entry is marked to close that program when it is returned), and drops those rows (`belongs()`
+  matches the rows of the shared engine and of the entries of the role, not only `self.engine.key`); (3) it
+  never closes a connection, because an entry may serve other targets (the entries are closed at exit, after
+  the gate). The reply keeps its shape: **`released`** lists each daemon program key **once**, when at least
+  one `close_program` for it succeeded (the key `p1:/alpha.exe` is the daemon's, the same on every
+  connection); **`failed`** has one object `{program, entry, error}` per failed close (`entry` is the entry's
+  key, or `"shared"`); `ok` is `not failed`; one additive key, `entries: {closed, deferred}`, counts the
+  entries whose `close_program` was sent and those left to their return or to the gate (a deferred entry is not
+  in `released` until it has closed). `close_program` is itself a leave, so it passes the gate too (a close
+  that the gate defers is reported as `deferred`, never as a failure); the note text is unchanged.
+- *Leaving a program (measured, revision 5; rules L1 to L3).* An entry that joined a program and then
+  **leaves** (a clean `close()`, a FIN, the end of an abandoned request after a FIN) queues the engine's
+  exclusive `releaseUse` (3.5). On the real daemon, with one read of 6 s running on the program and
+  entries that had joined it (`exp13`, a fresh state root per scenario, the 1.0.0 library; `exp11_rerun` and
+  `exp12_rerun` reproduce the third review's runs on hydra-3-candidate), every shared acquire was refused
+  `busy` after its 1.5 s wait while that release was queued, for a **new** entry's opens **and** for the script
+  of an **already-joined** entry:
+
+  | Scenario (`exp13`) | Engine as today (hydra.3 behaviour) | Engine with E3b's fast path (3.5) |
+  |---|---|---|
+  | A, revision 4 rule: an idle entry is closed cleanly while a read runs | new join `busy` after 1,509 ms; joined entry's script `busy` after 1,506 ms (`wanted:shared`, `readers:1`); both fine once the read had ended (3 ms, 43 ms) | join ok 3 ms, script ok 44 ms |
+  | B, revision 5 rule: the same entry stays open and is closed when the read has ended | join ok 3 ms and script ok 41 ms during the read; the close returned in 0.3 ms; join 4 ms and script 42 ms after | not run |
+  | C, revision 3 and 4 mechanism: a non-cooperative script, `cancel`, FIN; another entry starts an 8 s read; the script ends and the engine leaves the entry | join `busy` after 1,510 ms, script `busy` after 1,507 ms | join ok 3 ms, script ok 42 ms |
+  | D, revision 5: the same without the FIN; the worker receives the reply (`cancelled` at 5,036 ms) and defers its close to the end of the other read | join ok 4 ms, script ok 43 ms; the deferred close returned in 0.1 ms; `users` back to the live entries | not run |
+  | E, control: no FIN, but the worker closes at once after the reply | join `busy` after 1,511 ms, script `busy` after 1,505 ms | join ok 3 ms, script ok 189 ms |
+
+  An entry abandoned with no FIN and never closed caused nothing (`exp11_rerun`: join 4 ms, script 35.5 ms),
+  and the control without any leave gave join 3 ms and script 36.4 ms. (In that run the first join of the
+  `clean_close` mode was itself refused: the closes of the previous mode's entries reached the engine just
+  after the next read had started, the same effect by accident.) The rules, for an engine without E3b's
+  fast path (hydra.2 and hydra.3; hydra.4 does not use the pool, below):
+  - **L1. No FIN, no `shutdown`, no `close()` on an entry that joined a program while a request is in
+    flight on it.** A FIN adds nothing `cancel` had not done, and its one distinct effect is a leave at the end
+    of the request (scenario C). Step 4 is therefore the abandon, nothing more.
+  - **L2. The leave gate.** A joined entry is **closed only when this process has no read in flight on any
+    program the entry joined**, per program key `(root, gpr, program)`, counting abandoned requests that the
+    engine has not answered yet; until then it waits in a **closing list**, which is drained when the last
+    such read ends. The closes it covers: the abandoned worker after its late reply (step 5), the retirement
+    of an entry after `no_project`, `no_program` or `not_found` (I3), `QueryRunner.stop` and the exit of the
+    process. An entry whose connection already failed (`closed`, `OSError`, a daemon restart) has nothing to
+    leave and is dropped. The gate lives in `hydra.py` (Y4a); it never delays a **reply** and never blocks a
+    caller.
+  - **L3. Bounds.** The closing list holds at most 8 entries; past that the oldest is closed regardless (the
+    stall above is then possible, and the doctor reports the count). Idle entries are **not closed at all**:
+    the four live entries of a role stay open for the life of the process (no idle timeout, no shrink), so a
+    quiet process has no churn, and the one leave happens at `stop` or at exit, through the gate (at exit the gate waits at
+    most `deadline_grace_s`, then everything is closed: a process that is going away cannot wait for reads it cannot see).
+  The gate mitigates what the **client** causes. It cannot see another process's reads (limit in 6), and on
+  hydra.4 it is not needed: E3b's fast path makes a plain reader's leave harmless, and P1b's deadline keeps
+  the connection, so the entry pool and the gate serve the hydra.2/3 helper only.
 - *Fairness, unmeasured.* Each entry is its own client for the scheduler's round-robin release
   (`Scheduler.java:266-277`), so up to five connections of one process compete where one did; on hydra.2/3
   the key is the connection id and is never capped (G3). The effect on other agents' share of the lane was
   not measured.
 
 **Numbered steps.**
-1. *One call, one entry.* A deadline-bound call takes an idle entry of its `role` (or creates one, up to
-   the pool size) and returns it to the pool only after a reply that leaves the connection healthy: a
-   result, or a structured engine error such as the `busy` above. An entry that was abandoned or broke is
-   never reused; its replacement is a new entry with a new serial. **Invariant: no other request is ever
-   in flight on an entry.** Y4a's code and tests enforce it (an entry is checked out by exactly one call; a
-   second `send` on a checked-out entry raises), because `shutdown(SHUT_WR)` ends **every** request in
-   flight on the connection, not only the stalled one. Measured on the real hydra.3 (`exp6`, section N3,
-   and the reviewer's `exp4_adversarial.py`, X1 and X2): with a non-cooperative script A and a cooperative
-   script B on one connection, `cancel` for A and the FIN 3 s later ended **B** at once (`SessionError
-   cancelled` 0.02 s after the FIN; 2 s after it `status` listed only A), while A went on until its own end
-   (12.1 s) and was then answered `cancelled`. The shared `Engine` connection, on which several threads have
-   requests in flight, can therefore never be half-closed; this rule is what makes step 4 safe.
+1. *One attempt, one entry.* A deadline-bound **attempt** (a `QueryRunner._ask` attempt: `open_project` and
+   `open_program` on a cache miss, then the `script`; or the supervisor's `ping` on the probe's own
+   connection) takes an idle entry of its `role` (or creates one, up to the pool size) and returns it to the
+   pool only after an attempt that ended with a reply that leaves the connection healthy: a result, or a
+   structured engine error such as the `busy` above. An entry that was abandoned or broke is never reused;
+   its replacement is a new entry with a new serial. **Invariant: no other request is ever in flight on an
+   entry.** Y4a's code and tests enforce it (an entry is checked out by exactly one attempt; a second `send`
+   on a checked-out entry raises): an entry is abandoned as a whole, so a second request on it would be
+   abandoned with it, and the answer of an abandoned request must never be taken for another's. (The measured
+   reason revision 4 gave still holds: a FIN ends **every** request in flight on the connection. With a
+   non-cooperative script A and a cooperative script B on one connection, `cancel` for A and the FIN 3 s
+   later ended **B** at once, `SessionError cancelled` 0.02 s after the FIN, while A went on until its own
+   end, 12.1 s, `exp6` N3 and the reviewer's `exp4_adversarial.py`, X1 and X2; it is one more reason that the
+   shared `Engine` connection, on which several threads have requests in flight, is never half-closed.)
 2. The call is `rid = session.send(...)` plus `session.wait(rid)` **in a daemon worker thread** of
-   Hydralysis; the caller waits on its own `threading.Event` with the timeout `deadline_s` and never
+   Hydralysis, once per engine call of the attempt; the caller waits on its own `threading.Event` until the
+   **attempt's** deadline (`deadline_s` from the acquire, "The unit of the pool is the attempt") and never
    enters `wait`. A mutating call never gets a deadline that abandons (4.3).
-3. On expiry the worker's session gets `session.send("cancel", target=rid)` (thread-safe, `:732-738`;
-   it ends a request still waiting for a slot, and a cooperative one) and the caller waits
-   `deadline_grace_s` (5 s) more for the reply.
-4. If there is still none: `session.sock.shutdown(socket.SHUT_WR)`. **Nothing else**: no
-   `session.close()`, no `_r.close()`, no `sock.close()` while the worker is alive, and no `send` on
-   that session afterwards (a `send` after the half-close raises `BrokenPipeError` and leaves
-   buffered text that the `_w` finalizer reports on stderr, seen in `exp1_err_py*.txt`). The caller
-   gets `deadline_exceeded` with `details.connection_abandoned:true` after `deadline_s +
-   deadline_grace_s` (measured 2.01 s for 1 s + 1 s, `exp3`, C).
-5. The worker ends by itself when the engine answers or closes the connection, and then closes the
-   session **itself** (nothing is in `readline` any more: measured 0.0 s, `exp3`, A), leaves the
-   registry and calls `forget(entry)` (I2). Abandoned workers are counted in a process-wide registry with
-   **two budgets**: **at most 8** abandoned user calls at a time (*unmeasured policy*: 40 abandoned
-   connections cost 40 daemon threads and 40 sockets and all end when the engine closes them, `exp3`, B;
-   the `users` arithmetic is above), and **at most 3** abandoned supervisor probes, the number of
-   consecutive misses that makes a wedge (7.2). The probe is **exempt** from the 8: eight stuck lock
-   waits of user calls on a program held by a long analysis must never make a busy but healthy daemon look
-   as if it did not answer `ping`, and `ping` is answered inline outside the scheduler
-   (`Session.java:219-221`), so a missing answer is the wedge signal itself. Beyond the user budget a
-   deadline-bound call fails fast, **before anything is sent**, with the Hydralysis code `abandoned_cap`
-   (details `{cap, abandoned:[{cmd, label, program, ageS}]}`, `next` the doctor call), **not**
-   `daemon_unhealthy`, which stays the restart-budget code of 7.2; the doctor (7.1) lists both registries,
-   which is what an operator needs on a daemon where eight requests ignore cancel.
-6. Rejected: `close()` on a timer (hangs); abandon alone (the engine keeps the client and the
-   program's `users` entry for good, measured); the abortive close (c), which works on Windows and
-   wakes the reader, but reaches into the library's private `sock` with `detach()`, raises a raw
-   `OSError` out of `wait` that 1.0.0 does not handle (`_closed` stays unset), depends on Winsock
-   behaviour, and buys only the early end of one thread.
+3. On expiry the worker's session gets `session.send("cancel", target=rid)` (thread-safe, `:732-738`; it ends
+   a request still waiting for a slot, and a cooperative one) and the caller waits `deadline_grace_s` (5 s)
+   more for the reply.
+4. If there is still none: **abandon, and send nothing**: no `shutdown` (revision 3's `SHUT_WR` is withdrawn,
+   rule L1), no `session.close()`, no `_r.close()`, no `sock.close()` while the worker is alive, and no
+   `send` on that session afterwards. The caller gets `deadline_exceeded` with
+   `details.connection_abandoned:true` after `deadline_s + deadline_grace_s` (measured 2.01 s for 1 s + 1 s,
+   `exp3`, C; that timing does not depend on the FIN).
+5. The worker ends by itself when the engine answers or the connection fails. On the **answer** the request
+   is over: the abandoned **count** drops (it counts requests the engine has not answered), the entry's rows
+   leave `_keys` (`forget(entry)`, I2), and the worker hands its session to the **closing list** of the leave
+   gate (rule L2), which closes it when this process has no read in flight on a program the entry joined
+   (closing at the end of another read: `exp13` D; closing at once while another read runs stalls it:
+   `exp13` E). Abandoned workers are counted in a process-wide registry with **two budgets**: **at most 8**
+   abandoned user calls at a time (*unmeasured policy*: 40 abandoned connections cost 40 daemon threads and
+   40 sockets and all end when the engine closes them, `exp3`, B; the `users` arithmetic is above), and
+   **at most 3** abandoned supervisor probes, the number of consecutive misses that makes a wedge (7.2). The
+   probe is **exempt** from the 8: eight stuck lock waits of user calls on a program held by a long analysis
+   must never make a busy but healthy daemon look as if it did not answer `ping`, and `ping` is answered
+   inline outside the scheduler (`Session.java:219-221`), so a missing answer is the wedge signal itself.
+   Beyond the user budget a deadline-bound call fails fast, **before anything is sent**, with the Hydralysis
+   code `abandoned_cap` (details `{cap, abandoned:[{cmd, label, program, ageS}]}`, `next` the doctor call),
+   **not** `daemon_unhealthy`, which stays the restart-budget code of 7.2; the doctor (7.1) lists both
+   registries and the closing list, which is what an operator needs on a daemon where eight requests ignore
+   cancel.
+6. Rejected: `close()` on a timer (hangs); the half-close of revision 3 (a FIN makes the engine leave the
+   program when the request ends, and that leave stalls the other readers, `exp13` C; it adds nothing the
+   `cancel` had not done); abandon **and never close** (the engine keeps the client and the program's `users`
+   entry for good, which `exp2` (a) measured with a worker that never closed its session; the worker of step 5
+   does close it); closing the abandoned session at once on the answer (it stalls the other readers while
+   one runs, `exp13` E); the abortive close (c), which works on Windows and wakes the reader, but reaches
+   into the library's private `sock` with `detach()`, raises a raw `OSError` out of `wait` that 1.0.0 does not
+   handle (`_closed` stays unset), depends on Winsock behaviour, and buys only the early end of one thread.
 
 **What changes with P1b and E3b.** On a hydra.4 engine the library is 1.1.0 and P1b's `deadline`
 replaces steps 1 to 5 (the library times its own `wait`; the connection survives, so nothing is
-abandoned). E3b (V3, V5) also changes what the engine does with the half-close of an old library:
-a request in a lock wait now ends within a second of the `cancel` or the FIN, and a request that
-does not end is released after `cleanupGraceS + abandonWaitS` (about 20 s) with the program
-flagged `abandoned`, instead of staying registered for as long as it runs. Until then the cap of
-step 5 is the protection.
+abandoned, no entry is replaced and the leave gate is not used). E3b (V3, V5) also changes what the engine
+does with a connection of an old library that is closed or sends a FIN: a request in a lock wait now ends
+within a second of the `cancel` or the FIN, a request that does not end is released after
+`cleanupGraceS + abandonWaitS` (about 20 s) with the program flagged `abandoned`, instead of staying
+registered for as long as it runs, and **the leave of a plain reader takes no exclusive lock** (3.5), so the
+stall of "Leaving a program" does not occur. Until then the cap of step 5 and the leave gate are the
+protection.
 
-**Tests (Y4a).** New files: `tests/test_deadline.py` for the helper, the pool and the registry, and
-`tests/test_supervisor.py` for 7.2. Against the fake: a blocked session never has `close()` called
-while its worker is alive (a fake that fails the test if it is); the caller gets `deadline_exceeded` at
-`deadline_s + deadline_grace_s`; the abandoned count never passes 8 and returns to 0 when the fake
-closes; with the user budget of 8 full a probe is still sent, and `abandoned_cap` (not
-`daemon_unhealthy`) is the answer to the ninth user call; a fake that answers `no_project` or
-`no_program` to any call on a connection that has not seen both opens (the engine's rule) proves **I1 to
-I3**: an entry's first use sends `open_project` and `open_program`, a retired entry's `key` is never
-reused and `forget(entry)` leaves another entry's rows, and a retry after `closed` takes another entry; a
-second `send` on a checked-out entry raises; two requests on one fake connection are both ended by the
-half-close (the premise of the one-call-per-entry rule). Against the **real hydra.3**, one test per case
-above (L, S, C of `exp2`, reduced in time), plus the context and `wait` cases:
-- **`replacement_context`** (the experiment above as a test): a fresh connection without the two opens
-  answers `no_project` and `no_program` (a documented premise: if it stops failing, the context step is
-  dropped from the design, as E0's convention says); after the entry of case S is abandoned, **the very
-  next read gets a new entry, re-establishes its context and is answered with no `no_project`**; the
-  other entries' connections in `status.clients[]` are unchanged; the abandoned entry stays listed until
-  its script ends and then leaves; the program's `users` list has the size the arithmetic above predicts
-  at each step and returns to the live entries when the abandoned worker has ended.
+**Tests (Y4a).** New files: `tests/test_deadline.py` for the helper, the pool, the registry and the leave gate,
+and `tests/test_supervisor.py` for 7.2. Against the fake: a blocked session never has `close()` called while its
+worker is alive and **never receives a `shutdown`** (a fake that fails the test if either happens; `SHUT_WR` is
+no longer part of the mechanism); the caller gets `deadline_exceeded` at `deadline_s + deadline_grace_s`
+**for the attempt** (a fake whose `open_program` takes 40 s and whose script then takes 40 s gives it at 60 s
+plus the grace, not at 120 s: the unit is the attempt, N1); the abandoned count never passes 8 and returns to 0
+when the fake answers; with the user budget of 8 full a probe is still sent, and `abandoned_cap` (not
+`daemon_unhealthy`) is the answer to the ninth user call; a fake that answers `no_project` or `no_program` to
+any call on a connection that has not seen both opens (the engine's rule) proves **I1 to I3**: an entry's first
+use sends `open_project` and `open_program`, a retired entry's `key` is never reused and `forget(entry)`
+leaves another entry's rows, and a retry after `closed` takes another entry; a second `send` on a
+checked-out entry raises; **the leave gate**: a fake that records the instant of every `close` per connection
+and the reads in flight: no entry is closed while a read is in flight on a program it joined, the closing list
+drains when the last such read ends, a ninth entry in the list closes the oldest, an entry whose connection
+failed is dropped without a close, and `stop` waits for the gate (at most the grace) and reports `released`,
+`failed` and `entries` as in the `users` bullet. Against the **real hydra.3**, one test per case above (L, S,
+C of `exp2`, reduced in time), plus the context, `wait` and leave cases:
+- **`replacement_context`** (the experiment above as a test, **deterministic**: every wait is a poll of
+  `status` for a condition with a bound of 10 s, never a fixed sleep, and the script that plays S is
+  `TestNoCoop` with a length that does not depend on a race): (1) a fresh connection without the two opens
+  answers `no_project` and `no_program` (a documented premise: if it stops failing, the context step is dropped
+  from the design, as E0's convention says); (2) the entry of case S is abandoned at its deadline and **the
+  very next read takes a new entry, re-establishes its context and is answered, with no `no_project`**
+  (asserted on the answer and on the engine's `status.clients[]`: exactly one new client, which sent the two
+  opens); (3) the other entries' connections in `status.clients[]` are unchanged (the same ids, no request
+  added); (4) the program's `users` is `live + 1 (the new entry) + 1 (the abandoned one)` while S runs;
+  (5) when S ends, the abandoned worker receives the reply and the entry goes to the closing list; with no other
+  read in flight the gate closes it and `users` returns to the live entries; and with **another** read R in
+  flight when S ends (a cooperative 8 s script), the entry's close is **deferred until R ends**: while R runs
+  `users` still lists it and a further read is **answered, not `busy`** (`exp13` D), and when R ends `users`
+  drops and both the registry and the closing list are empty.
 - **`wait_below_deadline`**: a read for a program held by another client's script returns the engine's
   `busy` at `wait` (about 3 s in the test), the entry returns to the pool, nothing is abandoned and the
-  registry stays at 0 (`exp6`, N2, as a test).
+  registry stays at 0 (`exp6`, N2, as a test); **and the same for the two opens** (N2): with the program's
+  lock queued behind another client's leave during a running read (the hazard of 3.5, made real on hydra.3 by
+  the test itself) a new entry's `open_program` is answered `busy` at its `wait` (`exp13` A), the entry
+  returns to the pool and nothing is abandoned.
+- **`leave_gate_no_freeze`** (`exp13` D and E as one test): the abandoned worker's close, deferred, leaves a
+  concurrent read and a new join answered; the same close done at once is the control that must stall
+  (it is expected to, on hydra.3, and the test says so: if it stops stalling, rule L2 is dropped, as E0's
+  convention says).
 - the entry of the stalled call is replaced and the other entries are untouched; the engine shows the
-  cancelled flag within 1 s of the half-close; C is released within 1 s and the call returns the engine's
-  reply; L and S stay registered until the holder or the script ends and then the abandoned worker ends
-  and the registry is empty.
+  cancelled flag within 1 s of the **`cancel`** (nothing else is sent any more); C is released within 1 s and
+  the call returns the engine's reply; L and S stay registered until the holder or the script ends and then
+  the abandoned worker ends and the registry is empty.
 
 ### 7.7 The 20 tools: where each feature lives
 
 The 20 tools stay (`fingerprint`, `imports`, `disasm`, `inspect`, `xrefs`, `callers`, `callees`,
 `function`, `bytes`, `strings`, `sigscan`, `prologue`, `evidence_add`, `evidence_list`, `ghidra_run`,
 `ghidra_query`, `backend`, `prepare`, `job`, `runtime`). One catalog epoch in Y0d, before the 0.5.0
-tag, then a hash-checked freeze. **Where the epoch is reported (decided, and what shipped in Y0d):
-`backend action=status` and `backend help` carry `catalog:{epoch, hash}`, and nowhere else**:
-`ghidra_query action=status` is a target status built in `query.py` (a different file, owned by
-Y1/Y2/Y3) and is about a target, not about the tool surface; `backend inspect` and the MCP
-`initialize` reply (`mcp.py`, Y0c, closed) do not report it. The hash covers only the advertised tool
+tag, then a hash-checked freeze. **What shipped, and so what this section decides (revision 5, from the code
+at `1584f6e`):** the number is **2**. Epoch 1 (the table with the `doctor` and `backups` enum values and the
+`options` bags) never left the branch; its follow-up changed one description, so the table changed and the epoch
+was bumped: the `pe_address` text of the eight address tools keeps **only the refusal clause** ("Use rva:/va:;
+ambiguous unprefixed addresses are refused."), **not** the epoch-0 examples ("rva:0x... or va:0x..."), because
+the long form costs 104 bytes more (8,276 against 8,172 advertised bytes) and the table has a budget of 8,192
+(`tests/test_contracts.py`, `test_catalog_stays_small_in_bytes_as_well_as_count`). **Where the epoch is
+reported: `catalog:{epoch, hash}` is carried by `backend action=status`, `backend help` and `backend inspect`
+(`api.py`), and by the MCP `initialize` result under `_meta["hydralysis/catalog"]` (`mcp.py`)**;
+`ghidra_query action=status` is a target status built in `query.py` (a different file, owned by Y1/Y2/Y3) and
+is about a target, not about the tool surface, and the CLI does not carry it. The hash covers only the advertised tool
 table (names, descriptions, input schemas), **not** the `instructions()` text or the help output
 (a deviation Y0d disclosed and this section accepts): a change to either needs a manual epoch bump,
 which a reviewer checks, because no test can see it.
@@ -2014,7 +2230,8 @@ which a reviewer checks, because no test can see it.
 | format, health, platform facts | surfaced in `backend action=status` and the doctor |
 
 Until the engine capability exists a new action returns `{"not_available":"<capability>"}`, not an
-error. Running sessions cache tool lists (`mcp.py:45`): after the epoch, features arrive only through
+error (the dispatcher answers it when the handler module of `api.HANDLER_MODULES` does not exist; **no frozen
+test may assert it through the real dispatcher**: Y2 rewrites the existing ones against the registry, 8). Running sessions cache tool lists (`mcp.py:45`): after the epoch, features arrive only through
 `options`, and `backend help` and the 0.5.0 release notes say a harness restart is needed once.
 
 ---
@@ -2066,35 +2283,66 @@ Conventions that make the waves disjoint (the matrix in 8.1 is the authority; th
   tests that hand-write or patch a store when it moves to store v3, which 8.1 now **names**:
   `tests/test_analysis.py` (the 15 calls of the deleted `save_overlay`), `tests/test_exporting.py`,
   `tests/test_crossbuild.py`, `tests/test_revisions.py`, `tests/test_query_script.py` and `tests/test_query.py`.
-  The same applies to Y0e (the sealed `runtime._write`: `tests/test_runtime.py`) and to later format changes.
+  The same applies to later format changes. (Y0e's sealed `runtime._write` needed no edit of
+  `tests/test_runtime.py`, which is therefore frozen and has no row any more.)
+- **A package that makes a frozen test's assertion false owns that test, or the test must not assert it
+  (revision 5; the class of the fourth review's BLOCKING 1 and 2).** Rule 3 freezes a test file after the wave
+  that creates it, and rule 4 refuses any edit, so a later package that makes an old assertion false could
+  not fix it. Two kinds were found, each with a decision. (1) **Stub answers:** `tests/test_contracts.py`
+  (`NotAvailableCarriers`, `:105-164`) and Y0e's `tests/test_cli.py` assert `not_available` for `backend`
+  `doctor` and `backups`, for `ghidra_run` `options` and for `job` `options`, through the real dispatcher with
+  nothing patched; Y2 (backups and job options, W2), Y4b (doctor) and Y4e (isolation) each make one of them
+  false. **Decided: Y2 owns both files in W2 and rewrites those tests once, against the handler registry** (the
+  `api.py` bullet below), so Y4b and Y4e edit neither. (2) **Pinned values:** `tests/test_backends.py` (`:21`,
+  `:101`), `tests/test_query.py` (`:285-296`) and `tests/fakehydra.py` (`:28`) carry the pinned release
+  `12.3-hydra.2`, and `hydra.py` builds the message the first asserts from `RELEASE`. **Decided: Y4a (W6)
+  rewrites the two tests to derive the release from `hydra.RELEASE` and from the fake's own constant**, owns
+  the files `tools/bump_hydra.py` edits (5), and no bump edits a test after that. The proof script scans for
+  both kinds (below).
 - **Every test, example, tool and benchmark file has an owner: four rules that a script checks.** (1) A file
   with a row in 8.1 follows its row; a package that **creates** a test or example file gives it a row (bold),
   whatever its name. (2) `examples/dt_<id>.py`, `examples/char_<id>.py` and `examples/cc_<id>.py`, with
   `<id>` the package id in lower case (`dt_e3a.py`), belong to package `<id>` and to nobody else, and so do the
   goldens its `char_<id>.py` records, named `examples/characterization/v3/<id>-<scenario>.json`: the file
   carries the name of its owner. (3) Every other file under `tests/`, `examples/`, `tools/` and
-  `benchmarks/` at the two code bases is **frozen**: no package edits it. That is the seven v2 goldens
-  `examples/characterization/*.json` (they must stay `identical`), `examples/session_smoke.py`, the two
+  `benchmarks/` at the two code bases is **frozen**: no package edits it. That is `examples/session_smoke.py`, the two
   probes and `examples/scripts/ExportJsonl.java`, `tests/support.py` (shared helpers: a package that needs a
   change asks for a seam, D31), `tools/golden.py` and its helpers, `benchmarks/`, and the existing test
-  files that no row names (the proof script lists them). (4) `examples/check_ownership.py` fails a package
+  files that no row names (the proof script lists them). The seven v2 goldens `examples/characterization/*.json`
+  are **not** in this list: they have an E0 row in W0 (8.1), which covers the one deliberate re-record of
+  `f47ff15934` (E0, below); they must stay `identical`, and after W0 nobody edits them. (4) `examples/check_ownership.py` fails a package
   branch that changes a frozen file even when the package text names it. The file is E0's and was written
   before the ids `Y0e` and `Y4e` existed: its pattern `[EPYR]\d+[a-d]?` cannot see them
   (`examples/check_ownership.py:57`, `:145` on the E0 branch), so **E1's first commit** makes it read the
-  package ids from the wave plan table, accept the golden prefix of rule 2 and enforce rule 4 (a row in 8.1,
-  W1); until E1 merges, Y0e's branch is checked with E1's copy of the script. The proof that these rules hold
-  for this file is `D:/Projects/Hydra/_logs/spec-rev4/prove_disjoint_rev4.py`: besides the revision 3 checks
-  it lists every file that appears in **no** row yet is edited by some package's text, every file that two
-  packages of one wave cite, and the existing files that are frozen; the revision table quotes its output.
+  package ids from the wave plan table, accept the golden prefix of rule 2, enforce rule 4 and resolve the
+  repository-root documents of the Hydralysis table (`README.md`, `THIRD_PARTY.md`, `docs/...`, which it would
+  look for under `src/hydralysis/` today) (a row in 8.1, W1); until E1 merges, Y0e's branch is checked with E1's copy of the script. The proof that these rules hold
+  for this file is `D:/Projects/Hydra/_logs/spec-rev5/prove_disjoint_rev5.py`: besides the revision 3 and 4
+  checks it lists every file that appears in **no** row yet is edited by some package's text, every file that
+  two packages of one wave cite, the existing files that are frozen, **and (revision 5) every frozen test that
+  asserts a stub answer (`not_available`) or a pinned release literal (`12.3-hydra.<n>`) that a later package
+  changes**, requiring a row for the package that changes it or a declared waiver, and every pinned literal of
+  the Hydralysis tree to be in the edit list of `bump_hydra.py` (5) or the historical list; the revision
+  table quotes its output.
 - Hydralysis hotspot files (`workcopy.py`, `query.py`, `analysis.py`, `hydra.py`, `api.py`,
   `tests/fakehydra.py`) have one owner per wave (8.1). **`api.py` is opened once**: Y2 (W2) replaces
-  Y0d's `not_available` stubs with a **handler registry** (an action or option name to a callable;
-  modules `backups.py`, `commits.py`, `doctor.py` and `userscripts.py` register their handlers, and
-  `api.py` imports a fixed list of handler modules lazily and answers `not_available` for a module
-  that does not exist yet), so Y4b, Y4d and Y4e never edit `api.py`: the `ghidra_run` `options`
-  (`isolation`, `readonly`) dispatch, the `job` `options` and the `backend` `doctor` and `backups`
-  actions each have a named owner and wave in 8.2, which is the seams-first rule of D31 applied to the
-  Python side.
+  Y0d's `not_available` stubs with a **handler registry** (a capability name to a handler module, held in
+  `api.HANDLER_MODULES = {"backups": "hydralysis.backups", "doctor": "hydralysis.doctor", "jobOptions":
+  "hydralysis.commits", "scriptIsolation": "hydralysis.userscripts"}`, read at call time so that a test can
+  patch it; the names are the `not_available` values Y0d ships; `backups.py`, `commits.py`, `doctor.py` and
+  `userscripts.py` register their handlers, and `api.py` imports the module lazily and answers
+  `not_available` when it does not exist yet), so Y4b, Y4d and Y4e never edit `api.py`: the `ghidra_run`
+  `options` (`isolation`, `readonly`) dispatch, the `job` `options` and the `backend` `doctor` and `backups`
+  actions each have a named owner and wave in 8.2, which is the seams-first rule of D31 applied to the Python
+  side. **The tests of the stubs move with it (revision 5):** Y2 rewrites, in W2, the four tests of
+  `NotAvailableCarriers` in `tests/test_contracts.py` (`:111-157`) and the two stub tests of
+  `tests/test_cli.py` so that each **patches `api.HANDLER_MODULES` with a module that never exists** (for
+  example `"hydralysis._no_such_handler"`) for the capability it tests: the dispatcher's own `not_available`
+  path stays asserted whichever handler modules exist, and neither Y4b nor Y4e edits a frozen file. The
+  four tests are `:111-124` (doctor and backups), `:126-130` (the same through MCP), `:140-153` (`ghidra_run`
+  options) and `:155-163` (job options); the assertions inside them that are **not** stubs (a plain `ghidra_run`
+  and a plain `job` call, with and without an empty `options`, still reach their real functions, `:142-143`,
+  `:158-161`) and the option-validation test (`:132-138`) stay as they are and must still pass unchanged.
 - `examples/check_ownership.py` (E0) reads the matrix in 8.1 and fails when a wave cell names two packages
   or when the files changed on a package branch (`git diff --name-only` against its base) are not
   all in that package's rows for its wave; it runs at every package merge (gate 9.11). Its package-id parser and
@@ -2107,12 +2355,12 @@ Conventions that make the waves disjoint (the matrix in 8.1 is the authority; th
 | Wave | Hydra (engine) | Hydralysis | Notes |
 |---|---|---|---|
 | W0 baselines and hardening | E0 | Y0a, Y0b, Y0c, Y0d | no engine behaviour change; all parallel; disjoint files (8.1). |
-| W1 foundation and seams | P1a, then E1 | Y0e, then Y1 | E1 owns every shared-file seam (`Session.java`, `Scheduler`, `ImportCommands`, `UpgradeCache`, `ProjectCommands`, `ProjectEntry` (signature only), `HeadlessSession`, and the new `Advertised`, `Settings`, `Preflight`, `DbVersions`); P1a owns `ghidra_session.py` and the protocol-2 compatibility harness and lands first (E1's `cc_e1.py` needs its loader and the vendored 1.0.0 client); Y0e takes the W0 review follow-ups that no W0 package could own (8.2); disjoint except one declared sequence, `tests/test_durable.py`: Y0e, then Y1 (Y1 merges after Y0e, 8.2); E1's first commit also fixes the package-id parser of `check_ownership.py` (8) |
-| W2 facts, gates, lanes | E2, E3a | Y2 | **neither edits `Session.java`** (E1 placed the seams). E2: format, backup, gate, fork; it names no lane. E3a: `Scheduler`, `ImportCommands`, **`ImportGate`**, `Requests`, `Connection.respond`, `RequestMonitor`; it decides the lane and the lane note. A backup reaches the `maint` lane through E3a's command mapping, with no code dependency between the two; the combined test is E6's |
+| W1 foundation and seams | P1a, then E1 | Y0e, then Y1 | E1 owns every shared-file seam (`Session.java`, `Scheduler`, `ImportCommands`, `UpgradeCache`, `ProjectCommands`, `ProjectEntry` (signature only), `HeadlessSession`, and the new `Advertised`, `Settings`, `Preflight`, `DbVersions`); P1a owns `ghidra_session.py` and the protocol-2 compatibility harness and lands first (E1's `cc_e1.py` needs its loader and the vendored 1.0.0 client); Y0e takes the W0 review follow-ups that no W0 package could own (8.2; landed as `8e696e2`, after the streamed `AppendLog`, the `EngineError` cap and the `test_client.py` guard had landed in the W0 follow-ups); disjoint except one declared sequence, `tests/test_durable.py`: Y0e, then Y1 (Y1 merges after Y0e, 8.2); E1's first commit also fixes the package-id parser of `check_ownership.py` (8) |
+| W2 facts, gates, lanes | E2, E3a | Y2 | **neither edits `Session.java`** (E1 placed the seams). E2: format, backup, gate, fork; it names no lane. E3a: `Scheduler`, `ImportCommands`, **`ImportGate`**, `Requests`, `Connection.respond`, `RequestMonitor`; it decides the lane and the lane note. A backup reaches the `maint` lane through E3a's command mapping, with no code dependency between the two; the combined test is E6's. **Y2 rewrites the stub tests** of `tests/test_contracts.py` and `tests/test_cli.py` against the handler registry (8, 8.2) |
 | W3 robustness | E3b | Y3 | E3b owns `Waits`, `Caller`, `Access`, `ProgramEntry`, `OverlayCommands`, `Connection`, `RequestMonitor`, `Session.disconnect`, `ProjectCommands.leaveProject`, `ProgramCommands.releaseUse` |
 | W4 isolation, health, launcher | E4, E5, P1b | (catch-up) | E4 after E3b (both touch `OverlayCommands`); E5 owns `Session.java`, `Scheduler`, `HeadlessSession`; disjoint |
 | W5 soak and release prep | E6, then R1 | | R1 owns `tools/bump_hydra.py` and the docs and runs after E6 (it depends on every engine package, E6 included); then **gate G** (section 9) |
-| W6 adoption on hydra.4 | | Y4a, then Y4b, Y4d, Y4e | disjoint files; Y4b merges after Y4a (the doctor lists Y4a's abandoned-connection registry, 7.6); Y4a runs R1's `bump_hydra.py` and owns the files it edits. The package ids are Y4a, Y4b, Y4d and Y4e: **there is no Y4c** (the ids keep the labels of the first draft) |
+| W6 adoption on hydra.4 | | Y4a, then Y4b and Y4d, and Y4e | disjoint files; **Y4b and Y4d merge after Y4a**: the doctor lists Y4a's abandoned-connection registry (7.6), and Y4d's tests run on `tests/fakehydra.py`, which only Y4a edits in W6 and which Y4a extends with the E2 surface (`format`, `backup_required`, `fork_project purpose:"backup"` with `writer:"engine"`) and an opt-in connection scope (8.2); Y4e needs neither; Y4a runs R1's `bump_hydra.py` and owns the files it edits (5, 8.1). The package ids are Y4a, Y4b, Y4d and Y4e: **there is no Y4c** (the ids keep the labels of the first draft) |
 | W7 deferred | | Y5 | only after its preconditions |
 
 ### 8.1 File-ownership matrix (the disjointness assertion)
@@ -2150,6 +2398,7 @@ the four rules of section 8: a row here, the package id in the file's name, or f
 | **`S/Health.java`**, **`S/Watchdog.java`** | | | | | E5 | |
 | `support/ghidra_session.py` | | P1a (range, `engine` pass-through) | | | P1b | |
 | `examples/daemon_tests.py`, `examples/characterization_tests.py`, **`examples/dt_baseline.py`**, `examples/characterization/v3/` (created by E0 as an empty directory with the loader) | E0 | | | | | |
+| `examples/characterization/clients.json`, `examples/characterization/edits.json`, `examples/characterization/fork_refresh.json`, `examples/characterization/import_script.json`, `examples/characterization/overlays.json`, `examples/characterization/readonly.json`, `examples/characterization/session.json` | E0 (the seven v2 goldens; `fork_refresh.json` and `overlays.json` were re-recorded once, in `f47ff15934`, to mask the copied project's total size, E0; no later package edits them) | | | | | |
 | **`examples/check_ownership.py`** | E0 | E1 (its first commit: the package ids read from the wave plan, the `<id>-` golden prefix, the frozen files; section 8, rule 4) | | | | |
 | `examples/contract_tests.py` | | E1 (the protocol and first-`hello` tests) | | | | |
 | `examples/client_compat_tests.py`, **`examples/stock/ghidra_session_1_0_0.py`** | | P1a | | | | |
@@ -2162,20 +2411,21 @@ the four rules of section 8: a row here, the package id in the file's name, or f
 | File | W0 | W1 | W2 | W3 | W5 | W6 |
 |---|---|---|---|---|---|---|
 | `backends.py` | Y0a | | | | | |
-| **`durable.py`** | Y0a | Y0e (streamed log reads, the every-acquisition tail check, 4.1) | | | | |
-| `tests/test_durable.py` | Y0a | Y0e (the two-process test, the large-log test, and **the ratchet table**: the six rows of the three writers Y0e moves and the three count assertions, 8.2) | | | | |
+| **`durable.py`** | Y0a | | | | | |
+| `tests/test_durable.py` | Y0a | Y0e (**the ratchet table**: the six rows of the three writers Y0e moves and the three count assertions, 8.2; the two-process and large-log tests had landed in the W0 follow-up `2bf90c7`) | | | | |
 | `tests/test_durable.py` (**second step of W1, after Y0e**) | | Y1 (the two `save_overlay` rows and the counts, in the commit that deletes the function, 8.2) | | | | |
 | `tests/test_address_maps.py` | Y0a (one line: drop the stale seal of a hand-edited record; commit `c78be27`) | | | | | |
-| `tests/test_query.py` | Y0a (one line, the same) | Y1 (`status show=changes`) | Y2 (`stop`, `show=lineage`) | Y3 (rebase, `stale_view`) | | Y4a (lane hint, `wait`, the pool entry in `_ask`) |
-| `hydra.py` | Y0b | Y0e (`write_daemon_config` through `durable.atomic_write`; `EngineError` cap exempts `next`) | | | | Y4a |
-| `tests/test_client.py` | Y0b | Y0e (move the `unittest.main()` guard to the end of the file) | | | | |
-| `tests/fakehydra.py` | Y0b | | Y2 | | | Y4a |
+| `tests/test_query.py` | Y0a (one line, the same) | Y1 (`status show=changes`) | Y2 (`stop`, `show=lineage`) | Y3 (rebase, `stale_view`) | | Y4a (lane hint, `wait` on every call of the attempt, the pool entry in `_ask`, `stop` over the entries; the release literals `:285-296` derived from the fake) |
+| `hydra.py` | Y0b | Y0e (`write_daemon_config` through `durable.atomic_write`) | | | | Y4a (capabilities, the pin bump by `tools/bump_hydra.py`, `Supervisor`, the helper, the pool, the leave gate) |
+| `tests/test_client.py` | Y0b | | | | | |
+| `tests/fakehydra.py` | Y0b | | Y2 (fork purposes) | | | Y4a (the v3 fake, the E2 surface for Y4d's tests, the opt-in connection scope; the release constant is edited by the bump script, 5) |
 | `mcp.py`, `tests/test_mcp_transport.py` | Y0c | | | | | |
 | `api.py` | Y0d | | Y2 (the handler registry that replaces the Y0d stubs, 8) | | | |
-| `workflow_help.py`, `tests/test_contracts.py` | Y0d | | | | | |
-| **`cli.py`**, **`tests/test_cli.py`** | | Y0e (`backend --action doctor` and `--action backups`, `--options`, passed through to the dispatcher) | | | | |
-| `runtime.py`, `runtime_worker.py` | | Y0e (`_write` through `durable.write_json`) | | | | |
-| `tests/test_runtime.py` | | Y0e (only its hand-written `ready.json` and `state.json` fixtures, if the sealed `_write` needs them changed; `:258-275`, `:381-382`) | | | | |
+| `workflow_help.py` | Y0d | | | | | |
+| `tests/test_contracts.py` | Y0d | | Y2 (the four stub tests of `NotAvailableCarriers`, `:111-157`, rewritten against the handler registry, 8) | | | |
+| **`cli.py`** | | Y0e (`backend --action doctor` and `--action backups`, `--options` and `--options-file`, passed through to the dispatcher) | | | | |
+| **`tests/test_cli.py`** | | Y0e | Y2 (its two stub tests rewritten against the handler registry, 8) | | | |
+| `runtime.py`, `runtime_worker.py` | | Y0e (`_write` through `durable.write_sealed`; the readers unseal and fall back to the `.bak`) | | | | |
 | `workcopy.py` | Y0a (`_save_store`, `load_store`) | Y1 (v3 store, `has_overlays` and `expected_state` through `durable.exists`, `require_seal=True`) | Y2 | Y3 | | |
 | `targets.py`, `overlayjobs.py` | Y0a | | Y2 | | | |
 | `tests/test_overlayjobs.py` | | | Y2 (kind `commit`) | | | |
@@ -2187,7 +2437,7 @@ the four rules of section 8: a row here, the package id in the file's name, or f
 | `tests/test_query_script.py` | | Y1 (the RusticQuery structure guards, which the new outputs must keep passing) | | | | |
 | `tests/test_engine_integration.py` | | Y1 (real-engine round trip, env-gated) | Y2 (additions) | | | |
 | **`tests/test_store_v3.py`**, **`tests/test_bundles.py`** | | Y1 | | | | |
-| `query.py` | | Y1 (`status show=changes`) | Y2 (`stop`, `show=lineage`) | Y3 | | Y4a |
+| `query.py` | | Y1 (`status show=changes`) | Y2 (`stop`, `show=lineage`) | Y3 | | Y4a (lane hint, `wait`, the pool entry in `_ask`, `forget(entry)`, `stop` over the entries and its report, 7.6) |
 | `exporting.py` | | | Y2 | | | |
 | **`lineage.py`**, **`commits.py`**, **`backups.py`** | | | Y2 | | | Y4d |
 | **`tests/test_lineage.py`**, **`tests/test_commit.py`**, **`tests/test_backups.py`** | | | Y2 | | | Y4d (the fault matrix re-run, the engine-written backup) |
@@ -2196,11 +2446,13 @@ the four rules of section 8: a row here, the package id in the file's name, or f
 | **`doctor.py`**, **`tests/test_doctor.py`** | | | | | | Y4b |
 | `userscripts.py`, **`tests/test_userscripts.py`** | | | | | | Y4e |
 | **`tests/test_deadline.py`**, **`tests/test_supervisor.py`** | | | | | | Y4a |
+| `tests/test_backends.py` | | | | | | Y4a (the pinned release literals, `:21` and `:101`, derive from `hydra.RELEASE`, 5) |
+| `README.md`, `THIRD_PARTY.md`, `docs/upstream-setup.md` (the repository-root documents of Hydralysis) | | | | | | Y4a (the one sentence of each that names the pinned release, edited by `tools/bump_hydra.py`, 5) |
 | **`tools/bump_hydra.py`**, **`tests/test_bump_hydra.py`** | | | | | R1 | |
 
 Per wave the disjointness reads off the columns: W0 = {E0 | Y0a | Y0b | Y0c | Y0d}, each with its own
 files; W1 = {P1a, then E1 | Y0e | Y1} (Y1 after Y0e on the second `tests/test_durable.py` row only); W2 = {E2 | E3a | Y2}; W3 = {E3b | Y3}; W4 = {E4 | E5 | P1b}; W5 = {E6 | R1};
-W6 = {Y4a | Y4b | Y4d | Y4e} (Y4b after Y4a for the registry it lists, not for a file). Across waves a file may change hands only in the order the columns show,
+W6 = {Y4a | Y4b | Y4d | Y4e} (Y4b and Y4d after Y4a, for the registry the doctor lists and for the fake daemon Y4d's tests run on, not for a file). Across waves a file may change hands only in the order the columns show,
 and a package depends on the packages whose files it builds on (the lists below).
 
 ### 8.2 Ownership of what the first reviews found unowned
@@ -2212,16 +2464,20 @@ no W0 package could take (the W0 packages are closed; Y0e's files are disjoint f
 | Gap found | Owner | Wave | Decision |
 |---|---|---|---|
 | `cli.py` had no owner: spec 7.1 says doctor is also a CLI command, and Y0d could not expose `backend` `doctor`, `backups` or `options` there | **Y0e** | W1 | `cli.py` passes `--action` and an `--options` JSON object through to the same dispatcher as the MCP tool; no later package edits it |
-| `api.py`: Y0d's stubs (`ghidra_run` `options.isolation`/`readonly`, `job` `options`, `backend` `doctor`, `backups`) need a replacement in the waves where Y2, Y4b, Y4d, Y4e deliver their handlers, and the matrix gave `api.py` to Y2 and Y4b only (two packages in W6 would have needed it) | **Y2** | W2 | Y2 builds a **handler registry** once (8): `backend backups` goes to `backups.py` (Y2, W2); `job` `options` (`kind`, `cid`) to `commits.py` (Y2, W2); `backend doctor` to `doctor.py` (Y4b, W6); `ghidra_run` `options` to `userscripts.py` (Y4e, W6). `api.py` has a cell in W0 (Y0d) and W2 (Y2) and none after; until a handler's module exists the answer stays `not_available` |
+| `api.py`: Y0d's stubs (`ghidra_run` `options.isolation`/`readonly`, `job` `options`, `backend` `doctor`, `backups`) need a replacement in the waves where Y2, Y4b, Y4d, Y4e deliver their handlers, and the matrix gave `api.py` to Y2 and Y4b only (two packages in W6 would have needed it) | **Y2** | W2 | Y2 builds a **handler registry** once (8, `api.HANDLER_MODULES`): `backend backups` goes to `backups.py` (Y2, W2); `job` `options` (`kind`, `cid`) to `commits.py` (Y2, W2); `backend doctor` to `doctor.py` (Y4b, W6); `ghidra_run` `options` to `userscripts.py` (Y4e, W6). `api.py` has a cell in W0 (Y0d) and W2 (Y2) and none after; until a handler's module exists the answer stays `not_available` |
+| `tests/test_contracts.py` (`NotAvailableCarriers`, `:105-164`) and `tests/test_cli.py` (Y0e's two stub tests) assert `not_available` for `doctor`, `backups`, `job` `options` and `ghidra_run` `options` through the real dispatcher with nothing patched, so Y2 (backups, job options), Y4b (doctor) and Y4e (isolation) each make one false while rule 3 froze both files (revision 5, BLOCKING 1) | **Y2** | W2 | each stub test patches `api.HANDLER_MODULES` with a module that never exists, once, in W2; 8.1 gives both files a W2 cell for Y2; Y4b and Y4e edit neither; the detector of `prove_disjoint_rev5.py` scans every frozen test for `not_available` |
+| `tests/test_backends.py` (`:21`, `:101`), `tests/test_query.py` (`:285-296`) and `tests/fakehydra.py` (`:28`) carry the pinned release; `hydra.py` builds the message the first asserts from `RELEASE`; the text said Y4a "owns the files the script edits" and named none (revision 5, BLOCKING 2) | **Y4a** | W6 | the two tests derive the release from `hydra.RELEASE` and the fake's own constant, once, in W6 (`tests/test_backends.py` gets a W6 cell; the other two already had one); `tools/bump_hydra.py` (R1) edits exactly `hydra.py`, `tests/fakehydra.py` and the three pin statements of `README.md`, `THIRD_PARTY.md` and `docs/upstream-setup.md` (5), and `tests/test_bump_hydra.py` asserts it edits nothing else |
+| `tests/fakehydra.py` must emulate what Y4d's tests need (`format`, `backup_required`, `fork_project purpose:"backup"` with `writer:"engine"`) and a connection-scoped project and program context (N5, N9) | **Y4a** | W6 | Y4a adds the E2 surface and the connection scope to the fake (the file is Y4a's in W6); the scope is **opt-in** (`Daemon(connection_scoped=True)`, default off), so every frozen test that uses the fake keeps the single-context fake, and Y1 keeps the signatures that frozen tests call (`workcopy._apply(settings, engine, program, records, state, timeout)` and `workcopy._replayable(settings, target, edit)`, `tests/test_client.py:144-170`, `tests/test_archive_import.py:33-38`; its acceptance runs them unchanged); Y4d merges after Y4a |
+| the seven v2 goldens `examples/characterization/*.json` had no E0 row, so `check_ownership --package E0` exited 1 on `fork_refresh.json` and `overlays.json` (E0's review of `f47ff15934`) | **E0** | W0 | a row of 8.1 lists the seven files; the re-record of two of them masks the copied project's total size (E0, below); they must stay `identical`, and no later package edits them |
 | `workcopy.has_overlays` and `workcopy.expected_state` pre-check the **main** store path (`_store_path(...).is_file()`) and so bypass the `.bak` fallback: with the main file deleted and `.bak` intact, `load_store` answers but these two say "no overlays" | **Y1** | W1 | both use `durable.exists` (a store exists if the main file or its `.bak` does) and call `load_store`; test: delete the main store, keep the `.bak`, both report the overlays |
 | A v3 store is read with `require_seal=True`: with the default (`False`) a hand-stripped seal loads as a "pre-seal" v2 record and gives no tamper or truncation signal | **Y1** | W1 | `load_store` reads a version-3 file with `require_seal=True` (a file without a seal is `store_corrupt`); a version-1 or -2 file is still accepted unsealed once and sealed by its first write |
-| `AppendLog` reads whole logs through `localio.read_bytes` (32 MiB budget) and checks the tail on the first append of a process | **Y0e** | W1 | 4.1 item 3: streamed reads, tail window, the every-acquisition check with the size comparison, the two-process test; until it lands the 32 MiB limit is recorded in section 6 |
-| `EngineError` caps every list recursively, including `next.args` | **Y0e** | W1 | cap only the informational lists (7.6); `next` is exempt; test with an 8-argument `next` |
-| `tests/test_client.py` puts the `EngineRetryPolicy` class after `if __name__ == "__main__"` | **Y0e** | W1 | move the guard to the end |
-| `examples/check_ownership.py` (E0) cannot see the package ids `Y0e` and `Y4e` (its pattern `[EPYR]\d+[a-d]?`, `:57`, `:145`) and accepts a frozen file when a package text names it | **E1** | W1 | the ids are read from the wave plan table, the golden prefix `<id>-` is accepted, a frozen file is refused (section 8, rule 4); E1's first commit, with a unit check that every id of the plan parses; the matrix has the row |
+| `AppendLog` read whole logs through `localio.read_bytes` (32 MiB budget) and checked the tail on the first append of a process | (W0 follow-up) | W0 | **done** in `2bf90c7` (streamed reads, a bounded tail window, the every-acquisition check with the size comparison, the two-process tests) and verified, not redone, by Y0e (`8e696e2`); what remains is Y2's: the strictness each caller needs (`last()` is tail-only by default) and a rotation or checkpoint policy (4.1, 6) |
+| `EngineError` capped every list recursively, including `next.args` | (W0 follow-up) | W0 | **done** in `33cb5ee` and `5018367`: `next` and `retryAfterMs` are never capped, the lists inside `queue` keep 64 entries, the other lists 5 plus `more` (7.6); verified by Y0e |
+| `tests/test_client.py` put the `EngineRetryPolicy` class after `if __name__ == "__main__"` | (W0 follow-up) | W0 | **done** in `33cb5ee`: the guard is at the end of the file; verified by Y0e |
+| `examples/check_ownership.py` (E0) cannot see the package ids `Y0e` and `Y4e` (its pattern `[EPYR]\d+[a-d]?`, `:57`, `:145`), accepts a frozen file when a package text names it, and resolves the Hydralysis table's root documents under `src/hydralysis/` | **E1** | W1 | the ids are read from the wave plan table, the golden prefix `<id>-` is accepted, a frozen file is refused (section 8, rule 4), `README.md`, `THIRD_PARTY.md` and `docs/...` rows of the Hydralysis table resolve to the repository root; E1's first commit, with a unit check that every id of the plan parses; the matrix has the row. Confirmed by the fourth review: the checker as committed reports "22 packages" and, with the pattern widened to `[a-e]`, "24 packages, 0 violations" |
 | Y0a edited `tests/test_address_maps.py` and `tests/test_query.py`, which it did not own | **Y0a** | W0 | amended: the two files are Y0a's explicitly in 8.1 (a package that changes a stored format owns the tests that hand-write it, 8) |
-| `MAX_OUTSTANDING` per lane or global (Y0c) | decision | | **per lane** (7.6): 8 for the engine pool and 8 for the fast pool, total up to 16 |
-| Where `catalog:{epoch, hash}` is reported (Y0d) | decision | | `backend action=status` and `backend help` only (7.7) |
+| `MAX_OUTSTANDING` per lane or global (Y0c) | decision | | **per lane** (7.6): 8 for the engine pool and 8 for the fast pool, total up to 16; the `busy` answer carries the retry hint as text **and** as `structuredContent.retryAfterMs` (`49d5bb6`) |
+| Where `catalog:{epoch, hash}` is reported (Y0d), and which epoch | decision (what shipped, `1584f6e`) | | `backend action=status`, `backend help` and `backend inspect`, and the MCP `initialize` result under `_meta["hydralysis/catalog"]`; not `ghidra_query action=status`, not the CLI; the epoch number is 2 (7.7) |
 | `canonical()` seals an unpaired surrogate (`surrogatepass`) while 3.4 says it is refused | decision | | tolerated in **seals and bundles** (Python-only forms; 3.4, 4.1 item 2), refused in **manifests** (cross-language); 3.4 says so |
 | `*.tmp` files of killed writers are never swept | **Y4b** | W6 | the doctor reports and offers the removal; nothing deletes automatically (D28) |
 
@@ -2232,9 +2488,9 @@ its author adds it to this table):
 | Writer | What it writes | Owner | Wave | How |
 |---|---|---|---|---|
 | `analysis.save_overlay` | the legacy v1 overlay store (no production caller; tests only) | Y1 | W1 | deleted **together with its two rows and the counts in `tests/test_durable.py`**, which is the second step of W1, after Y0e has removed its own six rows (after Y0e the table has 2 record rows, 24 keys and 26 call sites; after Y1, 0, 22 and 24), and with `load_overlays`, whose only caller it was (Y1 searches before deleting; `load_store` reads a version-1 file itself, `workcopy.py:59` at 589432e); the 15 calls of `tests/test_analysis.py` (`:111-204`, import `:7`) write their fixtures through `workcopy._save_store`, with the assertions retargeted as below |
-| `hydra.write_daemon_config` | the daemon's `config.json` | Y0e | W1 | `durable.atomic_write` (fsync and write-through replace) **without a seal**: the engine's launcher reads this file and must see the plain JSON it expects |
-| `runtime._write` | runtime session state | Y0e | W1 | `durable.write_json` (sealed) |
-| `runtime_worker._write` | runtime worker state | Y0e | W1 | `durable.write_json` (sealed) |
+| `hydra.write_daemon_config` | the daemon's `config.json` | Y0e | W1 | `durable.atomic_write` (fsync and write-through replace) **without a seal**: the engine's launcher reads this file and must see the plain JSON it expects (`8e696e2`) |
+| `runtime._write` | runtime session state | Y0e | W1 | `durable.write_sealed` (sealed; its readers unseal, accept pre-seal files and fall back to the `.bak`) (`8e696e2`) |
+| `runtime_worker._write` | runtime worker state | Y0e | W1 | `durable.write_sealed` (the same) (`8e696e2`) |
 | 22 artifact keys (24 write sites: logs, exports, staged script copies, download and install renames) and 11 non-record keys in the four owned files | logs, exports, copies | none | | not records; frozen by the ratchet |
 
 **What the deletion of `analysis.save_overlay` does to the tests (Y1, W1).** Nine of the ten tests of
@@ -2262,7 +2518,8 @@ against this paragraph.
 Goal: baselines and loaders before any engine change.
 Files: `examples/daemon_tests.py` (loader for `dt_*.py`, `--only` over them), `examples/characterization_tests.py`
 (`--protocol {2,3}` sent in `hello`; loader for `char_*.py`; goldens dir `characterization/v3/`),
-new `examples/dt_baseline.py`, new `examples/check_ownership.py` (the 8.1 assertion; its package-id parser is fixed by E1, section 8).
+new `examples/dt_baseline.py`, new `examples/check_ownership.py` (the 8.1 assertion; its package-id parser is fixed by E1, section 8),
+and the seven v2 goldens `examples/characterization/*.json` (8.1; two were re-recorded once, below).
 Depends on: the hydra.3 install (`D:/Projects/Hydra/_engines/hydra-3-candidate`).
 Parallel with: Y0a-d.
 Surface: none.
@@ -2280,14 +2537,42 @@ ends `busy` when its `wait` ends, `ProgramEntry.java:195`; this is the premise o
 cancel-aware waits).
 `import_wait` must fail on its premise for the **third** import, the one that reaches the front: it
 shows about 20 s (10 s in the gate and 10 s for the slot), not merely `busy` at 10 s for every import
-(the first two fail at 10 s because they were admitted to the gate at once); the test asserts
-`max(importsMs) >= 19000`. `characterization_tests.py --protocol 3` against an engine that serves no v3
+(the first two fail at 10 s because they were admitted to the gate at once); the test asserts that the
+slowest import ends within `SLOWEST_IMPORT_MIN_MS` 19000 .. `SLOWEST_IMPORT_MAX_MS` 23000 ms **and** that the
+spread between the slowest and the fastest is within `SPREAD_MIN_MS` 8000 .. `SPREAD_MAX_MS` 12000 ms
+(`dt_baseline.py:55-58`, as committed in `f47ff15934`); any other observation that is busy at 10 s is a plain
+failure that carries its observation, so a loaded machine that pushes the slowest import past 23 s turns a
+CONFIRMED baseline into a failure, never into a pass. The evidence keys are `earlierImportsMs`,
+`slowestImportMs`, `spreadMs` and the two bounds (`:361-365`); the failure paths of the new bounds have not
+been exercised on a real failing observation. `characterization_tests.py --protocol 3` against an engine that serves no v3
 returns a SKIP (exit 0) unless `--require-v3` is given; **gate 9.3 always passes `--require-v3`**.
 Acceptance: the seven scenarios report `identical` at `--protocol 2`; the tests fail on hydra.3 as stated,
 or, for a premise that does not hold, are dropped from the design and recorded as a finding (E0's
 own convention above; at `c774d9e7b1` all six were `CONFIRMED` on hydra.3 in two runs,
 `D:/Projects/Hydra/_logs/E0/baseline1.log` and `baseline2.log`); the loaders work with an empty `dt_*.py`
 set. Exit codes verified.
+
+**The v2 goldens and the copied project's total size (E0 follow-up `f47ff15934`; revision 5).** The two
+goldens `fork_refresh.json` and `overlays.json` carry the byte total of the project that `fork_project` and
+`refresh` copy (`"bytes"` in the dicts that also have `mode`). That total is **not a function of the request**:
+the fixture project stores each program's `FILE_ID` three times (in `~index.dat`, `~journal.bak` and the `<n>.prp`
+file), and Ghidra builds the id as `hex(host IPv4 octets) + hex(port) + System.nanoTime()`
+(`FileIDFactory.java:33-54`), so its length follows the address the host resolves to: a machine resolving to
+`100.123.249.118` gives 27-character ids and 4,425,400 bytes, and two earlier project directories differed by
+18 bytes (4,425,382) in four files (6 occurrences of 3 characters). A golden that records the total therefore
+fails 5 of the 7 scenarios on a machine whose address changes. `characterization_tests.py` now **masks
+`bytes` in a dict that also has `mode`** (the fork descriptor and the `fork_project` and `refresh` answers; the
+value must still be a positive integer, so key presence, key order and the `files` count are compared); the two
+goldens were re-recorded on `hydra-3-candidate` with exactly 14 lines changed (`"bytes": <n>` to
+`"bytes": "<masked>"`, 11 in `fork_refresh.json` and 3 in `overlays.json`; the other five goldens and the 317
+requests are unchanged), and the program-file sizes (`1032192` and `1179648`, multiples of 4 KiB) stay
+unmasked. Verified at 7/7 identical on the refactor build, on hydra-3-candidate in work directories of
+different path lengths and on a simulated 24-character fixture (which failed 5 of 7 on the unmasked script,
+only on the `bytes` lines). Accepted trade-off: a regression in the **size** of what a fork copies is no longer
+caught by the goldens (the `files` count still is). That the earlier 24-character ids came from a 5-hex-digit
+address is an inference from the lengths, not an observation. The same commit adds
+`characterization_tests.py --selftest` (9 checks) and `daemon_tests.py --selftest --ghidra <install>` (15 checks
+of the client-protocol shim).
 
 **Y0a (Hydralysis, M): durable IO.** Goal: 4.1.
 Files: new `durable.py`; `backends.py` (`write_json`); `workcopy.py` (only `_save_store`, `load_store`);
@@ -2305,21 +2590,24 @@ Acceptance: `store_corrupt` raised, not "start empty"; no record-bearing write o
 **Y0b (Hydralysis, S): client retry policy and `EngineError`.** Files: `hydra.py` (retry only
 idempotent commands after `closed`, `details.ambiguous`; widened `EngineError`; `Engine.capabilities()`
 returning `{}` on protocol 2), `tests/fakehydra.py` (connection drop after a mutating call; busy with
-holderInfo), `tests/test_client.py`. Review follow-ups (the `next` exemption from the list cap, the
-`unittest.main()` guard) are Y0e's (8.2). Surface: none. Tests: a dropped `apply_overlays` reply is not
+holderInfo), `tests/test_client.py`. Review follow-ups **done** in `33cb5ee` and `5018367` (8.2, 7.6): `next` and
+`retryAfterMs` are never capped, the lists inside `queue` keep 64 entries, the `unittest.main()` guard is at the
+end of `tests/test_client.py`; and one addition that shipped: `Engine.call` pings before the first mutating call
+on a connection idle for 30 s (`STALE_S`), so that a dead socket is replaced before the call is sent and is
+not reported as ambiguous. Surface: none. Tests: a dropped `apply_overlays` reply is not
 re-sent and the marker reconciles; reads are retried. Acceptance: no mutating call is blindly re-sent.
 
 **Y0c (Hydralysis, S): fast/engine pools.** Files: `mcp.py`, `tests/test_mcp_transport.py`.
 Tests: four blocked engine calls do not delay `fingerprint` or `disasm`. Acceptance: `MAX_OUTSTANDING`
 still answers `busy` with a retry hint. **`MAX_OUTSTANDING` is per lane** (7.6): 8 on the engine pool and
 8 on the fast pool, so the total outstanding can reach 16; the hint is text (`retryAfterMs=2000` in the
-message) until the engine's structured `busy` exists.
+message) **and** `structuredContent.retryAfterMs` (`49d5bb6`) until the engine's structured `busy` exists.
 
 **Y0d (Hydralysis, S): the one catalog epoch.** Files: `api.py` (`backend.action += doctor, backups`;
 `options` bag on `backend`, `ghidra_run`, `job`; pass-through to stub handlers returning
 `not_available`), `workflow_help.py`, `tests/test_contracts.py` (catalog hash, `CATALOG_EPOCH`).
-Acceptance: **`backend action=status` and `backend help`** report `catalog:{epoch, hash}` (and nothing
-else does, 7.7); changing the tool table without bumping the epoch fails the test (the hash covers the
+Acceptance: `catalog:{epoch, hash}` is reported by `backend action=status`, `help` and `inspect` and by the MCP
+`initialize` result (7.7: what shipped; the epoch number is 2); changing the tool table without bumping the epoch fails the test (the hash covers the
 tool table only, not `instructions()` or the help output). Later packages never edit the schema. A
 non-empty `ghidra_run` or `job` `options` bag answers `not_available` until its handler is registered
 (8.2); `cli.py` exposure is Y0e's.
@@ -2327,21 +2615,26 @@ non-empty `ghidra_run` or `job` `options` bag answers `not_available` until its 
 ### W1
 
 **Y0e (Hydralysis, S): W0 review follow-ups.** Goal: the work that the W0 reviews found but no W0 package
-could own (8.2). Files: `durable.py` (log reads streamed, no `localio` budget; the every-acquisition tail
-check with the size comparison; 4.1 item 3), `tests/test_durable.py` (the two-process test of 4.1, a
-log larger than 32 MiB, and the ratchet rows of the writers it moves, below), `hydra.py` (`write_daemon_config` through `durable.atomic_write` without a seal;
-the `EngineError` cap exempts `next`), `tests/test_client.py` (the `unittest.main()` guard at the end),
-`cli.py` (`backend` `doctor` and `backups` actions and `--options` pass-through; new `tests/test_cli.py`),
-`runtime.py` and `runtime_worker.py` (`_write` through `durable.write_json`; `tests/test_runtime.py` only
-for its hand-written `ready.json` and `state.json` fixtures, if the seal needs them changed). Depends on:
-Y0a, Y0b, Y0d. Parallel with: P1a and E1; **Y1 builds in parallel but merges after Y0e**, because
-`tests/test_durable.py` has a second step (8.1). Surface: none. Tests: those named above, plus the
+could own (8.2). **Status (revision 5): landed as `8e696e2` on `feat/w1-hydralysis`.** Three items of revision 4
+had **already** been done by the W0 follow-up commits on `feat/w0-integration` and were verified, not redone:
+the streamed `AppendLog` reads and the every-acquisition tail check with their two-process tests (`2bf90c7`,
+`b0b947b`), the `EngineError` cap that exempts `next` (`33cb5ee`, `5018367`) and the `__main__` guard of the
+client tests (`33cb5ee`). Files: `cli.py` (`backend` `doctor` and `backups` actions, `--action` as well as the
+positional action, `--options` and `--options-file`, passed straight to `api.call`; new `tests/test_cli.py`),
+`hydra.py` (`write_daemon_config` through `durable.atomic_write` without a seal), `runtime.py` and
+`runtime_worker.py` (`_write` through `durable.write_sealed`; their readers unseal, accept pre-seal files and
+fall back to the `.bak`), `tests/test_durable.py` (the ratchet rows of the writers it moves, below; new tests for
+the config, the mailbox writers and readers, and the two-process repair test with a rollback append and a
+`backups.log` append). Depends on: Y0a, Y0b, Y0d. Parallel with: P1a and E1; **Y1 builds in parallel but
+merges after Y0e**, because `tests/test_durable.py` has a second step (8.1). Surface: none. Tests: the
 write-gate ratchet of `tests/test_durable.py`: Y0e removes the six rows of the three writers it moves
 (`hydra.write_daemon_config`, `runtime._write`, `runtime_worker._write`) and sets the counts of
-`test_the_follow_up_table_is_counted` to 2 record rows, 24 keys and 26 call sites (the two `save_overlay`
-rows stay until Y1 deletes the function). Its branch is checked with E1's `check_ownership.py` (section 8,
-rule 4). Acceptance: the full unit suite green; the AST gate lists no record-bearing writer outside
-`durable` except the legacy `save_overlay` (Y1 removes it, 8.2) and the artifact writes of 8.2.
+`test_the_follow_up_table_is_counted` to 2 record rows, 24 keys and 26 call sites (the two `save_overlay` rows
+stay until Y1 deletes the function); `tests/test_cli.py` (12 tests), two of which assert the `not_available`
+answer through the CLI and are **rewritten by Y2 in W2** (8, 8.2: they assert a stub that Y2, Y4b and Y4e
+replace). Its branch is checked with E1's `check_ownership.py` (section 8, rule 4). Acceptance: the full unit
+suite green; the AST gate lists no record-bearing writer outside `durable` except the legacy `save_overlay`
+(Y1 removes it, 8.2) and the artifact writes of 8.2.
 
 **E1 (Hydra, M): negotiation, identity, error contract, `expect`, `rk`, and the seams.**
 Goal: everything the other engine packages build on, with no behaviour change for protocol 2.
@@ -2364,7 +2657,8 @@ analysisIdentity, cached decompiler hash), `S/Advertised.java` (capability, limi
 declared up front), `S/Settings.java`, `S/Preflight.java`, `S/DbVersions.java` (`program()` and a
 `dataTypes()` that returns `null`; D31, 3.1, 3.2, 3.5, 3.7); `examples/contract_tests.py` (the tests below);
 `examples/check_ownership.py` (E1's **first commit**, section 8: the package ids read from the wave plan
-table, which fixes `Y0e` and `Y4e`; the `<id>-` golden prefix; refusal of frozen files).
+table, which fixes `Y0e` and `Y4e`; the `<id>-` golden prefix; refusal of frozen files; the root documents of the
+Hydralysis table resolved to the repository root).
 Depends on: E0 and P1a (its `cc_e1.py` runs on P1a's loader and vendored 1.0.0 client). Parallel with: Y1, Y0e.
 Surface: hello block (3.2), endpoint fields, `expect`/`rk` (3.4), `next`/`retryAfterMs`.
 Tests: `examples/char_e1.py` new goldens (hello at protocol 3 with `paths`, `platform` and
@@ -2426,7 +2720,9 @@ deleted and the `.bak` intact, `has_overlays` and `expected_state` still see the
 RusticQuery `effects` output check on the committed MSVC fixtures. Fault: kill between engine apply and
 store write (the marker heals it).
 Acceptance: all existing rebase tests green; `verify_before` mismatch rolls the whole transaction back and
-names the effect.
+names the effect; the frozen tests that call `workcopy._apply(settings, engine, program, records, state, timeout)`
+and `workcopy._replayable(settings, target, edit)` (the frozen client tests at lines 144-170 and the frozen
+archive-import tests at lines 33-38) pass unchanged, so Y1 keeps those signatures.
 
 ### W2
 
@@ -2495,17 +2791,19 @@ Acceptance: old goldens identical at protocol 2; golden decompile diff identical
 Files: new `lineage.py`, `commits.py`, `backups.py`; `targets.py` (stable key, `CURRENT.log` resolve),
 `workcopy.py` (shared base key, `pending`, `stale`, `_directory`, clearing a stale `overlay_state` on a
 fresh generation base), `overlayjobs.py` (kind `commit`), `exporting.py` (header, resume refusal), `query.py`
-(`stop`, `status options.show=lineage`), `api.py` (**the handler registry** that replaces the Y0d stubs: it
-imports the handler modules of the later packages lazily and answers `not_available` for a module that
-does not exist yet; 8, 8.2), `tests/fakehydra.py` (fork purposes), new `tests/test_lineage.py`, `tests/test_commit.py`, `tests/test_backups.py`, `tests/vectors/canonical-manifest.json`
+(`stop`, `status options.show=lineage`), `api.py` (**the handler registry** that replaces the Y0d stubs, `api.HANDLER_MODULES`: it
+imports the handler modules of the later packages lazily and answers `not_available` for a module that does not exist yet; 8, 8.2),
+**`tests/test_contracts.py` (`NotAvailableCarriers`, `:111-157`) and `tests/test_cli.py` (its two stub tests): each of those
+tests is rewritten to patch `api.HANDLER_MODULES` with a module that never exists, so that Y4b and Y4e need no edit (8, 8.2)**, `tests/fakehydra.py` (fork purposes), new `tests/test_lineage.py`, `tests/test_commit.py`, `tests/test_backups.py`, `tests/vectors/canonical-manifest.json`
 (a copy of E2's vector, asserted byte-identical at the release gate 9.8), additions to
 `tests/test_engine_integration.py`, `tests/test_exporting.py` (header, resume refusal), `tests/test_overlayjobs.py`
 (kind `commit`) and `tests/test_query.py` (`stop`, `show=lineage`). `backups.py` registers `backend action=backups` (`op=list|verify`) and `commits.py` registers the
 `job` `options` filters (`kind`, `cid`), so that no later package edits `api.py`.
-Depends on: Y1, Y0a, Y0b (`tests/fakehydra.py`), Y0d (`api.py`) and Y0e (the `AppendLog` it builds the
-logs on). Parallel with: E2, E3a.
+Depends on: Y1, Y0a (the `AppendLog` it builds the logs on, as streamed by the W0 follow-up `2bf90c7`), Y0b (`tests/fakehydra.py`), Y0d (`api.py`) and Y0e (`tests/test_cli.py`, whose stub tests it rewrites). Parallel with: E2, E3a.
 Surface: 4.4-4.7.
-Tests: key stability across a generation flip (the overlay store is found); commit preconditions;
+Tests: **the rewritten stub tests of `tests/test_contracts.py` and `tests/test_cli.py` pass with Y2's own handlers
+registered and would pass unchanged when Y4b and Y4e register theirs (they patch the registry with a module that
+never exists and register none of them)**; key stability across a generation flip (the overlay store is found); commit preconditions;
 `dry_run` has zero side effects (tree hash); a commit on a KotOR-sized fixture produces a verified
 generation and an untouched master; revert; one-way confirmation required when format unknown; torn and
 gapped `CURRENT.log`; `tampered` detection; **subset and skip commits** (4.2: dependency closure,
@@ -2534,7 +2832,7 @@ Files (8.1): new `S/Waits.java` (the single timed `tryLock` and the registration
 the thread local), `S/Access.java`, `S/ProgramEntry.java` (waiters, `abandoned`), `S/OverlayCommands.java`
 (lock site only), `S/Connection.java` (`run`: grace, `shutdownNow`, disconnect regardless), `S/Session.java`
 (`disconnect`, optional orphan TTL in `reap`), `S/ProjectCommands.java` (`leaveProject`),
-`S/ProgramCommands.java` (`releaseUse`, `closeEntry`); `examples/dt_e3b.py`, `examples/cc_e3b.py`.
+`S/ProgramCommands.java` (`releaseUse` with the reader-leave fast path of 3.5, `closeEntry`); `examples/dt_e3b.py`, `examples/cc_e3b.py`.
 Out of scope, stated: the untimed overlay-lifecycle `lock()` calls of `OverlayCommands.java` (3.5, 6).
 Depends on: E3a, **E2** (it edits `ProgramCommands.java` and `ProjectCommands.java` after E2 did) and P1a
 (`cc_e3b.py`). Parallel with: Y3.
@@ -2543,12 +2841,15 @@ Tests: `cancel_queued` (slot wait and lock wait answer `cancelled` within 1 s), 
 (kill a client blocked in `wait=3600000`: released within `cleanupGraceS + abandonWaitS + 2 s` for a
 cooperative script), `abandoned_holder` (a deliberately non-cooperative script: `abandonedRequests`,
 `busy{reason:abandoned}`, the program is not disposed, `health` lists it, nothing waits 10 minutes),
-`lock_queue_full`, `applied_flag`, and the three tests of 3.5: **`writer_vs_steady_readers`** (an
+`lock_queue_full`, `applied_flag`, **`reader_leave_no_freeze` and `last_user_leave_disposes` (the fast path of 3.5: a plain
+reader's leave takes no exclusive lock; the first must fail on hydra.3)**, and the three tests of 3.5: **`writer_vs_steady_readers`** (an
 exclusive request against steady shared readers acquires within a bounded time and keeps its FIFO
 position; run first against a slice-polling build, where it must fail), **`cancel_while_waiting`**
 (including 200 cancels raced against the release, no leaked lock and no stray interrupt) and
 `deadline_in_lock_wait`. `cc_e3b` (the stock 1.0.0 client): `dead_client_lock_wait` (V3),
-`abandoned_holder` (V4: `busy` with the existing keys), `cancel_while_waiting` (V5). Characterization
+`abandoned_holder` (V4: `busy` with the existing keys), `cancel_while_waiting` (V5), `reader_leave` (V3: a 1.0.0
+client closes its connection while another client's read runs, and the next join and script are answered within
+their `wait`). Characterization
 unchanged at protocol 2.
 Acceptance: the ownership-bits question (3.5) is decided in review and recorded; golden diff identical.
 
@@ -2614,25 +2915,34 @@ the new limits and the config keys of 3.7; the "Protocols" matrix), `ARCHITECTUR
 classes), `certification.manifest` (its own release entries; every package appends its own files, 8), the
 release workflow (a dry run); Hydralysis: new `tools/bump_hydra.py` and `tests/test_bump_hydra.py`. The **release notes** carry the items
 of 5.2 (D4 `minClient` unchanged, the pin refusal of Hydralysis 0.4.x, V1 to V7 by name) and the full v3 hello
-golden. `tools/bump_hydra.py` generates `RELEASE`, `ASSETS` with SHA-256 and sizes and the `fakehydra`
-constants; **R1 is its only owner**, Y4a runs it. **No tag, no push, no release by this stream**; the tag is an
+golden. `tools/bump_hydra.py` generates `RELEASE`, `PROTOCOL` and `ASSETS` (with SHA-256 and sizes) in `hydra.py`, the
+`fakehydra` constants and the one pin sentence of `README.md`, `THIRD_PARTY.md` and `docs/upstream-setup.md`,
+and **edits no other file** (5; `tests/test_bump_hydra.py` asserts the edit set); **R1 is its only owner**,
+Y4a runs it. **No tag, no push, no release by this stream**; the tag is an
 owner action. Until then Hydralysis tests run against the candidate install with `hydra_allow_unpinned`.
 Depends on: every engine package, **including E6** (R1 runs after E6 within W5).
 
 ### W6
 
-**Y4a (Hydralysis, L): engine adoption and supervisor.** Files: `hydra.py` (capabilities, pin,
-`Supervisor`, deadlines: P1b's on hydra.4, the half-close and abandon helper of 7.6 on hydra.2/3 with its
-pool of entries, the registry of two budgets and `abandoned_cap`), `query.py` (lane hint, shorter waits,
-`wait` below the deadline on hydra.2/3, one entry acquired per attempt in `_ask`, `forget(entry)`; 7.6),
-`tests/fakehydra.py` (v3 fake: queue info, `next`, health; a connection-scoped project and program
-context), new `tests/test_deadline.py` and `tests/test_supervisor.py`, additions to `tests/test_query.py`.
-It **runs** R1's
-`tools/bump_hydra.py` to produce the pin bump and owns the files the script edits; it does not own the
-script. Depends on: R1, Y0b, **Y2** (`tests/fakehydra.py`) and **Y1, Y2, Y3** (`query.py`). Tests: the
-deadline helper of 7.6 (half-close and abandon, never `close()`) against the fake and the real hydra.3 (the
-cases L, S, C of 7.6, the abandoned-connection budgets, the pool entry with `replacement_context` and
-`wait_below_deadline`: the list in 7.6); 7.2 policy against the fake and
+**Y4a (Hydralysis, L): engine adoption and supervisor.** Files: `hydra.py` (capabilities, pin, `Supervisor`,
+deadlines: P1b's on hydra.4, the abandon helper of 7.6 on hydra.2/3 with its pool of entries, the registry of
+two budgets, the leave gate and `abandoned_cap`), `query.py` (lane hint, shorter waits, `wait` below the
+deadline on **every call of the attempt** on hydra.2/3, one entry acquired per attempt in `_ask`,
+`forget(entry)`, and `QueryRunner.stop` over the entries with the report of 7.6; 7.6), `tests/fakehydra.py`
+(the v3 fake: queue info, `next`, health; **the E2 surface that Y4d's tests need: `format` in project info,
+`backup_required` on the upgrade gate, `fork_project purpose:"backup"` writing an engine-style manifest with
+`writer:"engine"`**; and a connection-scoped project and program context that is **opt-in**, default off, so
+that no frozen test changes), new `tests/test_deadline.py` and `tests/test_supervisor.py`, additions to
+`tests/test_query.py` (and the `:285-296` release literals derived from the fake's constant), and
+`tests/test_backends.py` (the release literals `:21` and `:101` derived from `hydra.RELEASE`). It **runs** R1's
+`tools/bump_hydra.py` to produce the pin bump and owns **exactly the files the script edits** (5): `hydra.py`,
+`tests/fakehydra.py` and the three pin statements of `README.md`, `THIRD_PARTY.md` and `docs/upstream-setup.md`
+(8.1 has a W6 cell for each); it does not own the script. Depends on: R1, Y0b, **Y2** (`tests/fakehydra.py`) and
+**Y1, Y2, Y3** (`query.py`); **Y4b and Y4d merge after it** (8).
+Tests: the
+deadline helper of 7.6 (abandon without a FIN, a gated close, never an early `close()`) against the fake and the real hydra.3 (the
+cases L, S, C of 7.6, the abandoned-connection budgets, the leave gate, the pool entry with `replacement_context`,
+`wait_below_deadline` and `leave_gate_no_freeze`: the list in 7.6); 7.2 policy against the fake and
 the real engine (a suspended daemon is restarted within budget; `lost_on_restart` recorded; a slow daemon
 with non-recoverable unsaved edits is not restarted); degrade matrix 7.5 against hydra.3.
 
@@ -2644,7 +2954,7 @@ Tests: zero daemon spawns and zero engine calls when no daemon exists; cites `he
 analysisIdentity`; one finding per section of 7.1.
 
 **Y4d (Hydralysis, M): engine backup and format adoption.** Files: `commits.py`, `backups.py`,
-`lineage.py`, and their tests `tests/test_commit.py`, `tests/test_lineage.py`, `tests/test_backups.py`. Depends on: E2, Y2. Switch backups to `purpose:"backup"` (`writer:"engine"`), use
+`lineage.py`, and their tests `tests/test_commit.py`, `tests/test_lineage.py`, `tests/test_backups.py`. Depends on: E2, Y2 and **Y4a** (in-wave order: its tests run on the fake daemon that Y4a extends with the E2 surface, 8.2). Switch backups to `purpose:"backup"` (`writer:"engine"`), use
 `format` for the confirmation, pass `backup:` to the candidate open. Tests: a Python-written backup is
 accepted by the engine gate and the reverse; fault matrix re-run.
 
@@ -2678,7 +2988,7 @@ Fresh state roots; the live daemons (18220, 17936) are never touched; no game-de
 | 9.5 | **Soak, 12 clients** | `soak_tests.py` PR lane green; one nightly-length run recorded (E6 criteria) |
 | 9.6 | **Upgrade and backup round trip** on the legacy fixture | backup (engine) then gate refusal without it, success with it, on a fork; commit to a new generation; restore the backup alongside; the restored tree hash equals the original; stock Ghidra 12.1.4 opens the restored backup read-only and does **not** open the committed generation (the documented one-way step, shown rather than asserted); source tree hash unchanged throughout |
 | 9.7 | **DB-version check** | `format_gate.py` exit 0: the constants (`ProgramDB` 33, `DataTypeManagerDB` 3, `DataTypeArchiveDB` 5, `ProgramUserDataDB` 1, `SlaFormat` 4 on the sync branch) equal `format-matrix.json`; `hello.analysisIdentity.dbVersions` equal them at runtime and are not `-1`. A changed constant without a matrix entry and release note fails the merge, and also fails any future upstream sync |
-| 9.8 | **Compatibility** | a raw protocol-2 transcript against hydra.4; the 1.1.0 client against hydra.3 (real install) and a fake protocol-2 server; Hydralysis 0.5.x test suite against hydra.3 (degraded set) and hydra.4; `bump_hydra.py` output verified against the zip SHA-256; the two copies of `canonical-manifest.json` (engine and Hydralysis) are byte-identical and both languages verify the other's manifest (3.4) |
+| 9.8 | **Compatibility** | a raw protocol-2 transcript against hydra.4; the 1.1.0 client against hydra.3 (real install) and a fake protocol-2 server; Hydralysis 0.5.x test suite against hydra.3 (degraded set) and hydra.4; `bump_hydra.py` output verified against the zip SHA-256 and its edit set equal to the list of 5; the two copies of `canonical-manifest.json` (engine and Hydralysis) are byte-identical and both languages verify the other's manifest (3.4) |
 | 9.9 | **Fault matrices** | Hydralysis commit points (4.6) with oracle O1-O6; engine `backup_fault`; Y0a torn and zero-length files; all green |
 | 9.10 | **Measurements recorded before any constant is fixed** | fsync latency per volume (F: Dev Drive on USB NVMe, C:, D:, E: HDD); store write cost at 1, 4, 16 writers, **including `write_json` of job and progress records, which now does a read, a `.bak` write and a main write (two fsyncs, two replaces: about 16 ms per 600-byte record on D: in Y0a's review, unmeasured on F:, C: and E:) and is rewritten often by export workers**; backup hash throughput; clone against copy on KotOR (122 MB) with the 1.5 GB program as a stress case only; private-instance open cost on KotOR; quick-lane p99 with the long lane saturated, before and after; the per-phase named-view cost. `quickScriptMaxS`, grace times, ETA budgets, `SYNC_LOCK_S`, copy limits and the private default derive from these |
 | 9.11 | **Hygiene** | every commit authored and committed as `KelpHect <kellhect@gmail.com>` (checked with `git log --format='%an <%ae> | %cn <%ce>'`); `certification.manifest` lists every new file and `buildHeadless` passes the IP check; docs state every limit of section 6; `examples/check_ownership.py` passes for every package branch (8.1) |
@@ -2750,11 +3060,14 @@ Branch `feat/session-extract` @ `b6df709e1e` (Hydra) and `feat/hydralysis-0.5` @
 | `Engine.module()` loads the session library from the engine install; connections are keyed by role; the 1.0.0 `send`/`wait` are thread-safe and `SocketSession` waits with `settimeout(None)` | `hydra.py:229-233`, `:227` at d0466bc (`:315-321`, `:313` at 589432e); `ghidra_session.py:681-682`, `:732-738`, `:845` |
 | `SocketSession.close()` closes `_w` and `_r` before `sock.shutdown`; `wait()` holds `_read_lock` (`:748`) inside `_r.readline()` (`:753`): `close()` from a second thread hangs and sends nothing (experiment, 7.6); the hydra.2 library and the one in the hydra-3 candidate differ only in `HYDRA_RELEASE` | `ghidra_session.py:740-776`, `:866-874`; `D:/Projects/Hydra/_logs/spec-rev3/exp1_client_matrix.py` |
 | `Connection.run` on EOF or reset: `leaving`, cancel every running monitor (observed: `cancelled` false to true), `awaitTermination(1, HOURS)`, no socket close and no unregister until the request threads end (observed on a real hydra.3 daemon) | `Connection.java:93-108`; `D:/Projects/Hydra/_logs/spec-rev3/exp2_engine.py`, `exp2_summary.txt` |
-| A connection is a **client**: the project and the program a call uses belong to it. `Access.projectFor` refuses a project the client has not joined (`no_project: this client has not joined project p1; send open_project`); a script's `program` key must be one the client opened (`no_program`); `open_project` and `open_program` add the client to the `users` set of the project and the program (a `LinkedHashSet`, no limit); `Session.reap` leaves a program with users open; a clean close, a FIN of an idle connection and the end of a request after a FIN remove the entry, an abandoned connection that sent no FIN does not (measured: `users` `[2, 14]` to `[2]`; `[2, 16]` stays) | `Access.java:82-85`, `ProjectCommands.java:83-84`, `ProgramCommands.java:236-237`, `ProgramEntry.java:148`, `Session.java:171-173`; `D:/Projects/Hydra/_logs/spec-rev4/exp5_pool_entry.py`, `exp5_small_out.txt`, `exp5_kotor_out.txt` |
+| A connection is a **client**: the project and the program a call uses belong to it. `Access.projectFor` refuses a project the client has not joined (`no_project: this client has not joined project p1; send open_project`); a script's `program` key must be one the client opened (`no_program`); `open_project` and `open_program` add the client to the `users` set of the project and the program (a `LinkedHashSet`, no limit); `Session.reap` leaves a program with users open; a clean close, a FIN of an idle connection and the end of a request after a FIN remove the entry, an abandoned connection that sent no FIN and is never closed does not (measured: `users` `[2, 14]` to `[2]`; `[2, 16]` stays) | `Access.java:82-85`, `ProjectCommands.java:83-84`, `ProgramCommands.java:236-237`, `ProgramEntry.java:148`, `Session.java:171-173`; `D:/Projects/Hydra/_logs/spec-rev4/exp5_pool_entry.py`, `exp5_small_out.txt`, `exp5_kotor_out.txt` |
+| `ProgramCommands.releaseUse` takes the program's **exclusive** lock for every leave (`close_program`, `leaveProject`, `Session.disconnect`); the program lock is a fair `ReentrantReadWriteLock`, so a queued exclusive makes every new shared acquirer wait behind a running reader: a new entry's `open_program` and an already-joined entry's script fail `busy` after their `wait` (measured on hydra-3-candidate and the refactor build; absent when the leaving entry was never closed, and with the fast path of 3.5 compiled over the same engine) | `ProgramCommands.java:461-472`, `:480`, `ProjectCommands.java:286-327`, `ProgramEntry.java:115`, `:191-196`; `D:/Projects/Hydra/_logs/spec-rev5/exp/` (`exp11_rerun.py`, `exp12_rerun.py`, `exp13_leave_rules.py`, `exp14_last_user.py`, `exp15_busy_first_script.py`, `exp16_first_script.py`, `exp16c_cold_script.py`, with their `*_out.txt`) |
+| The pinned release literal `12.3-hydra.<n>` is in `hydra.py` (`RELEASE`), `tests/fakehydra.py:28`, `tests/test_backends.py:21` and `:101`, `tests/test_query.py:285-296`, `README.md:50`, `THIRD_PARTY.md:16` and `docs/upstream-setup.md:24`, and as history in `docs/golden-harness.md` and `docs/verification-*.md`; `hydra.py` builds the message `test_backends.py:101` asserts from `RELEASE` | `git grep` at `8e696e2`; `hydra.py:30`, `:216-217` (`:29`, `:190-191` at `589432e`) |
+| `tests/test_contracts.py:111-157` and Y0e's `tests/test_cli.py` assert `not_available` for `doctor`, `backups`, `ghidra_run` `options` and `job` `options` through the real dispatcher | `tests/test_contracts.py`, `tests/test_cli.py`; `api.py:426`, `:504-526` at `f46788b` |
 | `Engine` (`hydra.py:209` at d0466bc, `:295` at 589432e) is one connection per process and root, shared by every thread; `_keys` is a module dict keyed `(engine.key, gpr, program, writable)`; `forget(engine)` drops one engine's rows; `QueryRunner._ask` retries once after `no_program`, `not_found`, `no_project`, `closed` | `hydra.py:209`, `:227`, `:268` and `:295`, `:313`, `:385`; `query.py:33`, `:49`, `:70`, `:184-210` (same at both bases) |
 | On hydra.3 a request with `wait=3000` for a program held by another client is answered `busy` at 3.0 s and leaves nothing registered; `shutdown(SHUT_WR)` ends every request in flight on the connection (B cancelled 0.02 s after the FIN, A, which ignores cancel, went on for 12.1 s) | `D:/Projects/Hydra/_logs/spec-rev4/exp6_wait_and_collateral.py`, `exp6_out.txt` |
 | Overlays have no journal; the overlay lifecycle takes untimed `lock()` calls | `OverlayCommands.java:228, 238, 251, 319, 352, 404`; no `journal` in `OverlayCommands.java` or `Overlay.java` |
-| `AppendLog` at Hydralysis `589432e` reads whole logs through `localio.read_bytes` (32 MiB budget); the write gate freezes 41 (file, function, kind) keys outside `durable.py` (43 call sites): 11 non-record keys, 8 record-bearing and 22 artifact keys | `durable.py` (`AppendLog`), `localio.py:18`, `tests/test_durable.py` (`FOLLOW_UP`, `NOT_A_RECORD`) |
+| `AppendLog` at Hydralysis `589432e` read whole logs through `localio.read_bytes` (32 MiB budget; streamed since `2bf90c7`); the write gate freezes 41 (file, function, kind) keys outside `durable.py` (43 call sites): 11 non-record keys, 8 record-bearing and 22 artifact keys | `durable.py` (`AppendLog`), `localio.py:18`, `tests/test_durable.py` (`FOLLOW_UP`, `NOT_A_RECORD`) |
 | hydra.3 candidate: `decompile.exe` sha256 starts `4f4680aa1c22`; gate PASS, KotOR 8616/8616 identical to hydra-2 | `t2_impl_gate.json` (stream report) |
 
 ## Appendix B: what the source designs got wrong or left out
@@ -2779,6 +3092,61 @@ Found by reading the code; each is handled in the section named.
 15. **Test files would collide**: every package wanted `daemon_tests.py` (D30).
 
 ## Revision history
+
+**Revision 5 (answers the fourth independent review: three blocking items and nine nits, and four items folded in from the W0 package reviews).** Docs only; no code in any repository this stream owns; one commit on `design/protocol-3`.
+The review's verdict was that revision 4 was not clean: two frozen tests that no row could edit would break
+when later packages made their assertions false (BLOCKING 1 and 2), and a pool entry's leave stalls every other
+reader of its program (BLOCKING 3). Every claim below was checked against the code or by experiment before
+the text was written. New experiments, on the real hydra-3-candidate daemon, the refactor build
+(`hydra-session-after`, same behaviour) and one experimental engine copy (`hydra-spec-rev5-patched`: the refactor
+build with one class replaced through `Ghidra/patch/`; not a package), Python 3.15.0, fresh state roots under
+`D:/Projects/Hydra/_logs/spec-rev5/exp/`: `exp11_rerun.py` and `exp12_rerun.py` (the reviewer's scripts, re-run
+first), `exp13_leave_rules.py` (scenarios A to E, run on both engines), `exp14_last_user.py`,
+`exp15_busy_first_script.py`, `exp16_first_script.py`, `exp16c_cold_script.py`, with their `*_out.txt`; the
+experimental patch is `D:/Projects/Hydra/_logs/spec-rev5/patch/src/ProgramCommands.java`; the proof is
+`D:/Projects/Hydra/_logs/spec-rev5/prove_disjoint_rev5.py` with `prove_disjoint_rev5_out.txt` (and
+`prove_disjoint_rev5_on_rev4_out.txt`). No live daemon was touched. **Rejected: none.** Two of the reviewer's
+statements are **refined**, not rejected: (1) BLOCKING 3 says every shared acquirer "is refused busy until the
+running read ends": a waiter is refused only when its own `wait` is shorter than what remains of the running read
+(it otherwise just waits, longer); (2) "today's single shared connection never leaves, so this is new with the
+pool": the stall is the same in kind for any client that leaves (another agent's process, a harness exit,
+Hydralysis's own `close_program` in `stop`), the pool makes it frequent. Revision 5 also **found** three things the review
+did not name (rows F1 to F3).
+
+| Item | Disposition | Where | Note |
+|---|---|---|---|
+| BLOCKING 1: `tests/test_contracts.py` (frozen after W0) asserts the Y0d stubs forever; Y2, Y4b, Y4e break it, no row may edit it | fixed | 8 (new bullet and the `api.py` bullet), 8.1, 8.2, 7.7, Y2, Y0e, wave plan | `tests/test_contracts.py` gets a **W2 cell for Y2**, and **Y2 rewrites the four stub tests** (`NotAvailableCarriers`, `:111-157`: doctor and backups; `ghidra_run` options; job options) to patch `api.HANDLER_MODULES` (the seam Y2 builds, named in the spec: `{"backups", "doctor", "jobOptions", "scriptIsolation"}` to handler module paths, read at call time) with a module that never exists, so the dispatcher's own `not_available` path stays asserted whichever handler modules exist and **Y4b and Y4e edit neither file**; the option-validation test (`:132-138`) and the non-stub assertions inside the four (plain calls, `:142-143`, `:158-161`) are unchanged. **The generalised detector** (`prove_disjoint_rev5.py`): every frozen test file that contains the literal `not_available` at the Hydralysis revisions is listed and must have a W2 cell for Y2 whose text names the registry and the file. On the **revision 4 text** it exits 1 with 12 violations: *`tests/test_cli.py  revs ['8e696e2']; cells {'W1': ['Y0e']} -> VIOLATION`* and *`tests/test_contracts.py  revs ['589432e', '8e696e2', 'f46788b']; cells {'W0': ['Y0d']} -> VIOLATION`* (and ten pinned-literal violations, BLOCKING 2); on the **revision 5 text** exit 0: *`tests/test_cli.py ... cells {'W1': ['Y0e'], 'W2': ['Y2']} -> OK`*, *`tests/test_contracts.py ... cells {'W0': ['Y0d'], 'W2': ['Y2']} -> OK`* |
+| F1 (found by the detector): Y0e's own `tests/test_cli.py` (committed in `8e696e2`) asserts `not_available` twice, through the CLI | fixed with BLOCKING 1 | 8, 8.1 (a W2 cell for Y2 on `tests/test_cli.py`), 8.2, Y0e, Y2 | the reviewer named only `tests/test_contracts.py`; the same class had just been created by Y0e (`test_doctor_and_backups_pass_the_not_available_answer_through_without_side_effects` and `test_the_call_command_reaches_doctor_too`); Y2 rewrites both in W2 |
+| BLOCKING 2: Y4a "owns the files the script edits" and names none; `tests/test_backends.py` (frozen) hard-codes the pinned release | fixed | 5, 8, 8.1, 8.2, Y4a, R1, 9.8 | the files `tools/bump_hydra.py` edits are **listed**: `hydra.py` (`RELEASE`, `PROTOCOL`, `ASSETS`), `tests/fakehydra.py`, and the one pin sentence of each of `README.md`, `THIRD_PARTY.md` and `docs/upstream-setup.md` (found by the scan; the review named only the first two), each with a W6 cell for Y4a; the history documents (`docs/golden-harness.md`, `docs/verification-*.md`) are listed as untouched. **Decided: derive, not edit per bump**: Y4a (W6 cell added for `tests/test_backends.py`) rewrites `test_backends.py:21` and `:101` to read `hydra.RELEASE` and `test_query.py:285-296` to read the fake's constant, once, so that no bump edits a test; `tests/test_bump_hydra.py` asserts that the script edits only the listed files. **The pinned-literal scan** (`12.3-hydra.<n>` over the whole tree at the four Hydralysis revisions) requires each hit to be in the bump list, the Y4a rewrite list (with Y4a's text saying it derives from `hydra.RELEASE`) or the historical list: revision 4 text, 10 violations; revision 5 text, 0, with the output *`hydra.py -> OK: edited by bump_hydra.py, a W6 cell of Y4a`*, *`tests/test_backends.py -> OK: Y4a rewrites it to derive the release`*, *`docs/golden-harness.md -> OK: historical, not edited`* |
+| BLOCKING 3: an entry that joined a program and leaves queues `releaseUse`'s exclusive lock; every new shared acquirer waits behind it (7.6, 'users and the cap', `replacement_context`, step 5, `QueryRunner.stop`, 6) | fixed, **by experiment**, in two layers | 3.5 (new paragraph), D19, D33, 5.1 V3, 6, 7.2, 7.5, 7.6 (deadline bullet, unit of the pool, read-only bullet, `users` bullet, new 'Leaving a program', steps 1, 4, 5, 6, P1b/E3b paragraph, tests), 3.8, E3b, Y4a, Appendix A | **Reproduced first** (hydra-3-candidate, fresh roots): `exp11_rerun`: control without a leave: join 3 ms, script 36.4 ms; `clean_close`: *`Y (after X left) join busy after 1509.5 ms`*; `fin`: *`join busy after 1509.1 ms`*; `abandon_no_fin`: *`join ok 4 ms`, `Y script ok 35.5`*; `exp12_rerun`: *`joined-entry script busy 1509.3 shared 1`*, *`joined-entry functions busy 1507.4 shared 1`*, *`after holder ended 37.0`*. **Engine layer (E3b, hydra.4, all protocols, declared with V3):** a plain reader's leave (neither owner nor shared writer, no overlay, **not the last user**) takes no exclusive lock; check and removal are one step under `synchronized (e.users)`, so the last user always takes today's path. **Measured** with that one change compiled over the same engine (`exp13` on `hydra-spec-rev5-patched`): scenario A *`probe new-entry join: ok 3 ms`, `joined entry: script ok 44 ms`*; C (FIN, rev. 4 mechanism) *`ok 3 ms`, `ok 42 ms`*; E *`ok 3 ms`, `script ok 189 ms`* (unpatched: busy after 1,509, 1,510 and 1,511 ms); `exp14` gives identical `users` lists and dispose behaviour on both engines (six entries closed concurrently, five rounds; the sole user; a second user). Tests in E3b: `reader_leave_no_freeze` (must fail on hydra.3), `last_user_leave_disposes`, `cc_e3b` `reader_leave`. **Client layer (hydra.2/3, where the engine cannot change): rules L1 to L3**: no FIN or early close on an entry that joined a program while a request runs on it (**the half-close of revision 3 is withdrawn**: a FIN adds nothing `cancel` had not done, its one distinct effect is the leave at the end of the request), a **leave gate** (a joined entry is closed only when this process has no read in flight on a program it joined; the abandoned worker closes its session itself after the engine's answer, through the gate), at most 8 entries waiting in the closing list, and the four live entries are never closed for being idle. Measured on the unpatched engine: C (rev. 4) *`join busy after 1510 ms`*, D (no FIN, gated) *`join ok 4 ms`, `script ok 43 ms`, deferred close 0.1 ms*, E (no FIN, close at once) *`join busy after 1511 ms`*, B (idle entry kept, closed after the read) *`ok 3 ms`, `ok 41 ms`, close 0.3 ms*. `replacement_context` is now **deterministic** (polls with bounds, no fixed sleeps, five numbered assertions, including the deferred close during another read); new tests `leave_gate_no_freeze`, the gate tests against the fake, `wait_below_deadline` extended to the opens; the `users` arithmetic is 1 + 4 + 8 + 8 = **21**; section 6 states the limit (another process's leave and `close_program` from anyone still stall, bounded and visible); `QueryRunner.stop` is specified (N7). **Rejected alternative:** never leaving at all (keeping every entry open for the process lifetime) is the rule for idle entries only; the abandoned and retiring entries must eventually close, which is what the gate is for |
+| N1: the unit of the pool is the attempt, not the call; does `deadline_s` cover all three | fixed | 7.6 ('The unit of the pool is the attempt', steps 1, 2, 4), D33, 7.5, Y4a | verified (`query.py:54`, `:58`, `:90`): one `_ask` attempt is `open_project` + `open_program` + `script`; **`deadline_s` is the deadline of the attempt**, one clock from the acquire, every call takes what is left; `_ask`'s second attempt starts a new clock (up to two deadlines and two graces, about 130 s, the existing retry rule); test: a fake whose `open_program` and script take 40 s each gives `deadline_exceeded` at 60 s plus the grace, not at 120 s |
+| N2: the two opens send `wait=BUSY_WAIT_MS` and are deadline-bound too | fixed, **by experiment** | 7.6 (the unit paragraph, 'A lock wait needs no abandon', `wait_below_deadline`), Y4a | verified (`query.py:29`, `:54`, `:58`): both opens now send `wait = min(25 s, remaining / 2)` on hydra.2/3; measured on the real engine that both opens honour a short `wait` (*busy after 1509 ms*, `exp13` A, `exp11_rerun`); `wait_below_deadline` covers them |
+| N3: the health probe is "one pool entry per call" (7.5) or its own connection (7.2, 7.6) | fixed | 7.5, 7.2 | **one wording**: the probe has its own connection, outside the entries; it joins nothing, so its close takes no program lock and needs no gate |
+| N4: cost numbers are from a quiet daemon; the first script on a replacement entry while another script runs | fixed, **by experiment** | 7.6 ('Quiet and busy') | said; busy figures added: join unchanged (3.1 and 1.3 ms with an 8 s script running, `exp15`); **the slow first script is not per entry**: it is the first-ever run of a script file while another instance still runs, 1,813, 2,157 and 1,626 ms (`exp15`), 2,130 ms (`exp16c`) for the first new entry and 37.7 ms for the next one; with the script warm, 46.6 ms against 42.1 ms quiet (`exp16`); the reviewer's 325 ms and 1.70 s and the 1.55 s KotOR outlier are consistent with it, not diagnosed |
+| N5: Y4d's tests need fake-engine support (`format`, `backup_required`, `purpose:"backup"`, `writer:"engine"`) but `tests/fakehydra.py` is Y4a's; a connection-scoped fake may break frozen tests | fixed | 8.2, 8.1, Y4a, Y4d, wave plan | **assigned to Y4a** (the file is Y4a's in W6): it adds the E2 surface, and the connection scope is **opt-in** (`connection_scoped`, default off), so every frozen test keeps the single-context fake; Y1 keeps the signatures that frozen tests call (`workcopy._apply`, `workcopy._replayable`, `tests/test_client.py:144-170`, `tests/test_archive_import.py:33-38`; its acceptance runs them unchanged); Y4d depends on Y4a |
+| N6: E1 widens `check_ownership.py`'s regex | verified, extended | 8 (rule 4), 8.2, E1 | already an E1 task (first commit); confirmed with the shipped checker patched to `[a-e]`; extended with the Hydralysis root documents (`README.md`, `THIRD_PARTY.md`, `docs/...` resolve under `src/hydralysis/` today), which the new rows need; Y0e's branch passes the matrix with the widened pattern (`8e696e2`: six files, 0 violations) |
+| N7: `QueryRunner.stop` after the pool: what do `released` and `failed` contain | fixed | 7.6 (`users` bullet), Y4a, tests | specified: wait for the gate (at most the grace), `close_program` on the shared connection and on every entry that joined the target, never a connection close; `released` lists each daemon program key once, `failed` has `{program, entry, error}` per failed close, `ok` is `not failed`, one additive key `entries: {closed, deferred}` |
+| N8: wording 'by one Hydralysis process; the engine has no cap' | fixed | 7.6 (`users` bullet), 6 | said: 21 per program for one process, and the engine has no cap (twelve entries listed fourteen ids), other processes add theirs |
+| N9: Y4a-before-Y4b/Y4d order for `tests/fakehydra.py` | fixed | wave plan, 8.1 text, Y4d | **declared**: Y4b and Y4d merge after Y4a; Y4d's `Depends on` names Y4a; the proof prints Y4d after Y4a as an in-wave order |
+| (a) 8.1 needs a row for the v2 goldens under E0 (`check_ownership --package E0` exits 1 on `fork_refresh.json`, `overlays.json`) | fixed | 8.1 (new Hydra row), 8 (rule 3), 8.2, E0 | a row lists the seven goldens for E0 (W0); rule 3 no longer calls them frozen forever; the documented reason: the total size of the copied project varies with the host address (`FILE_ID = hex(host IPv4) + hex(port) + nanoTime`, stored 3 times per program, `FileIDFactory.java:33-54`; 27-character ids against 24 changed the total by 18 bytes), so `bytes` is masked in dicts that also have `mode`, 14 lines changed; `check_ownership.check_changes` for E0 over the six files of E0's three commits: revision 4 text, 2 violations (the two goldens); revision 5 text, 0 |
+| (b) E0's `import_wait` test text says `max(importsMs) >= 19000` | fixed | E0 | now: slowest import within 19000..23000 ms (`SLOWEST_IMPORT_MAX_MS = 23000`) and spread within 8000..12000 ms, as committed in `f47ff15934` (`dt_baseline.py:55-58`), with the evidence keys; the failure paths were not exercised on a real failing observation (said) |
+| (c) Y0a / 4.1 wording: the every-acquisition tail check | fixed | 4.1 item 3 (writers, tests), 6, Appendix A | `589432e`'s `_clean_tail` already repaired a no-LF tail; the rule is **new only for LF-terminated damage**; the discriminating scenario is another process leaving an LF-terminated invalid line (it fails with `LineageCorrupt: invalid line at byte 17 followed by a valid line` on `589432e`, passes on `b0b947b`); the no-LF case is a contract guard |
+| (d) committed Y0a to Y0d code differs from the spec | fixed (spec follows the code) | 7.6 (`EngineError`, Pools), 7.7, 8.2, Y0b, Y0c, Y0d, D25 | `EngineError`: lists 5 plus `more`, **`next` and `retryAfterMs` uncapped**, the lists inside `queue` capped at 64 with `more["queue.waiting"]` (`33cb5ee`, `5018367`); catalog **epoch 2** (epoch 1 never left the branch; the address text keeps only the refusal clause, 8,172 bytes against 8,192, the long form costs 104 more); `MAX_OUTSTANDING` per lane with the busy hint as text **and** `structuredContent.retryAfterMs` (`49d5bb6`) |
+| F2 (found): the catalog is reported in four places, not two | fixed | 7.7, 8.2, Y0d | `backend` `status`, `help` and `inspect` and the MCP `initialize` `_meta` (`1584f6e`; `test_inspect_and_the_mcp_initialize_reply_report_the_catalog_too`); the spec said 'nowhere else' |
+| F3 (found): three of Y0e's revision 4 tasks had already landed in the W0 follow-ups | fixed (spec follows the code) | 4.1, 6, 8.1, 8.2, Y0e, wave plan, header | the streamed `AppendLog` reads, the every-acquisition check and the two-process tests (`2bf90c7`, `b0b947b`), the `EngineError` `next` exemption (`33cb5ee`, `5018367`) and the `test_client.py` guard (`33cb5ee`) were done before Y0e; Y0e (`8e696e2`) verified them; the Y0e cells for `durable.py`, `tests/test_client.py` and `tests/test_runtime.py` are removed (the last row with it), section 6's 32 MiB limit is replaced by what remains for Y2 (strictness of `last()`, rotation); `write_json` is `write_sealed` in the code |
+
+Also while re-reading the whole file: the Contents, D1 to D34 (no new decision number: D19, D25 and D33 are amended),
+the packages, the wave plan, 8.1 and the cross-references of 7.6 were checked against each other. **Proof output**
+(`prove_disjoint_rev5.py`, exit 0): *24 ids identical; 69 matrix rows, 165 (repo, wave, file) owner cells; 24 package
+blocks; files edited by the text but granted by no row or rule: none; Y1 deletes `save_overlay` and
+`load_overlays`, both granted to Y1; declared sequences: 1 (`tests/test_durable.py`, Y0e then Y1); 57 existing
+test, example, tool and benchmark files: 28 with a row, 0 by rule, 29 frozen (the seven v2 goldens now have a row);
+dependency cycles: none; in-wave order: E1 after P1a, R1 after E6, Y1 after Y0e, Y4b and Y4d after Y4a; a later
+owner not depending on an earlier one: none; frozen tests asserting a stub: `tests/test_cli.py` and
+`tests/test_contracts.py`, both OK; pinned release literals: 10 files, all OK; catalog epoch asserted by `tests/test_contracts.py` only, and no later package changes it, OK; RESULT: 0 violations.* The same
+script on the revision 4 text exits 1 with 12 violations. Counts: 24 packages, 69 matrix rows, 165 owner cells,
+1 declared in-wave sequence, 13 reply-shape conditionals, 6 behaviour gates, 8 G rows, 7 V rows and 34 decisions
+unchanged.
 
 **Revision 4 (answers the third independent review: two blocking items and eleven nits).** Docs only; no
 code; one commit on `design/protocol-3`. The review's verdict was that revision 3's three original
