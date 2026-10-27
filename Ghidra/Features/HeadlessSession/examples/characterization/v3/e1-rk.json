@@ -1,0 +1,770 @@
+{
+ "scenario": "e1-rk",
+ "protocol": 3,
+ "steps": [
+  {
+   "step": 1,
+   "who": "a",
+   "cmd": "open_project",
+   "request": {
+    "path": "<WORK>/e1rk/Fixture.gpr",
+    "writable": true
+   },
+   "response": {
+    "id": 2,
+    "ok": true,
+    "result": {
+     "id": "p1",
+     "name": "Fixture",
+     "dir": "<WORK>/e1rk",
+     "gpr": "<WORK>/e1rk/Fixture.gpr",
+     "writable": true,
+     "openMs": "<masked>",
+     "idleMs": "<masked>",
+     "files": 2,
+     "users": [
+      1
+     ],
+     "programs": 0,
+     "revision": "<rev1>",
+     "diskRevision": "<rev1>",
+     "stale": false,
+     "generation": 1,
+     "fork": null,
+     "opened": true
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 2,
+   "who": "a",
+   "cmd": "open_program",
+   "request": {
+    "path": "/alpha.exe",
+    "writable": true
+   },
+   "response": {
+    "id": 3,
+    "ok": true,
+    "result": {
+     "key": "p1:/alpha.exe",
+     "project": "p1",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "writable",
+     "owner": 1,
+     "mine": true,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": false,
+     "revision": "<rev2>",
+     "projectRevision": "<rev1>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1
+     ],
+     "overlays": [],
+     "writers": [],
+     "writer": true,
+     "journalSeq": 0,
+     "unsavedEdits": 0,
+     "openMs": "<masked>"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 3,
+   "who": "a",
+   "cmd": "edit",
+   "request": {
+    "ops": [
+     {
+      "op": "rename",
+      "address": "0x140001040",
+      "name": "e1_two"
+     },
+     {
+      "op": "comment",
+      "address": "0x140001040",
+      "text": "rk comment",
+      "type": "pre"
+     }
+    ],
+    "rk": "rk-edit-1"
+   },
+   "response": {
+    "id": 4,
+    "ok": true,
+    "result": {
+     "program": "p1:/alpha.exe",
+     "applied": 2,
+     "results": [
+      {
+       "address": "0x140001040",
+       "name": "e1_two",
+       "old": "FUN_140001040",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "seq": 1
+      },
+      {
+       "address": "0x140001040",
+       "type": "pre",
+       "old": null,
+       "text": "rk comment",
+       "op": "comment",
+       "seq": 2
+      }
+     ],
+     "seqs": [
+      1,
+      2
+     ],
+     "unsavedEdits": 2
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 4,
+   "who": "a",
+   "cmd": "edit",
+   "request": {
+    "ops": [
+     {
+      "op": "rename",
+      "address": "0x140001040",
+      "name": "e1_two"
+     },
+     {
+      "op": "comment",
+      "address": "0x140001040",
+      "text": "rk comment",
+      "type": "pre"
+     }
+    ],
+    "rk": "rk-edit-1"
+   },
+   "response": {
+    "id": 5,
+    "ok": true,
+    "result": {
+     "replayed": true,
+     "program": "p1:/alpha.exe",
+     "applied": 2,
+     "seqs": [
+      1,
+      2
+     ],
+     "results": [
+      {
+       "seq": 1,
+       "at": "<masked>",
+       "client": 1,
+       "name": "e1-a",
+       "harness": "e1-h",
+       "cmd": "edit",
+       "address": "0x140001040",
+       "old": "FUN_140001040",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "rk": "rk-edit-1",
+       "new": "e1_two"
+      },
+      {
+       "seq": 2,
+       "at": "<masked>",
+       "client": 1,
+       "name": "e1-a",
+       "harness": "e1-h",
+       "cmd": "edit",
+       "address": "0x140001040",
+       "type": "pre",
+       "old": null,
+       "text": "rk comment",
+       "op": "comment",
+       "rk": "rk-edit-1",
+       "new": "rk comment"
+      }
+     ],
+     "unsavedEdits": 2
+    },
+    "ms": "<masked>"
+   },
+   "note": "the same rk: replayed, not applied"
+  },
+  {
+   "step": 5,
+   "who": "a",
+   "cmd": "rename",
+   "request": {
+    "address": "0x140001020",
+    "name": "e1_one",
+    "rk": "rk-ren-1"
+   },
+   "response": {
+    "id": 6,
+    "ok": true,
+    "result": {
+     "address": "0x140001020",
+     "name": "e1_one",
+     "old": "FUN_140001020",
+     "kind": "function",
+     "created": false,
+     "seq": 3
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 6,
+   "who": "a",
+   "cmd": "rename",
+   "request": {
+    "address": "0x140001020",
+    "name": "e1_other",
+    "rk": "rk-ren-1"
+   },
+   "response": {
+    "id": 7,
+    "ok": true,
+    "result": {
+     "replayed": true,
+     "seq": 3,
+     "result": {
+      "seq": 3,
+      "at": "<masked>",
+      "client": 1,
+      "name": "e1-a",
+      "harness": "e1-h",
+      "cmd": "rename",
+      "address": "0x140001020",
+      "old": "FUN_140001020",
+      "kind": "function",
+      "created": false,
+      "op": "rename",
+      "rk": "rk-ren-1",
+      "new": "e1_one"
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "a different name, the same rk: still the first result"
+  },
+  {
+   "step": 7,
+   "who": "a",
+   "cmd": "comment",
+   "request": {
+    "address": "0x140001020",
+    "text": "rk",
+    "rk": "rk-com-1"
+   },
+   "response": {
+    "id": 8,
+    "ok": true,
+    "result": {
+     "address": "0x140001020",
+     "type": "eol",
+     "old": null,
+     "text": "rk",
+     "seq": 4
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 8,
+   "who": "a",
+   "cmd": "comment",
+   "request": {
+    "address": "0x140001020",
+    "text": "rk",
+    "rk": "rk-com-1"
+   },
+   "response": {
+    "id": 9,
+    "ok": true,
+    "result": {
+     "replayed": true,
+     "seq": 4,
+     "result": {
+      "seq": 4,
+      "at": "<masked>",
+      "client": 1,
+      "name": "e1-a",
+      "harness": "e1-h",
+      "cmd": "comment",
+      "address": "0x140001020",
+      "type": "eol",
+      "old": null,
+      "text": "rk",
+      "op": "comment",
+      "rk": "rk-com-1",
+      "new": "rk"
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 9,
+   "who": "a",
+   "cmd": "rename",
+   "request": {
+    "address": "0x140001020",
+    "name": "e1_one_b",
+    "rk": "rk-ren-2"
+   },
+   "response": {
+    "id": 10,
+    "ok": true,
+    "result": {
+     "address": "0x140001020",
+     "name": "e1_one_b",
+     "old": "e1_one",
+     "kind": "function",
+     "created": false,
+     "seq": 5
+    },
+    "ms": "<masked>"
+   },
+   "note": "another rk is applied"
+  },
+  {
+   "step": 10,
+   "who": "a",
+   "cmd": "edit",
+   "request": {
+    "ops": [
+     {
+      "op": "rename",
+      "address": "0x140001040",
+      "name": "e1_two"
+     }
+    ]
+   },
+   "response": {
+    "id": 11,
+    "ok": true,
+    "result": {
+     "program": "p1:/alpha.exe",
+     "applied": 1,
+     "results": [
+      {
+       "address": "0x140001040",
+       "name": "e1_two",
+       "old": "e1_two",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "seq": 6
+      }
+     ],
+     "seqs": [
+      6
+     ],
+     "unsavedEdits": 6
+    },
+    "ms": "<masked>"
+   },
+   "note": "no rk: applied each time"
+  },
+  {
+   "step": 11,
+   "who": "a",
+   "cmd": "edit",
+   "request": {
+    "ops": [
+     {
+      "op": "rename",
+      "address": "0x140001040",
+      "name": "e1_two"
+     }
+    ]
+   },
+   "response": {
+    "id": 12,
+    "ok": true,
+    "result": {
+     "program": "p1:/alpha.exe",
+     "applied": 1,
+     "results": [
+      {
+       "address": "0x140001040",
+       "name": "e1_two",
+       "old": "e1_two",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "seq": 7
+      }
+     ],
+     "seqs": [
+      7
+     ],
+     "unsavedEdits": 7
+    },
+    "ms": "<masked>"
+   },
+   "note": "no rk: applied each time"
+  },
+  {
+   "step": 12,
+   "who": "a",
+   "cmd": "edit",
+   "request": {
+    "ops": [
+     {
+      "op": "rename",
+      "address": "0x140001040",
+      "name": "e1_two"
+     }
+    ],
+    "rk": null
+   },
+   "response": {
+    "id": 13,
+    "ok": true,
+    "result": {
+     "program": "p1:/alpha.exe",
+     "applied": 1,
+     "results": [
+      {
+       "address": "0x140001040",
+       "name": "e1_two",
+       "old": "e1_two",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "seq": 8
+      }
+     ],
+     "seqs": [
+      8
+     ],
+     "unsavedEdits": 8
+    },
+    "ms": "<masked>"
+   },
+   "note": "rk null is no rk"
+  },
+  {
+   "step": 13,
+   "who": "a",
+   "cmd": "edit",
+   "request": {
+    "ops": [
+     {
+      "op": "rename",
+      "address": "0x140001040",
+      "name": "e1_two"
+     }
+    ],
+    "rk": 7
+   },
+   "response": {
+    "id": 14,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "rk must be a string of 1 to 64 characters",
+     "details": {
+      "field": "rk"
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "rk must be a string"
+  },
+  {
+   "step": 14,
+   "who": "a",
+   "cmd": "rename",
+   "request": {
+    "address": "0x140001020",
+    "name": "x",
+    "rk": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk"
+   },
+   "response": {
+    "id": 15,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "rk must be a string of 1 to 64 characters",
+     "details": {
+      "field": "rk"
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "rk is at most 64 characters"
+  },
+  {
+   "step": 15,
+   "who": "a",
+   "cmd": "comment",
+   "request": {
+    "address": "0x140001020",
+    "text": "x",
+    "rk": ""
+   },
+   "response": {
+    "id": 16,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "rk must be a string of 1 to 64 characters",
+     "details": {
+      "field": "rk"
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 16,
+   "who": "a",
+   "cmd": "edit",
+   "request": {
+    "ops": [
+     {
+      "op": "rename",
+      "address": "0x140001040",
+      "name": "e1_two"
+     }
+    ],
+    "rk": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk"
+   },
+   "response": {
+    "id": 17,
+    "ok": true,
+    "result": {
+     "program": "p1:/alpha.exe",
+     "applied": 1,
+     "results": [
+      {
+       "address": "0x140001040",
+       "name": "e1_two",
+       "old": "e1_two",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "seq": 9
+      }
+     ],
+     "seqs": [
+      9
+     ],
+     "unsavedEdits": 9
+    },
+    "ms": "<masked>"
+   },
+   "note": "64 characters is fine"
+  },
+  {
+   "step": 17,
+   "who": "a",
+   "cmd": "journal",
+   "request": {},
+   "response": {
+    "id": 18,
+    "ok": true,
+    "result": {
+     "program": "p1:/alpha.exe",
+     "seq": 9,
+     "savedSeq": 0,
+     "dropped": 0,
+     "entries": [
+      {
+       "seq": 1,
+       "at": "<masked>",
+       "client": 1,
+       "name": "e1-a",
+       "harness": "e1-h",
+       "cmd": "edit",
+       "address": "0x140001040",
+       "old": "FUN_140001040",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "rk": "rk-edit-1",
+       "new": "e1_two"
+      },
+      {
+       "seq": 2,
+       "at": "<masked>",
+       "client": 1,
+       "name": "e1-a",
+       "harness": "e1-h",
+       "cmd": "edit",
+       "address": "0x140001040",
+       "type": "pre",
+       "old": null,
+       "text": "rk comment",
+       "op": "comment",
+       "rk": "rk-edit-1",
+       "new": "rk comment"
+      },
+      {
+       "seq": 3,
+       "at": "<masked>",
+       "client": 1,
+       "name": "e1-a",
+       "harness": "e1-h",
+       "cmd": "rename",
+       "address": "0x140001020",
+       "old": "FUN_140001020",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "rk": "rk-ren-1",
+       "new": "e1_one"
+      },
+      {
+       "seq": 4,
+       "at": "<masked>",
+       "client": 1,
+       "name": "e1-a",
+       "harness": "e1-h",
+       "cmd": "comment",
+       "address": "0x140001020",
+       "type": "eol",
+       "old": null,
+       "text": "rk",
+       "op": "comment",
+       "rk": "rk-com-1",
+       "new": "rk"
+      },
+      {
+       "seq": 5,
+       "at": "<masked>",
+       "client": 1,
+       "name": "e1-a",
+       "harness": "e1-h",
+       "cmd": "rename",
+       "address": "0x140001020",
+       "old": "e1_one",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "rk": "rk-ren-2",
+       "new": "e1_one_b"
+      },
+      {
+       "seq": 6,
+       "at": "<masked>",
+       "client": 1,
+       "name": "e1-a",
+       "harness": "e1-h",
+       "cmd": "edit",
+       "address": "0x140001040",
+       "old": "e1_two",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "new": "e1_two"
+      },
+      {
+       "seq": 7,
+       "at": "<masked>",
+       "client": 1,
+       "name": "e1-a",
+       "harness": "e1-h",
+       "cmd": "edit",
+       "address": "0x140001040",
+       "old": "e1_two",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "new": "e1_two"
+      },
+      {
+       "seq": 8,
+       "at": "<masked>",
+       "client": 1,
+       "name": "e1-a",
+       "harness": "e1-h",
+       "cmd": "edit",
+       "address": "0x140001040",
+       "old": "e1_two",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "new": "e1_two"
+      },
+      {
+       "seq": 9,
+       "at": "<masked>",
+       "client": 1,
+       "name": "e1-a",
+       "harness": "e1-h",
+       "cmd": "edit",
+       "address": "0x140001040",
+       "old": "e1_two",
+       "kind": "function",
+       "created": false,
+       "op": "rename",
+       "rk": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+       "new": "e1_two"
+      }
+     ],
+     "returned": 9
+    },
+    "ms": "<masked>"
+   },
+   "note": "one entry per applied op, each with its rk; no replay added"
+  },
+  {
+   "step": 18,
+   "who": "a",
+   "cmd": "close_program",
+   "request": {
+    "discard": true
+   },
+   "response": {
+    "id": 19,
+    "ok": true,
+    "result": {
+     "closed": "p1:/alpha.exe",
+     "discarded": true,
+     "active": null
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 19,
+   "who": "a",
+   "cmd": "close_project",
+   "request": {},
+   "response": {
+    "id": 20,
+    "ok": true,
+    "result": {
+     "project": "p1",
+     "left": true,
+     "closed": true,
+     "activeProject": null
+    },
+    "ms": "<masked>"
+   }
+  }
+ ]
+}

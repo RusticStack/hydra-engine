@@ -1,0 +1,503 @@
+{
+ "scenario": "e1-hello",
+ "protocol": 3,
+ "steps": [
+  {
+   "step": 1,
+   "who": "a",
+   "cmd": "hello",
+   "request": {
+    "client": "e1-a",
+    "harness": "e1-h",
+    "clientVersion": "9.9.9",
+    "protocol": 3
+   },
+   "response": {
+    "id": 2,
+    "ok": true,
+    "result": {
+     "protocol": 3,
+     "minClient": "<masked>",
+     "hydraVersion": "<masked>",
+     "ghidraVersion": "<masked>",
+     "installId": "<masked>",
+     "startedAt": "<masked>",
+     "ghidra": "<masked>",
+     "install": "<masked>",
+     "java": "<masked>",
+     "pid": "<masked>",
+     "uptimeMs": "<masked>",
+     "listen": {
+      "host": "<masked>",
+      "port": "<masked>"
+     },
+     "launch": {
+      "mode": "fast",
+      "aot": null,
+      "classCache": "hit",
+      "readyMs": "<masked>",
+      "jvmToReadyMs": "<masked>"
+     },
+     "keepWarmS": 600,
+     "memory": {
+      "usedMb": "<masked>",
+      "committedMb": "<masked>",
+      "maxMb": "<masked>"
+     },
+     "protocolMin": 2,
+     "protocolMax": 3,
+     "capabilities": {
+      "errorNext": 1,
+      "expectAll": 1,
+      "idempotency": 1,
+      "identity": 1
+     },
+     "limits": {
+      "maxQuick": 4,
+      "maxLong": 2,
+      "maxImports": 2
+     },
+     "policy": {
+      "requireExpect": false
+     },
+     "paths": "<masked>",
+     "platform": "<masked>",
+     "analysisIdentity": "<masked>",
+     "projects": [],
+     "client": 1
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 2,
+   "who": "a",
+   "cmd": "status",
+   "request": {},
+   "response": {
+    "id": 3,
+    "ok": true,
+    "result": {
+     "protocol": 3,
+     "minClient": "<masked>",
+     "hydraVersion": "<masked>",
+     "ghidraVersion": "<masked>",
+     "installId": "<masked>",
+     "startedAt": "<masked>",
+     "ghidra": "<masked>",
+     "install": "<masked>",
+     "java": "<masked>",
+     "pid": "<masked>",
+     "uptimeMs": "<masked>",
+     "listen": {
+      "host": "<masked>",
+      "port": "<masked>"
+     },
+     "launch": {
+      "mode": "fast",
+      "aot": null,
+      "classCache": "hit",
+      "readyMs": "<masked>",
+      "jvmToReadyMs": "<masked>"
+     },
+     "keepWarmS": 600,
+     "memory": {
+      "usedMb": "<masked>",
+      "committedMb": "<masked>",
+      "maxMb": "<masked>"
+     },
+     "protocolMin": 2,
+     "protocolMax": 3,
+     "capabilities": {
+      "errorNext": 1,
+      "expectAll": 1,
+      "idempotency": 1,
+      "identity": 1
+     },
+     "limits": {
+      "maxQuick": 4,
+      "maxLong": 2,
+      "maxImports": 2
+     },
+     "policy": {
+      "requireExpect": false
+     },
+     "paths": "<masked>",
+     "platform": "<masked>",
+     "analysisIdentity": "<masked>",
+     "projects": [],
+     "you": 1,
+     "programs": [],
+     "clients": [
+      {
+       "id": 1,
+       "name": "e1-a",
+       "harness": "e1-h",
+       "transport": "socket",
+       "launcher": false,
+       "clientVersion": "9.9.9",
+       "activeProject": null,
+       "active": null,
+       "connectedMs": "<masked>",
+       "projects": [],
+       "programs": [],
+       "running": [],
+       "requests": []
+      }
+     ],
+     "overlays": [],
+     "scheduler": {
+      "quick": {
+       "slots": 4,
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 0,
+       "everQueued": 0,
+       "backgroundQueued": 0
+      },
+      "long": {
+       "slots": 2,
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 0,
+       "everQueued": 0,
+       "backgroundQueued": 0
+      }
+     },
+     "imports": {
+      "maxImports": 2,
+      "holder": null,
+      "running": [],
+      "queue": [],
+      "history": {
+       "count": 0,
+       "completed": 0,
+       "meanMs": null,
+       "msPerMb": null,
+       "peakRunning": 0
+      }
+     },
+     "youAre": {
+      "client": "e1-a",
+      "harness": "e1-h",
+      "labelled": false
+     },
+     "upgradeCache": {
+      "enabled": true,
+      "dir": "<WORK>/state/upgrade-cache",
+      "buildsStarted": 0,
+      "builds": []
+     },
+     "deferredInitMs": "<masked>"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 3,
+   "who": "a",
+   "cmd": "hello",
+   "request": {
+    "protocol": 2
+   },
+   "response": {
+    "id": 4,
+    "ok": true,
+    "result": {
+     "protocol": 3,
+     "minClient": "<masked>",
+     "hydraVersion": "<masked>",
+     "ghidraVersion": "<masked>",
+     "installId": "<masked>",
+     "startedAt": "<masked>",
+     "ghidra": "<masked>",
+     "install": "<masked>",
+     "java": "<masked>",
+     "pid": "<masked>",
+     "uptimeMs": "<masked>",
+     "listen": {
+      "host": "<masked>",
+      "port": "<masked>"
+     },
+     "launch": {
+      "mode": "fast",
+      "aot": null,
+      "classCache": "hit",
+      "readyMs": "<masked>",
+      "jvmToReadyMs": "<masked>"
+     },
+     "keepWarmS": 600,
+     "memory": {
+      "usedMb": "<masked>",
+      "committedMb": "<masked>",
+      "maxMb": "<masked>"
+     },
+     "protocolMin": 2,
+     "protocolMax": 3,
+     "capabilities": {
+      "errorNext": 1,
+      "expectAll": 1,
+      "idempotency": 1,
+      "identity": 1
+     },
+     "limits": {
+      "maxQuick": 4,
+      "maxLong": 2,
+      "maxImports": 2
+     },
+     "policy": {
+      "requireExpect": false
+     },
+     "paths": "<masked>",
+     "platform": "<masked>",
+     "analysisIdentity": "<masked>",
+     "projects": [],
+     "client": 1
+    },
+    "ms": "<masked>"
+   },
+   "note": "a second hello that asks for 2 on a protocol-3 connection: answered 3"
+  },
+  {
+   "step": 4,
+   "who": "a",
+   "cmd": "hello",
+   "request": {
+    "protocol": "3"
+   },
+   "response": {
+    "id": 5,
+    "ok": true,
+    "result": {
+     "protocol": 3,
+     "minClient": "<masked>",
+     "hydraVersion": "<masked>",
+     "ghidraVersion": "<masked>",
+     "installId": "<masked>",
+     "startedAt": "<masked>",
+     "ghidra": "<masked>",
+     "install": "<masked>",
+     "java": "<masked>",
+     "pid": "<masked>",
+     "uptimeMs": "<masked>",
+     "listen": {
+      "host": "<masked>",
+      "port": "<masked>"
+     },
+     "launch": {
+      "mode": "fast",
+      "aot": null,
+      "classCache": "hit",
+      "readyMs": "<masked>",
+      "jvmToReadyMs": "<masked>"
+     },
+     "keepWarmS": 600,
+     "memory": {
+      "usedMb": "<masked>",
+      "committedMb": "<masked>",
+      "maxMb": "<masked>"
+     },
+     "protocolMin": 2,
+     "protocolMax": 3,
+     "capabilities": {
+      "errorNext": 1,
+      "expectAll": 1,
+      "idempotency": 1,
+      "identity": 1
+     },
+     "limits": {
+      "maxQuick": 4,
+      "maxLong": 2,
+      "maxImports": 2
+     },
+     "policy": {
+      "requireExpect": false
+     },
+     "paths": "<masked>",
+     "platform": "<masked>",
+     "analysisIdentity": "<masked>",
+     "projects": [],
+     "client": 1
+    },
+    "ms": "<masked>"
+   },
+   "note": "a string protocol is not an integer: same"
+  },
+  {
+   "step": 5,
+   "who": "a",
+   "cmd": "ping",
+   "request": {},
+   "response": {
+    "id": 6,
+    "ok": true,
+    "result": {
+     "pong": true
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 6,
+   "who": "a",
+   "cmd": "projects",
+   "request": {},
+   "response": {
+    "id": 7,
+    "ok": true,
+    "result": {
+     "activeProject": null,
+     "projects": []
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 7,
+   "who": "b",
+   "cmd": "status",
+   "request": {},
+   "response": {
+    "id": 2,
+    "ok": true,
+    "result": {
+     "protocol": 3,
+     "minClient": "<masked>",
+     "hydraVersion": "<masked>",
+     "ghidraVersion": "<masked>",
+     "installId": "<masked>",
+     "startedAt": "<masked>",
+     "ghidra": "<masked>",
+     "install": "<masked>",
+     "java": "<masked>",
+     "pid": "<masked>",
+     "uptimeMs": "<masked>",
+     "listen": {
+      "host": "<masked>",
+      "port": "<masked>"
+     },
+     "launch": {
+      "mode": "fast",
+      "aot": null,
+      "classCache": "hit",
+      "readyMs": "<masked>",
+      "jvmToReadyMs": "<masked>"
+     },
+     "keepWarmS": 600,
+     "memory": {
+      "usedMb": "<masked>",
+      "committedMb": "<masked>",
+      "maxMb": "<masked>"
+     },
+     "protocolMin": 2,
+     "protocolMax": 3,
+     "capabilities": {
+      "errorNext": 1,
+      "expectAll": 1,
+      "idempotency": 1,
+      "identity": 1
+     },
+     "limits": {
+      "maxQuick": 4,
+      "maxLong": 2,
+      "maxImports": 2
+     },
+     "policy": {
+      "requireExpect": false
+     },
+     "paths": "<masked>",
+     "platform": "<masked>",
+     "analysisIdentity": "<masked>",
+     "projects": [],
+     "you": 2,
+     "programs": [],
+     "clients": [
+      {
+       "id": 1,
+       "name": "e1-a",
+       "harness": "e1-h",
+       "transport": "socket",
+       "launcher": false,
+       "clientVersion": "9.9.9",
+       "activeProject": null,
+       "active": null,
+       "connectedMs": "<masked>",
+       "projects": [],
+       "programs": [],
+       "running": [],
+       "requests": []
+      },
+      {
+       "id": 2,
+       "name": "e1-b",
+       "harness": "e1-h",
+       "transport": "socket",
+       "launcher": false,
+       "clientVersion": "1.1.0",
+       "activeProject": null,
+       "active": null,
+       "connectedMs": "<masked>",
+       "projects": [],
+       "programs": [],
+       "running": [],
+       "requests": []
+      }
+     ],
+     "overlays": [],
+     "scheduler": {
+      "quick": {
+       "slots": 4,
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 0,
+       "everQueued": 0,
+       "backgroundQueued": 0
+      },
+      "long": {
+       "slots": 2,
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 0,
+       "everQueued": 0,
+       "backgroundQueued": 0
+      }
+     },
+     "imports": {
+      "maxImports": 2,
+      "holder": null,
+      "running": [],
+      "queue": [],
+      "history": {
+       "count": 0,
+       "completed": 0,
+       "meanMs": null,
+       "msPerMb": null,
+       "peakRunning": 0
+      }
+     },
+     "youAre": {
+      "client": "e1-b",
+      "harness": "e1-h",
+      "labelled": false
+     },
+     "upgradeCache": {
+      "enabled": true,
+      "dir": "<WORK>/state/upgrade-cache",
+      "buildsStarted": 0,
+      "builds": []
+     },
+     "deferredInitMs": "<masked>"
+    },
+    "ms": "<masked>"
+   }
+  }
+ ]
+}
