@@ -8,12 +8,13 @@
 <h1 align="center">Hydra Engine</h1>
 
 <p align="center"><b>One Ghidra, many heads: a headless reverse-engineering engine for AI agents and tools.</b><br>
-A shared daemon serves many projects, programs and clients at once. Warm decompiles in milliseconds, not seconds.</p>
+Many agents work in it at the same time, on any number of projects. Warm decompiles in milliseconds, not seconds.</p>
 
 <p align="center"><sub>Hydra Engine is an independent project derived from NSA's Ghidra (Apache-2.0). It is not affiliated with or endorsed by the National Security Agency or the Ghidra project, and it is not affiliated with Marvel. The Ghidra name belongs to its authors.</sub></p>
 
 <p align="center">
   <a href="#quick-start"><img src="https://img.shields.io/badge/Quick_start-build_%26_connect-15803D?style=for-the-badge" height="40" alt="Quick start: build and connect"></a>
+  <a href="https://hydra-engine-site.vercel.app"><img src="https://img.shields.io/badge/Website-docs_%26_showcase-0B0D0D?style=for-the-badge&labelColor=0B0D0D&color=1F6A3C" height="40" alt="Website: docs and showcase"></a>
 </p>
 
 <p align="center">
@@ -28,17 +29,20 @@ A shared daemon serves many projects, programs and clients at once. Warm decompi
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/RusticStack/hydra-engine/main/.github/assets/architecture-dark.svg">
-    <img src="https://raw.githubusercontent.com/RusticStack/hydra-engine/main/.github/assets/architecture-light.svg" width="860" alt="Diagram: on the left, clients (Claude Code, Codex, OpenCode, QoderCLI, RusticRE as an MCP server, a script) connect to one Hydra Engine daemon in the middle, which has a quick lane and a long lane; one client is cut off and its locks are freed. On the right, the daemon serves three projects opened in place, with their programs">
+    <img src="https://raw.githubusercontent.com/RusticStack/hydra-engine/main/.github/assets/architecture-light.svg" width="860" alt="Diagram: on the left, six heads (Claude Code, Codex, OpenCode, QoderCLI, RusticRE as an MCP server, a script), each busy at the same moment, wired to one Hydra Engine daemon in the middle. Its quick lane holds four requests answered in milliseconds while its long lane runs an import and an analysis. On the right, five programs in five projects, each opened in place, wired to the requests working on them">
   </picture>
 </p>
 
-<p align="center"><i>Cut off one head and the body keeps going. Two more connect.</i></p>
+<p align="center"><i>Every head at work at once. One body holds them all.</i></p>
 
 In the myth, the Hydra has one body and many heads. Here the body is one long-lived JVM holding
 Ghidra, its open projects, its analysed programs and its warm decompilers. The heads are the
-clients: agent harnesses, MCP servers, scripts. They come and go; the body stays. When a head is
-cut off (a client crashes), its locks are freed and its unsaved edits dropped, and the others
-never notice.
+clients: agent harnesses, MCP servers, scripts. They all work at the same time. They read the
+same programs in parallel, each with its own pooled decompiler; they write without stepping on each
+other, through working copies, private overlays or shared writing with an author journal; and one
+head's import or whole-program analysis runs in the long lane while the others' millisecond
+queries keep flowing in the quick lane. Heads come and go; the body stays. If one crashes, its locks
+are freed and its unsaved edits dropped, and the others carry on.
 
 **Hydra Engine is the project name; inside, it's Ghidra:** the same packages, modules, Gradle
 projects and paths (`ghidra.*`, `Ghidra/Features/...`, `ghidra_12.3_DEV`), so Ghidra scripts and
@@ -109,6 +113,14 @@ decompile) took 7.0-7.8 s per question, and needed a copy of the project (measur
 ## Quick start
 
 You need a JDK 25 and Python 3.10 or later.
+
+**With your AI.** Paste this into Claude Code, Codex, OpenCode or Qoder. It installs
+[RusticRE](https://github.com/RusticStack/RusticRE), the MCP server that runs on Hydra Engine, which
+installs the pinned Hydra Engine release and registers itself with your harness:
+
+```text
+Set up RusticRE and Hydra Engine from github.com/RusticStack/RusticRE. Ask me which AI harnesses to add it to if you can; otherwise, use this one.
+```
 
 **Download (Windows x64).** Each [release](https://github.com/RusticStack/hydra-engine/releases)
 has `hydra-engine-<version>-win_x86_64.zip`, the client alone as `hydra-client-<version>.zip`,
@@ -278,6 +290,13 @@ and the resolutions are in [CONTRIBUTING](.github/CONTRIBUTING.md#upstream-sync)
 Branches: `main` (on upstream `master`) and `legacy-12.1.4`, the same module on Ghidra 12.1.4,
 kept only for projects analysed with 12.1.4. A project opened writable by `main` may be upgraded
 to a database version that 12.1.4 cannot read; open older projects from a copy.
+
+## Built with Hydra Engine
+
+Games remade in new engines, drivers brought back, tools rebuilt: projects made by
+reverse-engineering programs their authors own are on the [showcase](https://hydra-engine-site.vercel.app/examples). To add
+yours, open a [showcase issue](https://github.com/RusticStack/hydra-engine/issues/new?template=showcase.yml)
+with a public link.
 
 ## License and credits
 

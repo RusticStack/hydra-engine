@@ -1,0 +1,70 @@
+name: Bug report
+description: Something in Hydra Engine does not work as documented.
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Security problems do not belong here: report them privately through the
+        [security advisory form](https://github.com/RusticStack/hydra-engine/security/advisories/new).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: |
+        The smallest sequence that shows it. For the session daemon the requests are the best
+        reproduction: `python ghidra_session.py call <cmd> key=value ...`, or the JSON lines you sent.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: |
+        The error response (`code`, `message`, `details`) and the relevant part of the daemon log
+        (`<state>/<instance>.log`; `ghidra_session.py config` prints where the state dir is).
+        Remove tokens, paths and program names you do not want public.
+      render: text
+  - type: dropdown
+    id: part
+    attributes:
+      label: Which part
+      options:
+        - Session daemon (requests, lanes, locks, projects)
+        - Launcher (ghidra_session.py, JDK, AOT or class caches)
+        - Writing (working copies, overlays, shared writing, journal)
+        - Imports and analysis
+        - Headless build or release zip
+        - Something else
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Hydra Engine version
+      description: The release (`ghidra_session.py version`) or the commit you built.
+      placeholder: 12.3-hydra.2
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: OS, JDK (`java -version`), Python (`python --version`), and the client or harness (an MCP server, an agent harness, a script).
+      render: text
+    validations:
+      required: true
+  - type: checkboxes
+    id: upstream
+    attributes:
+      label: Upstream
+      options:
+        - label: I checked that it does not also happen with stock `analyzeHeadless` or an upstream Ghidra build (if it does, it may belong upstream).

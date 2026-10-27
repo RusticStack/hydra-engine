@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Documentation
+    url: https://hydra-engine-site.vercel.app/docs/quick-start
+    about: How to install, connect and use Hydra Engine; many questions are answered there.
   - name: Report a security vulnerability
     url: https://github.com/RusticStack/hydra-engine/security/advisories/new
     about: Report security problems privately, never in a public issue.
