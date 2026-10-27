@@ -133,6 +133,12 @@ final class Connection {
 			authenticate(req, id, cmd);
 			return;
 		}
+		if (cmd.equals("hello")) {
+			// The first hello fixes the protocol of the connection, here on the reader thread and
+			// before the next line is read, so every later request and reply is gated against a
+			// value that is already final. A later hello changes nothing (PROTOCOL-3.md 3.1).
+			client.negotiate(req);
+		}
 		Caller.Identity who;
 		try {
 			who = Caller.of(client, req);
@@ -199,6 +205,7 @@ final class Connection {
 			return;
 		}
 		client.authenticated = true;
+		client.negotiate(req); // the authenticating hello fixes the protocol, before it is answered
 		RequestMonitor hm = new RequestMonitor(id, this::send);
 		hm.describeAs(cmd, new Caller.Identity(client.name, client.harness, false));
 		respond(req, id, cmd, hm);

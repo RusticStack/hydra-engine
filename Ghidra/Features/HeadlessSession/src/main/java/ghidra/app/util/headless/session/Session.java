@@ -91,6 +91,10 @@ final class Session {
 		this.scheduler = scheduler;
 		this.keepWarmMs = Math.max(0, keepWarmSeconds) * 1000;
 		this.upgradeCache = upgradeCache;
+		// the capabilities of the features this class and Connection carry (3.1: a package enables
+		// its own from a class it owns)
+		Advertised.capability("errorNext", 1);
+		Advertised.capability("identity", 1);
 	}
 
 	// ---- clients ---------------------------------------------------------------------------
@@ -307,6 +311,10 @@ final class Session {
 	// ---- session ---------------------------------------------------------------------------
 
 	private JsonElement hello(Client c, JsonObject req) {
+		// The connection's reader thread has normally fixed the protocol already, before this runs
+		// on the worker pool (Connection.handleLine); this is a no-op then, and a later hello never
+		// changes it (PROTOCOL-3.md 3.1).
+		c.negotiate(req);
 		c.name = Json.str(req, "client", c.name);
 		c.harness = Json.str(req, "harness", c.harness);
 		c.clientVersion = Json.str(req, "clientVersion", c.clientVersion);
@@ -328,9 +336,19 @@ final class Session {
 			Application.getInstallationDirectory().getAbsolutePath(), "java",
 			System.getProperty("java.version"), "pid", ProcessHandle.current().pid(), "uptimeMs",
 			System.currentTimeMillis() - startedAt, "listen", listenInfo, "launch", launchInfo,
-			"keepWarmS", keepWarmMs / 1000, "memory",
-			Json.of("usedMb", (rt.totalMemory() - rt.freeMemory()) >> 20, "committedMb",
-				rt.totalMemory() >> 20, "maxMb", rt.maxMemory() >> 20));
+				"keepWarmS", keepWarmMs / 1000, "memory",
+				Json.of("usedMb", (rt.totalMemory() - rt.freeMemory()) >> 20, "committedMb",
+					rt.totalMemory() >> 20, "maxMb", rt.maxMemory() >> 20));
+		if (c != null && c.v3()) { // conditional C1: the one place the v3 identity block is built
+			Json.put(o, "protocolMin", HydraInfo.PROTOCOL_MIN);
+			Json.put(o, "protocolMax", HydraInfo.PROTOCOL_MAX);
+			o.add("capabilities", Advertised.capabilities());
+			o.add("limits", Advertised.limits());
+			o.add("policy", Advertised.policy());
+			o.add("paths", Identity.paths());
+			o.add("platform", Identity.platform());
+			o.add("analysisIdentity", Identity.analysisIdentity());
+		}
 		JsonArray ps = new JsonArray();
 		for (ProjectEntry p : projectsById.values()) {
 			ps.add(p.info(c));
