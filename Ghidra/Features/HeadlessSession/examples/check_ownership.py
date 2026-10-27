@@ -31,7 +31,8 @@ It reads the matrix and the wave plan from the spec (``../PROTOCOL-3.md``, or ``
 Besides its matrix rows a package may change, without a row (8.1: "Tests: ``dt_*``, ``char_*`` and
 ``cc_*`` files, vectors and fixtures belong to the package whose name they carry and appear in its
 package text"): its own ``examples/dt_<id>.py``, ``examples/char_<id>.py`` and
-``examples/cc_<id>.py``; the test and fixture paths its own package paragraph in section 8 names in
+``examples/cc_<id>.py``, and the goldens its ``char_<id>.py`` records, which carry the id
+(``examples/characterization/v3/<id>-<scenario>.json``, section 8 rule 2); the test and fixture paths its own package paragraph in section 8 names in
 backticks, and only these three kinds: ``examples/(dt|char|cc)_*.py`` (Hydra), ``characterization/v3/**``
 (Hydra, also written ``examples/characterization/v3/...``) and ``tests/**``; and
 ``certification.manifest``, which every package appends to (the one stated exception). Any other
@@ -54,7 +55,11 @@ import sys
 HERE = pathlib.Path(__file__).resolve().parent
 MODULE = "Ghidra/Features/HeadlessSession"
 SESSION = MODULE + "/src/main/java/ghidra/app/util/headless/session/"
-PKG = re.compile(r"\b[EPYR]\d+[a-d]?\b")
+PKG = re.compile(r"\b[EPYR]\d+[a-e]?\b")
+#: Anything that looks like a package id in the wave plan (a letter, digits, an optional letter):
+#: ``parse_spec`` fails when ``PKG`` does not see every one of them, so that an id such as ``Y0e``
+#: or ``Y4e`` can never again be invisible to the checker (it was, with ``[a-d]``).
+ANY_ID = re.compile(r"\b[A-Z]\d+[a-z]?\b")
 ROOT_DOCS = {"README.md", "CHANGELOG.md"}
 
 
@@ -119,6 +124,10 @@ def parse_spec(text):
             c = cells_of(ln)
             wave = re.match(r"W\d", c[0]).group(0)
             spec.plan[wave] = set(packages_in(c[1]) + packages_in(c[2]))
+            seen = set(ANY_ID.findall(strip_parens(c[1] + " " + c[2])))
+            if seen - spec.plan[wave]:
+                raise SpecError(f"wave plan {wave}: the package id(s) "
+                                f"{', '.join(sorted(seen - spec.plan[wave]))} are not parsed by PKG")
     if not spec.plan:
         raise SpecError("the wave plan table has no rows")
     # the matrix: two tables, each after its bold title
@@ -142,7 +151,7 @@ def parse_spec(text):
     # the package paragraphs of section 8
     cur = None
     for ln in section(lines, r"## 8\. ", r"## 9\. "):
-        m = re.match(r"\*\*([EPYR]\d+[a-d]?) \(", ln)
+        m = re.match(r"\*\*([EPYR]\d+[a-e]?) \(", ln)
         if m:
             cur = m.group(1)
             spec.text[cur] = []
@@ -246,6 +255,9 @@ def check_changes(spec, kind, pkg, changed):
     owners = ownership(spec)
     tfiles, tdirs = package_text_files(spec, kind, pkg)
     own_test = re.compile(rf"{re.escape(MODULE)}/examples/(dt|char|cc)_{pkg.lower()}\.py")
+    # rule 2 of section 8: the goldens a package's char_<id>.py records carry the package id
+    own_golden = re.compile(
+        rf"{re.escape(MODULE)}/examples/characterization/v3/{pkg.lower()}-[A-Za-z0-9_.-]+\.json")
     bad = []
     for path in changed:
         if path.endswith("certification.manifest"):
@@ -255,7 +267,7 @@ def check_changes(spec, kind, pkg, changed):
                 bad.append(f"{path}: a row of 8.1 owned by {', '.join(sorted(owners[path])) or 'nobody'}, "
                            f"not {pkg}")
             continue
-        if kind == "hydra" and own_test.fullmatch(path):
+        if kind == "hydra" and (own_test.fullmatch(path) or own_golden.fullmatch(path)):
             continue
         if path in tfiles or any(path.startswith(d) for d in tdirs):
             continue
@@ -381,6 +393,20 @@ def selftest():
            ["examples/dt_x.py", "examples/char_x.py", "examples/cc_x.py", None,
             "examples/characterization/v3/", "examples/characterization/v3/a.json", None, None,
             "tests/a/b.py", None])
+    expect("E1 changes its own v3 goldens (the <id>- prefix of rule 2), not another package's or an unprefixed one",
+           [len(check_changes(spec, "hydra", "E1", [E + "examples/characterization/v3/" + n]))
+            for n in ("e1-hello.json", "e1-expect_conflicts.json", "e0-hello.json", "session.json",
+                      "e10-x.json", "e1x.json", "sub/e1-a.json")], [0, 0, 1, 1, 1, 1, 1])
+    plan = SYNTHETIC.replace("| W1 second | E1 | | n |", "| W1 second | E1 | Y0e | n |").replace(
+        "| W0 first | E0 | Y0a | n |", "| W0 first | E0 | Y0a, Y4e | n |")
+    expect("the ids Y0e and Y4e are seen (they were not with [a-d])",
+           sorted(parse_spec(plan).plan["W1"]) == ["E1", "Y0e"] and
+           sorted(parse_spec(plan).plan["W0"]) == ["E0", "Y0a", "Y4e"], True)
+    try:
+        parse_spec(SYNTHETIC.replace("| W1 second | E1 | | n |", "| W1 second | E1 | Y0f | n |"))
+        expect("a plan id that PKG cannot see is an error, not a silent omission", False, True)
+    except SpecError:
+        expect("a plan id that PKG cannot see is an error, not a silent omission", True, True)
     two = parse_spec(SYNTHETIC.replace("| `S/Session.java` | | E1 (hello) |",
                                        "| `S/Session.java` | E0, Y0a | E1 (hello) |"))
     expect("a cell with two packages fails", len(check_matrix(two)), 1)
