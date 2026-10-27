@@ -146,10 +146,33 @@ and so on); they need the full build.
 
 `main` follows upstream Ghidra's `master`; `legacy-12.1.4` stays on Ghidra 12.1.4.
 
+The policy:
+
+- **Merge, never rebase.** `main` is public; upstream is brought in with `git merge`, so the
+  history of both sides stays and a sync can be reverted as one merge commit.
+- **One branch per sync**, `sync/upstream-YYYY-MM-DD`, cut from `origin/main`, never from an
+  older local branch. It is merged into `main` only after CI passes on it.
+- **The golden decompile diff is the gate.** Before and after the merge, decompile the same
+  golden set (functions of binaries you own, small and large, in an analysed project) with the
+  `main` build and with the sync branch's build, and compare the C. Any difference is explained
+  (an upstream decompiler or analyzer change named in the merge) or the sync does not merge.
+  Keep the golden set and its outputs outside the repository; never commit anything derived from
+  a binary you do not have the right to redistribute.
+- **Record the upstream commit.** The release's `CHANGELOG.md` section names the upstream
+  commit it is based on (see "Releases"); for a sync that is not released yet, say it in the merge
+  commit message.
+- **Check the database format constants.** Compare `DB_VERSION` in `ProgramDB.java` (33 at the
+  time of writing) and in `DataTypeManagerDB.java` (3) before and after the merge. If upstream
+  raised either, projects saved by the new build cannot be opened by the old one and the upgrade
+  cache starts over: say so in the compatibility statement of the next release.
+- **`legacy-12.1.4` is frozen and end of life.** It is not synced, not released from and gets no
+  new features; it exists only for projects that must stay on Ghidra 12.1.4. New work goes to
+  `main`.
+
 ```sh
 git remote add upstream https://github.com/NationalSecurityAgency/ghidra.git   # once
-git fetch upstream
-git switch -c sync/upstream-YYYY-MM-DD main
+git fetch origin upstream
+git switch -c sync/upstream-YYYY-MM-DD origin/main
 git merge upstream/master                  # a merge, never a rebase: main is public
 ./gradlew buildHeadless                    # then run both test suites
 ```
@@ -166,7 +189,13 @@ conflict:
 |---|---|---|
 | `README.md` | Upstream edits its README; ours replaced it, and upstream's text lives in `README-GHIDRA.md`. | Keep ours: `git checkout --ours README.md`. Then bring upstream's new text across unchanged: `git show upstream/master:README.md > README-GHIDRA.md`, and `git add README.md README-GHIDRA.md`. |
 | `build.gradle` | Our one line at the end (`apply from: 'gradle/hydra/headless.gradle'`); a conflict only if upstream also appends at the end. | Keep upstream's change and our line, ours last. |
-| `.github/ISSUE_TEMPLATE/bug_report.md`, `feature_request.md` (ours), `question.md` (removed) | Upstream rarely edits its templates. | Keep ours; keep `question.md` deleted (`git rm`). |
+| `.github/ISSUE_TEMPLATE/bug_report.md`, `feature_request.md`, `question.md` (removed; our issue forms are new files) | Upstream rarely edits its templates. | Keep them deleted (`git rm`). |
+| `Ghidra/Framework/DB/.../LocalBufferFile.java`, `Ghidra/Framework/FileSystem/.../LocalDatabaseItem.java`, `Ghidra/Framework/SoftwareModeling/.../SleighLanguageFile.java` | The three small fixes (module README, "Changes outside this module"), each with a one-line Hydra Engine comment above `package`. | Merge by hand, keeping both changes and the comment; rerun `import_write_kill` and the two test suites. |
+| `gradle/distributableGhidraModule.gradle` | Two `exclude` lines in the `support` copy. | Keep upstream's change and our two lines. |
+| `.gitattributes` | Three lines at the end. | Keep upstream's change and ours. |
+
+Every file in this table, and any other upstream file we change, is listed in `NOTICE-HYDRA`
+(Apache-2.0 section 4(b)); update it in the same commit.
 
 Files we only add (`gradle/hydra/`, `.github/CONTRIBUTING.md`, `.github/SECURITY.md`,
 `.github/workflows/ci.yml`, `.github/workflows/release.yml`, `.github/assets/`, `NOTICE-HYDRA`, `CHANGELOG.md`,
