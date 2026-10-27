@@ -177,7 +177,8 @@ final class OverlayCommands {
 						ResourceFile src = findScript(Json.str(req, "script"));
 						m.deadline(Json.num(req, "timeout", 0, 0, 7 * 86_400));
 						yield withOverlay(o,
-							s.scripts.runScript(src, req, p.project, o.program, null, "contained", m));
+							s.scripts.runScript(src, req, p.project, o.program, null, "contained",
+								m));
 					}
 					case "rename" -> applyOverlay(o, ops(req, "rename"));
 					case "comment" -> applyOverlay(o, ops(req, "comment"));
@@ -424,7 +425,7 @@ final class OverlayCommands {
 			JsonObject freq = f.deepCopy();
 			freq.addProperty("project", e.project.id);
 			freq.addProperty("writable", true);
-			fork = (JsonObject) s.forkProject(c, freq, m);
+			fork = (JsonObject) s.forkCmds.forkProject(c, freq, m);
 			target = fork.get("project").getAsString();
 		}
 		String path = Json.str(req, "path", e.path);
@@ -432,7 +433,8 @@ final class OverlayCommands {
 			path = "/" + path;
 		}
 		JsonObject info =
-			(JsonObject) s.programCmds.openProgram(c, Json.of("path", target + ":" + path, "writable", true), m);
+			(JsonObject) s.programCmds.openProgram(c,
+				Json.of("path", target + ":" + path, "writable", true), m);
 		String tsha = info.has("sha256") && !info.get("sha256").isJsonNull()
 				? info.get("sha256").getAsString()
 				: null;
@@ -444,7 +446,8 @@ final class OverlayCommands {
 		}
 		JsonObject areq = Json.of("program", info.get("key").getAsString());
 		JsonElement results =
-			s.access.withProgram(c, areq, "promote_overlay", true, true, t -> s.operations.applyOps(t.program, log));
+			s.access.withProgram(c, areq, "promote_overlay", true, true,
+				t -> s.operations.applyOps(t.program, log));
 		JsonElement saved = null;
 		if (Json.bool(req, "save", true)) {
 			saved = s.access.withProgram(c, areq, "save", true, true,

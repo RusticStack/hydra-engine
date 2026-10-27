@@ -21,11 +21,11 @@ import static ghidra.app.util.headless.session.Access.lockProject;
 import static ghidra.app.util.headless.session.Access.notOwner;
 import static ghidra.app.util.headless.session.Access.suggestFork;
 import static ghidra.app.util.headless.session.Addresses.hex;
+import static ghidra.app.util.headless.session.ProjectCommands.findFile;
 import static ghidra.app.util.headless.session.Requests.cancelled;
 import static ghidra.app.util.headless.session.Requests.waitMs;
 import static ghidra.app.util.headless.session.Requests.waitsForCache;
 import static ghidra.app.util.headless.session.Session.CLEANUP_WAIT_MS;
-import static ghidra.app.util.headless.session.Session.findFile;
 
 import java.io.*;
 import java.util.*;
