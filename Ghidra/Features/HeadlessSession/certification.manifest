@@ -1,5 +1,13 @@
 ##VERSION: 2.0
 ##MODULE IP: Apache License 2.0
+ARCHITECTURE.md||GHIDRA||||END|
 Module.manifest||GHIDRA||||END|
+examples/characterization/clients.json||GHIDRA||||END|
+examples/characterization/edits.json||GHIDRA||||END|
+examples/characterization/fork_refresh.json||GHIDRA||||END|
+examples/characterization/import_script.json||GHIDRA||||END|
+examples/characterization/overlays.json||GHIDRA||||END|
+examples/characterization/readonly.json||GHIDRA||||END|
+examples/characterization/session.json||GHIDRA||||END|
 README.md||GHIDRA||||END|
 src/main/resources/hydra.properties||GHIDRA||||END|

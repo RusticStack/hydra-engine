@@ -1124,6 +1124,13 @@ took 7.0-7.8 s per question and needed a copy of the project.
 
 ## Tests
 
+- `examples/characterization_tests.py`: the exact JSON replies of every command (317 requests in
+  seven scenarios: nothing open, a read-only project, edits, two clients, fork and refresh,
+  overlays, import and scripts, with the errors of bad input and `busy`/`conflict`/`not_owner`
+  naming the holder), compared byte for byte, key order included, with the golden files in
+  `examples/characterization/`. It needs no binary (it writes two tiny PE files) and is the safety
+  net for refactoring the Java; see [ARCHITECTURE.md](ARCHITECTURE.md) for the procedure and for
+  what it does not cover.
 - `examples/session_smoke.py`: the functional smoke test, through the daemon: create a project,
   import and analyse two programs, deduplicate, switch, decompile, rename, save, reopen read-only,
   contained scripts, ownership, busy, cancel and disconnect.
@@ -1188,6 +1195,7 @@ took 7.0-7.8 s per question and needed a copy of the project.
   program is absent or complete, never half, and the file imports again).
 
 ```
+python examples/characterization_tests.py --ghidra <install> --work <empty dir> [--record]
 python examples/session_smoke.py --ghidra <install> --work <empty dir> --binary A.exe --binary B.exe
 python examples/daemon_tests.py --ghidra <install> --work <empty dir> --exe A.exe --dll B.dll [--project <analysed project>] [--legacy-project <older project> [--legacy-program <path>]] [--big <binary>]... [--big-analyze]
 python examples/contract_tests.py --ghidra <install> --work <empty dir> [--lines 600000]

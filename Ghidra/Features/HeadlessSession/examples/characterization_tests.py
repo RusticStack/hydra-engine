@@ -34,7 +34,7 @@ Golden files: ``examples/characterization/<scenario>.json`` (``--golden`` to use
 directory). Scenarios: see ``SCENARIOS``; run some with ``--only session,edits``. With ``--out
 <dir>`` the masked replies of this run are also written there, whatever the mode.
 
-Not characterized (see ``docs/architecture.md``): requests that depend on the file system
+Not characterized (see ``ARCHITECTURE.md`` in the module directory): requests that depend on the file system
 (``fork_project`` ``mode`` ``copy-on-write`` and ``maxCopyMb``, whose answer differs between
 ReFS and NTFS), on other processes (the project lock's holder details beyond their keys), on
 an older-format project (``legacy_overlay`` and ``upgrade_cache`` in ``daemon_tests.py``), the
