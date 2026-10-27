@@ -28,12 +28,11 @@ import static ghidra.app.util.headless.session.Requests.MAX_TEXT_CAP;
 import static ghidra.app.util.headless.session.Requests.cancelled;
 import static ghidra.app.util.headless.session.Requests.waitMs;
 import static ghidra.app.util.headless.session.Requests.waitsForCache;
+import static ghidra.app.util.headless.session.ScriptCommands.findScript;
 
 import java.io.*;
-import java.lang.reflect.Method;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.Lock;
@@ -43,16 +42,9 @@ import java.util.regex.PatternSyntaxException;
 
 import com.google.gson.*;
 
-import generic.hash.HashUtilities;
 import generic.jar.ResourceFile;
 import ghidra.app.decompiler.*;
 import ghidra.app.plugin.core.analysis.AutoAnalysisManager;
-import ghidra.app.script.*;
-import ghidra.app.util.headless.HeadlessAnalyzer;
-import ghidra.app.util.headless.HeadlessScript;
-import ghidra.app.util.importer.MessageLog;
-import ghidra.app.util.importer.ProgramLoader;
-import ghidra.app.util.opinion.LoadResults;
 import ghidra.framework.Application;
 import ghidra.framework.model.*;
 import ghidra.framework.options.OptionType;
@@ -62,7 +54,6 @@ import ghidra.program.model.address.*;
 import ghidra.program.model.listing.*;
 import ghidra.program.model.symbol.*;
 import ghidra.program.util.GhidraProgramUtilities;
-import ghidra.program.util.ProgramLocation;
 import ghidra.util.Msg;
 import ghidra.util.NotOwnerException;
 import ghidra.util.exception.*;
@@ -86,7 +77,6 @@ final class Session {
 
 	static final int PROTOCOL_VERSION = 2;
 	private static final long CLEANUP_WAIT_MS = 600_000;
-	private static final Object SCRIPT_COMPILE = new Object();
 
 	private final long startedAt = System.currentTimeMillis();
 	/** Guards opening, upgrading and closing projects, and the two project maps. */
@@ -115,6 +105,8 @@ final class Session {
 
 	/** The commands, by area (see the class comments). */
 	final Access access = new Access(this);
+	final ScriptCommands scripts = new ScriptCommands(this);
+	final ImportCommands imports = new ImportCommands(this);
 
 	Session(Scheduler scheduler, long keepWarmSeconds, UpgradeCache upgradeCache) {
 		this.scheduler = scheduler;
@@ -316,8 +308,8 @@ final class Session {
 					JsonObject r = (JsonObject) analyze(e, req, m);
 					return journal(c, e, cmd, "analyze", Json.of("functions", r.get("functions")));
 				});
-				case "import" -> importProgram(c, req, m);
-				case "script" -> script(c, req, m);
+				case "import" -> imports.importProgram(c, req, m);
+				case "script" -> scripts.script(c, req, m);
 				default -> throw new SessionException(SessionException.UNKNOWN_COMMAND,
 					"unknown cmd '" + cmd + "'; send status or see the README for the list");
 			};
@@ -1190,7 +1182,7 @@ final class Session {
 	}
 
 	/** Journals a committed change by {@code c}; returns the result with its {@code seq}. */
-	private static JsonObject journal(Client c, ProgramEntry e, String cmd, String op,
+	static JsonObject journal(Client c, ProgramEntry e, String cmd, String op,
 			JsonObject result) {
 		JsonObject change = result.deepCopy();
 		Json.put(change, "op", op);
@@ -1440,7 +1432,7 @@ final class Session {
 						ResourceFile src = findScript(Json.str(req, "script"));
 						m.deadline(Json.num(req, "timeout", 0, 0, 7 * 86_400));
 						yield withOverlay(o,
-							runScript(src, req, p.project, o.program, null, "contained", m));
+							scripts.runScript(src, req, p.project, o.program, null, "contained", m));
 					}
 					case "rename" -> applyOverlay(o, ops(req, "rename"));
 					case "comment" -> applyOverlay(o, ops(req, "comment"));
@@ -2008,7 +2000,7 @@ final class Session {
 
 	// ---- programs --------------------------------------------------------------------------
 
-	private JsonElement openProgram(Client c, JsonObject req, RequestMonitor m) {
+	JsonElement openProgram(Client c, JsonObject req, RequestMonitor m) {
 		String path = Json.str(req, "path");
 		JsonObject scoped = req;
 		java.util.regex.Matcher mk = PROGRAM_KEY.matcher(path);
@@ -2635,7 +2627,7 @@ final class Session {
 		return j;
 	}
 
-	private JsonElement save(ProgramEntry e, JsonObject req, RequestMonitor m)
+	JsonElement save(ProgramEntry e, JsonObject req, RequestMonitor m)
 			throws IOException, CancelledException {
 		boolean changed = e.program.isChanged();
 		long upTo = e.journal.seq();
@@ -2834,7 +2826,7 @@ final class Session {
 	 * it: optional analysis options first, then all analyzers (or those triggered by a restricted
 	 * address set) in this thread, under one transaction.
 	 */
-	private JsonElement analyze(ProgramEntry e, JsonObject req, RequestMonitor m) {
+	JsonElement analyze(ProgramEntry e, JsonObject req, RequestMonitor m) {
 		Program p = e.program;
 		JsonObject opts = Json.obj(req, "options");
 		if (opts != null) {
@@ -2904,406 +2896,6 @@ final class Session {
 		}
 		finally {
 			p.endTransaction(tx, true);
-		}
-	}
-
-	// ---- import ----------------------------------------------------------------------------
-
-	/**
-	 * Imports a file (any format a Ghidra loader accepts: PE EXE or DLL, ELF, Mach-O, raw, ...)
-	 * into a writable project and opens it writable for the caller. A file whose SHA-256 is
-	 * already in that project is not imported again unless {@code "duplicate":true}.
-	 */
-	private JsonElement importProgram(Client c, JsonObject req, RequestMonitor m) {
-		ProjectEntry p = access.projectFor(c, req);
-		if (!p.writable()) {
-			throw new SessionException(SessionException.READ_ONLY,
-				"import needs project " + p.id +
-					" open writable (open_project \"writable\":true)");
-		}
-		File file = new File(Json.str(req, "file")).getAbsoluteFile();
-		if (!file.isFile()) {
-			throw new SessionException(SessionException.NOT_FOUND, "no such file: " + file);
-		}
-		String folder = Json.str(req, "folder", "/");
-		String sha;
-		try {
-			sha = HashUtilities.getHash(HashUtilities.SHA256_ALGORITHM, file);
-		}
-		catch (IOException ex) {
-			throw new SessionException(SessionException.FAILED, ex.getMessage(), null, ex);
-		}
-		// Imports run in parallel up to maxImports (each load is handed its project; nothing on
-		// the load path reads the process-wide active project). Queue in arrival order without
-		// holding a slot (the wait is unlimited unless "wait" is a number), then take the long
-		// slot for this import's own work.
-		boolean limited = Json.has(req, "wait") && !(req.get("wait").isJsonPrimitive() &&
-			req.getAsJsonPrimitive("wait").isBoolean());
-		long deadline = limited ? System.nanoTime() + waitMs(req) * 1_000_000L : Long.MAX_VALUE;
-		// The same file into the same project at once: the second waits for the first and then
-		// finds its result by SHA-256, so the file is imported once.
-		InFlightImport mine = null;
-		JsonObject sameFile = null;
-		if (!Json.bool(req, "duplicate", false)) {
-			String key = p.id + ":" + sha.toLowerCase(Locale.ROOT);
-			InFlightImport claim = new InFlightImport(Caller.label(c));
-			long t0 = System.currentTimeMillis();
-			for (InFlightImport other; (other = importsInFlight.putIfAbsent(key, claim)) != null;) {
-				sameFile = Json.of("who", other.who, "file", file.getName());
-				awaitSameImport(other, sameFile, m, deadline);
-				Json.put(sameFile, "waitedMs", System.currentTimeMillis() - t0);
-			}
-			mine = claim;
-			mine.key = key;
-		}
-		ImportGate.Entry gate;
-		try {
-			gate = ImportGate.GLOBAL.enter(ImportGate.Kind.IMPORT, Caller.label(c), c.id, p.id,
-				file.getName(), file.length(), m,
-				limited ? Math.max(0, (deadline - System.nanoTime()) / 1_000_000L) : -1);
-		}
-		catch (RuntimeException ex) {
-			finishInFlight(mine);
-			throw ex;
-		}
-		Scheduler.Ticket slot = null;
-		String saved;
-		double importS;
-		try {
-			slot = scheduler.admit(c, "import", m, waitMs(req));
-			long t0 = System.nanoTime();
-			Lock pl = lockProject(p, false, waitMs(req), "import");
-			try {
-				if (!Json.bool(req, "duplicate", false)) {
-					List<String> same = new ArrayList<>();
-					findBySha(p.data().getRootFolder(), sha, same);
-					if (!same.isEmpty()) {
-						JsonObject r = Json.of("imported", false, "project", p.id, "sha256", sha);
-						Json.put(r, "existing", same);
-						Json.put(r, "note", "already in the project; open_program it, or pass " +
-							"\"duplicate\":true to import again");
-						Json.put(r, "queue", gate.describeWait());
-						if (sameFile != null) {
-							Json.put(r, "sameFileImport", sameFile);
-						}
-						return r;
-					}
-				}
-				MessageLog log = new MessageLog();
-				try {
-					DomainFolder dest =
-						ProjectDataUtils.createDomainFolderPath(p.data().getRootFolder(), folder);
-					ProgramLoader.Builder b = ProgramLoader.builder()
-							.source(file)
-							.project(p.project)
-							.projectFolderPath(dest.getPathname())
-							.log(log)
-							.monitor(m);
-					if (Json.has(req, "name")) {
-						b.name(Json.str(req, "name"));
-					}
-					if (Json.has(req, "language")) {
-						b.language(Json.str(req, "language"));
-					}
-					if (Json.has(req, "compiler")) {
-						b.compiler(Json.str(req, "compiler"));
-					}
-					m.setMessage("importing " + file.getName());
-					try (LoadResults<Program> results = b.load()) {
-						saved = results.getPrimary().save(m).getPathname();
-						p.invalidateRevision();
-					}
-					gate.succeeded();
-				}
-				catch (CancelledException ex) {
-					throw cancelled(m);
-				}
-				catch (SessionException ex) {
-					throw ex;
-				}
-				catch (Exception ex) {
-					throw new SessionException(SessionException.FAILED,
-						"import failed: " + ex.getMessage(), Json.of("log", log.toString()), ex);
-				}
-			}
-			finally {
-				gate.close(); // the next import may start; this one goes on to open and analyse
-				finishInFlight(mine); // saved (or failed): a same-file import may check now
-				pl.unlock();
-			}
-			importS = (System.nanoTime() - t0) / 1e9;
-			JsonObject openReq = Json.of("path", saved, "writable", true, "project", p.id);
-			if (req.has("wait")) {
-				openReq.add("wait", req.get("wait"));
-			}
-			JsonObject info = (JsonObject) openProgram(c, openReq, m);
-			JsonObject r = Json.of("imported", true, "project", p.id, "path", saved, "key",
-				p.id + ":" + saved, "sha256", sha, "importSeconds", importS, "program", info);
-			Json.put(r, "queue", gate.describeWait());
-			if (Json.bool(req, "analyze", false)) {
-				JsonObject areq = Json.of("program", p.id + ":" + saved);
-				if (req.has("timeout")) {
-					areq.add("timeout", req.get("timeout"));
-				}
-				r.add("analysis", access.withProgram(c, areq, "analyze", true, true,
-					e -> analyze(e, areq, m)));
-				r.add("save", access.withProgram(c, areq, "save", true, true,
-					e -> save(e, Json.of("comment", "import + analysis"), m)));
-			}
-			return r;
-		}
-		finally {
-			gate.close();
-			finishInFlight(mine);
-			if (slot != null) {
-				slot.close();
-			}
-		}
-	}
-
-	/** An import of one file into one project that has not saved its program yet. */
-	private static final class InFlightImport {
-		final String who;
-		final CountDownLatch done = new CountDownLatch(1);
-		String key;
-
-		InFlightImport(String who) {
-			this.who = who;
-		}
-	}
-
-	/** Imports in flight by {@code "<project id>:<sha256>"} (not those with "duplicate"). */
-	private final ConcurrentHashMap<String, InFlightImport> importsInFlight =
-		new ConcurrentHashMap<>();
-
-	private void finishInFlight(InFlightImport f) {
-		if (f != null && f.key != null) {
-			importsInFlight.remove(f.key, f);
-			f.done.countDown();
-		}
-	}
-
-	/**
-	 * Waits until another import of the same file into the same project has saved (or failed),
-	 * saying so in the request's progress; a cancel or the request's numeric {@code wait} ends
-	 * the wait.
-	 */
-	private static void awaitSameImport(InFlightImport other, JsonObject info, RequestMonitor m,
-			long deadline) {
-		try {
-			while (!other.done.await(100, TimeUnit.MILLISECONDS)) {
-				if (m.isCancelled()) {
-					throw new SessionException(SessionException.CANCELLED,
-						"cancelled while waiting for " + other.who + "'s import of the same file");
-				}
-				if (deadline != Long.MAX_VALUE && System.nanoTime() - deadline >= 0) {
-					throw new SessionException(SessionException.BUSY,
-						other.who + " is importing the same file into this project; retry, or " +
-							"pass a longer \"wait\"",
-						info);
-				}
-				m.waiting("same file import", info);
-				m.setMessage("waiting for " + other.who + "'s import of the same file " +
-					"(the result is used instead of a second copy)");
-			}
-		}
-		catch (InterruptedException ex) {
-			Thread.currentThread().interrupt();
-			throw new SessionException(SessionException.CANCELLED, "interrupted");
-		}
-		finally {
-			m.waiting(null, null);
-		}
-	}
-
-	private static void findBySha(DomainFolder folder, String sha, List<String> out) {
-		for (DomainFile f : folder.getFiles()) {
-			if (sha.equalsIgnoreCase(f.getMetadata().get("Executable SHA256"))) {
-				out.add(f.getPathname());
-			}
-		}
-		for (DomainFolder sub : folder.getFolders()) {
-			findBySha(sub, sha, out);
-		}
-	}
-
-	// ---- scripts ---------------------------------------------------------------------------
-
-	/**
-	 * Runs a GhidraScript (by name on the script path, or by file path) with a program as
-	 * {@code currentProgram}, the way the window's Script Manager does, and returns what it
-	 * printed.
-	 * <ul>
-	 * <li>On a program this client owns writable: exclusive, and its changes stay (unsaved unless
-	 * {@code "save":true}).</li>
-	 * <li>Otherwise <i>contained</i>: the script runs inside an outer transaction that is always
-	 * rolled back, so it cannot change what other clients see or what is saved. Contained scripts
-	 * share the program lock and run concurrently unless {@code "exclusive":true}.</li>
-	 * <li>With {@code "program":null} (or no program open) it runs with no current program, with
-	 * the client's active project (if any) as its project.</li>
-	 * </ul>
-	 * This is not a sandbox: a script is Java with the session's rights.
-	 */
-	private JsonElement script(Client c, JsonObject req, RequestMonitor m) {
-		String name = Json.str(req, "script");
-		ResourceFile src = findScript(name);
-		boolean noProgram = req.has("program") && req.get("program").isJsonNull();
-		ProgramEntry e = (noProgram || (c.active == null && !req.has("program"))) ? null
-				: access.selected(c, req);
-		m.deadline(Json.num(req, "timeout", 0, 0, 7 * 86_400));
-		if (e == null) {
-			ProjectEntry p = null;
-			if (Json.has(req, "project") || c.activeProject != null) {
-				p = access.projectFor(c, req);
-			}
-			if (p == null) {
-				return runScript(src, req, null, null, null, "none", m);
-			}
-			ProjectEntry pp = p;
-			return access.inProject(p, req, "script",
-				x -> runScript(src, req, pp.project, null, null, "none", m));
-		}
-		ProjectEntry p = e.project;
-		Lock pl = lockProject(p, false, waitMs(req), "script");
-		try {
-			boolean owner = e.isWriter(c);
-			boolean exclusive = owner || Json.bool(req, "exclusive", false);
-			Lock l = e.acquire(exclusive, waitMs(req), c, "script " + name);
-			try {
-				if (e.program == null) {
-					throw new SessionException(SessionException.NO_PROGRAM, e.key + " was closed");
-				}
-				owner = e.isWriter(c);
-				JsonObject r = runScript(src, req, p.project, e.program, e,
-					owner ? "owner" : "contained", m);
-				if (owner && Json.bool(r, "changed", false)) {
-					journal(c, e, "script", "script", Json.of("script", name));
-				}
-				if (owner && Json.bool(req, "save", false) && e.program.isChanged()) {
-					e.savedSeq = e.journal.seq();
-					e.program.save("script " + name, m);
-					e.stampRevision();
-					p.invalidateRevision();
-					Json.put(r, "saved", true);
-				}
-				return r;
-			}
-			catch (CancelledException | IOException ex) {
-				throw new SessionException(
-					ex instanceof CancelledException ? SessionException.CANCELLED
-							: SessionException.FAILED,
-					ex.getMessage());
-			}
-			finally {
-				e.release(l);
-			}
-		}
-		finally {
-			pl.unlock();
-		}
-	}
-
-	private static ResourceFile findScript(String name) {
-		File f = new File(name);
-		ResourceFile src = f.isAbsolute() || f.isFile() ? new ResourceFile(f.getAbsoluteFile())
-				: GhidraScriptUtil.findScriptByName(name);
-		if (src == null || !src.exists()) {
-			throw new SessionException(SessionException.NOT_FOUND,
-				"script not found: " + name + " (give a file path, or start the session " +
-					"with -scriptPath)");
-		}
-		return src;
-	}
-
-	private JsonObject runScript(ResourceFile src, JsonObject req, Project project, Program p,
-			ProgramEntry e, String mode, RequestMonitor m) {
-		int cap = (int) Json.num(req, "maxChars", DEFAULT_TEXT_CAP, 1, MAX_TEXT_CAP);
-		StringWriter sw = new StringWriter();
-		PrintWriter pw = new PrintWriter(sw, true);
-		GhidraScript s;
-		synchronized (SCRIPT_COMPILE) {
-			GhidraScriptProvider provider = GhidraScriptUtil.getProvider(src);
-			if (provider == null) {
-				throw new SessionException(SessionException.BAD_REQUEST,
-					"no script provider for " + src.getName());
-			}
-			try {
-				s = provider.getScriptInstance(src, pw);
-			}
-			catch (Exception ex) {
-				pw.flush();
-				throw new SessionException(SessionException.FAILED,
-					"script did not load: " + ex.getMessage(), Json.of("output", sw.toString()),
-					ex);
-			}
-		}
-		s.setScriptArgs(Json.strings(req, "args").toArray(new String[0]));
-		bindHeadless(s);
-		ProgramLocation loc = null;
-		if (p != null && Json.has(req, "address")) {
-			loc = new ProgramLocation(p, address(p, Json.str(req, "address")));
-		}
-		GhidraState state = new GhidraState(null, project, p, loc, null, null);
-		boolean contained = p != null && mode.equals("contained");
-		// what this script changed, not whether the program had unsaved changes already (which a
-		// shared program usually has): every change fires an event, which moves this number
-		long modBefore = p == null ? 0 : p.getModificationNumber();
-		int outer = -1;
-		if (contained) {
-			outer = p.startTransaction("session: contained script (rolled back)");
-		}
-		long t0 = System.nanoTime();
-		Throwable failure = null;
-		try {
-			s.execute(state, new ScriptControls(pw, pw, false, m));
-		}
-		catch (Throwable t) {
-			failure = t;
-		}
-		finally {
-			if (contained) {
-				p.endTransaction(outer, false);
-			}
-			pw.flush();
-		}
-		String out = sw.toString();
-		JsonObject r = Json.of("script", src.getAbsolutePath(), "mode", mode, "program",
-			e == null ? null : e.key, "seconds", (System.nanoTime() - t0) / 1e9, "chars",
-			out.length(), "truncated", out.length() > cap, "output",
-			out.length() > cap ? out.substring(0, cap) : out, "changed",
-			p != null && !contained && p.getModificationNumber() != modBefore, "unsaved",
-			p != null && p.isChanged());
-		Json.put(r, "artifact", Json.str(req, "artifact", null));
-		if (failure != null) {
-			if (m.isCancelled() || failure instanceof CancelledException) {
-				throw new SessionException(SessionException.CANCELLED,
-					"script " + (m.timedOut() ? "timed out" : "cancelled"), r);
-			}
-			throw new SessionException(SessionException.FAILED,
-				"script failed: " + failure.getClass().getSimpleName() + ": " +
-					failure.getMessage(),
-				r, failure);
-		}
-		return r;
-	}
-
-	/**
-	 * Lets {@link HeadlessScript} subclasses run here as under {@code analyzeHeadless}
-	 * ({@code storeHeadlessValue} and friends). The setter is package-private in Ghidra, so it is
-	 * reached reflectively rather than by editing Ghidra's class.
-	 */
-	private static void bindHeadless(GhidraScript s) {
-		if (!(s instanceof HeadlessScript hs)) {
-			return;
-		}
-		try {
-			Method set = HeadlessScript.class.getDeclaredMethod("setHeadlessInstance",
-				HeadlessAnalyzer.class);
-			set.setAccessible(true);
-			set.invoke(hs, HeadlessAnalyzer.getInstance());
-		}
-		catch (ReflectiveOperationException | IOException | RuntimeException ex) {
-			Msg.warn(Session.class, "HeadlessScript features unavailable: " + ex);
 		}
 	}
 }
