@@ -18,6 +18,7 @@ once as golden files and compared byte for byte afterwards. Standard library onl
 
     python characterization_tests.py --ghidra <install> --work <empty dir>          # verify
     python characterization_tests.py --ghidra <install> --work <empty dir> --record # (re)record
+    python characterization_tests.py ... --protocol 3     # the v3 scenarios, goldens in v3/
 
 It is the safety net for refactoring ``Session.java``: a change that must not alter behaviour or
 the wire format must leave every golden file identical. Each scenario starts its own daemon
@@ -34,6 +35,22 @@ Golden files: ``examples/characterization/<scenario>.json`` (``--golden`` to use
 directory). Scenarios: see ``SCENARIOS``; run some with ``--only session,edits``. With ``--out
 <dir>`` the masked replies of this run are also written there, whatever the mode.
 
+Protocols (PROTOCOL-3.md, 3.1 and section 8, package E0). ``--protocol {2,3}`` (default 2) is the
+protocol every connection asks for in ``hello`` (an explicit ``hello`` request of a scenario carries
+it too when it is 3, so the v3 goldens show it). The seven scenarios below run at both; their
+goldens are ``characterization/`` for 2 and ``characterization/v3/`` for 3, so a v2 golden never
+changes because a v3 one is recorded. An engine without v3 answers 2 to a request for 3: at
+``--protocol 3`` the run then says so, runs and records nothing, and exits 0 (``--require-v3`` makes
+that an exit 2), because a golden recorded from such an engine would be a v2 golden in the v3
+directory.
+
+More scenarios live in ``char_<package>.py`` files next to this one: each exposes ``SCENARIOS =
+{name: fn}`` (``fn(ctx, rec)``, like the ones here), and may expose ``PROTOCOLS = (3,)`` (the
+protocols it runs at; the default is 3 only: a package's scenarios are new behaviour, so they have
+no v2 golden). ``import characterization_tests as ct`` in such a file gives it ``Rec``, ``Ctx``,
+``Fail``, ``make_pe`` and the constants. A directory without any ``char_*.py`` is fine
+(``--tests-dir``); a file that does not import is a failure.
+
 Not characterized (see ``ARCHITECTURE.md`` in the module directory): requests that depend on the file system
 (``fork_project`` ``mode`` ``copy-on-write`` and ``maxCopyMb``, whose answer differs between
 ReFS and NTFS), on other processes (the project lock's holder details beyond their keys), on
@@ -43,6 +60,7 @@ of a known duration), and the progress events and the start-up banner (not repli
 """
 import argparse
 import difflib
+import importlib.util
 import json
 import pathlib
 import re
@@ -208,10 +226,11 @@ class Fail(Exception):
 class Rec:
     """One scenario's record: every request with its masked response, in order."""
 
-    def __init__(self, name, gs, masker):
+    def __init__(self, name, gs, masker, protocol=2):
         self.name = name
         self.gs = gs
         self.m = masker
+        self.protocol = protocol
         self.steps = []
 
     def _record(self, who, s, cmd, fields, note=None):
@@ -225,6 +244,8 @@ class Rec:
 
     def any(self, who, s, cmd, note=None, **f):
         """Sends a request, records it whatever the answer; returns the whole response."""
+        if cmd == "hello" and self.protocol > 2 and "protocol" not in f:
+            f = {**f, "protocol": self.protocol}  # an explicit hello asks for the run's protocol
         try:
             s.call(cmd, **f)
         except self.gs.SessionError:
@@ -274,6 +295,7 @@ class Ctx:
         (self.state / "config.json").write_text(json.dumps(cfg))
         self.daemons = []
         self.sessions = []
+        self.protocol = a.protocol
         self.golden = pathlib.Path(a.golden)
         self.install = str(pathlib.Path(a.ghidra).absolute())
 
@@ -287,7 +309,11 @@ class Ctx:
         return d
 
     def connect(self, d, client, harness):
-        s = d.connect(client, harness)
+        """A session that asks for this run's protocol in ``hello`` (the first connect starts the
+        daemon, so a scenario's client ids start at 1 as before)."""
+        from daemon_tests import client_protocol
+        with client_protocol(self.gs, self.protocol):
+            s = d.connect(client, harness)
         self.sessions.append((d, s))
         return s
 
@@ -808,12 +834,57 @@ SCENARIOS = {
     "overlays": sc_overlays,
     "import_script": sc_import_script,
 }
+#: scenario name -> the protocols it runs at (the seven above run at both)
+PROTOCOLS = {n: (2, 3) for n in SCENARIOS}
+LOADED = {}  # char_*.py file name -> its scenario names
+
+
+def load_char(tests_dir):
+    """Imports every ``char_*.py`` of ``tests_dir`` (sorted) and registers its ``SCENARIOS`` (and
+    ``PROTOCOLS``, default ``(3,)``). Returns ``[(file name, what went wrong)]`` for the files that
+    did not load; the others still load. An empty set is fine."""
+    errors = []
+    for f in sorted(pathlib.Path(tests_dir).glob("char_*.py")):
+        try:
+            spec = importlib.util.spec_from_file_location(f.stem, f)
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[f.stem] = mod
+            spec.loader.exec_module(mod)
+            scen = getattr(mod, "SCENARIOS", None)
+            if not isinstance(scen, dict) or not all(callable(v) for v in scen.values()):
+                raise TypeError("SCENARIOS must be a dict {name: fn}")
+            protos = tuple(getattr(mod, "PROTOCOLS", (3,)))
+            if not protos or not set(protos) <= {2, 3}:
+                raise TypeError("PROTOCOLS must be a non-empty subset of (2, 3)")
+            for n, fn in scen.items():
+                if n in SCENARIOS and SCENARIOS[n] is not fn:
+                    raise ValueError(f"scenario name {n!r} is already taken")
+            for n, fn in scen.items():
+                SCENARIOS[n] = fn
+                PROTOCOLS[n] = protos
+            LOADED[f.name] = list(scen)
+        except Exception as e:  # noqa: BLE001
+            errors.append((f.name, f"{type(e).__name__}: {e}"))
+    return errors
+
+
+def served_protocol(c):
+    """What the engine answers to a ``hello`` asking for this run's protocol: (protocol, hello)."""
+    d = c.daemon("c-probe")
+    try:
+        s = c.connect(d, "probe", "characterization")
+        return s.hello.get("protocol"), s.hello
+    finally:
+        c.stop(d)
 
 
 # ---- driver --------------------------------------------------------------------------------
 
 def render(R):
-    return json.dumps({"scenario": R.name, "steps": R.steps}, indent=1, ensure_ascii=False) + "\n"
+    head = {"scenario": R.name}
+    if R.protocol > 2:
+        head["protocol"] = R.protocol  # a v2 golden keeps its bytes
+    return json.dumps({**head, "steps": R.steps}, indent=1, ensure_ascii=False) + "\n"
 
 
 def main():
@@ -821,27 +892,63 @@ def main():
     ap.add_argument("--ghidra", required=True, help="the install to test")
     ap.add_argument("--work", required=True, help="an empty working directory")
     ap.add_argument("--tmpdir", help="java.io.tmpdir for the daemon (default: <work>/tmp)")
-    ap.add_argument("--golden", default=str(HERE / "characterization"),
-                    help="the golden directory (default: examples/characterization)")
+    ap.add_argument("--golden", default=None,
+                    help="the golden directory (default: examples/characterization, and "
+                    "examples/characterization/v3 with --protocol 3)")
+    ap.add_argument("--protocol", type=int, choices=(2, 3), default=2,
+                    help="the protocol every connection asks for in hello (default 2)")
+    ap.add_argument("--require-v3", dest="require_v3", action="store_true",
+                    help="with --protocol 3: exit 2 when the engine does not serve protocol 3 "
+                    "(default: say so and exit 0)")
     ap.add_argument("--record", action="store_true", help="write the golden files")
     ap.add_argument("--out", help="also write this run's masked replies here")
     ap.add_argument("--only", help="comma-separated scenario names")
+    ap.add_argument("--list", action="store_true", help="list the scenarios and exit")
+    ap.add_argument("--tests-dir", dest="tests_dir", default=str(HERE),
+                    help="where the char_*.py files are (default: next to this script)")
     a = ap.parse_args()
+    if a.golden is None:
+        base = HERE / "characterization"
+        a.golden = str(base if a.protocol == 2 else base / "v3")
+    sys.modules.setdefault("characterization_tests", sys.modules[__name__])  # char_*.py import it
+    load_errors = load_char(a.tests_dir)
+    known = [n for n in SCENARIOS if a.protocol in PROTOCOLS[n]]
+    if a.list:
+        for n in SCENARIOS:
+            print(f"{n}  protocols {','.join(map(str, PROTOCOLS[n]))}")
+        for f, why in load_errors:
+            print(f"FAIL load {f}: {why}")
+        return 1 if load_errors else 0
+    names = a.only.split(",") if a.only else known
+    for n in names:
+        if n not in SCENARIOS:
+            ap.error(f"unknown scenario {n}; known: {', '.join(SCENARIOS)}")
+        if a.protocol not in PROTOCOLS[n]:
+            ap.error(f"scenario {n} does not run at protocol {a.protocol}")
+    for f, why in load_errors:
+        print(f"FAIL load {f}: {why}")
     sys.path.insert(0, str(pathlib.Path(a.ghidra) / "Ghidra" / "Features" / "HeadlessSession" /
                            "support"))
     import ghidra_session as gs
     c = Ctx(a, gs)
-    names = a.only.split(",") if a.only else list(SCENARIOS)
-    for n in names:
-        if n not in SCENARIOS:
-            ap.error(f"unknown scenario {n}; known: {', '.join(SCENARIOS)}")
-    c.golden.mkdir(parents=True, exist_ok=True)
-    failed = []
+    failed = [f for f, _ in load_errors]
     t_all = time.perf_counter()
+    if a.protocol > 2:
+        try:
+            got, hello = served_protocol(c)
+        finally:
+            c.cleanup()
+        if got is None or got < a.protocol:
+            print(f"SKIP protocol {a.protocol}: the engine answered protocol {got} to a hello "
+                  f"asking for {a.protocol} (protocolMax {hello.get('protocolMax')}); "
+                  f"nothing was run, compared or recorded")
+            return 2 if a.require_v3 else (1 if failed else 0)
+    if a.record:
+        c.golden.mkdir(parents=True, exist_ok=True)
     try:
         for n in names:
             t = time.perf_counter()
-            R = Rec(n, gs, c.masker())
+            R = Rec(n, gs, c.masker(), c.protocol)
             c.clean()
             try:
                 SCENARIOS[n](c, R)
@@ -880,8 +987,9 @@ def main():
                     failed.append(n)
     finally:
         c.cleanup()
-    print(f"{len(names) - len(failed)}/{len(names)} scenarios "
-          f"{'recorded' if a.record else 'identical'} in {time.perf_counter() - t_all:.0f} s")
+    print(f"{len(names) - len([f for f in failed if f in names])}/{len(names)} scenarios "
+          f"{'recorded' if a.record else 'identical'} at protocol {a.protocol} in "
+          f"{time.perf_counter() - t_all:.0f} s")
     return 1 if failed else 0
 
 

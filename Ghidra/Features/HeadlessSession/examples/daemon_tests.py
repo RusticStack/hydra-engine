@@ -19,6 +19,7 @@
                            [--project <an analysed project, opened read-only>]
                            [--legacy-project <a project saved by an older Ghidra>
                             [--legacy-program <path in it>]] [--only a,b]
+                           [--baseline] [--list] [--tests-dir <dir>] [--report <file.json>]
 
 Each test starts its own daemon instance in <work>/state and stops it, so the user's daemon is
 never touched. --project (optional) adds an existing analysed project, which is only ever opened
@@ -31,8 +32,28 @@ caller_labels, idle_shutdown, keep_warm, stdio, upgrade_cache, holders, fork, re
 refresh_force, overlays, overlay_owned, legacy_overlay, multi_writer, shared, edit,
 orphan_shutdown, import_write_kill, shared_stress. import_speed takes --big <binary> (repeat)
 and --big-analyze.
+
+More tests live in ``dt_<package>.py`` files next to this one (PROTOCOL-3.md, section 8): each
+exposes ``TESTS = {name: fn}`` (``fn(ctx)`` returns a note, or raises ``Fail``) and may expose
+``BASELINE = {name: premise}``. They are imported by name (``import daemon_tests as dt`` gives
+them ``Fail``, ``check``, ``expect_error``, ``wait_for``, ``PremiseFail`` and the ``Ctx``), run after
+the tests above and selected by ``--only`` like them. A directory without any ``dt_*.py`` is fine
+(``--tests-dir`` names another one); a file that does not import is reported as a failure.
+
+Expected-fail baseline. A test named in a module's ``BASELINE`` is written against the behaviour
+the design wants, and is *expected to fail* on the engine it is a baseline of (hydra.3). It is not
+part of the default run (which would be red by design). ``--baseline`` runs them and checks that each
+fails **for its stated reason**: the test raises ``PremiseFail`` only when the desired behaviour is
+absent *and* the observation carries the premise's signature (for example ``busy`` naming the long
+lane). Each test is then CONFIRMED (``PremiseFail``), REFUTED (it passed: the premise is not true of
+this engine, and the test is recorded as a finding and dropped, never weakened) or OTHER (it failed
+without the signature: the test is wrong, or the engine is). ``--baseline`` exits 0 only when every
+test is CONFIRMED. Name a baseline test with ``--only`` to run it with ordinary semantics, which is
+how it is used on an engine that is supposed to have fixed it.
 """
 import argparse
+import contextlib
+import importlib.util
 import json
 import os
 import pathlib
@@ -41,6 +62,8 @@ import subprocess
 import sys
 import threading
 import time
+
+HERE = pathlib.Path(__file__).resolve().parent
 
 MAKE_PROJECT = """// @category HeadlessSession.Test
 import ghidra.app.script.GhidraScript;
@@ -90,10 +113,50 @@ def expect_error(code, fn, *args, **kw):
     raise Fail(f"expected {code}, got a result: {str(r)[:300]}")
 
 
+class PremiseFail(Fail):
+    """A baseline test failed *as premised*: the behaviour the design wants is absent and the
+    observation carries the premise's signature. ``evidence`` is a dict of what was seen."""
+
+    def __init__(self, what, evidence=None):
+        super().__init__(what)
+        self.evidence = evidence or {}
+
+
+_SHIM = threading.RLock()
+
+
+@contextlib.contextmanager
+def client_protocol(gs, n):
+    """Makes the launcher library send ``protocol: n`` in ``hello`` and accept an engine that
+    answers any protocol from 2 to ``n`` (an engine without v3 answers 2 to a request for 3: the
+    spec's rule, PROTOCOL-3.md 3.1). The library file is not edited; this works for the 1.0.0
+    client (``PROTOCOL = 2``) and for one that already ranges over 2..3."""
+    with _SHIM:
+        saved = (gs.PROTOCOL, gs.check_compatible, gs.Daemon._check_install)
+
+        def check(info, *args, **kw):
+            p = info.get("protocol")
+            if not isinstance(p, int) or not 2 <= p <= n:
+                raise gs.IncompatibleError(f"the engine answered protocol {p}; this test "
+                                           f"client asks for {n} and accepts 2..{n}")
+
+        def check_install(self, ep, install):
+            if ep.get("install") and pathlib.Path(ep["install"]).resolve() != install.dir:
+                raise gs.LaunchError(f"the {self.instance!r} daemon runs {ep['install']}, "
+                                     f"not {install.dir}")
+
+        gs.PROTOCOL, gs.check_compatible, gs.Daemon._check_install = n, check, check_install
+        try:
+            yield
+        finally:
+            gs.PROTOCOL, gs.check_compatible, gs.Daemon._check_install = saved
+
+
 class Ctx:
     def __init__(self, a, gs):
         self.a = a
         self.gs = gs
+        self.procs = []
         self.work = pathlib.Path(a.work).absolute()
         self.state = self.work / "state"
         self.scripts = self.work / "scripts"
@@ -114,6 +177,12 @@ class Ctx:
         d = self.gs.Daemon(self.a.ghidra, str(self.state), instance, **cfg)
         self.daemons.append(d)
         return d
+
+    def connect(self, d, client, harness, protocol=2):
+        """A session on daemon ``d`` (started if need be) that asks for ``protocol`` in ``hello``.
+        The engine's answer is ``s.hello["protocol"]`` (2 when it serves no v3)."""
+        with client_protocol(self.gs, protocol):
+            return d.connect(client, harness)
 
     def script(self, name):
         return str(self.scripts / name)
@@ -151,11 +220,19 @@ class Ctx:
         """A separate Python process (a second harness) with ghidra_session importable."""
         prelude = (f"import sys, json, time; sys.path.insert(0, {str(self.support)!r}); "
                    "import ghidra_session as gs; A = sys.argv[1:]\n")
-        return subprocess.Popen([sys.executable, "-c", prelude + code, *map(str, args)],
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                                stdin=subprocess.DEVNULL)
+        p = subprocess.Popen([sys.executable, "-c", prelude + code, *map(str, args)],
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                             stdin=subprocess.DEVNULL)
+        self.procs.append(p)
+        return p
 
     def cleanup(self):
+        for p in self.procs:
+            with contextlib.suppress(Exception):
+                if p.poll() is None:
+                    p.kill()
+                    p.wait(timeout=10)
+        self.procs.clear()
         for d in self.daemons:
             try:
                 if d.jvm_alive():
@@ -2583,6 +2660,77 @@ TESTS = ["two_harnesses", "two_projects", "dll_import", "client_kill", "daemon_r
          "refresh_force", "overlays", "overlay_owned", "legacy_overlay", "multi_writer",
          "shared", "edit", "orphan_shutdown", "shared_stress"]
 
+REGISTRY = {}   # test name -> fn(ctx): the tests above and those of the dt_*.py files
+BASELINE = {}   # test name -> the premise it is a baseline of (expected to fail, see --baseline)
+LOADED = {}     # dt_*.py file name -> its test names, in order
+
+
+def load_dt(tests_dir):
+    """Imports every ``dt_*.py`` of ``tests_dir`` (sorted) and registers its ``TESTS`` (and
+    ``BASELINE``). Returns ``[(file name, what went wrong)]`` for the files that did not load; the
+    other files still load. An empty set is fine."""
+    errors = []
+    for f in sorted(pathlib.Path(tests_dir).glob("dt_*.py")):
+        try:
+            spec = importlib.util.spec_from_file_location(f.stem, f)
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[f.stem] = mod
+            spec.loader.exec_module(mod)
+            tests = getattr(mod, "TESTS", None)
+            if not isinstance(tests, dict) or not all(callable(v) for v in tests.values()):
+                raise TypeError("TESTS must be a dict {name: fn}")
+            base = getattr(mod, "BASELINE", {})
+            if not isinstance(base, dict) or set(base) - set(tests):
+                raise TypeError("BASELINE must be a dict {name: premise} of names in TESTS")
+            for n, fn in tests.items():
+                if n in REGISTRY and REGISTRY[n] is not fn:
+                    raise ValueError(f"test name {n!r} is already taken")
+            for n, fn in tests.items():
+                REGISTRY[n] = fn
+                if n in base:
+                    BASELINE[n] = base[n]
+            LOADED[f.name] = list(tests)
+        except Exception as e:  # noqa: BLE001
+            errors.append((f.name, f"{type(e).__name__}: {e}"))
+    return errors
+
+
+def watchdog(c, name, secs):
+    """Ends the run, with every daemon and child killed, when one test outlives ``secs``."""
+    def fire():
+        print(f"FAIL {name} did not end within {secs} s; killing its daemons and children",
+              flush=True)
+        c.cleanup()
+        os._exit(4)
+    t = threading.Timer(secs, fire)
+    t.daemon = True
+    t.start()
+    return t
+
+
+def run_test(c, n, secs):
+    """Runs one test; returns (status, note, seconds, evidence): status is "pass", "premise"
+    (a PremiseFail) or "fail"."""
+    t = time.perf_counter()
+    wd = watchdog(c, n, secs) if secs else None
+    ev = {}
+    try:
+        status, note = "pass", REGISTRY[n](c)
+    except PremiseFail as e:
+        status, note, ev = "premise", str(e), e.evidence
+    except Exception as e:  # noqa: BLE001
+        tb = e.__traceback__
+        where = tb.tb_next.tb_lineno if tb and tb.tb_next else "?"
+        det = getattr(e, "details", None)
+        status = "fail"
+        note = f"{type(e).__name__}: {e}{' ' + json.dumps(det) if det else ''} at line {where}"
+    finally:
+        if wd:
+            wd.cancel()
+    if status != "pass":
+        c.cleanup()  # nothing a failed test started may outlive it
+    return status, note, time.perf_counter() - t, ev
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -2604,32 +2752,85 @@ def main():
                     help="a binary for import_speed (repeat; default: two random raw files)")
     ap.add_argument("--big-analyze", dest="big_analyze", action="store_true",
                     help="import_speed also analyses (import with analyze:true)")
-    ap.add_argument("--only")
+    ap.add_argument("--only", help="comma-separated test names (built in or from dt_*.py)")
+    ap.add_argument("--baseline", action="store_true",
+                    help="run the expected-fail baseline tests (BASELINE of the dt_*.py files) and "
+                    "check that each fails for its stated reason; exit 0 only if all do")
+    ap.add_argument("--list", action="store_true", help="list the tests and exit")
+    ap.add_argument("--tests-dir", dest="tests_dir", default=str(HERE),
+                    help="where the dt_*.py files are (default: next to this script)")
+    ap.add_argument("--test-timeout", dest="test_timeout", type=int, default=None,
+                    help="seconds one test may take before the run is ended with its daemons and "
+                    "children killed (default: 600 with --baseline, else none)")
+    ap.add_argument("--report", help="also write the results here, as JSON")
     a = ap.parse_args()
+    sys.modules.setdefault("daemon_tests", sys.modules[__name__])  # dt_*.py import this file
+    for n in TESTS:
+        REGISTRY[n] = globals()["t_" + n]
+    load_errors = load_dt(a.tests_dir)
+    default = list(TESTS) + [n for fl in LOADED.values() for n in fl if n not in BASELINE]
+    only = [x for x in (a.only or "").split(",") if x]
+    for n in only:
+        if n not in REGISTRY:
+            ap.error(f"unknown test {n}; known: {', '.join(REGISTRY)}")
+    if a.baseline:
+        for n in only:
+            if n not in BASELINE:
+                ap.error(f"{n} is not a baseline test; baseline tests: {', '.join(BASELINE)}")
+        names = only or list(BASELINE)
+    else:
+        names = only or default
+    if a.list:
+        for n in REGISTRY:
+            print(n + ("  [baseline: " + BASELINE[n] + "]" if n in BASELINE else ""))
+        for f, why in load_errors:
+            print(f"FAIL load {f}: {why}")
+        sys.exit(1 if load_errors else 0)
+    if a.baseline and not names and not load_errors:
+        print("no baseline tests to run")
     sys.path.insert(0, str(pathlib.Path(a.ghidra) / "Ghidra" / "Features" / "HeadlessSession" /
                            "support"))
     import ghidra_session as gs
     c = Ctx(a, gs)
-    names = a.only.split(",") if a.only else TESTS
-    failed = 0
+    secs = a.test_timeout if a.test_timeout is not None else (600 if a.baseline else 0)
+    results = []
+    bad = len(load_errors)
+    for f, why in load_errors:
+        print(f"FAIL load {f}: {why}", flush=True)
+        results.append({"test": f, "status": "load_error", "note": why})
+    skipped = [n for n in BASELINE if not a.baseline and n not in only]
     try:
         for n in names:
-            t = time.perf_counter()
-            try:
-                note = globals()["t_" + n](c)
-                print(f"ok   {n:16s} {time.perf_counter() - t:7.1f} s  {note}", flush=True)
-            except Exception as e:  # noqa: BLE001
-                failed += 1
-                print(f"FAIL {n:16s} {time.perf_counter() - t:7.1f} s  {type(e).__name__}: {e}"
-                      f"{' ' + json.dumps(e.details) if getattr(e, 'details', None) else ''}"
-                      f" at line {e.__traceback__.tb_next.tb_lineno if e.__traceback__.tb_next else '?'}",
-                      flush=True)
-                c.cleanup()
+            status, note, secs_n, ev = run_test(c, n, secs)
+            if a.baseline:
+                word = {"premise": "CONFIRMED", "pass": "REFUTED", "fail": "OTHER"}[status]
+                bad += status != "premise"
+                print(f"{word:9s} {n:24s} {secs_n:7.1f} s  {note}", flush=True)
+            else:
+                bad += status != "pass"
+                word = {"pass": "ok  ", "premise": "FAIL", "fail": "FAIL"}[status]
+                tag = " (as premised)" if status == "premise" else ""
+                print(f"{word} {n:16s} {secs_n:7.1f} s  {note}{tag}", flush=True)
+            results.append({"test": n, "status": status, "seconds": round(secs_n, 1),
+                            "note": note, "evidence": ev})
     finally:
         c.cleanup()
+    if skipped:
+        print(f"not run: {len(skipped)} expected-fail baseline test(s) ({', '.join(skipped)}); "
+              "--baseline runs them")
+    if a.report:
+        pathlib.Path(a.report).write_text(
+            json.dumps({"mode": "baseline" if a.baseline else "run", "results": results},
+                       indent=1), encoding="utf-8")
     print("timings:", json.dumps(c.timings, indent=1))
-    print(f"{len(names) - failed}/{len(names)} passed")
-    sys.exit(1 if failed else 0)
+    miss = f"; {len(load_errors)} dt file(s) did not load" if load_errors else ""
+    if a.baseline:
+        n_ok = sum(r["status"] == "premise" for r in results)
+        print(f"{n_ok}/{len(names)} baseline tests fail as premised{miss}")
+    else:
+        n_ok = sum(r["status"] == "pass" for r in results)
+        print(f"{n_ok}/{len(names)} passed{miss}")
+    sys.exit(1 if bad else 0)
 
 
 if __name__ == "__main__":
