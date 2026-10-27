@@ -151,8 +151,8 @@ has `hydra-engine-<version>-win_x86_64.zip`, the client alone as `hydra-client-<
 and a `SHA256SUMS`. Unzip the engine anywhere; it holds the install, `ghidra_12.3_DEV\`:
 
 ```powershell
-Get-FileHash hydra-engine-12.3-hydra.2-win_x86_64.zip     # compare with SHA256SUMS
-Expand-Archive hydra-engine-12.3-hydra.2-win_x86_64.zip C:\tools
+Get-FileHash hydra-engine-12.3-hydra.3-win_x86_64.zip     # compare with SHA256SUMS
+Expand-Archive hydra-engine-12.3-hydra.3-win_x86_64.zip C:\tools
 $G = "C:\tools\ghidra_12.3_DEV"
 python $G\Ghidra\Features\HeadlessSession\support\ghidra_session.py ensure   # the daemon
 & $G\support\analyzeHeadless.bat C:\re MyProject -import target.exe          # stock headless

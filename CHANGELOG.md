@@ -12,6 +12,49 @@ example `12.3-hydra.1`); its tag is `v` and the version. Releases are on
 Not yet released; a release renames this heading to its version and names the upstream commit
 it is based on.
 
+## 12.3-hydra.3
+
+Based on upstream Ghidra `master` (12.3 DEV) as of 2026-10-27,
+commit `1b9e58a915cf867e106495eaa2a4b18eb4971c9d`, merged into the Hydra Engine branch with a
+plain merge commit (no rebase): 0 conflicts. The previous base was `057a646233`; the merge brings in
+35 upstream commits (17 that are not merges) and touches 29 files, none of which Hydra Engine
+changed. `git merge-tree` predicted the merged tree `069259b499` and the merge produced the same
+tree.
+
+### Upstream changes picked up
+
+- Decompiler (C++, so the native `decompile.exe` is rebuilt): GP-7212 (`RuleRangeMeld` extra
+  pull back for offcut matches, `ruleaction.cc`), GP-7414 (`truncatePointer` checks for a
+  constant varnode), GP-7423 (`findCbranch` in `checkCommonCbranch`, `coreaction.cc`,
+  `jumptable.cc`).
+- GP-1 `ghidra.util.datastruct.Range` is `long` based instead of `int` based.
+- GP-7418 Ghidra URL encode and decode fixes (`GhidraURL`); GP-7416 loader options built with
+  constructors deprecated in 12.2 no longer lose headless `-loader-*` arguments (`Option`).
+- Bounds-checking fix in `StaticValueByteProvider`, symbol path parsing (`SymbolPathParser`),
+  Objective-C message analyzer, Windows RTTI script, GUI-only dialog and marker fixes.
+
+### Database format gate
+
+Nothing in the database or language layers changed: the merge touches no file in
+`Ghidra/Framework/DB`, `Ghidra/Framework/SoftwareModeling`'s `program/database` packages or any
+processor (`Ghidra/Processors`); `ProgramDB.DB_VERSION` is still 33,
+`DataTypeManagerDB.DB_VERSION` 3, `DataTypeArchiveDB.DB_VERSION` 5, `ProgramUserDataDB.DB_VERSION`
+1, `SlaFormat.FORMAT_VERSION` 4, `LocalBufferFile.HEADER_FORMAT_VERSION` 1. Projects of
+12.3-hydra.2 open unchanged. `LocalBufferFile` still has both GP-7261's size checks and Hydra's
+truncate-before-close for temporary buffer files (`3229f6e79f`).
+
+### Build and tests
+
+`gradle buildHeadless` (JDK 25, Gradle 9.8.2, Visual Studio Build Tools) built the headless install
+for Windows x64, native decompiler included: `decompile.exe` and `sleigh.exe` were compiled from the
+merged sources, not copied. On that install (NTFS volume): `session_smoke.py` passed (34 checks),
+`contract_tests.py` 5/5, `daemon_tests.py` 31/31 (including `import_queue`, `import_isolation`,
+`parallel_imports`, `import_speed`, `upgrade_cache` and `fork`); `legacy_overlay` and the
+older-format half of `upgrade_cache` need a project saved by Ghidra 12.1.4 and were skipped. Not
+exercised: the ReFS-only behaviour (block-clone fork, slow close of a temporary buffer file). A
+stock `analyzeHeadless` import with `-loader-*` arguments applied them; upstream's tests for
+`GhidraURL`, the protocol connector and `SymbolPathParser` pass (55 tests).
+
 ## 12.3-hydra.2
 
 Released 2026-10-26. Based on upstream Ghidra `master` (12.3 DEV) as of 2026-10-26,
