@@ -214,6 +214,13 @@ if (headlessRequested) {
 			}
 		}
 	}
+	// Ship Ghidra's NOTICE and our modification notice (Apache-2.0 section 4) next to LICENSE,
+	// which assembleDistribution already copies to the install root.
+	assembleDistribution {
+		from(rootProject.projectDir) {
+			include 'NOTICE', 'NOTICE-HYDRA'
+		}
+	}
 	// The software bill of materials (bom.json) opens every jar of the install, one after another,
 	// and was most of assembleDistribution's time. A headless install skips it unless asked:
 	// -PheadlessSbom=true.

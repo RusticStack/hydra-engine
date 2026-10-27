@@ -137,6 +137,9 @@ jobs:
           Expand-Archive -LiteralPath "out/$env:ASSET" -DestinationPath $dest
           $top = @(Get-ChildItem -Directory $dest)
           if ($top.Count -ne 1) { throw "expected one top folder in the zip, found $($top.Count)" }
+          foreach ($notice in 'LICENSE', 'NOTICE', 'NOTICE-HYDRA') {
+            if (-not (Test-Path -LiteralPath (Join-Path $top[0].FullName $notice))) { throw "the zip has no $notice" }
+          }
           "GHIDRA_INSTALL=$($top[0].FullName)" >> $env:GITHUB_ENV
           Write-Output "Install: $($top[0].FullName)"
 

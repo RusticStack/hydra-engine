@@ -43,6 +43,25 @@ processor (`Ghidra/Processors`); `ProgramDB.DB_VERSION` is still 33,
 12.3-hydra.2 open unchanged. `LocalBufferFile` still has both GP-7261's size checks and Hydra's
 truncate-before-close for temporary buffer files (`3229f6e79f`).
 
+### Decompiler gate
+
+The decompiler output of this build was compared with 12.3-hydra.2 (`golden.py`, one program
+function at a time, C text hashed):
+
+- KotOR (an x86 game executable, 8616 functions): 8616/8616 identical to 12.3-hydra.2 on all three
+  decompile paths (explicit, explicit-program and production), and identical between two runs of
+  12.3-hydra.3.
+- x86 fixtures: identical. x64 fixtures: exactly one function per program differs, the same CRT
+  `strncmp` (125 bytes) in all four; the change is GP-7212's. The 100% fixtures profile therefore
+  fails by one function per x64 program until those baselines are re-recorded.
+- GP-7423 and GP-7414 changed no output in this corpus (no regression seen; not a verified
+  improvement). KotOR is x86 only.
+- Timing: no regression above the run-to-run noise of a machine shared with other Java processes
+  (interleaved A/B medians: 3.40 ms for 12.3-hydra.2 against 3.37 ms for 12.3-hydra.3); one raw pair
+  of back-to-back runs showed +14 to +16%, which the interleaved runs did not reproduce.
+- A project saved by 12.3-hydra.3 opens in 12.3-hydra.2 and back. This is expected: both builds
+  use the same database format, so it is not independent evidence about the format.
+
 ### Build and tests
 
 `gradle buildHeadless` (JDK 25, Gradle 9.8.2, Visual Studio Build Tools) built the headless install
@@ -54,6 +73,36 @@ older-format half of `upgrade_cache` need a project saved by Ghidra 12.1.4 and w
 exercised: the ReFS-only behaviour (block-clone fork, slow close of a temporary buffer file). A
 stock `analyzeHeadless` import with `-loader-*` arguments applied them; upstream's tests for
 `GhidraURL`, the protocol connector and `SymbolPathParser` pass (55 tests).
+
+### Documentation and licensing (no change in behaviour)
+
+- **README**: Hydra Engine is described as a fork of Ghidra 12.3 DEV that depends on it (the
+  project format, decompiler, analyzers and scripts are Ghidra's), not as an independent project.
+- **Speed**: the warm decompile time is qualified as size-dependent. The 6.7-7.1 ms of the
+  benchmark is one function whose size was not recorded; measured by the owner on a KotOR
+  executable on 2026-10-27, a warm decompile took 0.7-2.1 ms for a one-byte function and 35-45 ms
+  for a 6.7 KB function of 29 basic blocks.
+- **Writes**: they are serialized and never corrupt a program, but are not collision-checked by
+  default: shared writes are last-writer-wins per value, and `expect` is opt-in per call. The
+  wording "write without stepping on each other" is replaced accordingly (README and module
+  README).
+- **Platform and limits** section: releases are Windows x64 only, JDK 25 is required, one daemon
+  per state directory, `fork_project` is a block clone only on ReFS (a full copy elsewhere),
+  changes are kept only by `save`, and the project upgrade from 12.1.4 is one-way.
+- **Hydralysis** (renamed from RusticRE): a status note says its repository, command and
+  `HYDRALYSIS_ROOT` are not published yet; the links stay.
+- **NOTICE-HYDRA** rewritten as the Apache-2.0 section 4(b) notice of modifications: it lists
+  every modified upstream file with what changed, and each of the three modified Java files
+  (`LocalBufferFile`, `LocalDatabaseItem`, `SleighLanguageFile`) has a one-line comment saying so
+  (no code change).
+- **Release archives** now ship `NOTICE` and `NOTICE-HYDRA` next to `LICENSE`: in the headless
+  install's root (`gradle/hydra/headless.gradle`) and in the client zip
+  (`.github/scripts/package-client.sh`); the release workflow checks the unzipped engine for all
+  three.
+- **CONTRIBUTING**: the upstream sync policy (merge never rebase, one `sync/upstream-YYYY-MM-DD`
+  branch cut from `origin/main`, the golden decompile diff gate, the upstream commit recorded in
+  the changelog, the database format constants check, `legacy-12.1.4` frozen and end of life) and
+  a complete list of the upstream files that can conflict.
 
 ## 12.3-hydra.2
 
