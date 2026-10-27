@@ -7,6 +7,19 @@ fork maintenance, import/export/golden gating) and orders the work to build it. 
 works today is in [README.md](README.md) ("Protocol (version 2)") and
 [ARCHITECTURE.md](ARCHITECTURE.md).
 
+**Revision 6 (2026-10-27) adds the multi-agent objective.** The owner's objective is that several harnesses (Claude
+Code, Codex, OpenCode, QoderCLI) work on several projects at once, that nothing they do corrupts a project or another
+agent's work, and that no client's lock blocks another client; Hydra Engine and Hydralysis may be refactored for it.
+Revision 6 synthesises one design from three competing drafts (isolation first, engine concurrency, verification first)
+and three judges, on four measurement streams run on the real daemon (3.9): capacity (`_logs/measA`), a lock map
+(`_logs/lockmap`), 952 forced kills (`_logs/crash-C`) and a claims audit (`_logs/claims-audit`). It reverses or changes
+nine rev5 decisions (2.1), adds decisions D35-D58, a concurrency model (3.9), a blocking-point table (3.10), resource
+governance (3.11), storage integrity and the corruption oracle (3.12), per-agent views and the publish queue (4.10), the
+guarantees with their tests (6.1), the chaos and soak gate and seven more gates (9.12-9.19), the Z packages and the
+claims packages (8.3), and a reordered wave plan with the release mapping (5.3). **Hydra Engine is headless only: there
+is no GUI and none is planned.** Nothing here is implemented; the measurement figures are single runs under foreign
+load unless stated.
+
 Evidence conventions. Every `File.java:line` below was read on branch `feat/session-extract`
 (commit `b6df709e1e`, the tree this file is committed on); every `file.py:line` was read on
 Hydralysis branch `feat/hydralysis-0.5` (commit `d0466bc`, package `src/hydralysis`, formerly
@@ -25,7 +38,10 @@ cited README phrase is quoted so the line can be found again after the branch mo
 kinds of evidence are cited by path: the characterization and baseline runs of the engine packages
 (`D:/Projects/Hydra/_logs/<stream>/`), the review runs (`.../spec-review/`, `.../review-spec-rev3/`, `.../review-spec-rev4/`) and the
 experiments of revisions 3, 4 and 5 (`.../spec-rev3/`, `.../spec-rev4/`, `.../spec-rev5/`: scripts and their
-recorded output, 3.5, 3.8 and 7.6). Anything not
+recorded output, 3.5, 3.8 and 7.6). Revision 6 adds the
+measurement streams of 3.9 and the proof `D:/Projects/Hydra/_logs/spec-rev6/prove_disjoint_rev6.py`; its code
+citations were re-read on `feat/session-extract` (`b6df709e1e`) and the Ghidra core files of 3.12 in the same tree.
+Anything not
 marked that way is a proposal. A number marked *unmeasured* has no
 measurement behind it on this machine: it is a starting value to be replaced by the measurements in
 [Release gates](#9-release-gates). Appendix A lists the code facts the design depends on and where
@@ -39,7 +55,7 @@ out, as found by reading the code.
 3. [The engine contract](#3-the-engine-contract)
 4. [The Hydralysis state contract: the op-log, generations, backups, commit](#4-the-hydralysis-state-contract)
 5. [Compatibility with hydra.2/3 clients and engines](#5-compatibility-and-the-release-train)
-6. [Honest limits](#6-honest-limits)
+6. [Guarantees and honest limits](#6-guarantees-and-honest-limits)
 7. [Client obligations (Hydralysis)](#7-client-obligations-hydralysis)
 8. [Work packages](#8-work-packages)
 9. [Release gates](#9-release-gates)
@@ -73,15 +89,25 @@ The engine adds **facts and gates**; Hydralysis keeps the **record**.
   disposable unless a verified backup of that project's current revision is named.
 - **Admission, isolation and supervision** are extensions of the existing seams (`Scheduler`,
   `Connection`, `Caller`, `ScriptCommands`, `Session.info`), plus one new inline command,
-  `health`. There is no new admission class, no command table, no Java fault-injection layer.
+  `health`. There is no command table and no Java fault-injection layer; **revision 6 adds a resource governor behind
+  an admission seam (E9, D46)**.
 - **Protocol 3 is a negotiated contract level.** The engine serves protocols 2 and 3 on one
   port. A connection that does not ask for 3 sees byte-identical replies, which is checked by the
   existing 317-request characterization goldens, and today's behaviour, except for the short list
   of changes in [5.1](#51-every-change-a-protocol-2-client-can-observe) (each there with its reason
   and its own test, because the goldens see replies only). Everything else about 3 is additive.
 - **Ordering.** Hydralysis durability and commit ship first, on hydra.2/3, with no engine change.
-  The engine work follows in small packages that each pass the characterization diff. Per-agent
-  default views, in-place replace and helper-JVM script isolation are explicitly later or out.
+  The engine work follows in small packages that each pass the characterization diff. In-place replace is out.
+  **Revision 6 reorders the train around the owner objective (D56)**: verification and the wording pass first (W0), the
+  integrity packages that fix the two real corruptions next (W1), then lanes and the shared base, robustness, the
+  non-blocking core and per-agent views, the governor and the soak gate. Per-agent default views are required, not
+  deferred (D43); a killable script worker is hydra.5 and conditional (D47).
+- **Revision 6: concurrency by construction (D36-D58).** Agents never share a mutable program: readers read a sealed
+  master or generation that has no exclusive holder, each writer works in its own view (a disposable fork whose truth is
+  the Hydralysis store), and the only serialisation point is a leader-elected publish queue that no reader and no view
+  waits on (3.9, 4.10). The remaining shared locks are bounded, capped and listed (3.9, 3.10); the engine refuses with
+  `busy` before it runs out of memory (3.11); the two real corruptions are fixed at their source and an oracle with
+  planted failures guards them (3.12, 6.1). Every claim is limited to what a named test proves (D52, D58).
 
 ## 2. Conflicts resolved, one by one
 
@@ -91,40 +117,92 @@ ergonomics) and the investigation's critic.
 
 | # | Conflict | Decision | Why |
 |---|---|---|---|
-| D1 | Five analyses each wanted a `hydra.3`/protocol-3/`minClient` bump with different content; the upstream merge is also called hydra.3 | **hydra.3 is the upstream merge only** (no protocol change). **hydra.4 is protocol 3**, one tag. The engine packages merge separately to one integration branch and are gated one by one; the Hydralysis pin moves once. | The merge was golden-gated on its own (KotOR 8616/8616 identical to hydra-2; report in `_golden/baselines/hydra-3-candidate`). Mixing protocol work into it would make a decompile difference unattributable. |
+| D1 | Five analyses each wanted a `hydra.3`/protocol-3/`minClient` bump with different content; the upstream merge is also called hydra.3 | **hydra.3 is the upstream merge only** (no protocol change). **hydra.4 is protocol 3**, one tag. The engine packages merge separately to one integration branch and are gated one by one; the Hydralysis pin moves once. **Revision 6 (D35): CHANGED.** A protocol-neutral integrity cut (E8, E2a) may ship before hydra.4. | The merge was golden-gated on its own (KotOR 8616/8616 identical to hydra-2; report in `_golden/baselines/hydra-3-candidate`). Mixing protocol work into it would make a decompile difference unattributable. |
 | D2 | `README.md:988-992` says additions need no protocol change; all three designs still bump to 3 | The bump is kept as a **negotiated contract level**, not a break. `hello` echoes the `protocol` the client sends (the hydra.2 client already sends `protocol=2`, `ghidra_session.py:850-852`), within `[2,3]`; absent means 2. Reply keys that only a v3 client can use are produced only for a v3 connection, at the bounded list of sites in 3.1 (thirteen reply-shape conditionals, C1 to C13, enumerated there). Behaviour that a v2 client could notice is gated on the same `Client.v3()` test (six behaviour gates) unless 5.1 declares it v2-visible with a reason and a test. | A v2 connection then stays byte-identical, so the seven existing scenarios (317 requests) remain an exact regression suite for a Java code base with no unit tests. Those goldens see replies only (they exclude progress events, older-format projects and lock timing: `characterization_tests.py` docstring), so each non-reply behaviour has a behaviour test of its own (5.1). The cost is thirteen reply-shape conditionals (C1 to C13, 3.1) plus six behaviour gates (5.1). The alternative (always additive reply keys, re-record goldens under a "superset of old keys" check) is wire-compatible and is the fallback if the **reply-shape** count (13 now, checked by listing C1 to Cn in 3.1) grows past twenty or a gate needs more than `Client.v3()`; it changes no wire rule and cannot replace the behaviour gates. |
 | D3 | Endpoint file and `ready` event: protocol 3 only (A), or the lowest served plus a maximum (C) | Endpoint file and `ready` carry `"protocol": 2` (the lowest served), plus `protocolMin: 2`, `protocolMax: 3`. | The stock client refuses the endpoint on inequality (`ghidra_session.py:1000`) and the `hello` on inequality (`:113`). A hydra.4 client library accepts any overlap of `[2,3]` with the daemon's range and uses the highest. So: a hydra.2/3 stock client works against a hydra.4 daemon at protocol 2; a hydra.4 client works against a hydra.2/3 daemon at protocol 2. |
 | D4 | `minClient` bump now (B asked), or never | `minClient` stays `1.0.0`. The new client library is `CLIENT_VERSION 1.1.0` (something added). The one bump is reserved for the release that drops protocol 2. | Nothing is non-additive for a client that does not opt in. A bump would reject every existing client for no safety gain. |
-| D5 | Persistent op-log: engine WAL/ViewStore (B, C) versus the Hydralysis store (A) | **The Hydralysis store.** No engine-owned op-log in this train. Re-open only if (a) a non-Hydralysis client needs durable engine annotations, or (b) a spike shows bulk ops (`import_types`, `import_archive`, struct) replay on a changeable view program with the same result as the fork-based working copy. | Hydralysis never uses the engine edit path: it forks, then replays RusticQuery `apply_overlays` (`workcopy.py:352-405`, `RusticQuery.java:2305-2345`). The five native engine ops cover rename, label, comment, signature and data_type only; struct, variable, function_create/body/delete and the two bulk imports exist only as RusticQuery code. An engine log would need a second Java implementation of all of them, the biggest risk any design carried. The store already has atomic writes, a monotone revision, per-edit `by`/`at`, a subject journal, and mandatory `expect_revision` with subject-aware rebase (`revisions.py`). What it lacks is hardening (D14), `before` values, a master binding and a commit path, which this design adds. |
+| D5 | Persistent op-log: engine WAL/ViewStore (B, C) versus the Hydralysis store (A) | **The Hydralysis store.** No engine-owned op-log in this train. Re-open only if (a) a non-Hydralysis client needs durable engine annotations, or (b) a spike shows bulk ops (`import_types`, `import_archive`, struct) replay on a changeable view program with the same result as the fork-based working copy. **Revision 6 (D43): PRESERVED.** The engine `view_*` family two drafts proposed is rejected; the write-ahead order of 4.10 is added to the store contract. | Hydralysis never uses the engine edit path: it forks, then replays RusticQuery `apply_overlays` (`workcopy.py:352-405`, `RusticQuery.java:2305-2345`). The five native engine ops cover rename, label, comment, signature and data_type only; struct, variable, function_create/body/delete and the two bulk imports exist only as RusticQuery code. An engine log would need a second Java implementation of all of them, the biggest risk any design carried. The store already has atomic writes, a monotone revision, per-edit `by`/`at`, a subject journal, and mandatory `expect_revision` with subject-aware rebase (`revisions.py`). What it lacks is hardening (D14), `before` values, a master binding and a commit path, which this design adds. |
 | D6 | Three on-disk formats for "journal" (`<project>.journal`, view op-log, `recovery/*.ops.json`) | None of the three. Journal = recovery = commit source = the store v3 record set. An optional dump of an orphaned engine journal to `<stateDir>/recovery/` (E3b, default off) exists only for direct clients. | One format means one reader and one recovery rule. |
 | D7 | Two subject/conflict models (store revision plus `before` drift; seq plus subject rebase) | **One subject record** `{subject, field, before, after, seq, by, at}` inside each edit's `effects[]` (4.2). Conflict decisions use the **coarse subject** (the strings of `revisions.subjects_of`, unchanged); `field` only refines drift checks and the probe. | Existing rebase tests stay valid; a rename and a comment at one address still count as one subject for conflicts but are two effects for drift. |
 | D8 | Two backup components with different manifests | One: `fork_project purpose:"backup"` implemented in a new `ProjectBackup` class (not inside `ForkCommands`, 278 lines today). One manifest schema with a `writer` field (`engine` or `hydralysis`), so the Python-written manifest used on hydra.2/3 and the engine-written one are the same format. | The commit works before the engine change (H2 in design A) and later switches writer without a format change. |
 | D9 | Commit mechanism: fork+replay+publish, promote a fork's DB into `.rep`, or apply and save in place | Fork+replay+verify+publish as a **new generation**. No Ghidra-internals write, no promote, no in-place save of a canonical project. | Nothing in the commit path can corrupt the master; the one-way format step lands on the new generation only. |
 | D10 | Commit point: atomic replace of `targets.json` (A), pointer record in an append log (B), `lineage.json` replace (C) | **Append one CRC'd line to `CURRENT.log` and fsync.** `targets.json` is only a cache of it. | Replace-based pointers have no integrity check and no recovery rule; an append log with per-line CRC and a "last valid line wins, a torn tail is ignored by readers and repaired by the next writer on every acquisition of the writer lock (4.1), a mid-log gap is loud" rule does. |
 | D11 | **New finding, in none of the three designs:** `target["key"]` is `sha256(resolved gpr + program)` (`targets.py:114-117`) and keys the overlay store (`workcopy.py:46-47`), the working directory (`:105-106`), the view re-key (`:36-43`), the export header (`exporting.py:118`) and `stop()` (`query.py:224`). A pointer flip that changes `gpr` would orphan every store. | The target keeps a **stable `key` for life**: at lineage creation the existing key is stored in the record (`lineage.origin_key`) and `resolve()` returns it; only `gpr` follows `CURRENT.log`. `stop()` releases the programs of every generation of the lineage. | Without this, the first commit silently abandons the analyst's overlay store. |
-| D12 | "Canonical" for the upgrade gate: no sidecar (A, C) or not provably disposable (B) | **Decided from the project's own fork sidecar alone, because the engine cannot see `CURRENT.log` (Hydralysis-side).** A project is disposable iff its sidecar (`<name>.fork.json`) exists, parses, has `kind == "ghidra-session-fork"` and does not say `disposable:false`. A sidecar without the field (every hydra.2/3 fork: the sidecar is built at `ForkCommands.java:246-251`) is therefore disposable: that is the hydra.2/3 meaning of a fork and the only way Hydralysis's own base forks stay upgradable. hydra.4 `fork_project` writes `disposable:true` for `purpose:"fork"` and `disposable:false` for `purpose:"generation"` and `"backup"`. A generation made **before** the engine knows `purpose` (a commit on hydra.2/3, Y2) would carry no field and look disposable, so Hydralysis rewrites that sidecar to `disposable:false, purpose:"generation"` through `durable` right after the fork and **before** step 7 hashes the folder (4.6); the rewrite is part of what the manifest covers. No sidecar, an unparseable one, a sidecar write that failed (`ForkCommands.java:255-257` only warns), or any doubt: canonical. | Generations are made by `fork_project`, so "no sidecar" would exempt every generation from the second one on, and "not a published generation" is not decidable in the engine. A sidecar is an ordinary file a local process can edit: the gate is a guard against accidents (section 6). |
+| D12 | "Canonical" for the upgrade gate: no sidecar (A, C) or not provably disposable (B) | **Decided from the project's own fork sidecar alone, because the engine cannot see `CURRENT.log` (Hydralysis-side).** A project is disposable iff its sidecar (`<name>.fork.json`) exists, parses, has `kind == "ghidra-session-fork"` and does not say `disposable:false`. A sidecar without the field (every hydra.2/3 fork: the sidecar is built at `ForkCommands.java:246-251`) is therefore disposable: that is the hydra.2/3 meaning of a fork and the only way Hydralysis's own base forks stay upgradable. hydra.4 `fork_project` writes `disposable:true` for `purpose:"fork"` and `disposable:false` for `purpose:"generation"` and `"backup"`. A generation made **before** the engine knows `purpose` (a commit on hydra.2/3, Y2) would carry no field and look disposable, so Hydralysis rewrites that sidecar to `disposable:false, purpose:"generation"` through `durable` right after the fork and **before** step 7 hashes the folder (4.6); the rewrite is part of what the manifest covers. No sidecar, an unparseable one, a sidecar write that failed (`ForkCommands.java:255-257` only warns), or any doubt: canonical. **Revision 6 (D38, D41): CHANGED.** A seal registry joins the sidecar, the sidecar gains `state`, and a writable open of a sealed project is refused. | Generations are made by `fork_project`, so "no sidecar" would exempt every generation from the second one on, and "not a published generation" is not decidable in the engine. A sidecar is an ordinary file a local process can edit: the gate is a guard against accidents (section 6). |
 | D13 | Backup freshness test | The gate checks `backup.source.revision == Revision.of(project)` **and** the manifest self-hash **and** every file's size. Integrity of content is the manifest's per-file SHA-256, re-verified by the client before it relies on a backup. | `Revision.of` identifies the large database files only by size and mtime (`Revision.java:51-80`, files above `HASH_LIMIT` = 1 MiB are not hashed): it proves "this is the same saved state", not "the bytes are intact". The engine gate is a guard against accidents, not a security boundary against a local process with the same rights. |
 | D14 | Durable IO: skipped (A: "proven"), engine-side CRC/WAL (B), not mentioned (C) | **First thing shipped, on hydra.2/3, no engine change:** `durable.py` (fsync before replace, write-through replace on Windows, retry on `PermissionError`, sealed JSON with a previous-version fallback, never "start empty"). | `_save_store` (`workcopy.py:72-80`) and `write_json` (`backends.py:50-54`) do `write_bytes` then `replace` with no fsync: a power cut can leave a zero-length or stale store, which is the only record on hydra.2/3. Counted, not estimated: the AST write gate Y0a shipped (`tests/test_durable.py`, at Hydralysis `589432e`) finds **41 (file, function, kind) keys** outside `durable.py` (**43 call sites**: `hydra.install Path.rename` and `crossbuild.run open(w)` have two each, `COUNTS`): 11 keys that are not records in the four files Y0a owns (downloads, corpus copies, logs, markers), **8 keys (8 call sites) in 4 record-bearing writers that stay outside `durable`** (`analysis.save_overlay`, `hydra.write_daemon_config`, `runtime._write`, `runtime_worker._write`) and 22 artifact keys (24 sites: logs, exports, staged copies). The owner of each is the table in 8.2. |
 | D15 | Idempotency: `rk`/`opId` everywhere (B, C) versus none (A) | Two parts. (1) The client **stops blindly retrying non-idempotent engine calls** after `closed` (`hydra.py:268-287` retries every command once), and reconciles through the program's `overlay_state` marker instead. (2) The engine's journaled edit commands (`edit`, `rename`, `comment`) accept an optional `rk` and answer a repeat with `replayed:true` (not `apply_overlay`: the engine's overlays have no journal, 3.4). Commit and backup jobs are idempotent by their own id and intent log. | The marker already makes `apply_overlays` recoverable; the blind retry is the real hole. `rk` costs little where `expect` is being added anyway. |
-| D16 | Lanes: where `save` goes; explicit hint versus inference | New **MAINT** lane for `fork_project`, `refresh`, `reopen`, `promote_overlay` and `save`. `script` is `quick` **only with an explicit `lane:"quick"` and a `timeout` of at most `quickScriptMaxS`**; no inference from the timeout or from the script's directory. The lane move is **gated on v3** (a v2 connection keeps `save` and the others in `long`, 5.1). | RusticRE 0.4.x already sends `timeout_s+5` (`query.py:91`) but pins hydra.2 and refuses hydra.4, so inference would help no one it could reach; and silent lane changes for unknown clients are not worth a hidden behaviour. (Judges disagreed; this is the safer reading.) |
-| D17 | Replace `Scheduler`/`ImportGate` with an `AdmissionController` (B, C), or extend | **Extend.** Fair key, caps, queue info, MAINT lane and the import wait fix are changes inside `Scheduler` and `ImportCommands`. | `laneOf(String)` is static and cmd-only (`Scheduler.java:59-69`), and `Scheduler.admit(c, cmd, m, waitMs)` (`Scheduler.java:138`) is called from two places, `Session.execute` (`Session.java:248`) and `ImportCommands` (`ImportCommands.java:112`). Lane-by-request and validate-before-wait therefore change **two** signatures, `laneOf(cmd, req)` and `admit(c, cmd, req, m, waitMs)`, and both call sites. E1 makes those edits first, as behaviour-free seams (8.1), so that no later package edits `Session.java` for them. |
+| D16 | Lanes: where `save` goes; explicit hint versus inference | New **MAINT** lane for `fork_project`, `refresh`, `reopen`, `promote_overlay` and `save`. `script` is `quick` **only with an explicit `lane:"quick"` and a `timeout` of at most `quickScriptMaxS`**; no inference from the timeout or from the script's directory. The lane move is **gated on v3** (a v2 connection keeps `save` and the others in `long`, 5.1). **Revision 6 (D40): CHANGED** defaults: `maintSlots` 4, `maxLong` `max(8, CPUs)`, and the per-client cap reaches v2 (V9). | RusticRE 0.4.x already sends `timeout_s+5` (`query.py:91`) but pins hydra.2 and refuses hydra.4, so inference would help no one it could reach; and silent lane changes for unknown clients are not worth a hidden behaviour. (Judges disagreed; this is the safer reading.) |
+| D17 | Replace `Scheduler`/`ImportGate` with an `AdmissionController` (B, C), or extend | **Extend.** Fair key, caps, queue info, MAINT lane and the import wait fix are changes inside `Scheduler` and `ImportCommands`. **Revision 6 (D39, D40): CHANGED** only in the waiter caps (every v3 request) and the defaults. | `laneOf(String)` is static and cmd-only (`Scheduler.java:59-69`), and `Scheduler.admit(c, cmd, m, waitMs)` (`Scheduler.java:138`) is called from two places, `Session.execute` (`Session.java:248`) and `ImportCommands` (`ImportCommands.java:112`). Lane-by-request and validate-before-wait therefore change **two** signatures, `laneOf(cmd, req)` and `admit(c, cmd, req, m, waitMs)`, and both call sites. E1 makes those edits first, as behaviour-free seams (8.1), so that no later package edits `Session.java` for them. |
 | D18 | Validate before queueing (C) | **Validate-before-wait:** the request-shape checks run only when the request would otherwise have to wait for a slot, and only for a v3 connection (5.1). | A request that is admitted at once keeps today's order of errors, so no existing golden changes; a v3 request that would sit in a queue for a minute and then fail `bad_request` fails at once instead. A v2 request keeps today's order and timing exactly. |
-| D19 | Dead-client release | One design, owned by E3b: bounded wait, interrupt (and cancel delivered to lock waits by interrupting the registered waiting thread, 3.5), then release regardless, **including the 600 s waits in `leaveProject`/`releaseUse`** (found in the code, in none of the designs): `Session.disconnect` passes `CLEANUP_WAIT_MS` (600 000 ms, `Session.java:52,121`) to `leaveProject`, which takes the project lock and the program's exclusive lock with that wait (`ProjectCommands.java:286-322`, `ProgramCommands.java:480-520`). A stuck holder therefore blocks `disconnect` for 10 minutes per program even if `Connection.run` stops waiting. **Revision 5 adds the other half, measured:** the leave of a plain reader takes that exclusive lock too, and while it waits behind a running reader every new shared acquirer waits behind it (fair lock), so E3b also makes the leave of a client that is neither owner nor writer and not the last user take no exclusive lock (3.5). | A bounded `awaitTermination` alone would not release anything. |
-| D20 | Script isolation: exclusive by default (import-export item), private instance, or trust by directory (C) | Per-request `isolation: shared|private|exclusive`, default `shared` (today). RusticQuery stays `shared`. User `ghidra_run` uses `private` **only when the working copy has nothing unsaved**, else `exclusive`. RusticQuery is pinned by an optional `scriptSha256`. No trust by directory. | `private` reads the **stored** file (`getReadOnlyDomainObject`), so it cannot see unsaved shared edits. Hydralysis working copies hold their edits unsaved in the daemon until a saver runs (`workcopy.py:352-359`), so a private run on an edited view would silently answer from the master. Found in the code, in none of the designs. |
+| D19 | Dead-client release | One design, owned by E3b: bounded wait, interrupt (and cancel delivered to lock waits by interrupting the registered waiting thread, 3.5), then release regardless, **including the 600 s waits in `leaveProject`/`releaseUse`** (found in the code, in none of the designs): `Session.disconnect` passes `CLEANUP_WAIT_MS` (600 000 ms, `Session.java:52,121`) to `leaveProject`, which takes the project lock and the program's exclusive lock with that wait (`ProjectCommands.java:286-322`, `ProgramCommands.java:480-520`). A stuck holder therefore blocks `disconnect` for 10 minutes per program even if `Connection.run` stops waiting. **Revision 5 adds the other half, measured:** the leave of a plain reader takes that exclusive lock too, and while it waits behind a running reader every new shared acquirer waits behind it (fair lock), so E3b also makes the leave of a client that is neither owner nor writer and not the last user take no exclusive lock (3.5). **Revision 6 (D37): REVERSED in role.** A bounded wait still shows a 10 s refusal (measured); the leave of every reader becomes a refcount change (E3c), and E3b stays for the legacy owner and writer paths, cancel of lock waits and the post-acquire `leaving` check. | A bounded `awaitTermination` alone would not release anything. |
+| D20 | Script isolation: exclusive by default (import-export item), private instance, or trust by directory (C) | Per-request `isolation: shared|private|exclusive`, default `shared` (today). RusticQuery stays `shared`. User `ghidra_run` uses `private` **only when the working copy has nothing unsaved**, else `exclusive`. RusticQuery is pinned by an optional `scriptSha256`. No trust by directory. **Revision 6 (D47): CHANGED.** A user `ghidra_run` never runs `shared`: `private` on a clean program, `exclusive` on a view. | `private` reads the **stored** file (`getReadOnlyDomainObject`), so it cannot see unsaved shared edits. Hydralysis working copies hold their edits unsaved in the daemon until a saver runs (`workcopy.py:352-359`), so a private run on an edited view would silently answer from the master. Found in the code, in none of the designs. |
 | D21 | Wedge detection and registry | `health` inline from a watchdog snapshot; wedge decided by the client after three probes. The daemon registry is launcher-side Python; an entry is live iff the instance lock is held (`Daemon.jvm_alive`, `ghidra_session.py:969-979`). | Pid reuse cannot fool a held OS lock. No Java registry class. |
-| D22 | Fault injection compiled into the engine (B, C) | **No Java fault layer.** Engine tests kill and suspend processes from outside. One test hook is allowed: a launch property `-Dghidra.session.testHooks=true` registering `debug_stall`, advertised in `hello.platform.testHooks` and turning `health.state` to `degraded`. Hydralysis commit fault points are Python (`durable.fault(name)`, a no-op unless `HYDRALYSIS_TEST_FAULT` is set). | A `Runtime.halt` in a release binary is a hazard larger than the bug it finds. |
+| D22 | Fault injection compiled into the engine (B, C) | **No Java fault layer.** Engine tests kill and suspend processes from outside. One test hook is allowed: a launch property `-Dghidra.session.testHooks=true` registering `debug_stall`, advertised in `hello.platform.testHooks` and turning `health.state` to `degraded`. Hydralysis commit fault points are Python (`durable.fault(name)`, a no-op unless `HYDRALYSIS_TEST_FAULT` is set). **Revision 6 (D48): PRESERVED.** `crashAt`, `failWrite` and `mutant` switches were proposed and rejected; injection is external and trigger-timed. | A `Runtime.halt` in a release binary is a hazard larger than the bug it finds. |
 | D23 | Doctor in five places | One module (`doctor.py`), read-only, never starts a JVM. The engine supplies `hello.paths/platform/analysisIdentity`, `format`, `health`. | |
 | D24 | Ergonomics scope (C) against the correctness spec | Adopted because each is tied to a verified defect: error `next`/`retryAfterMs`, validate-before-wait, queue info, `applied` on cancel, widened `EngineError` (`hydra.py:61-63` drops `holderInfo`, `heldMs`, queue), a fast/engine tool pool split (`mcp.py:22-23`: four workers, eight outstanding). **Not adopted:** call detach/patience as a new state next to jobs (a bounded wait that returns the engine's structured `busy` achieves "never block long" without it), reply diet, a catalog-hash freeze beyond the one epoch in Y0d. | |
 | D25 | 20 tools | A target, not a cap. Nothing here needs a 21st tool. One catalog epoch (Y0d; the number that ships is **2**, because epoch 1 never left the branch and its follow-up changed one description, 7.7) adds `backend.action` values `doctor` and `backups` and an `options` bag to `backend`, `ghidra_run`, `job`; every other feature rides existing `options` bags (`type_edit` kinds, `status` `show`). Section 7.7. | Running sessions cache tool lists (`mcp.py:45`, `listChanged: False`): schema changes must happen once. |
-| D26 | Per-agent default views | Not in this train. `shared` stays the default. Precondition list in Y5. | Needs publish/merge to have soaked, a stable agent id (`rusticre:<pid>` today) and a measured named-view cost (the 1.4 s figure is a single unreproduced run). |
+| D26 | Per-agent default views | **Revision 6: REVERSED (D43).** Per-agent views are the default and required (owner decision). Y5 moves from W7 to W4; its precondition list becomes gates (Y3 soaked, the agent id, view eviction, Z2's per-phase cost). | Needs publish/merge to have soaked, a stable agent id (`rusticre:<pid>` today) and a measured named-view cost (the 1.4 s figure is a single unreproduced run). |
 | D27 | In-place replace / restore-replace | Not built. If ever: its own capability, own fault matrix on the owner's volumes, owner decision. | Directory renames over open handles are the Windows failure the generation design avoids. |
-| D28 | Retention | **No automatic deletion** of backups, generations or candidates in this train. Unfinished candidates are invisible (no valid manifest) and listed by `backend action=backups` for manual removal. | Every automatic delete is a data-loss surface; the disk cost of keeping is bounded by the 50 GB ask-first rule. |
+| D28 | Retention | **No automatic deletion** of backups, generations or candidates in this train. Unfinished candidates are invisible (no valid manifest) and listed by `backend action=backups` for manual removal. **Revision 6 (D41): PRESERVED**, with one carve-out: the engine may delete staging artefacts it created whose owning process is provably dead. | Every automatic delete is a data-loss surface; the disk cost of keeping is bounded by the 50 GB ask-first rule. |
 | D29 | Baseline ordering | Golden baselines are captured on the released hydra.3 install from COW or full **copies** with tree hashes before and after, before any engine package merges (the hydra-3-candidate captures already exist). | The three comparisons (12.1.4 vs hydra.2, hydra.2 vs hydra.3, after-commit vs working copy) are never mixed in one diff. |
 | D30 | Test-file collisions | `daemon_tests.py` and `characterization_tests.py` get an extension loader in E0 (`examples/dt_*.py`, `examples/char_*.py`), so every later package adds its tests in its own file. | Lets packages in one wave touch disjoint files. |
 | D31 | Seams: which package may edit the cross-cutting files | **Seams first, then features.** E1 (W1) builds four small registries and makes the two signature changes of D17, so that later packages in one wave never edit the same shared file: `Advertised` (capabilities, limits, policy, 3.1), `Settings` (config keys, 3.7), `Preflight` (per-command request validators, 3.5), `DbVersions` (the constants behind `dbVersions`, 3.2). Ownership per file and wave is the matrix in 8.1. | The v1 plan said `Session.java` is edited by one package per wave while E2 and E3a both needed it in W2, and E1 needed a constant that only E2 could edit (review B4). |
 | D32 | Commit state: watermark or ids | **A committed-id set, not a watermark.** A record is committed iff its id is in the `ids` of a live (not reverted) commit entry; the replay set is every other record, in `seq` order (4.2). `commit` can take a subset (`only`) and `on_drift:"skip"` leaves records pending, so a single `committed_through` number could mark a skipped record as committed. | Review B2. |
 | D33 | Deadline on a stalled call against a hydra.2/3 engine (revision 2 said: `session.close()` on a timer; revision 3: half-close with a FIN) | **Abandon the connection with nothing more sent, and close it late, through a leave gate** (7.6): a worker thread owns `send`/`wait`, the caller waits on its own event, `cancel` goes through the same session, then the worker and the connection are abandoned (at most 8 for user calls, 3 for the supervisor probe, counted apart); when the engine's answer arrives the worker closes the session itself, but only when this process has no read in flight on a program that entry joined. Each attempt runs on its own pool entry, a connection plus the project and program it joined (a fresh connection answers `no_project`; re-establishing the context costs about 6 ms on a quiet daemon, measured), and nothing else shares an entry. The client never relies on an EOF or a reply coming back on hydra.3, and never sends a FIN to an entry that has joined a program. | `SocketSession.close()` hangs when another thread is in `wait()` (it closes the file objects before it shuts the socket down), measured on the real 1.0.0 object on Python 3.14.7 and 3.15.0. Revision 3 chose `shutdown(SHUT_WR)`; **revision 5 withdraws it**: a FIN adds nothing the `cancel` had not done (`Connection.run` calls the same `RequestMonitor.cancel()`), and its one distinct effect is that the engine **leaves** the program when the request ends, taking the program's exclusive lock, which makes every other reader of that program wait behind a running reader (measured: a new entry's `open_program` and an already-joined entry's script fail `busy` after their wait, 3.5, 7.6). Without the FIN the same release happens when the worker closes the session after the reply (measured), at a moment the client chooses. P1b/E3b change this on hydra.4: the deadline is the library's, and a plain reader's leave takes no exclusive lock. |
 | D34 | Where each Python catalog stub gets its handler (Y0d left `not_available` stubs in `api.py`; the matrix gave `api.py` to Y2 and Y4b only, two packages in W6 needed it) | **A handler registry in `api.py`, built once by Y2 (W2)**; `backups.py`, `commits.py`, `doctor.py` and `userscripts.py` register their handlers and no later package edits `api.py` (8.2). | The seams-first rule of D31 applied to the Python side; it removes the one cell that two W6 packages would have shared. |
+| D35 | **Revision 6.** The release train: hydra.3 is the upstream merge only (D1), but the one real corruption found (measurement C) and the atomic fork publish are protocol-neutral and cannot wait for protocol 3 | **Four releases, one wave numbering (5.3).** (1) **hydra.3** unchanged. (2) **Hydralysis 0.5.0, "qualified"** (owner decision): client only, on the hydra.2/3 pin: Y0a-Y0e, Y1, Y2 (shared base, `_sync` fix, `integrity.py`, launch config), Y3 (publish queue), Y5 (per-agent default views), Z-packages that need no engine change, R0/S1/Z13a wording. Its README states exactly the guarantees of 6.1 that hold on hydra.3 and what is not yet proven. (3) **hydra.4**: protocol 3, E1-E6, E8, E2a, E3c, E9, X0 and the gates 9.12-9.19; **a protocol-neutral hotfix cut** (E8 plus E2a, cherry-pickable, no protocol-visible change) may be tagged first once its kill batches pass; its tag name is an owner decision (OD10). (4) **Hydralysis 0.6.0** pins hydra.4 (Y4a-Y4e, Z9-Z12, Z14; label OD11). **hydra.5**: E7, E10, E11, E12, all conditional | The three drafts disagreed on labels (A: 0.6.0/0.7.0; B: hotfix, 0.5.0, hydra.4+0.6.0; C: 0.5.0 after W3, 0.6.0). The judges agreed that the corruption fix and the Hydralysis-only work must not wait for the XL engine packages. The owner fixed "0.5.0 qualified". |
+| D36 | The owner objective as testable contracts; GUI | Six contracts, each a gate (9.12-9.19): **NB** (no client's request waits on a lock another client holds, except the listed residual points of 3.9), **ISO** (no agent sees another agent's unpublished edit unless it opts into the shared view or protocol-2 shared mode), **COR** (sealed and published trees and other projects are never written; a kill damages at most a disposable unpublished artefact and is detected before it can be published), **DUR** (an acknowledged edit or publish survives a process crash; power loss is not promised), **RES** (overload is refused with `busy`, never an out-of-memory, and a runaway script or decompiler fault is contained), **COMPAT** (protocol 2 byte-identical except the declared rows of 5.1). **Headless only: there is no GUI, none is planned, and stock-GUI projects are not a goal.** OD2 and every "materialise a generation for the GUI" idea are removed, as are the GUI rows of 4.7, the stock-Ghidra clause of gate 9.6 and the GUI limit of section 6 | The owner (2026-10-27): multiple harnesses at once, never corrupt, locks must not block other clients, headless only. The site claims it (hydrare.dev); `claims-audit` found 11 sentences that measurement contradicts. |
+| D37 | How readers stop blocking: A (refcounted immutable snapshots plus a replica pool), B (RCU with an XL rewrite), C (sealed immutable generations) | **Sealed generations are the read path (C), refcount for every reader's join and leave (all three), and the snapshot/replica machinery is conditional.** A published generation and the adopted master are opened only read-only and never have an exclusive holder, so their readers meet no lock another client can hold. Join and leave of a reader of **any** program is a counter change (E3c: the `releaseUse` fast path of 3.5 for everyone who is not owner, writer or last user, plus a deferred, non-blocking disposal of the last user). Read replicas of one stored file for DB-bound readers (E11) and an immutable-snapshot publish for programs under analysis are **not built in hydra.4**: they depend on spike SP1 (a read-only open of the stored file while another instance saves a new version) and SP8 (replica heap and scaling), and fail back to this decision. Legacy `open` projects (an in-place owner, protocol-2 shared mode) keep their locks with the bounds of 3.5; they carry **no** non-blocking claim | Judge 1 chose A as the base, judge 2 chose C, judge 3 chose B; all three agree on refcount leave and on the dependency of A and B on unmeasured Ghidra behaviour (a snapshot pinned while an owner saves N+1 on Windows). C has no such dependency, and a failed spike must fall back to it rather than weaken the claim. |
+| D38 | Sealing: A `disposable:false` sidecar, B `canonical_readonly`, C a seal registry | **One predicate, `Seals.isSealed(project)`** (E2): true when the project's sidecar says `disposable:false` (D12) **or** the engine's seal registry (`<stateDir>/seals/`, written by the new v3 command `seal_project`, 3.4) holds the project's path with the `Revision` it was sealed at. A sealed project is refused every writable path (`open_program writable`, `analyze`, `save`, owner scripts, edits, `promote_overlay` into it, `refresh` to a writable view) with the code `sealed` for v3 and `conflict` with `details.reason:"sealed"` for v2, and `next:{cmd:"fork_project"}`. **A project with no sidecar and no seal record is not sealed** (legacy in-place use is unchanged: B's rule would have broken it). The refusal is declared v2-visible (V8, 5.1) because it can only meet projects that hydra.4 itself marked | C measured that a writable open of a pristine project changes `~index.bak` and deletes `~journal.bak`; Hydralysis never opens its master writable, and the engine now says so. On hydra.2/3 sealing is client discipline plus `integrity.py` (G1 depends on the client behaving there, stated in 6.1). |
+| D39 | Slot and lock order: A slot-yield, B lease first, C locks before slots (R-A) | **Slot first, then locks, as in rev5 (a lock holder never waits for a lane slot, so there is no slot/lock deadlock), bounded by waiter caps; C's reorder is rejected; slot-yield is an optional, gated step.** (1) Every v3 request, hinted or not, is subject to the per-resource waiter cap of 3.5 (`lock_queue_full`), now at most `max(2, slots/4)` waiters per program lock, per project lock and per overlay lock, so one program's lock queue cannot take a lane. (2) E3c may add `Ticket.yieldSlot/reacquire` behind the setting `yieldSlots` (default **off**) only if spike SP9 (a stress test with a reserved re-entry slot) shows no deadlock and measurement B's s5 improves; until then the residual (up to the cap of waiters hold slots) is stated in 3.10 | Judge 1 (must reject C's R-A: a lock holder that waits for a saturated lane blocks every reader of its program) and judge 2 (use caps and a raised `maxLong`, not a blanket reorder) agree. Rev5 already rejected parking a slot (3.5). |
+| D40 | Lanes: A four lanes with a query lane and per-project shares, C maint/script/heavy, B sub-caps | **Three lanes as in rev5 (quick, long, maint) with new defaults and the per-client running cap extended to v2.** `maxLong` default `max(8, CPUs)` (was CPUs/4, at least 2: measurement A, six slots gave a 7th client 10.2-10.5 s for a script, save and fork; 24 slots gave 87, 281 and 531 ms); `maintSlots` default 4 (was 2); the work-conserving per-key cap of 3.5 also applies to **v2** connections (a v2 client could occupy 32 parallel requests, claims-audit U2), declared as V9 in 5.1. The `lane:"quick"` hint stays trust-based (D16). All numbers are `Settings` keys and appear in `hello.limits` | Judge 2: ship the lane taxonomy as defaults behind settings, decided by the lane test. A fourth lane is added only if the NB10 lane test fails with these defaults. |
+| D41 | Fork publish protocol: A one directory rename (`layout:"dir"`), B intent file plus marker, C `.gpr` last | **`.gpr` last, with a `state` in the sidecar, an idempotency key and a sweeper (E2a).** The fork is staged in `.<name>.fork-<id>.tmp` with an intent record (`id`, `pid`, creation time of the process, `rk`); `.rep` is moved, then the sidecar with `state:"publishing"`, then `.gpr` (the commit point: if `.gpr` exists, `.rep` and the sidecar exist), then the sidecar is rewritten `state:"complete"` and flushed. A repeat with the same `rk` and path returns the completed fork or resumes; without `rk` a half fork the engine itself made (intent present, owner dead) is resumed or removed instead of answering a bare `conflict`. A **lazy sweeper** (the first `fork_project` under a parent directory) removes only artefacts the engine created and can prove dead: staging folders and `.rep` without `.gpr` whose intent names a dead process, `tmp*.tmp`, `tmp*.ps` and `.ghidra.test.lock~~` older than 10 minutes; everything else is reported by `health`/`doctor`. A client-side kill is unchanged (the `finally` already cleans) | Measurement C: 12 of 162 fork kills blocked a retry (4 `.rep` without `.gpr`, 8 without sidecar), 53 left a staging folder nobody removes. A's single directory rename cannot cover a destination folder that already exists (`ProjectFork.copy` accepts one, `ProjectFork.java:155-159`), so `.gpr` last is used. |
+| D42 | The version-file corruption (measurement C finding 1): A (rename after header, quarantine), B (F1a flush before rename, F1b quarantine on every open), C (temporary name, `StoreRecovery`) | **E8, in two parts, both in the Ghidra core and both protocol-neutral.** (1) **The root fix is an ordering fix**: `LocalManagedBufferFile.saveCompleted` renames the pre-save file to its final name `db.N+1.gbf` first (`saveFile.renameFile(newFile)`, `LocalManagedBufferFile.java:696`) and only then calls `saveFile.setReadOnly()` (`:709`), whose `flush()` writes the header and syncs (`LocalBufferFile.java:824`, `:768-790`); a kill between the two leaves a full-size file with an all-zero header. E8 calls `flush()` (header, `raf.getFD().sync()`) **before** `renameFile`. The pre-save file is already a temporary file (C's `.part` scheme is not needed). (2) **Repair on open, never destructive, never on a read-only tree**: an invalid-magic newest `db.N.gbf` (valid files begin `2f30312c34292c2a`) in a **writable disposable** project is moved to `<name>.quarantine/` and the previous version is used (`repairs[]` in the reply and in `health`); in a sealed, published or read-only-opened project nothing is written and the open answers `corrupt_newest` with the repair hint (reading must not mutate the master). `integrity.py` (Y2) does the same for Hydralysis-owned forks on hydra.2/3 | Verified in source (above) and by measurement: deleting the zero-header newest file reopened the last acknowledged save 12 of 12. Judge 1: B's rename on a read-only open would break the master-unchanged guarantee and could race a second daemon's in-flight save. |
+| D43 | Per-agent views: A (engine `view_*` family with eviction events), B (overlay or fork backend by spike), C (forks) | **Per-agent views are the default and fork-backed; there is no engine `view_*` command family (D5 stands).** A view is a Hydralysis target: `(lineage, agent id)`, created lazily at the agent's first edit; reads of an agent without a view go to the sealed master. The agent id is `options.as`; the fallback is `<client name>@<boot id>`, never a process id (judge 3: a pid breaks resume). Subagents that share one MCP server process share its default id, so the skills must tell harnesses that spawn editing subagents to pass a distinct `as` for each. The engine's part is **admission** (3.11): `fork_project purpose:"view"` (a disposable fork with the owner agent and lineage in its sidecar) and every open are refused with `busy{reason:"capacity"}` before heap, native memory or disk run out. **Eviction is the client's** (Y5: LRU, idle time, `max_views`; closing the program keeps the fork on disk and the next use reopens it, about 0.6 s measured for an upgrade open); the engine never closes a view it did not open. Overlay-backed views (E10) are decided by spike SP2 and only for direct clients | Owner decision: required, not deferred (reverses D26). A showed 12 and 24 writable forks on one daemon with zero failures: about 6.7 MB live heap and 10 MB JVM private memory per view, the first limit is CPU in the native decompilers. Judge 2: an engine view family duplicates `fork_project` plus the op-log. |
+| D44 | `_base` "once per master revision" (rev5 4.4) is false in the code | **One shared base per `(lineage, generation, engine release)`, built once under a cross-process single-flight lock, cloned per view (Y2).** Measured (A): the base was rebuilt for every named view (`base_upgrade` 1103, 4754, 5594 ms for views 1-3; 243-346 MB per view on NTFS); 12 processes building views at once took 8.2-9.0 s each, 15.6-18.2 s while the master's 15-16.5 s upgrade-cache build ran. `prepare` finishes the upgrade-cache build (E2 `prepare_upgrade`, a job) before the first view is created. `_sync` no longer shares one process-wide writer connection (`workcopy._sync`'s `writer.reset()` in `finally` closed it under other threads: `no_project` with 4 threads, reproduced once, cause by code reading): each view has its own pool entry with a reference-counted reset, and the per-target `.sync.lock` (up to 900 s, one writer at a time across all clients) is replaced by a per-view lock with a bound (`SYNC_LOCK_S`, 30 s) and a structured `busy`. Z1 adds the failing test first | A, measurement section on the work-copy path; all three drafts agree. |
+| D45 | Publish and merge: A (disk queue, leader on an OS lock, batches of 16), B (group commit), C (FIFO build lock, batching only if measured) | **One leader per lineage, a FIFO queue on disk, batch size 1 by default (`publishBatchMax`).** `publish`/`commit` seals a changeset record (flushed) and returns a job with a position at once; the leader holds a non-blocking OS lock on `publish.lock`, builds one candidate (fork of the head generation, replay with `before` checks, verify with the oracle subset K2/K3), appends **one** CRC line to `CURRENT.log` (D10) and writes the per-changeset result. **Exactly once**: the generation's manifest records the changeset ids it applied (the committed-id set of D32), so a leader that dies after the append and before the result file is resolved by reading the manifest. Optimistic parallel builds with compare-and-swap are rejected (with 24 publishers the losers rebuild O(N) times). Batching up to `publishBatchMax` changesets per generation is switched on only if Z2/SP7 show the p95 publish latency at 12 publishers above the budget; until measured no latency figure for publish is stated | Judge 1 (single leader, manifest ids), judge 3 and judge 2 (no group commit in the first cut). |
+| D46 | Resource governance: three overlapping designs | **One governor (E9) behind two seams E1 builds (`Hooks.Admission`, `Guarded`).** Details in 3.11: minimum heap 512 MB; admission by measured heap after GC with a soft and a hard watermark; a decompiler semaphore of `min(CPUs, nativeBudget/200 MB)` permits, fair per client; a Windows Job Object with kill-on-close around the daemon (P1b) so native decompilers never outlive it; decompiler crash isolation and a small circuit breaker; Throwable-safe daemon threads; admission refusals as structured `busy`. **Rejected:** per-decompiler nested Job Object memory limits through the FFM API (unproven, judge 2) | Measurement A: `-Xmx128m` fails at 12 views, `-Xmx256m` ends in `OutOfMemoryError` at 24 and the session-reaper thread dies, `-Xmx512m` is fine; the decompiler pool is unbounded (one native process per concurrent client, 4.9 GB at 24 busy views). |
+| D47 | Runaway and deaf scripts | **hydra.4 bounds them; hydra.5 can kill them (E7, conditional).** A user `ghidra_run` never runs `shared` (it is `private` on a clean program and `exclusive` on a view, D20), so a deaf script holds only its owner's view and one slot. Per-client caps, a wall budget (`scriptMaxS`) and a quarantine (the slot counts against its owner and `health.leakedWorkers`; the owner's `long` cap drops to 1) bound the damage; the only hard remedy, a killable worker JVM on a clone of the saved view, is E7 with spike SP10 for its start-up and RAM cost | All three drafts agree; `Thread.stop` is gone in JDK 25. Measured (B): a deaf script ran to its end 22 s after cancel and held its long slot. |
+| D48 | Verification: C's mutant switches in the shipping jar versus external injection | **Verification first, with no test code in the release jar (D22 stands).** X0 (W0) builds the corruption oracle K1-K17 (3.12, 6.1) with **planted-violation self-tests** (a zero-header version file, a flipped byte in a sealed file, a `.rep` without `.gpr`, a missing acknowledged op, mixed generation tags, an orphan decompiler, a leaked thread; and a torn last `CURRENT.log` line that must be **tolerated**), imports the measurement scripts of A, B and C as the regression suites, and records the **red table** on hydra-3-candidate. A fix is accepted only if its test was red on the old build and is green on the new one; where no old build exists, the old class is compiled back over the new engine through `Ghidra/patch/` (the technique of the rev5 experiments), not a switch in the jar. Injection is external: kill and suspend, **trigger-timed kills** (kill X ms after the version folder listing first changes, the method that found the corruption: 2/131 random-time against 7/95 trigger-timed), kill of the native decompiler, a handle holder | Judge 2 and judge 3 reject `mutant=`/`crashAt=` (test branches in release code, and a wider upstream-merge surface). |
+| D49 | What gates "no client blocks another" | **The deterministic counter first:** `health.waits.foreignBlocked` (v3, 3.4) counts waits whose holder is another client's request, and must be 0 for reads of a sealed generation and for view operations throughout the regression suites and the chaos run (K13). Replies carry `waited` (`queueMs`, `lockMs`, `slotMs`) **only when the wait was 250 ms or more**, like `queue` (C9). Latency is secondary: a threshold is fixed from a quiet-machine run (foreign load recorded below 25% CPU), is reproduced twice before it fails, and on a loaded machine is report-only | Measurement A varied 2x between identical runs under foreign load, C saw 16-24 s stalls under load, B's baselines differ between scripts (1,200 against 610 calls/s). Judge 3: never gate on loaded-machine latency; no always-on reply fields. |
+| D50 | The chaos/soak gate: A (24 agents x 6 projects, 4 h, three passes), C (L0-L4, up to 8 h and 1000 kills), B (counted batches) | **Counted kill batches plus a nightly soak plus one release run (9.17).** Batches (each with the oracle and Wilson bounds): at least 400 trigger-timed save kills (200 NTFS, 200 ReFS), 300 fork-publish kills, 200 publish and promote kills, 50 daemon kills with 8 clients; a nightly soak (16 agents x 4 projects, 2 h, fault classes with minimum hit counts); and **one** release soak of 24 agents x 6 projects for at least 4 hours. No single all-or-nothing 8-hour run. A zero count over 400 trials supports "below 0.75% at 95%" (rule of three), which is the wording, never "never" | Judge 2 (reject an 8-hour, 1000-kill gate on a loaded machine), judge 1 (counts and fault hits). |
+| D51 | Reply semantics and size | **Nothing is added to every reply, and no read silently changes meaning.** `waited` appears from 250 ms; `asOf`, `stale` and `lease` appear only when they differ from "the live state of the program the caller joined"; a v3 reader of a legacy-open program reads the live program exactly as a v2 reader does (A's stored-file readers with `asOf` and B's snapshot-only reads are not adopted in hydra.4, D37). The tool catalog stays at 20 tools and under 8,192 bytes (8,172 today) | Judge 3: the catalog is at 8,172 of 8,192 bytes; agents pay tokens for every reply field; a silent staleness is an agent hazard. |
+| D52 | Truthful claims and who owns the website | **A wording pass before any engine work (R0, S1, Z13a, W0), a claims ledger, and an owner for the site repo.** `docs/data/claims.json` (Z13a) holds one row per claim (id, text, class, evidence path, the package whose test flips it); `tests/test_claims.py` fails when a number differs from its source (the tool catalog's 8,172 bytes against the limit 8,192 generated from `tool_table()`, the KotOR function counts 8,966 total / 8,616 internal / 60 thunks, the X0 baselines); the site build checks its copy (S2); `tools/bump_hydra.py` (R1) is extended to the site's version constants (the rev5 rule for Hydralysis pins, 5). The **wording rule** until a claim's gate passes: "serialized", "never corrupt (in the tests listed)", "tested with up to N clients", "native commands", "by function size", "when you pass `expect`"; not allowed: "never collide", "any number", "never blocks", "cleaned up at once", "7 ms" without its size qualifier. 8.3 lists the 25 claims and the package whose test flips each | Measurement D: 11 contradicted, 14 unsupported or stale, 5 future, 14 supported claims; the site (`projects.ts:7`, `index.tsx:18/108`, `scheduling.ts:36/48`, `architecture.ts:85/95`) still carries wording that the engine README and CHANGELOG already replaced. |
+| D53 | The audit's Z1-Z15 packages (49 asks without a package) and its eight ownership conflicts | **All fifteen packages are in section 8 with waves, files and dependencies; the eight conflicts and two conditionals are resolved in 8.3 (table "The eight conflicts of the audit").** Waves: Z1 W1, Z4 Z5 Z7 W2, Z2 Z3 Z6 Z8 W3, Z13b Z15 W5, Z9 Z10 Z14 W6, Z11 Z12 W7. Z2 moves from W4 to W3 (the named-view benchmark must exist before Y5 and gate 9.16). Runtime evidence and coverage (Z9, Z10, Z11) come before memory write and watchpoints (Z12), which stay fixture-only (owner decision) | Audit 5.4; judge 3 adopted its resolutions. |
+| D54 | An honest interim on hydra.2/3 for the lane starvation | **Y2 sets `maxLong` and `maxQuick` when it launches the daemon** (`hydra.write_daemon_config`, from the expected number of agents, default 16), which removed the 10.2-10.5 s waits in measurement A (`maxLong` 24: script 87 ms, save 281 ms, fork 531 ms). The website wording stays qualified until hydra.4 passes 9.13 | Judge 3 (must adopt). |
+| D55 | Supervisor | Auto-restart (Y4a) is enabled only when `journal.durable` is true: the store v3 write-ahead record (4.10) exists and its start-up self-test (write, kill, read) passes. The supervisor waits for process exit before restarting (TerminateProcess to exit: median 2.1 s, p95 19.5 s, maximum 39 s in the loaded runs of measurement C) and treats every hard kill as a crash | Owner decision (OD4 changed). |
+| D56 | Wave order | **W0 verification and wording (E0, X0, R0, S1, Z13a); W1 seams and the two integrity packages (P1a, E1, E8, E2a, Y0e, Y1, Z1); W2 (E2, E3a, Y2, Z4, Z5, Z7); W3 (E3b, Y3, Z2, Z3, Z6, Z8); W4 (E3c, E4, P1b, Y5); W5 (E5, E9, E6, R1, Z13b, Z15, S2); W6 adoption (Y4a, Y4b, Y4d, Y4e, Z9, Z10, Z14); W7 (Z11, Z12); W8 hydra.5 (E7, E10, E11, E12).** E5 moves from W4 to W5 because E3c owns `Session.java` in W4; E4 stays in W4 after E3b | Judge 2: do not stack E8, E2, E3a and E3c in one wave, and do not give `Session.java` four owners without a gate per wave. |
+| D57 | Cross-project isolation | Every lineage has its own `CURRENT.log`, `publish.lock`, queue, base and views; the project registry is a per-project state machine (`OPENING`, `OPEN`, `CLOSING`) in a `ConcurrentHashMap`, and **no wait for a lock happens inside a monitor** (E3b un-nests the `makeWritable` wait first, E3c replaces the registry). The only daemon-wide resources are the lanes, the import gate, the decompiler gate, heap, native memory and disk, governed fairly (3.11). K9 (every uninvolved project's tree hash unchanged) and B's s5/s13 reruns are the tests | Measurement B: an unrelated project's `open_project` took 9,421 ms; 24 lock waiters took 24 of 24 quick slots. |
+| D58 | The guarantees the documents may state | Exactly GR1-GR11 of 6.1, each with the test that can fail and the release it holds in; nothing else is claimed. The honest wording for the corruption window until E8 and the batches pass: "a hard kill during a save can make that fork's newest version unreadable; the fork is repaired to its last acknowledged save by an automatic check; the master is never at risk" | Measurement C recommendation; all three judges. |
+
+### 2.1 Rev5 decisions that revision 6 reverses or changes
+
+Revision 6 does not delete the rev5 rows above; each is marked in place and listed here with the decision that
+carries the change. **REVERSED** means the rev5 position is no longer the plan; **CHANGED** means the row stands
+with the stated difference; **PRESERVED** means a row someone proposed to drop stands.
+
+| Rev5 decision | Status | Carried by | What changed and why |
+|---|---|---|---|
+| D26 per-agent default views not in this train | **REVERSED** | D43, D44, D45 | Required by the owner; measured: 12 and 24 writable forks, zero failures. Y5 moves from W7 to W4 and its preconditions become gates (Y3 soaked, stable agent id, view eviction, Z2's per-phase cost) |
+| D19 bounded release and interruptible waits as the fix for dead and leaving clients | **CHANGED** (reversed in role) | D37, D39, 3.10 | Measured: a bounded wait still shows a 10 s refusal (B s1); the leave of a plain reader becomes a refcount operation for **every** reader, the 600 s cleanup waits go, and E3b stays for what remains (legacy owner and shared paths, the post-acquire `leaving` check, cancel of lock waits) |
+| D16 and D17 lanes (`maintSlots` 2, `maxLong` CPUs/4, v3-only per-key cap) | **CHANGED** | D40, D54 | New defaults, the per-client running cap also for v2 (V9), waiter caps for every v3 request, no fourth lane unless NB10 fails |
+| D20 script isolation (RusticQuery `shared`; user scripts `private` only when nothing is unsaved) | **CHANGED** | D47, 3.6 | A user `ghidra_run` never runs `shared`: `private` on a clean program, `exclusive` on a view (only its owner waits); contained scripts on a shared program keep the documented dirty-read limit and are not claimed isolated |
+| D12 "disposable" decided from the sidecar alone | **CHANGED** | D38, D41 | A seal registry joins the sidecar; the sidecar gains `state`; a writable open of a sealed project is refused |
+| D5 persistent op-log is the Hydralysis store, no engine `view_*` family | **PRESERVED**, narrowed | D43 | A and B wanted an engine view family; rejected. Re-open criterion (a) is not triggered. The write-ahead order W1-W4 (4.10) is added to the store contract |
+| D22 no Java fault layer | **PRESERVED** | D48 | C's `crashAt`, `failWrite` and `mutant` switches rejected; injection is external and trigger-timed |
+| D28 no automatic deletion | **PRESERVED**, with one carve-out | D41 | The engine may delete only staging artefacts it created whose owning process is provably dead (never a backup, generation, published fork, candidate or user file). New risk accepted: generation disk growth (OD8) |
+| D1 hydra.3 is the upstream merge only | **CHANGED** | D35 | A protocol-neutral integrity cut (E8, E2a) may ship before hydra.4 |
+| D9 and D27 no rename, no in-place replace | **PRESERVED** | D41 | The fork publish moves files inside a destination the engine owns; a generation is still never replaced |
+| D13/D25/D32/D33/D34 | **PRESERVED** | | Backup freshness, 20 tools, committed-id set, the hydra.2/3 deadline, the handler registry are unchanged |
+| OD1 backup policy | **DECIDED** | D35 | A second independent backup copy by default (`backup_min_independent` 1; the second root is configured, OD9); the 50 GB ask-first rule stays |
+| OD2 generation mode against the GUI | **REMOVED** | D36 | Headless only |
+| OD4 supervisor auto-restart on | **CHANGED** | D55 | On only when a durable journal exists |
+| OD7 per-agent views and who may commit | **DECIDED** | D43, D45 | Views are the default; any holder of the confirmation may publish through the queue; an optional `publish_policy` can name one integrator identity (client-side) |
+| Rev5 gate 9.5 (12-client soak against E0's p99) | **REPLACED** | D49, D50 | By 9.17 and the oracle K1-K17; E0's recorded failing latency is not a bound |
+| Rev5 gate 9.6 stock-Ghidra clause | **REMOVED** | D36 | Headless only; the one-way format step is asserted by `format_gate.py` |
+| Rev5 4.4 "`_base` once per master revision" | **false in the code**, fixed | D44 | Measured per-view rebuild |
+| Rev5 4.7 rows "A GUI user saving a generation" and "The Ghidra GUI opening the original .gpr" | **REMOVED** | D36 | Replaced by process-neutral rows |
 
 ## 3. The engine contract
 
@@ -172,14 +250,14 @@ byte-identical).** Thirteen reply-shape conditionals, **C1 to C13**, one per row
 | # | The one site | v3-only content |
 |---|---|---|
 | C1 | `Session.info(c)` (one method builds the hello result and the `status` header) | `protocolMin`, `protocolMax`, `capabilities`, `limits`, `policy`, `paths`, `platform`, `analysisIdentity` |
-| C2 | `Scheduler.describe(boolean v3)` (`status.scheduler`; E1 adds the argument, 8.1) | `maint` lane, `waiting[].position`, `waiting[].estimatedWaitMs`, `oldestWaitMs`, `longestRunningMs`, `starving`, `perKeyCap`, and the `{"unavailable":true,"waitedMs":250}` form (the `tryLock(250 ms)` itself is behaviour gate 5, G6) |
+| C2 | `Scheduler.describe(boolean v3)` (`status.scheduler`; E1 adds the argument, 8.1) | `maint` lane, `waiting[].position`, `waiting[].estimatedWaitMs`, `oldestWaitMs`, `longestRunningMs`, `starving`, `perKeyCap`, the per-key waiter counts, and the `{"unavailable":true,"waitedMs":250}` form (the `tryLock(250 ms)` itself is behaviour gate 5, G6) |
 | C3 | the program description in `status.programs[]` | `abandonedRequests[]` |
 | C4 | `Scheduler.admit`: the `m.waiting(lane + " slot", ...)` call (`Scheduler.java:155`, one-argument today) | the `queue` key of a **slot wait**: in its progress events and in `status.requests[].queue` (3.4) |
 | C5 | `ImportGate.queueInfo(e)` (`ImportGate.java:309-315`) | `estimateScope:"load"` and nothing else. The `queue` object and the progress key of an **import** wait **already exist in protocol 2** (`m.waiting("import queue", q)`, `ImportGate.java:188-194`; `status.requests[].queue`, `RequestMonitor.describe`, `RequestMonitor.java:111`) and stay exactly as they are |
 | C6 | `ProjectEntry.info(client)` (callers: `openProject`, `ProjectCommands.java:92`; the `project` command, `Session.java:265`; `status.projects[]`, `Session.java:333`, `:427`) | `format` |
 | C7 | `ForkCommands.forkProject` success | `cost`, `warnings`, `purpose`, `manifest` (backup) |
 | C8 | `ScriptCommands.script` reply | `isolation`, `lane`, `laneNote`, `attemptedChanges`, `attemptedChangesCount`, `basedOn`, `unsavedIgnored` |
-| C9 | `Connection.respond`, success | top-level `queue` (waited 250 ms or more) |
+| C9 | `Connection.respond`, success | top-level `queue` and `waited{queueMs, lockMs, slotMs}` (waited 250 ms or more, D49) |
 | C10 | `Connection.error` (gets the client, E1) | `error.next` and `error.retryAfterMs` |
 | C11 | `Connection.respond`, the `cancelled` path | `error.details.applied` and `error.details.phase` (3.3) |
 | C12 | the one busy-details helper that `Scheduler.admit`, `Access.lockProject`, `ProgramEntry.acquire` and the overlay lock call | `details.reason`, `queue`, `abandoned` (`retryAfterMs` is **not** a details key: it sits in `error`, 3.3) |
@@ -187,7 +265,7 @@ byte-identical).** Thirteen reply-shape conditionals, **C1 to C13**, one per row
 
 Keys that have **no conditional of their own** because only a v3 request can provoke them (a v2
 connection cannot send the field, behaviour gate 1), so no v2 reply can contain them:
-`lock_queue_full` (needs `lane:"quick"`), `rk_expired` (needs `rk`), `script_changed` (needs
+`lock_queue_full` (any v3 request, revision 6), `rk_expired` (needs `rk`), `script_changed` (needs
 `scriptSha256`). The v3 error code `backup_required` is a code choice, not a reply key: behaviour
 gate 6.
 
@@ -197,8 +275,8 @@ reads it: `purpose`, `open`, `verify`, `lane`, `isolation`, `scriptSha256`, `rk`
 `signature`/`data_type`; a v2 request carrying one is exactly as before); the one exception is
 `backup` on `open_program`, which any protocol may present because the upgrade gate applies to every
 protocol (5.1); (2) `laneOf(cmd, req, v3)` moves `save`, `fork_project`, `refresh`, `reopen`,
-`promote_overlay` to `maint` only for v3; (3) the fair key `connection id + scope` and the per-key
-cap apply only to a v3 connection's requests (a v2 request keeps the key `connection id`, 3.5);
+`promote_overlay` to `maint` only for v3; (3) the fair key `connection id + scope` applies only to a v3 connection's requests (a v2 request keeps the key
+`connection id`, 3.5); **the per-key running cap reaches v2 too (V9, revision 6)**;
 (4) validate-before-wait runs only for v3; (5) `describe`'s `tryLock(250 ms)` (C2 is its reply shape); (6) the upgrade gate's refusal is
 `conflict` with `details.reason:"backup_required"` for v2 and the code `backup_required` for v3.
 
@@ -207,7 +285,7 @@ cap apply only to a v3 connection's requests (a v2 request keeps the key `connec
 **Capabilities** (object, name to integer version; a new minor feature raises the number and needs no
 new protocol): `errorNext`, `expectAll`, `idempotency`, `laneHint`, `maintLane`, `queueInfo`,
 `cancelWait`, `forkReport`, `format`, `backup`, `upgradeGate`, `scriptIsolation`, `scriptSha256`,
-`attemptedChanges`, `health`, `identity`. A client uses a feature only if its capability is present.
+`attemptedChanges`, `health`, `identity`, and (revision 6, 3.13) `seal`, `forkAtomic`, `admission`, `waitsAttribution`. A client uses a feature only if its capability is present.
 An engine without `capabilities` (hydra.2/3) is "degraded": 7.5.
 
 **Who registers what.** Only E1 owns `hello`/`Session.info`, but every package adds its own
@@ -286,8 +364,8 @@ Existing codes and their meanings are unchanged (`SessionException.java:27-51`).
 | `bad_request` with `details.reason:"rk_expired"` | an `rk` whose multi-op entries were partly evicted from the journal (3.4); only a request that carries `rk` (v3) can get it | `rk`, `foundOf`, `expectedOf` |
 
 `busy` gains `details.reason` (`slot_wait`, `lock_wait`, `lock_queue_full`, `abandoned`) for v3
-(conditional C12). `lock_queue_full` can only answer a request that carries the v3-only
-`lane:"quick"`. `cancelled` gains `details.phase` (`queued` for a slot wait, `lock_wait`, `running`)
+(conditional C12). `lock_queue_full` answers any v3 request (revision 6, D39; rev5 limited it to
+requests that carry the v3-only `lane:"quick"`). `cancelled` gains `details.phase` (`queued` for a slot wait, `lock_wait`, `running`)
 and, for the commands listed below, `details.applied`, both for v3 (conditional C11).
 `conflict` for `expect` on `signature` and `data_type` (v3 only, 3.4) has the same shape as for name and comment
 (`reason:"changed"`, `address`, `field`, `expected`, `current`, plus `lastEdit` and `holderInfo`
@@ -648,8 +726,8 @@ is not touched:
 | Lane | Commands | Slots (config) |
 |---|---|---|
 | `quick` | `list`, `functions`, `decompile`, `rename`, `comment`, `open_program`, `switch`, `open_project`; **`script` only with `lane:"quick"` and a bounded `timeout`**; `health`, `ping`, `status`, `cancel` need none | `maxQuick` (CPU count) |
-| `long` | `analyze`, `import`, `script` (default) | `maxLong` (CPU/4, at least 2) |
-| `maint` (new) | `fork_project`, `refresh`, `reopen`, `promote_overlay`, `save`, **for a v3 connection**; a v2 connection keeps them in `long` | `maintSlots` (2) |
+| `long` | `analyze`, `import`, `script` (default) | `maxLong` (revision 6, D40: `max(8, CPUs)`; rev5 CPUs/4, at least 2) |
+| `maint` (new) | `fork_project`, `refresh`, `reopen`, `promote_overlay`, `save`, **for a v3 connection**; a v2 connection keeps them in `long` | `maintSlots` (revision 6: 4; rev5 2) |
 
 `save` moves from long to maint: a 35 s save of the 1.5 GB benchmark program (*unmeasured on this
 machine*, from the durable-annotations analysis) must not wait behind two analyses, and a
@@ -678,7 +756,7 @@ its requests would otherwise see its own requests reordered). Unlabelled request
 per connection, as today. The key is attribution, not access control (any holder of the token can
 forge it; the README already says so).
 
-**Per-key running cap**, work-conserving (v3 keys only; a v2 request is never capped): a key at its
+**Per-key running cap**, work-conserving (v3 keys; **revision 6 extends the cap to v2 connections, V9**, keyed by `connection id` as before): a key at its
 cap is held back **only while another key waits for that lane that is itself under its own cap**
 (a key that has reached its cap and whose next request is queued does not count as "another key
 waiting", so two keys that each run one request and queue another never leave slots idle: with
@@ -799,11 +877,12 @@ and a decompile on the same connection afterwards succeed, and the daemon log ha
 `ClosedByInterruptException`). `deadline_in_lock_wait`: a request with `timeout` shorter than its
 lock wait answers `cancelled` at the deadline.
 
-**Lock-queue cap (opt-in, v3).** For a v3 request that carries `lane:"quick"`, at most
-`max(2, slots/2)` may wait on one program's lock (`ProgramEntry.waiters`); further ones get `busy`
+**Lock-queue cap (v3; revision 6 applies it to every v3 request, D39).** At most
+`max(2, slots/4)` requests may wait on one program's lock (`ProgramEntry.waiters`), one project's lock or one
+overlay's lock; further ones get `busy`
 at once with `reason:"lock_queue_full"` and a `retryAfterMs`. The wait then happens in the client
 (Hydralysis already treats `busy` as retryable and has its own budget), not in an engine slot.
-Parking a waiter's slot is **not** attempted: it breaks "lock holders never wait for a slot"
+Parking a waiter's slot is **not** attempted by default (revision 6, D39: `Ticket.yieldSlot` behind the setting `yieldSlots`, off, gated by SP9): it breaks "lock holders never wait for a slot"
 (`Scheduler.java:42-43`), which is what makes slot-then-lock deadlock-free, and it needs a written
 lock order and a stress test of its own.
 
@@ -906,6 +985,13 @@ if not, the guarantee for `shared` stays "rolled back, measured, and RusticQuery
 and hash-pinned", and the README says so. A script is still Java with the daemon's rights: this
 is containment of the current program, not a sandbox (`ScriptCommands.java:67`).
 
+**Revision 6 (D47).** The default isolation of a user `ghidra_run` is never `shared`: `private` when the program has
+nothing unsaved (the stored file is the whole truth), `exclusive` on a view (only its owner exists, so only the owner
+waits). `shared` stays the default of a direct client and of RusticQuery's read actions, which do not write
+(`attemptedChanges` must be false). A contained script on a program that other clients read keeps the measured limit
+that its uncommitted changes are visible to them while it runs (94 of 114 polls); no document may call that isolated.
+The killable worker (E7) is hydra.5 and conditional.
+
 ### 3.7 Daemon configuration
 
 New keys, in `<state>/config.json` and as command-line flags (`HeadlessSession.java:64-86`,
@@ -919,7 +1005,8 @@ them in the README. No new environment variable is added.
 
 | Key | Default | Meaning | Read by |
 |---|---|---|---|
-| `maintSlots` | 2 | maint lane slots | E3a |
+| `maintSlots` | 4 (rev5 2) | maint lane slots | E3a |
+| `maxLong` | `max(8, CPUs)` (rev5 CPUs/4, at least 2) | long lane slots | E3a |
 | `quickScriptMaxS` | 60 (hard max 120) | longest `timeout` for `lane:"quick"` scripts | E3a (the lane decision) |
 | `maxRunningPerKey` | quick `max(1,slots/2)`, long `max(1,slots-1)`, maint 1 | work-conserving per-key cap | E3a |
 | `cleanupGraceS` / `abandonWaitS` | 15 / 5 | dead-client release | E3b |
@@ -927,6 +1014,10 @@ them in the README. No new environment variable is added.
 | `requireBackupForUpgrade` | true | the upgrade gate | E2 |
 | `orphanKeepS` | 0 (never) | orphan dump and discard | E3b |
 | `watchdogStallMs` / `starveMs` | 15000 / 30000 | `health` thresholds | E5 |
+| `minXmxMb`, `maxViews`, `maxViewsPerClient`, `heapSoftPct`, `heapHardPct`, `nativeBudgetMb` | 512, 32, 4, 70, 85, 50% of RAM minus `-Xmx` | the governor (3.11) | E9 |
+| `scriptMaxS`, `yieldSlots`, `writeStallMs` | 600, off, 5000 | runaway-script wall budget, the optional slot yield (D39), the stalled-socket disconnect | E4, E3c, E3b |
+| `viewDiskBudget`, `diskReserve`, `viewIdleEvictS` | 20 GB, `max(5 GB, 5%)`, 600 | disk admission (3.11) and the client-side eviction time | E9, Y5 |
+| `publishBatchMax`, `SYNC_LOCK_S`, `BASE_WAIT_S` | 1, 30, 30 | Hydralysis: changesets per generation, the per-view lock bound, the shared-base wait (4.10) | Y3, Y2 |
 
 `-Dghidra.session.testHooks=true` is not a config key: a launch property only.
 
@@ -958,6 +1049,269 @@ them in the README. No new environment variable is added.
   result. `singleton:"per-install"` raises `DuplicateDaemonError(holder pid, stateDir, instance,
   three ways out)`. Enforcement is opt-in until the owner consolidates the two live daemons
   (pids 18220 and 17936, which this design never touches). No Java registry class.
+- **Revision 6 (D46, 3.11).** P1b also starts the daemon inside a Windows Job Object with kill-on-close, so a killed
+  daemon takes its native decompilers with it. A supervisor that restarts a daemon waits for the process object to exit
+  first (D55). No nested per-decompiler memory limits (rejected, D46).
+
+### 3.9 The concurrency model (revision 6)
+
+**What this section is for.** The owner objective is that several harnesses (Claude Code, Codex, OpenCode,
+QoderCLI) work on several projects at once, that nothing they do corrupts a project or another agent's work, and
+that a lock held for one client does not make another wait. Four measurement streams, run on the real daemon in
+October 2026, say how far rev5 is from that; all numbers below are single runs or small repeat counts on one
+24-CPU machine under uncontrolled foreign load (A varied about 2x between identical runs), and every one of them
+has a script and an output file:
+
+| Stream | What it measured | Where |
+|---|---|---|
+| A (capacity) | 12 and 24 agents on their own writable forks, one daemon; fork, memory and throughput cost; heap probes; the long lane; the Hydralysis work-copy path | `D:/Projects/Hydra/_logs/measA/` (`scripts/`, `out/`; `out/ramp3-scale.json`, `out/ramp4-p1.json`, `out/lane-def.json`, `out/lane-ml24.json`, `out/forkcost-ntfs.json`, `out/hlm-c.json`, `out/hlm-d.json`) |
+| B (lock map) | every blocking point of the engine, static and on real daemons, 17-row `lock_matrix.json`, scripts `s1` to `s13`, `t3_scaling` | `D:/Projects/Hydra/_logs/lockmap/` |
+| C (crash) | 952 forced kills (`TerminateProcess`) with a fresh daemon and an oracle after each | `D:/Projects/Hydra/_logs/crash-C/` (`final_numbers.json`, `run/<run>/results.jsonl`, `run/repair-check/repair_result.json`) |
+| D (claims) | about 45 claims of the site and READMEs against the measurements | `D:/Projects/Hydra/_logs/claims-audit/` |
+
+**Topology.** One daemon per state root (OD3: no consolidation yet). K harness processes, each with its own
+Hydralysis server process serving one or more agents (`options.as`). Therefore **every piece of Hydralysis
+coordination is cross-process**: OS byte-range locks (released by the kernel when the holder dies), atomic
+markers and append logs. In-process state is a cache. Measurement A saw separate processes avoid the in-process
+`_sync` bug, but also saw 12 of them rebuild 12 bases because nothing was shared between them (D44).
+
+**Objects.**
+
+| Object | Definition | Who may write it |
+|---|---|---|
+| **Master** | the lineage's current generation (generation 0 is the adopted project itself, never written) | nobody; opened read-only only |
+| **Generation** | an immutable project folder: a verified fork plus the replay of a changeset batch, named by a line of `CURRENT.log` (D10). **Sealed** (D38) | nobody after the append |
+| **View** | an agent's private world `(lineage, agent id)`: a base generation, the agent's pending records in the Hydralysis store (the truth) and, once the agent has edited, a disposable writable fork of the shared base (the cache) | its one owner |
+| **Candidate** | a fork being turned into the next generation | the publisher |
+| **Open project** | a project nobody sealed: today's in-place use, protocol-2 shared mode, owner mode, rooms of shared writers | as today, with the bounds of 3.5; opt-in; **no non-blocking claim** |
+
+**Roles.**
+
+| Concern | Engine (hydra.4) | Client (Hydralysis) |
+|---|---|---|
+| Reads | read-only opens, refcount join and leave, native decompile through a governed pool | chooses the master or the agent's view; sends lane hints and the agent label |
+| Writes | the private writable fork of one owner; hard caps independent of client behaviour; sealing refusals | write-ahead record, replay, rebase, publish |
+| Truth | none for annotations (D5) | the store; a view fork is a rebuildable cache |
+| Generations | `fork_project` with the atomic publish of D41, `seal_project` | lineage, `CURRENT.log`, publish queue, verify, rebase |
+| Limits | admission, caps, watermarks, decompiler gate (3.11) | soft policy: LRU, idle time, `max_views`, friendly errors |
+| Faults | contains script, decompiler and out-of-memory faults; sweeps its own staging | crash-safe store, idempotent replay, orphan candidate listing |
+
+**Read path (no lock another client can hold).**
+
+1. A read-only `open_project` or `open_program` of the master or of any generation finds the program entry,
+   increments the user count and returns. A sealed program has no exclusive holder at all (D38), so there is
+   nothing to wait for. Join and leave of **any** reader change a counter only (E3c; 3.5, the reader-leave fast
+   path extended to every non-owner, non-writer). Measured: readers of one program never block each other,
+   native decompile scaled 9.6x at 24 clients (87 to 840 calls/s, `lockmap/t3_scaling.json`); 12 clients on one
+   shared read-only program ran at a median 160.4 funcs/s against 163.9 on 12 forks, interleaved
+   (`measA/out/ramp4-p1.json`), with a live heap of 51 MB that does not grow with the number of clients.
+2. DB-bound reads (`functions` with a regex, xref scans) of one `Program` instance are capped by Ghidra's one
+   `DBHandle` monitor at 1.4x to 1.8x (41 of 114 sampled session-thread stacks `BLOCKED` on `db.DBHandle`);
+   eight separate instances reached 4.1x (`lockmap/s12_instances.json`, `s9_threaddump.txt`). That is
+   **inherent to Ghidra** and is not refactored away; read replicas are E11, conditional on SP1 and SP8 (D37).
+3. A program being imported or analysed answers a v3 join **at once** with `busy{reason:"analyzing"}` and the
+   job's progress and ETA (E3c), instead of failing after `wait` (B: `open_program` busy for 162.8 s behind a
+   `notepad` analysis). Hydralysis never analyses in place: it analyses a fork and publishes a generation.
+4. A v3 reader of an open (legacy) program sees the live program exactly as a v2 reader does (D51).
+
+**Write path.** An agent that has not edited has no view and costs nothing. Its first edit creates the view
+(D43). Measured per view on KotOR (8,966 functions, `measA/out/`): NTFS fork 147 to 214 ms alone, 364 to 1,184 ms
+(median 751) with 12 at once, 127.7 MB of disk (the fork copies two database versions, 63.8 MB each; 121.8 MB
+after a save); ReFS clone 142 to 160 ms and 361 to 805 ms, 2.1 to 13.2 MB; live heap about 6.7 MB, JVM private
+memory about 10 MB, daemon temp 19 to 26 MB while the format is upgraded, native decompiler 22.6 MB idle and about
+161 MB busy. First decompile on a fresh fork 1.07 s alone (fork ~150, open with upgrade ~640, decompile ~265 ms)
+and 2.2 to 2.8 s with 12 at once, on a warm daemon. Through Hydralysis today the first edit costs 1.86 s alone,
+3.1 s with 4 agents, 8.2 to 9.0 s with 12 (15.6 to 18.2 s while the master's upgrade-cache build runs); **the 1.4 s
+figure of rev5 is retired**. With the shared base of D44 the construction is fork + open + replay; **a prediction,
+not a result: 0.3 to 0.55 s alone**, to be measured by Z2 and gated by 9.16 before it is quoted anywhere. These are
+KotOR figures; a 1.5 GB, 244k-function project costs about 1.5 GB of disk per writing agent on NTFS and its heap
+per view is **unmeasured** (SP2), which is why admission (3.11) uses the measured cost of each open and not a
+formula.
+
+**Write-ahead (the four steps of the store contract, 4.10).** An edit is sealed in the Hydralysis store and
+flushed (W1); applied to the view's fork with `rk` = the record id (W2); acknowledged (W3); and on recovery any
+record without an `applied` mark is replayed idempotently (W4). The fork is therefore a pure cache: its loss,
+eviction or corruption costs a rebuild (base clone + replay: 0.23 s for a second edit measured), never data.
+
+**Publish: the one serialisation point (D45).** Described in 4.10. Other views are snapshots of their base
+generation; a publish invalidates nothing and blocks nothing (4.7).
+
+**Residual serialisation points (complete; each has a bound and a counter, and nothing else may be called a lock
+that blocks another client).**
+
+| Point | Why it is inherent | Bound | Counter |
+|---|---|---|---|
+| The publish leader of one lineage | linear history of generations | async job with position and ETA; never on a read or view path | `publish.queue` in `status` |
+| An open (legacy) program: owner mode, protocol-2 shared mode, rooms | several writers on one Ghidra `Program` (one transaction at a time) | the waiter caps and bounds of 3.5; `analyze`, owner scripts and `save` hold the program exclusive and its other readers wait | `waits.foreignBlocked` is expected non-zero here |
+| One view | one owner | none needed | |
+| One `DBHandle` monitor per `Program` instance | Ghidra internal | replicas (E11, conditional) | |
+| Lane slots, import gate, decompiler gate | CPU and memory | per-key caps, round-robin, structured `busy` | `status.scheduler` |
+| The project OS lock across daemons | safety | a second daemon's writable open is `conflict` in 112 ms; its read-only open always works (`lockmap/s8_overlay.json`) | |
+| First build of a base | one build per generation and release | single-flight lock; followers read the master meanwhile (no wait) | `last_sync.phases_ms` |
+| Waiters for one program, project or overlay lock | fair `ReentrantReadWriteLock` | `lock_queue_full` beyond `max(2, slots/4)` (D39) | `waits` |
+
+### 3.10 Non-blocking engine: every blocking point, its decision and its test
+
+The matrix `lockmap/lock_matrix.json` has 17 rows. **E3c's acceptance includes a test that enumerates its rows and
+fails if a row has no decision here.** The lock order today is lane slot (`Session.java:248`), project lock
+(`Access.java:105-109`), program lock (`ProgramEntry.java:191-196`), overlay lock (`OverlayCommands.java:139-143`);
+all three read/write locks are **fair** (`ProgramEntry.java:115`, `ProjectEntry.java:43`, `Overlay.java:54`), so
+a queued exclusive refuses every later reader. Contract **NB**, as asserted by the tests of 9.13:
+NB1 a read of a sealed generation takes no lock another client can hold exclusively; NB2 the join, leave or open
+of a read-only handle takes no program or project lock; NB3 no wait for a lock happens inside a monitor; NB4 every
+blocking wait is interruptible, bounded, attributed (`holder`, `retryAfterMs`) and cancelled on client death, and
+**a dead client's queued write is never applied**; NB5 the waiters of one lock are capped so they cannot take a
+lane; NB6 the residual list of 3.9 is complete.
+
+| # | Blocking point | Measured (stream, file) | Decision | Package | Test that is red on hydra.3 |
+|---|---|---|---|---|---|
+| BP1 | reader against reader | none; decompile 9.6x at 24 (B `t3_scaling.json`) | KEEP | | NB0 control |
+| BP2 | one `DBHandle` monitor per `Program` | DB reads 1.4-1.8x (B `s9_threaddump.txt`) | KEEP (inherent); replicas conditional | E11 | `s12_instances` |
+| BP3 | every leave takes the program **exclusive**, plain readers included (`ProgramCommands.java:480-481`, `releaseUse`, `leaveProject` `ProjectCommands.java:286`, `Session.disconnect` `:109`/`:121` with `CLEANUP_WAIT_MS` 600 s `:52`) | new readers and joins refused 2.5-12.0 s behind one 20 s read; on a socket close until the read ended (20.1 s) (B `s1_xqueue.json`; the same on `hydra-session-after`) | REFACTOR AWAY: refcount leave for every non-owner, non-writer, non-last user; deferred non-blocking disposal | E3b (owner/legacy), E3c (all readers) | `s1_xqueue` a, b, c |
+| BP4 | fair program lock: one queued exclusive refuses later readers | a comment queued behind a 6 s read stalled every reader up to 5,131 ms (B `s2_writer.json`) | REFACTOR AWAY for sealed and views (no exclusive exists); BOUND for open programs (waiter cap, `lock_queue_full`) | E2, E3c | `s2_writer` |
+| BP5 | `analyze` holds the program exclusive 19.8-162.8 s; `open_program` busy throughout | 28 of 28 probes refused (B `s4_dead.json`, `s6_import.json`) | REFACTOR: analysis runs on a fork and is published; a join of a program being analysed answers `analyzing` at once | E3c, Y2 | `s6_import` |
+| BP6 | owner scripts, `save`, READ_ONLY-to-writable swap hold the program (`ScriptCommands.java:90-93`, `ProgramCommands.java:180`) | an 8 s owner script refused 4 of 4 reader probes | REFACTOR AWAY for sealed and views (a writable view is a fork); KEEP for open programs | E3c | `s4_dead` |
+| BP7 | the fair project lock is held for the whole command; a queued `refresh` or writable `open_project` refuses everything in the project | all 9 probes (other program, list included) refused 10 s (B `s7_project.json`) | REFACTOR AWAY: commands pin; the project lock covers structure changes only; a sealed project needs no `refresh` | E3c | `s7_project` |
+| BP8 | `synchronized (s.registry)` around `makeWritable`, which waits on the project lock (`ProjectCommands.java:70-77`; the same monitor in `leaveProject` `:309` and `Session.reap` `:177`) | an **unrelated** project's `open_project` took 9,421 ms (B `s13_registry.json`) | REFACTOR AWAY: un-nest first (E3b), then a per-project state machine in a `ConcurrentHashMap` (E3c) | E3b, E3c | `s13_registry` |
+| BP9 | a request waiting for a lock keeps its lane slot (`Session.java:248` admits before the locks) | 24 waiters took 24 of 24 quick slots; a client on another project was `busy` 6 of 6 (B `s5_lanes.json`) | BOUND: waiter caps for every v3 request (D39); slot-yield optional and gated | E3b, E3c | `s5_lanes` |
+| BP10 | six long scripts block another project's `save`, `fork_project`, `refresh`, `analyze`, `script` | 5 of 5 busy; with `maxLong` 24 the waits fell to 87/281/531 ms (A `lane-ml24.json`) | REFACTOR: new defaults, maint lane, per-client cap for v2 too (D40) | E3a | `lanetest` |
+| BP11 | `cancel` does not interrupt lock waits (`ProgramEntry.java:195`, `Access.java:109`, `OverlayCommands.java:142`); a dead client's queued exclusive keeps refusing readers and then **applies its write** | readers busy 3.8-15.8 s, journal seq 1 written by the dead client (B `s4_dead.json`); cancel answered `busy` 6,498 ms late (D N7) | REFACTOR AWAY: `Waits.tryLock` registered and interrupted by cancel and disconnect (3.5), `client.leaving` re-checked after acquire | E3b | `s4_dead` S4b, `cancel_while_waiting` |
+| BP12 | `Connection.run` waits for the dead client's running request (`Connection.java:99-102`, 1 hour) | dead-client slots held 40 s, released 0.5 s after the holder ended (D N3) | REFACTOR (3.5 bounded release) | E3b | `dead_client_lock_wait` |
+| BP13 | a deaf script cannot be stopped in-process | ran to its end 22 s after cancel; timeout answered 16.7 s late (B `s4_dead.json`, `s10_misc.json`) | KEEP in hydra.4 and bound it (D47); REMOVE in hydra.5 | E4, E7 | `s10` S10a |
+| BP14 | a contained script shares the live `Program` (`ScriptCommands.java:174-176`; Ghidra joins concurrent `startTransaction` calls) | the rename was visible to another client in 94 of 114 polls (D N5, B `s9_script_db.json`) | REFACTOR: user scripts never `shared` (D47); RusticQuery read actions do not write | E4, Y4e | `script_shared_visibility` |
+| BP15 | one connection is serial (`Connection.java:63`, the worker is a single thread) | `info` behind a 4 s script took 3.85 s, 1.1 ms with `parallel:true` | REFACTOR (v3): read-class commands dispatch in parallel unless the request says `ordered` | E3b | `s7c` |
+| BP16 | the import gate (4 permits) | queues only imports; readers unaffected (B `s6_import.json`) | KEEP; fix the double wait (3.5) | E3a | `import_wait` |
+| BP17 | the project OS lock across daemons (`ProjectLocks.java:44`) | writable `conflict` in 112 ms | KEEP | | `s8` |
+| BP18 | shared-mode writer storm | four writers cut readers from 610 to 167 calls/s, p50 8.7 to 37.7 ms (B `s11_storm.json`); four writers in private overlays left readers at 606/s with 2,921 writes/s at p50 0.5 ms | KEEP the serialisation of shared writers; per-agent views are the default so most writers are private | Y5 | `s11_storm` |
+| BP19 | Hydralysis per-target `.sync.lock` (up to 900 s) | one writer at a time across all clients of a shared view | REFACTOR: per-view lock, 30 s bound | Y2 | Z1 |
+| BP20 | Hydralysis `_sync` shares one writer connection per process | `no_project` error, 4 threads (A `hl_multi.py`; one reproduction, cause by reading) | FIX | Y2 | Z1 (known-issue until Y2) |
+| BP21 | the upgrade-cache build on the first read-only open of an old-format program | 15-16.5 s background; 12 concurrent first views took 16-18 s | KEEP, make explicit: `prepare_upgrade` is a job that finishes before the first fork | E2 | `named_view_cost` |
+| BP22 | the decompiler pool is unbounded | one native process per concurrent client; 4.9 GB at 24 busy views | REFACTOR: decompiler gate (3.11) | E9 | `-Xmx` laps |
+| BP23 | a progress event written from a lock-holding thread to a client that stopped reading (`Connection.java:289`) | untested | TEST FIRST, then a bounded per-connection outbound queue (events dropped, a reply stalled over `writeStallMs` disconnects that client) | E3b | `stalled_socket` |
+| BP24 | `OverlayCommands` lifecycle `lock()` calls are untimed | opening a new overlay during a base exclusive hold was `busy` (B `s9_script_db.json`) | OUT of E3b (3.5); E4 opens overlays from the stored file with a timed wait | E4 | `s8` |
+
+**Rejected as a way to meet NB:** dropping lock fairness globally (readers no longer need the lock on the sealed
+path; writers keep it), forking Ghidra's `DBHandle` locking (replicas reach the same effect without touching the
+database layer), and an engine-owned op-log (D5).
+
+### 3.11 Resource governance (E9, hydra.4)
+
+**Principle.** Overload yields an immediate structured `busy{reason:"capacity"}` and never an out-of-memory or a
+hang. Measured (A): the first throughput limit is **CPU in the native decompiler processes**, not heap, disk or a
+Java lock (12 session threads all in `FileInputStream.readBytes` waiting on decompiler pipes, no blocked thread in
+three dumps; the JVM used 1 to 1.6 cores at 12 views; 0 full GCs and 1.58 s of pauses in 24 views at the default
+heap); aggregate throughput plateaued at 12 to 24 views (about 200 to 417 funcs/s depending on foreign load; 0.031
+to 0.041 CPU-seconds per function regardless of N). Heap bites only below about 512 MB: `-Xmx128m` fails to open
+12 views, `-Xmx256m` runs 12 views with 297 full GCs (27.7 s) and ends in `OutOfMemoryError` at 24 **and the
+session-reaper thread dies**, `-Xmx512m` runs 24 views (`measA/out/ramp3-h128m.json`, `ramp3-h256m.json`,
+`ramp3-h512m.json`). The default heap (a quarter of RAM, 15 GB here) is about 30x what 24 KotOR views need.
+
+| Control | Rule (every value a `Settings` key and advertised in `hello.limits`) | Basis |
+|---|---|---|
+| Minimum heap | the daemon refuses to start with `-Xmx` below `minXmxMb` (512) unless forced | A: 128 and 256 MB failed |
+| Admission seam | E1 builds `Hooks.Admission` (default: allow). Called before `open_project`, `open_program`, `fork_project`, `import` | seam, behaviour-free in E1 |
+| Heap admission | admit iff `heapAfterGc + 1.5 x estHeap <= 0.70 x Xmx` and `views < maxViews` (default 32; tested 24) and the per-client cap `maxViewsPerClient` (4). `estHeap` starts at `max(8 MB, 6% of the stored database size)` (KotOR: 6.7 MB for 127.7 MB, 5.2%) and is replaced by the measured delta of the first open of that program. Above 85% after a GC the daemon is `degraded`: it refuses opens, forks and imports and keeps serving reads | A; the percentages are *unmeasured* defaults checked by the squeeze laps |
+| Decompiler gate | a fair counting semaphore of `min(CPUs, nativeBudget / 200 MB)` permits (`nativeBudget` = 50% of RAM minus `-Xmx`), round-robin by client, taken where a decompiler is borrowed (`ProgramEntry.java:287`, `Overlay.java:89`); idle decompilers are disposed after 60 s | A: 161 MB busy, 22.6 MB idle, CPU plateau |
+| Job Object | P1b starts the daemon in a Windows Job Object with kill-on-close, so a killed daemon takes every native decompiler with it (K7: no orphan processes) | judge 2: the launcher part only |
+| Decompiler faults | a native crash, hang or timeout fails that one request (`decompiler_failed{function}`, retryable); `returnDecompiler(d, false)` already disposes (`Decompilers.java:27`) and the next borrow creates a fresh one (`ProgramEntry.java:299`); more than 3 failures in a minute on one function trip a 10-minute negative cache. SP4 checks that an in-process `DecompInterface` can be disposed and recreated | design; test: kill -9 a decompiler during 12-client load |
+| Daemon threads | accept, reaper, watchdog and governor threads run under `Guarded`: catch `Throwable`, log, restart with backoff, count in `health`; an 8 MB emergency reserve is released on an out-of-memory so the reaper can run | A: the reaper thread died at 256 MB |
+| Disk | a fork, base or view requires `free >= estimate + max(5 GB, 5%)` (NTFS estimate = database bytes, ReFS 5%); the machine policy's ask-first rule above 50 GB stays | A |
+| Client-side eviction | Y5: LRU, idle time (`viewIdleEvictS`, default 600), `max_views`; only views whose edits are all in the store (always true for Hydralysis views); closing the program keeps the fork | D43 |
+| Runaway scripts | hydra.4: per-client `long` cap, `scriptMaxS` wall budget, CPU and allocated-bytes sampling (`ThreadMXBean`) that set the cancel flag, and a quarantine for a script that ignores cancel (`health.leakedWorkers`, the owner's long cap drops to 1); hydra.5: E7 | D47 |
+
+**Safe eviction is a compare against a pin count**, not a check of "no running request": a view is evictable only
+if it has no running request, no lease and no mid-publish step, tested atomically with the close (Y5).
+
+### 3.12 Storage integrity and failure containment
+
+**What was found (measurement C, `crash-C/final_numbers.json`).** 825 kills of the daemon in scenarios a to d, 25
+with 8 clients on 8 forks, 102 client kills: no acknowledged commit was lost (0), every readable program matched a
+pre-kill or a post-save baseline exactly, the canonical copy kept its tree hash in every counted iteration as long
+as it was never opened writable, and a client death never harmed the daemon (102 of 102). Two real defects:
+
+1. **Version-file poison.** A kill during a program save can leave the newest `db.N.gbf` at full size with an
+   all-zero header; Ghidra then fails with "Unrecognized file format" and neither falls back to `db.N-1` nor
+   repairs it. 12 of 363 kills in scenario (a): 2 of 131 NTFS random-time, 7 of 95 NTFS trigger-timed, 0 of 57
+   ReFS random-time, 3 of 80 ReFS trigger-timed (so ReFS is no protection). Deleting that file reopened the last
+   acknowledged save in 12 of 12. **Cause, read in the source:** `LocalManagedBufferFile.saveCompleted` renames
+   the pre-save file to its final name (`LocalManagedBufferFile.java:696`) and only then calls `setReadOnly()`
+   (`:709`) whose `flush()` writes the header and syncs (`LocalBufferFile.java:824`, `:768-790`). D42.
+2. **Fork publish is not atomic.** `ProjectFork.copy` moves `.rep`, then `.gpr` (`ProjectFork.java:155-185`); the
+   sidecar is written afterwards (`ForkCommands.java:246-257`, a failure only warns). Of 162 kills, 4 left `.rep`
+   without `.gpr`, 8 a complete fork without a sidecar (12 retries blocked with `conflict`), 53 an orphan staging
+   folder that nothing removes. D41.
+
+**Also found:** a writable open of a pristine project changed `~index.bak` and deleted `~journal.bak` with no edit
+(D38); overlays are RAM-only (52 of 52 kills lost them), a killed `promote_overlay` leaves absent, a fork without
+the edits, or a fork with them, and a fork without them looks like a good one (the sidecar gains
+`promote:"in-progress"` until it is acknowledged, E2); the stale `.lock` and `.lock~` of a killed writable fork
+were taken over without error in every case (131 of 131, 95 of 95, 57 of 57, 80 of 80) and are only reported; a
+killed import leaves one of three consistent states (absent, imported but not analysed, complete: 15, 25, 5 of 45);
+and `TerminateProcess` to process exit took a median of 2.1 s, p95 19.5 s and up to 39 s under load.
+
+**The corruption oracle.** Run after every injected fault and periodically while agents work (X0 builds it,
+E6 and every package's own test use it). Each invariant has a planted-violation self-test (D48).
+
+| ID | Invariant |
+|---|---|
+| K1 | the sealed master and every sealed generation: sha256 of every file unchanged, and the engine log shows no writable open of one |
+| K2 | every `db.N.gbf` of every project (master, views, generations, backups) has the magic at offset 0 and the newest is valid; a 50 ms watcher also fails on any **visible** final-named `db.*.gbf` with an invalid header during writes |
+| K3 | every program opens read-only and, for forks, writable; function count and names hash equal an allowed generation; 50 sampled decompile hashes equal the baseline and contain the current function name |
+| K4 | generation atomicity: a tagged edit set shows one generation G with acknowledged <= G <= sent |
+| K5 | no acknowledged save, import, promote or publish is missing after recovery (the harness's own fsynced ledger is the witness) |
+| K6 | a fork path is absent or complete (`.gpr`, `.rep`, sidecar `state:"complete"`, data equal to its base); no staging folder after the next sweep |
+| K7 | residue: `.lock` only for live processes, no orphan `tmp*`, JVM temp not growing across restarts, no orphan decompiler or worker process, handles and threads bounded |
+| K8 | op-log consistency: replaying the store onto the base generation equals each view's state; an interrupted publish or promote is detectable from its record |
+| K9 | cross-project isolation: the tree hash of every project not involved is unchanged |
+| K10 | liveness: after a client kill the daemon answers `ping`, no request or slot is held for the dead client |
+| K11 | view isolation: each agent writes a unique tag; no other view and not the head ever shows an unpublished tag |
+| K12 | publish linearisation: `CURRENT.log` generations are consecutive, each equals its parent plus exactly the changesets its manifest lists, none acknowledged is missing, none applied twice |
+| K13 | non-blocking attribution: `waits.foreignBlocked` is 0 for reads of sealed generations and for view operations; the engine-reported lock wait p99 of reads is at most 5 ms |
+| K14 | resources: no `OutOfMemoryError`, heap after GC below the hard watermark, `slots inUse` 0 after drain, no dead daemon thread |
+| K15 | cache equivalence: a view rebuilt from base + store equals the live view |
+| K16 | model equivalence: a sequential reference model folds the changesets in `CURRENT.log` order, conflicts rejected exactly as the engine claims, and equals the head (catches a silent lost update, which no file check can) |
+| K17 | store integrity: every sealed record file validates or falls back to its previous version; `CURRENT.log` may have a torn **last** line only (tolerated), never a torn middle |
+
+**Planted violations (X0's self-test, run on every commit).** X1 a zero-header newest version; X2 one flipped
+byte in a sealed file; X3 a `.lock` for a live process; X4 a duplicate generation line; X5 an acknowledged op
+missing; X6 a torn last `CURRENT.log` line (**must be tolerated**); X7 `.rep` without `.gpr`; X8 mixed generation
+tags; X9 an orphan decompiler process; X10 a leaked thread. The oracle must flag X1-X5 and X7-X10 and pass X6.
+
+**Containment after revision 6.**
+
+| Failure | Blast radius | Recovery |
+|---|---|---|
+| Client crash | its requests are cancelled, its leases drop, its queued write is not applied, its view fork is a cache | reconnect; the view is rebuilt from the store |
+| Script crash or deaf script | one slot and one view, quarantined (D47) | E7 in hydra.5 |
+| Native decompiler crash | one request | pool respawn, negative cache |
+| Overload or out-of-memory risk | refusal at admission | evict (client side), retry hint |
+| Daemon kill | all in-memory state; on disk: the master untouched (K1), generations only after verification and the `CURRENT.log` append, store records flushed before acknowledgement, forks possibly mid-save | E8 prevents the poisoned header and quarantines an existing one on a disposable fork; E2a sweeps partial forks; views are rebuilt; the supervisor restarts after the process object exits (D55) |
+| Kill during fork publish | the path is absent or complete | rk retry or the sweeper |
+| Kill during publish | nothing published (`CURRENT.log` unchanged) or fully published; the changeset is durable | the next leader resumes; the orphan candidate is listed (D28) |
+| Kill during `promote_overlay` | unknown until acknowledged | the `promote:"in-progress"` marker; Hydralysis does not use `promote_overlay` for publishing |
+| Disk full | admission refusal; publish aborts with the staging removed | free space and retry; the ENOSPC test is OD13 |
+| Power loss or OS crash | **not tested**; a kill is `TerminateProcess` and the OS page cache survives | stated as process-crash scope everywhere (6.1); E12 |
+
+### 3.13 Revision 6 additions to the commands and the error model
+
+- **`seal_project` (v3, E2).** `{"cmd":"seal_project","project":"p1","lineage":"L-9c1e"}` records the project's
+  path and its current `Revision` in `<stateDir>/seals/`; `{"cmd":"seal_project","project":"p1","unseal":true,
+  "force":true}` removes the record (owner action, logged). Reply `{sealed:true, revision}`. Capability `seal`.
+- **`fork_project purpose:"view"`** (v3): a disposable fork whose sidecar carries `owner` (the agent id),
+  `lineage` and `base` (generation); admission (3.11) applies. `purpose:"generation"` and `"backup"` stay
+  non-disposable (D12).
+- **Errors (v3):** `sealed` (`details.next` = `fork_project`), `busy` with `details.reason` in `capacity`
+  (`{resource: views|heap|native|disk|client_cap, have, need, retryAfterMs}`), `analyzing` (`{job, progress,
+  etaMs}`), `lock_queue_full` for any v3 request (D39), `corrupt_newest` (`{project, program, file, repair}`),
+  `decompiler_failed`, `runaway_quarantined`. v2 receives `conflict` or `busy` with the same `details.reason`
+  where the situation exists in v2 (V8, V9).
+- **`health` additions:** `waits.foreignBlocked` (count since start and in the last minute), `governor{views,
+  maxViews, heapAfterGcMb, heapState, decompilers, tokens, nativeBudgetMb}`, `leakedWorkers`, `repairs[]`
+  (E8 quarantines and E2a sweeps, each with path and time). The engine knows no lineage; publish queue figures
+  are Hydralysis's (`status show=queue`).
+- **`status.scheduler`** gains the per-key waiter counts; **replies** gain `waited{queueMs, lockMs, slotMs}` from
+  250 ms (D49).
+- **Capabilities** added to the list of 3.1: `seal`, `forkAtomic`, `admission`, `waitsAttribution`.
 
 ---
 
@@ -1473,8 +1827,8 @@ Other views (a named view forks from the master, not from `shared`; `workcopy.wi
 | In-flight exports | They snapshot at start; the header records `{lineage, generation, master_revision, engine release}` and resume is refused if any differ (`exporting.py:115-118` records the engine release and query key today). |
 | Open programs of other clients | The old generation is immutable, so their reads stay consistent; they get the existing `refreshed`/`stale` marker through `Session.annotate` only if the registered path changes, which it does not for them. A client that wants the new generation reopens. |
 | Runtime sessions and evidence | Not invalidated; provenance names the generation and a claim is flagged `superseded_by_generation` on read. |
-| A GUI user saving a generation | `Revision.of` of a generation folder differs from its manifest: the lineage is flagged `tampered`, commits are refused until the owner re-adopts. (`projectState` is already excluded from `Revision`.) |
-| The Ghidra GUI opening the original `.gpr` | Sees generation 0 with none of the committed annotations. This is a real regression against in-place commit; owner decision OD2. |
+| A process that writes into a generation folder (an editor tool, another daemon) | `Revision.of` of a generation folder differs from its manifest: the lineage is flagged `tampered`, commits are refused until the owner re-adopts, and the engine refuses a writable open of a sealed generation (D38). (`projectState` is already excluded from `Revision`.) |
+| Any other process reading the original `.gpr` | Sees generation 0 with none of the committed annotations; this is by design (the master is never written, D9, D38) and there is no GUI that could expect otherwise (headless only, D36). |
 
 ### 4.8 Publish and merge between named views (Y3, client only)
 
@@ -1482,8 +1836,7 @@ Other views (a named view forks from the master, not from `shared`; `workcopy.wi
 view's edits after its `published_through`, compare its `before` with the destination's current value
 of that subject. All match: append the edits to the destination with new ids and
 `merged_from:{view, id, seq}`; otherwise return conflicts `{subject, theirs, mine}` and accept
-`resolve:{<subject>: take_mine | keep}`. Idempotent through `published_through`. Locks of two views are taken in lexicographic order of their keys. **Per-agent default views are not enabled**
-(D26).
+`resolve:{<subject>: take_mine | keep}`. Idempotent through `published_through`. Locks of two views are taken in lexicographic order of their keys. **Per-agent default views are enabled by default in revision 6** (D43, 4.10).
 
 ### 4.9 Annotation bundles (Y1)
 
@@ -1501,12 +1854,96 @@ language and compiler, probes every record's `before` against the target, and re
 `apply:true` it adds the records to a **named** view as proposals (`imported_from`). It never writes a
 generation. Cross-build address mapping stays in `crossbuild.py` and is out of scope.
 
+### 4.10 Per-agent views, the shared base, write-ahead and the publish queue (revision 6)
+
+This section replaces the rev5 statement that per-agent default views are not enabled (4.8, D26). The contract
+is the Hydralysis half of 3.9; the packages are Y2 (base, connections, locks, `integrity.py`), Y3 (publish
+queue, rebase) and Y5 (the default view, identity, eviction).
+
+**Records in the lineage folder** (all written through `durable` and sealed, 4.1; `CURRENT.log` is unchanged):
+`views/<viewid>.json` (agent id, base generation, state, last seen), `pending/<csid>.json` (a sealed changeset),
+`done/<csid>.json` (its outcome), `publish.lock` (an OS byte-range lock file), `_base/<generation>-<release>/`
+(the shared base, D44) and its completion marker. A reader that finds a newer `format` refuses (5.2).
+
+**Identity.** The view of a call is `(lineage, agent id)`. The agent id is `options.as` when given, otherwise
+`<MCP clientInfo name>@<boot id of the server process>`; a process id is never used (D43). The name `shared` is
+reserved for the shared collaboration view (mandatory `expect_revision`, per-view lock). A call that names no
+view and has no edits reads the master.
+
+**Lazy creation and routing.** The first edit of an agent creates its view: take the base of the master's
+generation (build it once, single-flight, 4.10 "shared base"), fork it with `purpose:"view"`, open it writable,
+replay the agent's pending records onto it. Reads of an agent with a view go to its view; `scope:"master"`
+bypasses it. Every reply names `view`, `base` and, when behind, `stale:{base, head, behind}`.
+
+**Shared base.** `base_key = sha256(origin_key, generation, engine release, analysisIdentity, format)`. The first
+caller takes the OS lock `_base/<key>.lock`, builds the upgraded and saved base in a staging folder, writes a
+completion marker and renames it; every other caller reads the master meanwhile (**no waiter blocks a reader**)
+and polls the marker, bounded by `BASE_WAIT_S` (30, *unmeasured*). A generation is itself a verified saved fork, so
+after the first publish the new generation **is** the base of the next views (no extra build). `prepare` finishes
+the master's upgrade-cache build first (E2 `prepare_upgrade`).
+
+**Write-ahead.** For every edit: (W1) seal and flush the record in the store; (W2) apply it to the view's fork
+with `rk` = the record id, so a replay is idempotent (D15); (W3) acknowledge; (W4) on recovery, any record without
+an `applied` mark is replayed. A view's fork can be dropped at any time (eviction, a kill, a corrupt version file
+quarantined by E8) and is rebuilt from the base and the store (K15). `journal.durable` (D55) is true when the
+store is v3 and a start-up self-test (write a record, kill the writer, read it back) passes.
+
+**Publish (the one serialisation point, D45).** `type_edit kind=publish` (and `commit`, 4.6) is a job:
+
+1. Seal `pending/<csid>.json` (a changeset: the view's records, the base generation, the agent id) and return
+   `{job, position, etaMs}` at once. No engine call, no other view and no reader is involved.
+2. The caller or any other waiting caller tries a non-blocking OS lock on `publish.lock`; the winner is the leader
+   and drains `pending/` in id order, `publishBatchMax` (1) changesets per generation.
+3. The leader forks the head generation (`purpose:"generation"`), replays the changeset subject-aware with
+   `before` checks (D7, 4.2) and records, per changeset, `applied`, `rebased`, `converged`, `conflict` (it names
+   the other editor; the records stay pending in the view and are never dropped) or `skipped`. It saves and closes.
+4. **Verify before it can be head:** K2 and K3 on the candidate (header magic of the newest version, opens
+   read-only and writable, function count, names hash equal to the parent plus the applied effects, K sampled
+   decompiles succeed and contain the current names). A candidate that fails is never published; it stays listed
+   for manual removal (D28), the changesets stay pending, the job reports `candidate_failed` and the doctor shows it.
+5. Commit point: append one CRC line to `CURRENT.log` (D10, naming the changeset ids, D32) and flush. Then write
+   `done/<csid>.json` and release the lock. A leader that dies after step 5 and before the `done` file is
+   resolved by the manifest's ids; a leader that dies earlier published nothing.
+6. A follower never waits on the leader inside a call: it polls its job (`publish_pending{position, etaMs}`).
+   Bound: a changeset waits for the build in progress plus its own, about two builds; 24 simultaneous publishers
+   are served in turn. T_build (fork + replay + save + verify) is **unmeasured** (SP7, Z2); no publish latency is
+   stated before it is.
+
+**What other views see** is 4.7: snapshot isolation; nothing blocks; `rebase` builds a new view fork from the head
+generation, replays the unpublished records, verifies with the oracle subset and switches the view pointer in one
+atomic store write. A view without edits may set `follow:"head"`. A dirty view that edits while behind gets a
+clean-only automatic rebase first; on conflict the edit is refused with `stale_view` naming the editors.
+
+**Per-view and publish locks.** The per-target `.sync.lock` is replaced by a per-view lock (bound
+`SYNC_LOCK_S`, 30 s, then a structured `busy`); readers take none; two views' locks are taken in lexicographic
+order (4.8); `publish.lock` is held only by the leader.
+
+**Interim on hydra.2/3** (Hydralysis 0.5.0): everything above works on the hydra.2/3 engine except the
+engine-side admission and sealing (G1 and GR8 depend on the client behaving there, 6.1); Y2's launch
+configuration sets `maxLong` and `maxQuick` from the expected number of agents (D54) and `integrity.py` checks and
+quarantines the header of every Hydralysis-owned fork before opening it.
+
+### 4.11 Hydralysis obligations that follow from the measurements
+
+- **Thread safety first** (Z1, then Y2): the multithread `_sync` test exists, marked a known issue, before the
+  fix; the fix is a per-sync or reference-counted connection per view.
+- **Pre-build before agents start**: `prepare` (adopt) produces generation 0 with the upgrade-cache build
+  finished; the doctor warns when a master's cache is building while views are created.
+- **Never open the master or a generation writable**, not even to check (K1); `integrity.py` reads headers without
+  opening programs.
+- **Agent identity in the skills**: harnesses that start editing subagents must pass a distinct `as` for each; the
+  skills and the tool descriptions say so (D43). Not doing so falls back to the shared view's mandatory
+  `expect_revision`.
+- **Structured `busy` to `next`**: capacity, `analyzing`, `lock_queue_full`, `sealed` and `corrupt_newest` map to
+  a ready `next` call; a view that the engine refuses (`capacity`) is retried after `retryAfterMs` or an LRU
+  eviction by Y5.
+
 ---
 
 ## 5. Compatibility and the release train
 
 **Train.** hydra.3: the upstream merge only (branch `sync/upstream-2026-10-27`, `6d266ebcff`, golden gate
-PASS). hydra.4: this design. Inside hydra.4 the engine packages E1 to E5, E6 and the client packages P1a,
+PASS). hydra.4: this design. Inside hydra.4 the engine packages E1 to E5, E2a, E3c, E6, E8, E9 and X0 and the client packages P1a,
 P1b each merge to one integration branch, each gated by the characterization run, `daemon_tests`,
 `contract_tests` and `session_smoke`; one tag; one Hydralysis pin bump generated by a new `tools/bump_hydra.py` (it does not exist
 in the Hydralysis tree today; the source designs assumed it). **R1 owns the script** (writes and
@@ -1522,19 +1959,19 @@ and `12.3-hydra.3` today, and `hydra.py` builds the message the first one assert
 (`:29`, `:190-191` at `589432e`; `:30`, `:216-217` at `f46788b`), so Y4a rewrites them **once**, in W6,
 to read the release from `hydra.RELEASE` and from the fake daemon's own constant (decided: derive, not
 edit per bump), after which no bump touches a test. **Historical, not edited by the script**:
-`docs/golden-harness.md`, `docs/verification-nct-2.5.md` and `docs/verification-fixtures.md` (dated
-reports of the hydra.2 baseline). The release workflow gets a
+`docs/golden-harness.md`, `docs/verification-nct-2.5.md`, `docs/verification-fixtures.md` and `docs/pr6-traceability.md` (dated
+reports: the hydra.2 baseline and the PR #6 audit). The release workflow gets a
 `workflow_dispatch` dry run first (the hydra.2 release failed once before succeeding, per the critic).
 
 **Matrix** (what "keeps working" means, exactly):
 
 | Client | hydra.2/3 engine | hydra.4 engine |
 |---|---|---|
-| Any raw JSON-line client speaking protocol 2 | works | works; replies byte-identical (characterization at protocol 2); behaviour identical except the declared changes of 5.1 (V1 to V7, the first of which is the upgrade gate, 3.4) |
+| Any raw JSON-line client speaking protocol 2 | works | works; replies byte-identical (characterization at protocol 2); behaviour identical except the declared changes of 5.1 (V1 to V10, the first of which is the upgrade gate, 3.4) |
 | stock `ghidra_session.py` 1.0.0 (protocol 2) | works | works at protocol 2 (endpoint says `protocol:2`) |
 | `ghidra_session.py` 1.1.0 (protocol 2..3) | works at protocol 2, capabilities absent | full |
 | Hydralysis 0.4.x | works (its own pin) | **refuses by its own pin** (`hydra.py:104-105`, `:246-249`) unless `hydra_allow_unpinned`; this cannot be fixed on the engine side and is stated, not hidden |
-| Hydralysis 0.5.x (this train) | degraded set (7.5) | full |
+| Hydralysis 0.5.0 (this train, client only, pinned to hydra.2/3; 5.3) and 0.6.0 (pinned to hydra.4, OD11) | 0.5.0: degraded set (7.5) | 0.6.0: full |
 
 The doctor shows connected clients by protocol so a mixed fleet is visible. The legacy window:
 hydra.4 and hydra.5 serve protocol 2; whether to refuse it from hydra.6 is for the owner then (OD6).
@@ -1559,7 +1996,7 @@ first and must pass unchanged on the hydra.4 candidate.
 |---|---|---|---|---|
 | G1 | `expect` enforced on `signature` and `data_type` (3.4) | a request that carries `expect` there is ignored today (`Operations.java:157,186` compute the old value and never compare); enforced it would turn a success into `conflict` | **Gated on v3.** Enforcing it for a v2 client that sent a stale `expect` would be a break with no benefit to that client | `cc_e1`: v2 `edit` signature and data_type with a wrong `expect` still succeed; the same request on v3 conflicts (E1) |
 | G2 | `save`, `fork_project`, `refresh`, `reopen`, `promote_overlay` move from `long` to `maint` (3.5) | queueing, ordering and the text of `busy` for these commands | **Gated on v3** (`laneOf(cmd, req, v3)`). The benefit is for the Hydralysis commit path, which is v3 | `cc_e3a` `v2_lane_unchanged`: long saturated, a v2 `save` waits and fails `busy` in `long` as on hydra.3; a v3 `save` runs (E3a) |
-| G3 | fair key `connection + scope` and the per-key cap (3.5) | the order in which a v2 client's own labelled requests are served | **Gated on v3**: a v2 request keeps the key `connection id` and is never capped | `cc_e3a` `v2_queue_order`: the hydra.3 service order of two labels on one v2 connection is reproduced (E3a) |
+| G3 | fair key `connection + scope` and the per-key cap (3.5) | the order in which a v2 client's own labelled requests are served | **Key gated on v3**: a v2 request keeps the key `connection id`; the per-key cap itself reaches v2 as V9 (revision 6) | `cc_e3a` `v2_queue_order`: the hydra.3 service order of two labels on one v2 connection is reproduced (E3a) |
 | G4 | validate-before-wait (3.5) | a bad request on a full lane fails at once instead of after its wait | **Gated on v3**: timing and which error wins (`bad_request` or `busy`) are observable | `cc_e3a` `v2_no_preflight` (E3a) |
 | G5 | the `queue` key of a **slot wait**'s progress events and `status.requests[].queue`, and the import estimate's `estimateScope` (3.4; conditionals C4 and C5) | one more key in an event or a `status` entry. **Premise corrected in revision 3:** an **import** wait already carries `queue` in its progress events and in `status.requests[].queue` in protocol 2 today (`m.waiting("import queue", q)`, `ImportGate.java:188-194`; `RequestMonitor.java:111`), so for the import wait the `queue` key is **not new v3 content and not gated**; only the slot-wait `queue` key (today `Scheduler.admit` calls the one-argument `waiting`, `Scheduler.java:155`) and `estimateScope` are new | **Gated on v3**: `Scheduler.admit` keeps the one-argument `waiting(what)` for a v2 connection, and `ImportGate` (E3a's file, which needs the client: `enter` receives only `c.id`) adds `estimateScope` only for a v3 entry. Events are not replies, so the goldens cannot see them | `cc_e3a` `v2_progress_keys`: the exact key set of every progress event during a slot wait **and** an import wait, equal to hydra.3's (the import wait still carries `queue`, without `estimateScope`) (E3a) |
 | G6 | `Scheduler.describe` takes the scheduler lock with `tryLock(250 ms)` and may answer `unavailable` (3.4, `health`) | `status.scheduler` could say `unavailable` instead of blocking | **Gated on v3** (E1 adds the `describe(boolean v3)` overload, which does not exist yet: `Scheduler.java:285` takes no argument; the `tryLock` is behaviour gate 5, the reply shape C2) | `cc_e5` (with `-Dghidra.session.testHooks=true` and `debug_stall` holding the scheduler lock): v2 `status` blocks as on hydra.3, v3 answers `unavailable` (E5) |
@@ -1572,6 +2009,9 @@ first and must pass unchanged on the hydra.4 candidate.
 | V5 | `cancel` (and a `timeout` deadline) now ends a lock wait (3.5) | a cancelled request that waits for a program, project or overlay lock answers `cancelled` within a second; today it keeps waiting until its `wait` ends in `busy` | **Visible to v2**: it is what `cancel` is documented to do. The single timed `tryLock` and its FIFO order are unchanged | `cc_e3b` `cancel_while_waiting` (E3b) |
 | V6 | endpoint file and `ready` event gain `protocolMin`, `protocolMax` (3.1) | two extra keys in a file and an event; `protocol` stays 2 | **Visible, additive**: needed for negotiation (D3); the 1.0.0 client reads `protocol` and `minClient` and ignores the rest | `cc_e1` (first test): the 1.0.0 client against the E1 engine connects and works (E1; the harness is P1a's) |
 | V7 | every `fork_project` sidecar gains `purpose` and `disposable` (3.4, D12) | a few keys in a file beside the fork; the reply is unchanged | **Visible, additive**: the upgrade gate decides from the sidecar | `cc_e2` `fork_sidecar` (E2) |
+| V8 | a project that hydra.4 marked sealed (a `disposable:false` sidecar, a seal record, D38) refuses every writable path | `open_program writable`, `analyze`, `save`, owner scripts, `promote_overlay` into it: `conflict` with `details.reason:"sealed"` and a `fork_project` `next` for v2, the code `sealed` for v3. A project with no sidecar and no seal record behaves exactly as before | **Visible to v2, by design, but only for projects hydra.4 itself marked**; no existing v2 transcript can meet one. Protects the master and every generation from the clients least likely to know | `cc_e2` `sealed_refusal` on a v2 connection against a sealed fork (E2) |
+| V9 | the work-conserving per-key running cap (3.5) applies to **v2** connections too, with the new lane defaults (D40) | a v2 connection that held up to 32 parallel requests and every running slot is held back only while another key waits under its own cap; the order in which one connection's own requests run is unchanged (D18's v2 key `connection id` is kept) | **Visible to v2**: under contention only, measured starvation (claims-audit U2: no per-client running cap; A: a 7th client waited 10.2-10.5 s) | `cc_e3a` `v2_running_cap`: one v2 connection with 32 parallel scripts cannot starve a second connection's script; on an idle daemon nothing changes (E3a) |
+| V10 | the reader-leave fast path of V3 now covers **every** non-owner, non-writer, non-last user, and `Session.disconnect` removes the 600 s cleanup waits for them (E3c; E3b did the owner and writer side) | no reader of a program waits behind another client's leave or disconnect | **Visible to v2**: it changes how long others wait, no reply shape | `cc_e3c` `reader_leave_all` (E3c) |
 
 The release identity strings (`hydraVersion`, `buildDate`) change with every release; the goldens mask
 them (`"hydraVersion": "<masked>"`). `health` is a new command, so an old transcript contains none.
@@ -1579,8 +2019,8 @@ The counts D2 refers to: **thirteen reply-shape conditionals, C1 to C13, one per
 3.1**; G5 is the behaviour test of C4 and C5, which are events and `status` entries that the goldens
 cannot see, while the other eleven are reply shapes that the seven v2 scenarios at `--protocol 2`
 check directly (a v2 reply must stay byte-identical); six behaviour gates (G1 and G7 share the
-request-field helper; G2, G3, G4, G6 and G8 are one gate each); seven declared visible changes (V1 to
-V7).
+request-field helper; G2, G3, G4, G6 and G8 are one gate each); ten declared visible changes (V1 to
+V10; revision 6 adds V8 to V10).
 
 ### 5.2 Release notes (R1) must say
 
@@ -1588,22 +2028,68 @@ V7).
   serves protocol 2 and 3 on one port. The one bump is reserved for the release that drops protocol 2.
 - Hydralysis 0.4.x refuses a hydra.4 engine by its own pin (the matrix above); hydra.2/3 clients
   keep working at protocol 2.
-- The declared protocol-2-visible changes V1 to V7 of 5.1, by name.
+- The declared protocol-2-visible changes V1 to V10 of 5.1, by name.
 - A harness restart is needed once after the Hydralysis catalog epoch (7.7).
 
 **State formats written by hydra.4 / Hydralysis** (`CURRENT.log`, `MANIFEST.json`, `backup.json`, store v3) carry a
 `format` number and are forward-checked: a reader that finds a newer `format` refuses with
 `format_unreadable` and says which writer wrote it; it does not guess.
 
+### 5.3 Release mapping (revision 6)
+
+One wave numbering, four release trains (D35). A release makes only the claims that its gates passed (D52).
+
+| Release | Contents | Gate | Claims it may make |
+|---|---|---|---|
+| **hydra.3** | done: the upstream merge, tag `v12.3-hydra.3` | its own golden gate (KotOR 8,616 of 8,616 identical to hydra.2) | unchanged; the README and CHANGELOG already carry the qualified wording |
+| **Integrity cut** (optional, protocol-neutral; tag name OD10) | E8 and E2a only, cherry-picked onto the hydra.3 line | 9.15: at least 400 trigger-timed save kills (200 NTFS, 200 ReFS) with 0 unopenable and 0 unrepaired; at least 300 fork-publish kills with 0 blocked retries and no leftover after the sweep; the golden decompile diff identical | "a kill during a save no longer leaves an unopenable newest version; a partial fork is swept and retryable", with the rule-of-three bound |
+| **Hydralysis 0.5.0, qualified** | client only, pinned to hydra.2/3 (7.5 degraded set): Y0a-Y0e, Y1, Y2, Y3, Y5, R0/S1/Z13a wording, Z1, Z2, Z3, Z4, Z5, Z6, Z7, Z8 | Hydralysis unit and integration suites; the chaos PR lane against hydra.3 (9.17); 9.16 measured; `test_claims` | exactly the GR rows of 6.1 marked "0.5.0", with "the engine's locking is hydra.3's; heavy parallel use is something to measure". **No non-blocking and no "any number" claim**; the doctor warns when the engine is older than the integrity cut |
+| **hydra.4** | protocol 3: P1a, E1, E8, E2a, E2, E3a, E3b, E3c, E4, E5, E9, P1b, E6, X0, R0, R1 | 9.1-9.4, 9.7-9.19 | the GR rows marked "hydra.4"; the site flips each claim only when its test flips (S2) |
+| **Hydralysis 0.6.0** (label OD11) | pins hydra.4: Y4a, Y4b, Y4d, Y4e, Z9, Z10, Z14, later Z11, Z12 | 9.8 and 9.17 against hydra.4 | adoption of the engine's capabilities; the supervisor's auto-restart only with a durable journal |
+| **hydra.5** | E7 (script worker), E10 (overlay-backed views), E11 (read replicas), E12 (power-loss durability) | each package's spike and gate | "a deaf script is killed"; DB-bound read scaling on a hot program; a power-loss claim only after E12's simulated matrix |
+
+Nothing in this file tags, pushes or publishes; every tag and every label is the owner's (OD5, OD10, OD11).
+
 ---
 
-## 6. Honest limits
+## 6. Guarantees and honest limits
+
+### 6.1 What may be guaranteed, and the test of each (revision 6)
+
+Each guarantee names the test that can fail (a test counts only if it was red on the old build, D48), the
+release it holds in and its scope. **Scope everywhere: a process crash (`TerminateProcess`, a client kill), not a
+power loss or an OS crash.** These eleven rows are the only things the documents and the site may claim (D58).
+
+| # | Guarantee | Test | Holds in | Basis |
+|---|---|---|---|---|
+| GR1 | The master, every published generation and every project not involved in an operation are never written: their tree hashes are unchanged | K1 and K9 in every chaos iteration; `cc_e2` `sealed_refusal`; the 100-iteration writable-attempt loop (a writable open of a pristine project changed `~index.bak` and deleted `~journal.bak`) | 0.5.0 by client discipline plus `integrity.py`; hydra.4 enforced (D38) | C: 0 changes in 825 + 25 + 102 kills when never opened writable |
+| GR2 | Corruption can only touch a disposable, unpublished artefact, and a candidate generation is verified before it can become head; after E8 a kill during a save does not leave an unopenable newest version | K2 watcher, K3, K6; at least 300 trigger-timed kills during a candidate save with the head verifying every time; at least 400 trigger-timed save kills (200 NTFS, 200 ReFS) with 0 unopenable; the planted X1 | the integrity cut and hydra.4; 0.5.0 repairs its own forks on hydra.2/3 | C: 12 of 363, rule of three |
+| GR3 | An acknowledged edit survives a client or daemon process crash | K5 and K15; the kill matrix between W1 and W3 of the store write-ahead (torn file, kill -9 between seal and apply) | 0.5.0 | C: 0 acknowledged losses |
+| GR4 | An acknowledged publish is never lost and is applied exactly once; the history is linear | K12 and K16; a publish storm with kills of leaders and of the daemon | 0.5.0 | 4.10, D32, D45 |
+| GR5 | No agent sees another agent's unpublished edit, except through the shared view or protocol-2 shared mode | K11 with 24 agents | 0.5.0 (per-agent views); hydra.4 | B: 94 of 114 polls red on hydra.3 |
+| GR6 | No client's request waits on a lock another client holds, outside the residual list of 3.9 | K13 (`waits.foreignBlocked` = 0 on sealed reads and views) and the reruns of B's `s1`, `s2`, `s4`, `s5`, `s7`, `s11`, `s13` and A's lane test | **hydra.4 only**; on hydra.3 only Y2's `maxLong` mitigation (D54) | B, A |
+| GR7 | A client crash never harms the daemon or the other clients, and a dead client's queued write is never applied | K10; B `s4_dead` S4b; C scenario e | hydra.4 (the write part); the rest already holds | C: 102 of 102 |
+| GR8 | At the configured budgets the daemon answers `busy` instead of running out of memory, and its own threads survive | `-Xmx256m` with 24 views and `-Xmx512m` with the full agent set; a 100-view probe; K14 | hydra.4 | A: OOM and a dead reaper at 256 MB |
+| GR9 | A native decompiler crash, hang or kill fails one request; a daemon kill leaves no orphan decompiler | the decompiler-kill lap; K7 | hydra.4 | 3.11 |
+| GR10 | A fork path is absent or complete, and no staging artefact survives the next sweep | K6; at least 300 kills during `fork_project` | the integrity cut and hydra.4 | C: 12 of 162 |
+| GR11 | A killed daemon is recoverable without manual repair, and operations in one project never change or delay another | K8, K9, K10 and B's `s5`/`s13` reruns; restart timing recorded (median 1.4 to 1.9 s measured) | 0.5.0 and hydra.4 | C, B |
+
+**Not guaranteed, and said so in the documents:** power loss and OS crash (E12); the protocol-2 connections and the
+open (legacy) projects, where the locks of 3.5 apply and their holders block their readers; the shared view's
+writers among themselves; the `DBHandle` ceiling per `Program` instance until E11; seeing another client's unsaved
+live state; killing a deaf script before E7; unsaved overlays and protocol-2 shared edits across a daemon kill;
+`promote_overlay` atomicity; latency under foreign load; scale beyond the soak that passed (24 agents, 6 projects,
+4 hours); the cost of a program much larger than KotOR; ReFS as protection (3 of 80 trigger-timed kills still
+poisoned a version file before E8); whether the version-file defect also exists in stock Ghidra (not run).
+
+### 6.2 Limits
 
 - **Non-cooperative threads.** Java cannot kill a thread that ignores cancel and interrupt, nor release a
   `ReentrantReadWriteLock` from another thread. A script that never polls `monitor.checkCancelled()`
   keeps its program lock after its client is gone. The design bounds the wait, shows the holder and
   keeps the rest of the daemon running; restart is safe for Hydralysis work (the store is the
-  record). Only a helper JVM for user scripts would be a hard guarantee; it is out of scope.
+  record). Only a helper JVM for user scripts would be a hard guarantee; it is E7 (hydra.5, conditional, D47). In hydra.4 a deaf
+  script is confined to its owner's view and one slot, counted against the owner's cap and quarantined.
 - **The overlay lifecycle waits are not cancel-aware.** `openOverlay`, `rebuildOverlays`,
   `dropOverlays` and `promoteOverlay` take untimed `lock()` calls on an overlay's lock
   (`OverlayCommands.java:228, 238, 251, 319, 352, 404`). `cancel`, a `timeout` deadline and the
@@ -1664,11 +2150,23 @@ V7).
 - **`private` isolation reads the stored file**, not unsaved edits; `shared` `attemptedChanges` is
   program-wide, not per script.
 - **ETA is a rough estimate**, `null` without history, and `null` when the lane is dominated by a long job.
-- **The GUI** opening the original project does not see committed annotations (4.7).
+- **Headless only.** There is no GUI. Projects Hydra Engine writes cannot be opened by Ghidra 12.2 or 12.1.4, and opening them in a stock Ghidra is not a goal (D36).
 - **The data-type database version** is `null` until it can be read and tested against 12.1.4 data.
 - **Sources of numbers:** save time (about 35 s) and clone/hash costs come from the 1.5 GB /
   243,855-function benchmark; the golden baseline is KotOR (122 MB). Every timing constant here is
   *unmeasured* on the target until the gate-9 measurements are recorded.
+- **Revision 6 limits.** (1) Every measurement of A, B, C and D is a single run or a handful on one 24-CPU machine under
+  foreign load (A varied about 2x between identical runs), on KotOR (8,966 functions) only; heap per view, fork time,
+  publish latency and the soak result do not transfer to a 244k-function, 1.5 GB program (SP2). (2) The kill tests
+  are `TerminateProcess`: the OS page cache survives, so fsync and power loss are not measured (E12). (3) Kills in the
+  write window are rare in random-time mode (2 of 131), so the batches use trigger-timed kills, a biased sample that
+  gives bounds, not field rates; intervals are wide (Wilson 95%). (4) Open (legacy) projects, protocol-2 connections,
+  rooms of shared writers and the shared view keep their locks and block their own readers (3.9); the non-blocking
+  contract is for sealed generations and views. (5) One `Program` instance serves DB-bound reads at 1.4x to 1.8x
+  until E11. (6) hydra.4 cannot kill a deaf script. (7) A native decompiler is one process per concurrent request
+  until E9 bounds it. (8) The unmeasured values (heap watermarks, eviction times, quotas, `BASE_WAIT_S`) are
+  starting points checked by the squeeze laps of 9.14. (9) ReFS gives a disk saving and no protection. (10) Whether the
+  version-file defect exists in stock Ghidra was not run. (11) The foreign-load sampler is an estimate.
 
 ---
 
@@ -1722,6 +2220,11 @@ protocol. Default output is findings only.
   restarted while the list is non-empty, unless the call carries `force:true`.
 - Killing a daemon on ReFS can leave project locks for seconds: keep the existing wait for the pid to exit.
 - Tests use fresh state roots only. Pids 18220 and 17936 are never touched.
+- **Revision 6 (D55).** Auto-restart is enabled only when `journal.durable` is true (the store v3 write-ahead record of
+  4.10 and its start-up self-test). A restart waits for the process object to exit (median 2.1 s, up to 39 s under load
+  after `TerminateProcess`), treats every hard kill as a crash, and is refused while a publish is mid-flight without a
+  recorded intent. The doctor warns when the engine is older than the integrity cut (5.3) and lists unfinished
+  candidates and `repairs[]`.
 
 ### 7.3 Commit flow (Y2, Y4d)
 
@@ -2234,6 +2737,12 @@ error (the dispatcher answers it when the handler module of `api.HANDLER_MODULES
 test may assert it through the real dispatcher**: Y2 rewrites the existing ones against the registry, 8). Running sessions cache tool lists (`mcp.py:45`): after the epoch, features arrive only through
 `options`, and `backend help` and the 0.5.0 release notes say a harness restart is needed once.
 
+### 7.8 Multi-agent obligations (revision 6)
+
+The obligations that follow from 3.9 to 3.12 are in 4.10 and 4.11: a stable agent id and a distinct `as` for each
+editing subagent, a lazily created fork-backed view per agent, the shared base, write-ahead before apply, the publish
+queue, client-side eviction, structured `busy` mapped to `next`, and never opening a master or generation writable.
+
 ---
 
 ## 8. Work packages
@@ -2260,8 +2769,8 @@ Conventions that make the waves disjoint (the matrix in 8.1 is the authority; th
   (`Scheduler.laneOf`/`admit`, `Session.java:248`, `ImportCommands.java:112`), the call sites of
   `ProjectEntry.info(client)` (a signature only, so that E2's `format` needs no `Session.java` edit), and
   four registries (`Advertised`, `Settings`, `Preflight`, `DbVersions`). Later packages
-  register into them from classes they own. So `Session.java` is edited by E1 (W1), E3b (W3) and
-  E5 (W4) and by no one in W2, and E2 and E3a, which run in parallel in W2, share no file.
+  register into them from classes they own. So `Session.java` is edited by E1 (W1), E3b (W3), E3c (W4) and
+  E5 (W5) and by no one in W2, and E2 and E3a, which run in parallel in W2, share no file.
 - E0 adds loaders so each package adds tests in its **own** files: `examples/dt_<package>.py` for
   daemon tests (each exposes `TESTS = {name: fn}`; `daemon_tests.py` imports `dt_*.py`),
   `examples/char_<package>.py` for characterization scenarios, with goldens in
@@ -2352,16 +2861,17 @@ Conventions that make the waves disjoint (the matrix in 8.1 is the authority; th
 
 ### Wave plan (compact)
 
-| Wave | Hydra (engine) | Hydralysis | Notes |
-|---|---|---|---|
-| W0 baselines and hardening | E0 | Y0a, Y0b, Y0c, Y0d | no engine behaviour change; all parallel; disjoint files (8.1). |
-| W1 foundation and seams | P1a, then E1 | Y0e, then Y1 | E1 owns every shared-file seam (`Session.java`, `Scheduler`, `ImportCommands`, `UpgradeCache`, `ProjectCommands`, `ProjectEntry` (signature only), `HeadlessSession`, and the new `Advertised`, `Settings`, `Preflight`, `DbVersions`); P1a owns `ghidra_session.py` and the protocol-2 compatibility harness and lands first (E1's `cc_e1.py` needs its loader and the vendored 1.0.0 client); Y0e takes the W0 review follow-ups that no W0 package could own (8.2; landed as `8e696e2`, after the streamed `AppendLog`, the `EngineError` cap and the `test_client.py` guard had landed in the W0 follow-ups); disjoint except one declared sequence, `tests/test_durable.py`: Y0e, then Y1 (Y1 merges after Y0e, 8.2); E1's first commit also fixes the package-id parser of `check_ownership.py` (8) |
-| W2 facts, gates, lanes | E2, E3a | Y2 | **neither edits `Session.java`** (E1 placed the seams). E2: format, backup, gate, fork; it names no lane. E3a: `Scheduler`, `ImportCommands`, **`ImportGate`**, `Requests`, `Connection.respond`, `RequestMonitor`; it decides the lane and the lane note. A backup reaches the `maint` lane through E3a's command mapping, with no code dependency between the two; the combined test is E6's. **Y2 rewrites the stub tests** of `tests/test_contracts.py` and `tests/test_cli.py` against the handler registry (8, 8.2) |
-| W3 robustness | E3b | Y3 | E3b owns `Waits`, `Caller`, `Access`, `ProgramEntry`, `OverlayCommands`, `Connection`, `RequestMonitor`, `Session.disconnect`, `ProjectCommands.leaveProject`, `ProgramCommands.releaseUse` |
-| W4 isolation, health, launcher | E4, E5, P1b | (catch-up) | E4 after E3b (both touch `OverlayCommands`); E5 owns `Session.java`, `Scheduler`, `HeadlessSession`; disjoint |
-| W5 soak and release prep | E6, then R1 | | R1 owns `tools/bump_hydra.py` and the docs and runs after E6 (it depends on every engine package, E6 included); then **gate G** (section 9) |
-| W6 adoption on hydra.4 | | Y4a, then Y4b and Y4d, and Y4e | disjoint files; **Y4b and Y4d merge after Y4a**: the doctor lists Y4a's abandoned-connection registry (7.6), and Y4d's tests run on `tests/fakehydra.py`, which only Y4a edits in W6 and which Y4a extends with the E2 surface (`format`, `backup_required`, `fork_project purpose:"backup"` with `writer:"engine"`) and an opt-in connection scope (8.2); Y4e needs neither; Y4a runs R1's `bump_hydra.py` and owns the files it edits (5, 8.1). The package ids are Y4a, Y4b, Y4d and Y4e: **there is no Y4c** (the ids keep the labels of the first draft) |
-| W7 deferred | | Y5 | only after its preconditions |
+| Wave | Hydra (engine) | Hydralysis | Docs, site, policy | Notes |
+|---|---|---|---|---|
+| W0 verification and wording | E0, X0 | Y0a, Y0b, Y0c, Y0d | R0, S1, Z13a | no engine behaviour change; all parallel; disjoint files (8.1). X0 builds the oracle K1-K17 with its planted-violation self-tests, imports the measurement scripts of A, B and C as regression suites and records the **red table** on hydra-3-candidate (9.12). R0, S1 and Z13a correct the wording of the engine documents, the website and the Hydralysis documents to what is true today (D52, 8.2). |
+| W1 foundation, seams, integrity | P1a, then E1; E8; E2a | Y0e, then Y1; Z1 | | E1 owns every shared-file seam (`Session.java`, `Scheduler`, `ImportCommands`, `UpgradeCache`, `ProjectCommands`, `ProjectEntry` (signature only), `HeadlessSession`, and the new `Advertised`, `Settings`, `Preflight`, `DbVersions`, **`Hooks` and `Guarded`**); P1a owns `ghidra_session.py` and the protocol-2 compatibility harness and lands first; **E8** fixes the version-file ordering in the Ghidra core and **E2a** makes the fork publish atomic and sweepable (neither is protocol-visible; together they are the integrity cut of 5.3); Y0e takes the W0 review follow-ups (8.2); **Z1 merges before Y1** (it pins the concurrency behaviour Y1 and Y2 must keep, and holds the multithread `_sync` test as a known issue); disjoint except one declared sequence, `tests/test_durable.py`: Y0e, then Y1 |
+| W2 facts, gates, lanes, shared base | E2, E3a | Y2; Z4, Z5, Z7 | | **neither E2 nor E3a edits `Session.java`**. E2: format, backup, gate, fork purposes, **seal**, `prepare_upgrade`, the second independent backup; it names no lane. E3a: `Scheduler`, `ImportCommands`, `ImportGate`, `Requests`, `Connection.respond`, `RequestMonitor`; lanes, caps (v2 too), the import wait. Y2: lineage, commit, backups, **the shared base, the per-view connection and lock, `integrity.py`, the launch configuration (`maxLong`, `maxQuick`)** and the stub-test rewrites (8, 8.2). Z4, Z5, Z7 need no engine change |
+| W3 robustness | E3b | Y3; Z2, Z3, Z6, Z8 | | E3b owns `Waits`, `Caller`, `Access`, `ProgramEntry`, `OverlayCommands` (lock site), `Connection`, `RequestMonitor`, `Session.disconnect`, `ProjectCommands` (the registry un-nesting and `leaveProject`), `ProgramCommands.releaseUse`. Y3: rebase, publish queue, merge. Z2 measures the named-view cost and the publish latency (9.16, SP7) |
+| W4 the non-blocking core, isolation, launcher, views | E3c, E4, P1b | Y5 | | **E3c** owns `Session.java`, `Access`, `ProgramEntry`, `ProgramCommands`, `ProjectCommands`, `ProjectEntry` and the new `ProjectRegistry`: refcount join and leave for every reader, the per-project state machine, `analyzing`, waiter caps; **E4** owns `ScriptCommands`, `OverlayCommands`, `PrivateInstance`; the two share no file. P1b adds the Job Object. **Y5** makes per-agent views the default (it does not need E3c: it works on hydra.3 through forks) |
+| W5 health, governor, soak and release prep | E5, E9, E6, then R1 | Z13b; (R1's bump script) | S2, Z15 | E5 (moved from W4 because E3c owns `Session.java` in W4) owns `Session.java`, `Scheduler`, `Health`, `Watchdog` and starts the watchdog in `HeadlessSession` **then E9** starts the governor there; E9 owns the governor, the decompiler gate and the decompiler borrow sites; E6 is the gate runner (PR, nightly, release lanes); R1 owns `tools/bump_hydra.py` (now also the site constants) and the docs and runs after E6; then **gate G** (section 9) |
+| W6 adoption on hydra.4 | | Y4a, then Y4b and Y4d, and Y4e; Z9, Z10, Z14 | | disjoint files; **Y4b and Y4d merge after Y4a**; Y4a runs R1's `bump_hydra.py` and owns the files it edits (5, 8.1). Z9 (evidence v2) and Z10 (runtime evidence on the existing fixtures) run in parallel; Z14 closes the wave. The package ids are Y4a, Y4b, Y4d and Y4e: **there is no Y4c** |
+| W7 runtime scenario | | Z11, Z12 | | Z11 (fixture-first scenario) then Z12 (memory write and watchpoints, fixture-only, after the owner's decisions N2 and N3 of the audit): runtime evidence and coverage come first |
+| W8 hydra.5, conditional | E7, E10, E11, E12 | | | each only if its spike says go (9.20) |
 
 ### 8.1 File-ownership matrix (the disjointness assertion)
 
@@ -2373,87 +2883,147 @@ the four rules of section 8: a row here, the package id in the file's name, or f
 
 **Hydra (engine repo)**
 
-| File | W0 | W1 | W2 | W3 | W4 | W5 |
-|---|---|---|---|---|---|---|
-| `S/Session.java` | | E1 (hello, `info`, `admit` call with the request, the call sites of `ProjectEntry.info(client)` at `:265`, `:333`, `:427`, `isInline` stays) | | E3b (`disconnect`, `reap`) | E5 (`isInline`, `case health`, watchdog start) | |
-| `S/Scheduler.java` | | E1 (`laneOf(cmd, req, v3)`, `admit(c, cmd, req, m, waitMs)`, `describe(boolean)`, all behaviour-free) | E3a (maint lane, fair key, cap, queue info, ETA, `Preflight` call) | | E5 (`describe` `tryLock`, lane stats) | |
-| `S/ImportCommands.java` | | E1 (the `admit` call at `:112` only) | E3a (remaining wait; the `ImportGate.enter` call at `:100` passes the client) | | | |
-| **`S/ImportGate.java`** | | | E3a (`enter` takes the `Client`, `Entry` keeps it, `queueInfo` adds `estimateScope` for v3) | | | |
-| `S/Connection.java` | | E1 (`error()` gets the client and emits `next`, `retryAfterMs`) | E3a (`respond`: `queue` header) | E3b (`run`: grace, `shutdownNow`; `respond`: `cancelled` details `applied`, `phase`) | | |
-| `S/RequestMonitor.java` | | | E3a (queue, lane and lane-note carriers) | E3b (wait registration, `cancel()` override) | | |
-| `S/Requests.java` | | | E3a (generic `Preflight` checks) | | | |
-| `S/Caller.java`, `S/Access.java`, `S/ProgramEntry.java`, **`S/Waits.java`** | | | | E3b | | |
-| `S/OverlayCommands.java` | | | | E3b (lock site) | E4 (`loadOverlay` extracted) | |
-| `S/ProjectCommands.java` | | E1 (the call sites of `ProjectEntry.info(client)` at `:92`, `:395`) | E2 (`openProject` `format`) | E3b (`leaveProject`) | | |
-| `S/ProgramCommands.java` | | | E2 (`openWritable` gate) | E3b (`releaseUse`, `closeEntry`) | | |
-| `S/UpgradeCache.java` | | E1 (`currentDbVersion` moved to `DbVersions`) | E2 (`readStored`) | | | |
-| `S/EditCommands.java` | | E1 (`withLastEditor`, `rk`) | E2 (`save` stamp) | | | |
-| `S/ForkCommands.java`, `S/ProjectFork.java`, **`S/ProjectFormat.java`**, **`S/ProjectBackup.java`** | | | E2 | | | |
-| `S/ProjectEntry.java` | | E1 (`info(Client)`: the signature only, same value) | E2 (`format` for v3) | | | |
-| **`S/DbVersions.java`** | | E1 (`program()`, `dataTypes()` returning `null`) | E2 (`dataTypes()`) | | | |
-| `S/Operations.java`, `S/Journal.java`, `S/Client.java`, `S/SessionException.java`, **`S/Identity.java`**, **`S/Advertised.java`**, **`S/Settings.java`**, **`S/Preflight.java`** | | E1 (`SessionException`: the new codes, the busy-details and the bad-request-details helpers) | | | | |
-| `S/HeadlessSession.java` | | E1 (endpoint and `ready`, `-set`) | | | E5 (watchdog start) | |
-| `S/HydraInfo.java` | | E1 (protocol constants) | | | | R1 (version) |
-| `S/ScriptCommands.java`, **`S/PrivateInstance.java`** | | | | | E4 | |
-| **`S/Health.java`**, **`S/Watchdog.java`** | | | | | E5 | |
-| `support/ghidra_session.py` | | P1a (range, `engine` pass-through) | | | P1b | |
-| `examples/daemon_tests.py`, `examples/characterization_tests.py`, **`examples/dt_baseline.py`**, `examples/characterization/v3/` (created by E0 as an empty directory with the loader) | E0 | | | | | |
-| `examples/characterization/clients.json`, `examples/characterization/edits.json`, `examples/characterization/fork_refresh.json`, `examples/characterization/import_script.json`, `examples/characterization/overlays.json`, `examples/characterization/readonly.json`, `examples/characterization/session.json` | E0 (the seven v2 goldens; `fork_refresh.json` and `overlays.json` were re-recorded once, in `f47ff15934`, to mask the copied project's total size, E0; no later package edits them) | | | | | |
-| **`examples/check_ownership.py`** | E0 | E1 (its first commit: the package ids read from the wave plan, the `<id>-` golden prefix, the frozen files; section 8, rule 4) | | | | |
-| `examples/contract_tests.py` | | E1 (the protocol and first-`hello` tests) | | | | |
-| `examples/client_compat_tests.py`, **`examples/stock/ghidra_session_1_0_0.py`** | | P1a | | | | |
-| `examples/soak_tests.py` | | | | | | E6 |
-| `format-matrix.json`, `examples/format_gate.py`, `examples/make_legacy_fixture.py`, `examples/vectors/canonical-manifest.json`, **`examples/fixtures/legacy-12.1.4/`** | | | E2 | | | |
-| `README.md`, `CHANGELOG.md`, `ARCHITECTURE.md`, release workflow | | | | | | R1 |
+Paths are relative to `Ghidra/Features/HeadlessSession` unless they begin with `/`, which is the repository root
+(the Ghidra core, `NOTICE-HYDRA`, the root documents and `.github`). The wave columns are W0 to W5 and W8
+(W6 and W7 have no Hydra cell).
 
-**Hydralysis (`src/hydralysis`, `tests/`, `tools/`)**
+| File | W0 | W1 | W2 | W3 | W4 | W5 | W8 |
+|---|---|---|---|---|---|---|---|
+| `S/Session.java` | | E1 (hello, `info`, `admit` call with the request, the call sites of `ProjectEntry.info(client)` at `:265`, `:333`, `:427`, the admission and `Guarded` seam call sites, `isInline` stays) | | E3b (`disconnect`, `reap`) | E3c (the join of a program under analysis, the registry as a state machine, refcount disposal in `reap`) | E5 (`isInline`, `case health`, watchdog start) | |
+| `S/Scheduler.java` | | E1 (`laneOf(cmd, req, v3)`, `admit(c, cmd, req, m, waitMs)`, `describe(boolean)`, all behaviour-free) | E3a (maint lane, fair key, cap, queue info, ETA, `Preflight` call, `Ticket.yieldSlot`) | | | E5 (`describe` `tryLock`, lane stats) | |
+| `S/ImportCommands.java` | | E1 (the `admit` call at `:112` only) | E3a (remaining wait; the `ImportGate.enter` call at `:100` passes the client) | | | | |
+| **`S/ImportGate.java`** | | | E3a (`enter` takes the `Client`, `Entry` keeps it, `queueInfo` adds `estimateScope` for v3) | | | | |
+| `S/Connection.java` | | E1 (`error()` gets the client and emits `next`, `retryAfterMs`) | E3a (`respond`: `queue` header) | E3b (`run`: grace, `shutdownNow`; `respond`: `cancelled` details; the bounded outbound queue; parallel dispatch for v3) | | | |
+| `S/RequestMonitor.java` | | | E3a (queue, lane and lane-note carriers, `addCancelHook`) | E3b (wait registration, `cancel()` override) | | | |
+| `S/Requests.java` | | | E3a (generic `Preflight` checks) | | | | |
+| `S/Caller.java`, **`S/Waits.java`** | | | | E3b | | | |
+| `S/Access.java` | | | | E3b | E3c (project pin instead of the whole-command project lock) | | |
+| `S/ProgramEntry.java` | | | | E3b (waiters, `abandoned`) | E3c (refcount users, deferred disposal) | E9 (the decompiler gate at `borrowDecompiler`) | E11 |
+| `S/Overlay.java` | | | | | | E9 (the decompiler gate at `borrowDecompiler`) | E10 |
+| `S/OverlayCommands.java` | | | | E3b (lock site) | E4 (`loadOverlay` extracted, overlay open from the stored file) | | E10 |
+| `S/ProjectCommands.java` | | E1 (the call sites of `ProjectEntry.info(client)` at `:92`, `:395`) | E2 (`openProject` `format`, the `sealed` refusal) | E3b (`leaveProject`, the `makeWritable` wait taken out of the registry monitor) | E3c | | |
+| `S/ProgramCommands.java` | | | E2 (`openWritable` gate, `sealed`, `upgradeBackup`) | E3b (`releaseUse`, `closeEntry`) | E3c (the reader leave for every reader) | | |
+| **`S/ProjectRegistry.java`** | | | | | E3c | | |
+| `S/UpgradeCache.java` | | E1 (`currentDbVersion` moved to `DbVersions`) | E2 (`readStored`, `prepare_upgrade` single flight) | | | | |
+| `S/EditCommands.java` | | E1 (`withLastEditor`, `rk`) | E2 (`save` stamp) | | | | |
+| `S/ForkCommands.java`, `S/ProjectFork.java` | | E2a (the `.gpr`-last order, the intent, `rk`, the sidecar `state`) | E2 (purpose, open, verify, cost, warnings, sidecar fields, `view`, `promote` marker) | | | | |
+| **`S/ForkSweeper.java`**, **`S/ForkIntent.java`** | | E2a | | | | | |
+| **`S/ProjectFormat.java`**, **`S/ProjectBackup.java`**, **`S/Seals.java`** | | | E2 | | | | |
+| `S/ProjectEntry.java` | | E1 (`info(Client)`: the signature only, same value) | E2 (`format` for v3) | | E3c (state machine fields) | | |
+| **`S/DbVersions.java`** | | E1 (`program()`, `dataTypes()` returning `null`) | E2 (`dataTypes()`) | | | | |
+| `S/Operations.java`, `S/Journal.java`, `S/Client.java`, `S/SessionException.java`, **`S/Identity.java`**, **`S/Advertised.java`**, **`S/Settings.java`**, **`S/Preflight.java`**, **`S/Hooks.java`**, **`S/Guarded.java`** | | E1 (`SessionException`: the new codes, the busy-details and the bad-request-details helpers; `Hooks.Admission` and `Guarded`, both inert) | | | | | |
+| `S/HeadlessSession.java` | | E1 (endpoint and `ready`, `-set`) | | | | E5 **then** E9 (E5: the watchdog and `testHooks`; E9: the governor start) | |
+| `S/HydraInfo.java` | | E1 (protocol constants) | | | | R1 (version) | |
+| `S/ScriptCommands.java` | | | | | E4 | | E7 |
+| **`S/PrivateInstance.java`** | | | | | E4 | | |
+| **`S/Health.java`**, **`S/Watchdog.java`** | | | | | | E5 | |
+| **`S/Governor.java`**, **`S/Budgets.java`**, **`S/DecompilerGate.java`** | | | | | | E9 | |
+| **`S/ScriptWorker.java`** | | | | | | | E7 |
+| **`S/ReplicaPool.java`** | | | | | | | E11 |
+| `/Ghidra/Framework/DB/src/main/java/db/buffers/LocalManagedBufferFile.java` | | E8 | | | | | E12 |
+| `/Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/db/VersionedDatabase.java`, **`/Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/db/VersionFileCheck.java`** | | E8 | | | | | |
+| `/NOTICE-HYDRA` | | E8 (the two added core files and the one added class) | | | | R1 | |
+| `support/ghidra_session.py` | | P1a (range, `engine` pass-through) | | | P1b (deadline, `LaunchError`, registry, the Job Object) | | |
+| `examples/daemon_tests.py`, `examples/characterization_tests.py`, **`examples/dt_baseline.py`**, `examples/characterization/v3/` (created by E0 as an empty directory with the loader) | E0 | | | | | | |
+| `examples/characterization/clients.json`, `examples/characterization/edits.json`, `examples/characterization/fork_refresh.json`, `examples/characterization/import_script.json`, `examples/characterization/overlays.json`, `examples/characterization/readonly.json`, `examples/characterization/session.json` | E0 (the seven v2 goldens; `fork_refresh.json` and `overlays.json` were re-recorded once, in `f47ff15934`, to mask the copied project's total size, E0; no later package edits them) | | | | | | |
+| **`examples/oracle.py`**, **`examples/chaos_lib.py`**, **`examples/conc/`** | X0 | | | | | | |
+| **`examples/check_ownership.py`** | E0 | E1 (its first commit: the package ids read from the wave plan, the `<id>-` golden prefix, the frozen files; section 8, rule 4) | | | | | |
+| `examples/contract_tests.py` | | E1 (the protocol and first-`hello` tests) | | | | | |
+| **`examples/client_compat_tests.py`**, **`examples/stock/ghidra_session_1_0_0.py`** | | P1a | | | | | |
+| **`examples/soak_tests.py`**, **`examples/chaos_tests.py`** | | | | | | E6 | |
+| **`format-matrix.json`**, **`examples/format_gate.py`**, **`examples/make_legacy_fixture.py`**, **`examples/vectors/canonical-manifest.json`**, **`examples/fixtures/legacy-12.1.4/`** | | | E2 | | | | |
+| `README.md`, `ARCHITECTURE.md` (the module's) | R0 | | | | | R1 | |
+| `/README.md`, `/CHANGELOG.md` | R0 | | | | | R1 | |
+| `/.github/CONTRIBUTING.md`, `/.github/SECURITY.md`, **`/.github/workflows/upstream-sync.yml`**, **`/.github/hydra-touched-files.txt`** | | | | | | Z15 | |
 
-| File | W0 | W1 | W2 | W3 | W5 | W6 |
-|---|---|---|---|---|---|---|
-| `backends.py` | Y0a | | | | | |
-| **`durable.py`** | Y0a | | | | | |
-| `tests/test_durable.py` | Y0a | Y0e (**the ratchet table**: the six rows of the three writers Y0e moves and the three count assertions, 8.2; the two-process and large-log tests had landed in the W0 follow-up `2bf90c7`) | | | | |
-| `tests/test_durable.py` (**second step of W1, after Y0e**) | | Y1 (the two `save_overlay` rows and the counts, in the commit that deletes the function, 8.2) | | | | |
-| `tests/test_address_maps.py` | Y0a (one line: drop the stale seal of a hand-edited record; commit `c78be27`) | | | | | |
-| `tests/test_query.py` | Y0a (one line, the same) | Y1 (`status show=changes`) | Y2 (`stop`, `show=lineage`) | Y3 (rebase, `stale_view`) | | Y4a (lane hint, `wait` on every call of the attempt, the pool entry in `_ask`, `stop` over the entries; the release literals `:285-296` derived from the fake) |
-| `hydra.py` | Y0b | Y0e (`write_daemon_config` through `durable.atomic_write`) | | | | Y4a (capabilities, the pin bump by `tools/bump_hydra.py`, `Supervisor`, the helper, the pool, the leave gate) |
-| `tests/test_client.py` | Y0b | | | | | |
-| `tests/fakehydra.py` | Y0b | | Y2 (fork purposes) | | | Y4a (the v3 fake, the E2 surface for Y4d's tests, the opt-in connection scope; the release constant is edited by the bump script, 5) |
-| `mcp.py`, `tests/test_mcp_transport.py` | Y0c | | | | | |
-| `api.py` | Y0d | | Y2 (the handler registry that replaces the Y0d stubs, 8) | | | |
-| `workflow_help.py` | Y0d | | | | | |
-| `tests/test_contracts.py` | Y0d | | Y2 (the four stub tests of `NotAvailableCarriers`, `:111-157`, rewritten against the handler registry, 8) | | | |
-| **`cli.py`** | | Y0e (`backend --action doctor` and `--action backups`, `--options` and `--options-file`, passed through to the dispatcher) | | | | |
-| **`tests/test_cli.py`** | | Y0e | Y2 (its two stub tests rewritten against the handler registry, 8) | | | |
-| `runtime.py`, `runtime_worker.py` | | Y0e (`_write` through `durable.write_sealed`; the readers unseal and fall back to the `.bak`) | | | | |
-| `workcopy.py` | Y0a (`_save_store`, `load_store`) | Y1 (v3 store, `has_overlays` and `expected_state` through `durable.exists`, `require_seal=True`) | Y2 | Y3 | | |
-| `targets.py`, `overlayjobs.py` | Y0a | | Y2 | | | |
-| `tests/test_overlayjobs.py` | | | Y2 (kind `commit`) | | | |
-| `revisions.py`, `analysis.py`, **`annotations.py`**, `scripts/RusticQuery.java` | | Y1 (`analysis.py`: new kinds, and the legacy v1 writer `save_overlay` and its reader `load_overlays` are deleted, 8.2) | | | | |
-| `tests/test_analysis.py` | | Y1 (the 15 `save_overlay` calls and the import, `:7`, `:111-204`: fixtures through `workcopy._save_store`, assertions retargeted, 8.2) | | | | |
-| `tests/test_exporting.py` | | Y1 (`:94-98` appends an edit to a store and calls `_save_store`) | Y2 (header, resume refusal) | | | |
-| `tests/test_crossbuild.py` | | Y1 (store-shaped dict literals patched into `workcopy.load_store`, `:81`, `:205`, `:218`, `:253`) | | | | |
-| `tests/test_revisions.py` | | Y1 (effect and field vocabulary) | | | | |
-| `tests/test_query_script.py` | | Y1 (the RusticQuery structure guards, which the new outputs must keep passing) | | | | |
-| `tests/test_engine_integration.py` | | Y1 (real-engine round trip, env-gated) | Y2 (additions) | | | |
-| **`tests/test_store_v3.py`**, **`tests/test_bundles.py`** | | Y1 | | | | |
-| `query.py` | | Y1 (`status show=changes`) | Y2 (`stop`, `show=lineage`) | Y3 | | Y4a (lane hint, `wait`, the pool entry in `_ask`, `forget(entry)`, `stop` over the entries and its report, 7.6) |
-| `exporting.py` | | | Y2 | | | |
-| **`lineage.py`**, **`commits.py`**, **`backups.py`** | | | Y2 | | | Y4d |
-| **`tests/test_lineage.py`**, **`tests/test_commit.py`**, **`tests/test_backups.py`** | | | Y2 | | | Y4d (the fault matrix re-run, the engine-written backup) |
-| **`tests/vectors/canonical-manifest.json`** | | | Y2 | | | |
-| **`views.py`**, **`tests/test_views.py`** | | | | Y3 | | |
-| **`doctor.py`**, **`tests/test_doctor.py`** | | | | | | Y4b |
-| `userscripts.py`, **`tests/test_userscripts.py`** | | | | | | Y4e |
-| **`tests/test_deadline.py`**, **`tests/test_supervisor.py`** | | | | | | Y4a |
-| `tests/test_backends.py` | | | | | | Y4a (the pinned release literals, `:21` and `:101`, derive from `hydra.RELEASE`, 5) |
-| `README.md`, `THIRD_PARTY.md`, `docs/upstream-setup.md` (the repository-root documents of Hydralysis) | | | | | | Y4a (the one sentence of each that names the pinned release, edited by `tools/bump_hydra.py`, 5) |
-| **`tools/bump_hydra.py`**, **`tests/test_bump_hydra.py`** | | | | | R1 | |
+**Hydralysis (`src/hydralysis`, `tests/`, `tools/`, and the repository-root documents)**
 
-Per wave the disjointness reads off the columns: W0 = {E0 | Y0a | Y0b | Y0c | Y0d}, each with its own
-files; W1 = {P1a, then E1 | Y0e | Y1} (Y1 after Y0e on the second `tests/test_durable.py` row only); W2 = {E2 | E3a | Y2}; W3 = {E3b | Y3}; W4 = {E4 | E5 | P1b}; W5 = {E6 | R1};
-W6 = {Y4a | Y4b | Y4d | Y4e} (Y4b and Y4d after Y4a, for the registry the doctor lists and for the fake daemon Y4d's tests run on, not for a file). Across waves a file may change hands only in the order the columns show,
-and a package depends on the packages whose files it builds on (the lists below).
+| File | W0 | W1 | W2 | W3 | W4 | W5 | W6 | W7 |
+|---|---|---|---|---|---|---|---|---|
+| `backends.py` | Y0a | | | | | | | |
+| **`durable.py`** | Y0a | | | | | | | |
+| `tests/test_durable.py` | Y0a | Y0e (**the ratchet table**: the six rows of the three writers Y0e moves and the three count assertions, 8.2; the two-process and large-log tests had landed in the W0 follow-up `2bf90c7`) | | | | | | |
+| `tests/test_durable.py` (**second step of W1, after Y0e**) | | Y1 (the two `save_overlay` rows and the counts, in the commit that deletes the function, 8.2) | | | | | | |
+| `tests/test_address_maps.py` | Y0a (one line: drop the stale seal of a hand-edited record; commit `c78be27`) | | | | | | | |
+| `tests/test_query.py` | Y0a (one line, the same) | Y1 (`status show=changes`) | Y2 (`stop`, `show=lineage`) | Y3 (rebase, `stale_view`) | | | Y4a (lane hint, `wait` on every call of the attempt, the pool entry in `_ask`, `stop` over the entries; the release literals `:285-296` derived from the fake) | |
+| `hydra.py` | Y0b | Y0e (`write_daemon_config` through `durable.atomic_write`) | Y2 (the launch configuration: `maxLong`, `maxQuick` from the expected number of agents) | | | | Y4a (capabilities, the pin bump by `tools/bump_hydra.py`, `Supervisor`, the helper, the pool, the leave gate) | |
+| `tests/test_client.py` | Y0b | | | | | | | |
+| `tests/fakehydra.py` | Y0b | | Y2 (fork purposes) | | | | Y4a (the v3 fake, the E2 surface for Y4d's tests, the opt-in connection scope; the release constant is edited by the bump script, 5) | |
+| `mcp.py` | Y0c | | | Z3 (the launch banner) | | | | |
+| `tests/test_mcp_transport.py` | Y0c | | | | | | | |
+| `api.py` | Y0d | | Y2 (the handler registry that replaces the Y0d stubs, 8, with the capability names `views`, `publish`, `environment`, `evidenceBundle`) | | | | | |
+| `workflow_help.py` | Y0d | | | | | | | |
+| `tests/test_contracts.py` | Y0d | | Y2 (the four stub tests of `NotAvailableCarriers`, `:111-157`, rewritten against the handler registry, 8) | | | | | |
+| **`cli.py`** | | Y0e (`backend --action doctor` and `--action backups`, `--options` and `--options-file`, passed through to the dispatcher) | | | | | | |
+| **`tests/test_cli.py`** | | Y0e | Y2 (its two stub tests rewritten against the handler registry, 8) | | | | | |
+| `runtime.py`, `runtime_worker.py` | | Y0e (`_write` through `durable.write_sealed`; the readers unseal and fall back to the `.bak`) | | | | | Z10 | Z12 |
+| `workcopy.py` | Y0a (`_save_store`, `load_store`) | Y1 (v3 store, `has_overlays` and `expected_state` through `durable.exists`, `require_seal=True`) | Y2 (shared base, per-view connection, per-view lock) | Y3 (publish, rebase) | Y5 (lazy view routing, eviction) | | | |
+| `targets.py`, `overlayjobs.py` | Y0a | | Y2 (stable key, `CURRENT.log` resolve, `adopt` derives `copied` and `imported` by observation) | | | | | |
+| `tests/test_overlayjobs.py` | | | Y2 (kind `commit`) | | | | | |
+| `revisions.py`, `analysis.py`, **`annotations.py`**, `scripts/RusticQuery.java` | | Y1 (`analysis.py`: new kinds, and the legacy v1 writer `save_overlay` and its reader `load_overlays` are deleted, 8.2) | | | | | | |
+| `tests/test_analysis.py` | | Y1 (the 15 `save_overlay` calls and the import, `:7`, `:111-204`: fixtures through `workcopy._save_store`, assertions retargeted, 8.2) | | | | | | |
+| `tests/test_exporting.py` | | Y1 (`:94-98` appends an edit to a store and calls `_save_store`) | Y2 (header, resume refusal) | Z6 (the resume refusal if the snapshot at export start is built) | | | | |
+| `tests/test_crossbuild.py` | | Y1 (store-shaped dict literals patched into `workcopy.load_store`, `:81`, `:205`, `:218`, `:253`) | | | | | | |
+| `tests/test_revisions.py` | | Y1 (effect and field vocabulary) | | | | | | |
+| `tests/test_query_script.py` | | Y1 (the RusticQuery structure guards, which the new outputs must keep passing) | | | | | | |
+| `tests/test_engine_integration.py` | | Y1 (real-engine round trip, env-gated) | Y2 (additions) | | | | | |
+| **`tests/test_store_v3.py`**, **`tests/test_bundles.py`** | | Y1 | | | | | | |
+| `query.py` | | Y1 (`status show=changes`) | Y2 (`stop`, `show=lineage`) | Y3 | Y5 (the default view, `options.as`) | | Y4a (lane hint, `wait`, the pool entry in `_ask`, `forget(entry)`, `stop` over the entries and its report, 7.6) | |
+| `exporting.py` | | | Y2 | Z6 (the snapshot at export start) | | | | |
+| `export_worker.py` | | | | Z6 | | | | |
+| **`lineage.py`**, **`commits.py`**, **`backups.py`** | | | Y2 | | | | Y4d | |
+| **`tests/test_lineage.py`**, **`tests/test_commit.py`**, **`tests/test_backups.py`** | | | Y2 | | | | Y4d (the fault matrix re-run, the engine-written backup) | |
+| **`tests/vectors/canonical-manifest.json`** | | | Y2 | | | | | |
+| **`integrity.py`**, **`tests/test_integrity.py`** | | | Y2 | | | | | |
+| **`views.py`**, **`tests/test_views.py`** | | | | Y3 | Y5 | | | |
+| **`viewgov.py`**, **`tests/test_viewgov.py`** | | | | | Y5 | | | |
+| **`doctor.py`**, **`tests/test_doctor.py`** | | | | | | | Y4b | |
+| `userscripts.py`, **`tests/test_userscripts.py`** | | | | | | | Y4e | |
+| **`tests/test_deadline.py`**, **`tests/test_supervisor.py`** | | | | | | | Y4a | |
+| `tests/test_backends.py` | | | | | | | Y4a (the pinned release literals, `:21` and `:101`, derive from `hydra.RELEASE`, 5) | |
+| `README.md`, `THIRD_PARTY.md` | Z13a (the wording pass, the GUI removal) | | | | | Z13b (numbers regenerated from the ledger) | Y4a (the one sentence of each that names the pinned release, edited by `tools/bump_hydra.py`, 5) | |
+| `docs/upstream-setup.md` | | | | | | | Y4a (the pin sentence, edited by `tools/bump_hydra.py`, 5) | |
+| `docs/golden-harness.md` | Z13a (one phrase: "parity with the Ghidra window" becomes `DecompileOptions.grabFromProgram`; the file stays a dated report) | | | | | | | |
+| `skills/hydralysis/SKILL.md`, `skills/ghidra-project/SKILL.md` | Z13a (the wording pass; the contained-script sentences, the GUI sentences) | | Z4 (frontmatter names, the harness audit) | | | | | |
+| **`docs/data/claims.json`**, **`tests/test_claims.py`** | Z13a | | | | | Z13b | | |
+| **`tools/bump_hydra.py`**, **`tests/test_bump_hydra.py`** | | | | | | R1 | | |
+| **`tests/test_concurrency.py`** | | Z1 | Y2 (flips the known-issue marker of the `_sync` test) | | | | | |
+| **`benchmarks/mcp_latency.py`**, **`benchmarks/concurrency_bench.py`**, **`benchmarks/named_view_cost.py`**, **`benchmarks/bench_cold_start.py`**, **`benchmarks/bench_install.py`**, **`benchmarks/budgets.json`**, **`tests/test_output_size.py`** | | | | Z2 | | | | |
+| **`environment.py`**, **`tests/test_environment.py`**, `config.py`, `paths.py` | | | | Z3 | | | | |
+| **`tests/test_engine_nostock.py`**, **`tools/audit_harness.py`**, `docs/ci.md`, `.github/workflows/tests.yml` | | | Z4 | | | | | |
+| **`tests/test_engine_prepare.py`**, **`tests/test_engine_scripts.py`**, **`docs/verification-prepare.md`** | | | Z5 | | | | | |
+| **`tools/golden_classify.py`**, **`docs/verification-golden.md`** | | | Z7 | | | | | |
+| **`tests/test_engine_export.py`**, `tools/verify_corpus.py` | | | | Z6 | | | | |
+| **`tests/test_parity_surface.py`** | | | | Z8 | | | | |
+| `tests/fixtures/verify_fixtures.py` | | | | Z8 (new check groups `listing`, `callgraph`, `namemap`) | | | Z10 (`break_continue`, `export_hook`, `capture`, `snapshot`) | Z11 (`scenario`) |
+| `tests/fixtures/flow_fixture.c`, `tests/fixtures/build_fixtures.py` | | | | | | | Z10 (an exported function; `runtime_fixture.c` folded into `BUILDS`) | Z12 (a watch case) |
+| `tests/fixtures/runtime_fixture.c` | | | | | | | Z10 | |
+| `tests/fakefrida/` | | | | | | | Z10 | |
+| **`tests/test_runtime_capture.py`**, **`tests/test_runtime_snapshot.py`** | | | | | | | Z10 | |
+| `evidence.py`, **`evidence_bundle.py`**, `docs/upstream-runtime.md` | | | | | | | Z9 | |
+| **`tests/test_evidence_model.py`**, **`tests/test_evidence_bundle.py`**, **`tests/test_evidence_parity.py`** | | | | | | | Z9 | |
+| **`tools/scenarios/kotor_vfs_lookup.py`**, **`tests/test_runtime_scenario_fixture.py`** | | | | | | | | Z11 |
+| **`tools/watch_conformance.py`**, **`tests/test_runtime_watch.py`**, **`tests/test_runtime_write.py`** | | | | | | | | Z12 |
+| `docs/tool-mapping.md`, **`docs/data/tool-surfaces.json`**, `docs/verification.md`, **`tools/count_surfaces.py`**, **`tests/test_tool_mapping.py`** | | | | | | Z13b | | |
+| **`CHANGELOG.md`**, **`.github/workflows/release.yml`**, **`docs/versioning.md`** | | | | | | | Z14 | |
+
+**Site (`F:/Projects/hydra-engine-site`, the website repository; it had no owner in revision 5)**
+
+| File | W0 | W5 |
+|---|---|---|
+| `src/routes/index.tsx`, `src/routes/changelog.tsx`, `src/routes/integrations.tsx` | S1 (the wording of 8.3: `index.tsx:18`, `:108`, `:38`, `:48`; the GUI mentions) | S2 (the claims that a passed gate flips) |
+| `src/docs/pages/projects.ts`, `src/docs/pages/scheduling.ts`, `src/docs/pages/architecture.ts`, `src/docs/pages/mcp-server.ts`, `src/docs/pages/core-concepts.ts`, `src/docs/pages/installation.ts`, `src/docs/pages/evidence-ledger.ts`, `src/docs/pages/quick-start.ts`, `src/docs/pages/clients.ts`, `src/docs/pages/api-reference.ts` | S1 | S2 (version constants through `tools/bump_hydra.py`, 5) |
+| `src/lib/site.ts`, `src/lib/llms.ts`, `src/lib/seo.ts` | S1 | S2 (the release and protocol constants, edited by `tools/bump_hydra.py`) |
+| `src/components/landing/Hydralysis.tsx`, `src/components/landing/HowItWorks.tsx` | S1 (panels labelled illustrative; unsourced figures removed) | S2 |
+
+Per wave the disjointness reads off the columns. Hydra: W0 = {E0 | X0 | R0}; W1 = {P1a, then E1 | E8 | E2a}; W2 =
+{E2 | E3a}; W3 = {E3b}; W4 = {E3c | E4 | P1b}; W5 = {E5 then E9 | E6 | R1 | Z15}; W8 = {E7 | E10 | E11 | E12}.
+Hydralysis: W0 = {Y0a | Y0b | Y0c | Y0d | Z13a}; W1 = {Y0e | Y1 | Z1} (Y1 after Y0e on the second
+`tests/test_durable.py` row only, and after Z1); W2 = {Y2 | Z4 | Z5 | Z7}; W3 = {Y3 | Z2 | Z3 | Z6 | Z8}; W4 = {Y5};
+W5 = {Z13b}, with R1's `tools/bump_hydra.py`; W6 = {Y4a | Y4b | Y4d | Y4e | Z9 | Z10 | Z14} (Y4b and Y4d after Y4a, for the
+registry the doctor lists and for the fake daemon Y4d's tests run on, not for a file); W7 = {Z11 | Z12}. Site:
+W0 = {S1}, W5 = {S2}. Across waves a file may change hands only in the order the columns show, and a package depends
+on the packages whose files it builds on (the lists below).
 
 ### 8.2 Ownership of what the first reviews found unowned
 
@@ -2512,7 +3082,154 @@ appending the same id twice is one record, and a changed edit under an existing 
 and validation coverage therefore cannot fall without anyone noticing: Y1's review checks the ten tests
 against this paragraph.
 
+### 8.3 Revision 6: the Z packages, the eight ownership conflicts and the claims
+
+**The Z packages.** `D:/Projects/Hydra/wt/rre-trace/docs/pr6-traceability.md` (at `627b5b5`) turned the 109 asks of the
+two PR #6 review comments into 15 packages Z1-Z15 for the 49 asks that had none. All fifteen are packages of this
+file now (their blocks are in the wave sections, their files in 8.1):
+
+| Package | Wave | Repo | What | Depends on |
+|---|---|---|---|---|
+| Z1 | W1 | Hydralysis | concurrency regression guard, with the failing-by-design `_sync` and single-base tests | none, merges before Y1 |
+| Z2 | W3 (the audit said W4) | Hydralysis | measurement harness; the named-view cost and publish latency | Y2, Y1 |
+| Z3 | W3 | Hydralysis | environment, configuration, an early doctor slice | Y2, Y0c |
+| Z4 | W2 | Hydralysis | no-stock end-to-end proof and harness audit | Z13a |
+| Z5 | W2 | Hydralysis | real-engine matrix for prepare, adopt, scripts | Y2 |
+| Z6 | W3 | Hydralysis | corpus export parity, resume, snapshot | Y2 |
+| Z7 | W2 | Hydralysis | 12.1.4 to 12.3 golden classification, **reported never gated** | none |
+| Z8 | W3 | Hydralysis | surface parity tests | none |
+| Z9 | W6 | Hydralysis | evidence v2 and bundles | Y1, Y2 |
+| Z10 | W6 | Hydralysis | runtime evidence, capture, snapshot, export-name hooks, on the fixtures | Y0e, Z8, Z9 |
+| Z11 | W7 | Hydralysis | runtime scenario end to end, fixture-first | Z9, Z10 |
+| Z12 | W7 | Hydralysis | memory write and watchpoints, **fixture-only, gated by the owner's decisions** | Z10 |
+| Z13 | W0 (a) and W5 (b) | Hydralysis | documentation, surfaces, the claims ledger and its test | Z13a; Z13b: Z13a, Z4 |
+| Z14 | W6 | Hydralysis | Hydralysis release process | R1, Y4a, Z13b |
+| Z15 | W5 | Hydra | fork maintenance and policy, the patched-core-file guard | E8 |
+
+Order (owner decision): runtime evidence and coverage (Z9, Z10, Z11) first; memory write and watchpoints (Z12) later
+and only on fixtures.
+
+**The eight conflicts of the audit (its 5.4) and the two conditional ones, resolved.** Revision 5's rule is that a
+file has one owner per wave and a package that makes a frozen assertion false owns the test.
+
+| # | Conflict | Resolution |
+|---|---|---|
+| 1 | Z3 `init` in `cli.py` (Y0e's, "no later package edits it") | no `init` in `cli.py`; Z3 ships `python -m hydralysis.environment init`; Y0e's `backend --action doctor` stays the CLI surface |
+| 2 | Z3 `backend status` with `start=False` in `api.py` (opened once, by Y2) | Z3 registers an `environment` handler through Y2's `api.HANDLER_MODULES`; Y2 adds the capability name `environment` in W2 |
+| 3 | Z5 tree-hash adopt test in `tests/test_engine_integration.py` (Y1, Y2) | the test lives in Z5's new `tests/test_engine_prepare.py`; the Y1/Y2 file is not edited |
+| 4 | Z5 `targets.py`: `adopt` derives `copied` and `imported` by observation (Y2's file in W2) | the edit is Y2's (8.1 cell); Z5 asserts it in its own file |
+| 5 | Z8 `tests/fixtures/verify_fixtures.py` (an existing file, frozen, no row) | an 8.1 row hands it over: Z8 (W3), then Z10 (W6), then Z11 (W7); a second harness file would duplicate `Running`, `target` and `McpClient` |
+| 6 | Z9 bundle CLI and `api.py` | the `evidenceBundle` capability name in Y2's registry; Z9's `evidence_bundle.py` has its own `__main__`; neither `cli.py` nor `api.py` is edited again |
+| 7 | Z10 fixture sources (`flow_fixture.c`, `runtime_fixture.c`, `build_fixtures.py`) | 8.1 rows: Z10 (W6) extends, never replaces; `flow_fixture.c` and `build_fixtures.py` pass to Z12 (W7) |
+| 8 | Z10 `tests/fakefrida/` | an 8.1 row: Z10 (W6) |
+| c1 | Z6 snapshot at export start changes the resume refusal asserted by the exporting test | Z6 owns that file in W3 (Y1 W1, Y2 W2, Z6 W3: a valid hand-over) |
+| c2 | Z7 dropping `maxBadData` from the options hash would edit the frozen `tools/golden.py` | the other option: capture with the option held equal; no frozen file is edited |
+| collision | Z5 and Z7 both named `docs/verification-import-export.md` | Z5 `docs/verification-prepare.md`, Z7 `docs/verification-golden.md` |
+
+New rows the audit did not foresee: the Hydralysis table gains W4, W6 and W7 columns (W4: Y5; W6: Y4a, Z9, Z10,
+Z14; W7: Z11, Z12); Z15's root-level `.github` rows are disjoint from R1's; the **site repository** gets its own table
+and owners S1 (W0) and S2 (W5); `docs/data/claims.json` and `tests/test_claims.py` are Z13a's (W0) and Z13b's (W5).
+
+**The claims audit as packages R0, S1, Z13a (W0) and S2, Z13b (W5).** Wording until the flipping test is green;
+"flips" is the package whose test, red today, turns the sentence true. IDs are those of
+`D:/Projects/Hydra/_logs/claims-audit/` (11 contradicted C, 14 unsupported or stale U; 5 future F and 14 supported S
+claims need no change or wait for a package). The rule: nothing gets stronger without its test.
+
+| Claim | True-today wording (replaces) | Flips when |
+|---|---|---|
+| C1 "writes never collide" (`index.tsx:18`, `:108`, `projects.ts:7`, `changelog.tsx:35`) | "Writes are serialized and never corrupt a program in the tests listed; collisions are only detected when you pass `expect`." Tagline: "Open in place, import once, write through the mode that fits." | Y5 (a view per agent), Y3 (`before` checks at publish), Z1 `SameAddressRace`, the chaos gate 9.17 |
+| C2 "a contained script cannot change what others see" (`projects.ts:149`, README) | "A contained script's changes are rolled back and never saved; while it runs, other clients can see them. RusticQuery's read actions do not modify the program." | E4 (`script_shared_visibility` flips), Y4e (`ghidra_run` never `shared`) |
+| C3 "analysis never slows questions" (`index.tsx:38`, `:48`, `HowItWorks.tsx`, README) | "Native commands stay in the quick lane while imports and analyses run in the long lane. Questions asked through Hydralysis are scripts and share the long lane; a full long lane delays them (measured up to about 8 s). Readers of the program being analysed wait for its lock." | E3a (lane defaults, caps), Y2 (launch configuration) on hydra.3; E3c (`analyzing`, sealed generations) on hydra.4; 9.13 |
+| C4 "different programs and projects never wait on each other" (`scheduling.ts:36`) | "Each program and project has its own lock. They share the daemon's lane slots and import gate, so enough long work anywhere can delay a save or fork elsewhere." | E3a maint lane and caps, E3c (no wait inside a monitor, waiter caps); `s5`, `s13` |
+| C5 "cleaned up at once", "clean release" (`architecture.ts:85`, `:95`, `clients.ts:88`) | "A disconnected client's requests are cancelled and its uncommitted changes rolled back when its running request ends. A request blocked on a lock, or a script that ignores cancel, keeps its place until the lock frees or the script ends." | E3b/E3c (`dead_client_lock_wait`, `reader_leave_no_freeze`); non-cooperative scripts stay a limit until E7 |
+| C6 "a queued import waits until it runs or is cancelled" (`scheduling.ts:48`) | "An import waits in the import queue; at the front it still needs a long slot and fails `busy` after `wait` (10 s default)." | E3a import wait fix (`import_wait`) |
+| C7 "cancel: one of your requests, running or queued" (`scheduling.ts:68`) | "cancel stops requests waiting for a slot and cooperative scripts; a request waiting for a program lock stays until its `wait` runs out." | E3b (`cancel_while_waiting`) |
+| C8 "one daemon per user" (`architecture.ts:35`) | "One daemon per state directory and instance; Hydralysis uses its own instance and data root." | no change now (OD3) |
+| C9 "about 7 ms" through Hydralysis (`Hydralysis.tsx`, `HowItWorks.tsx`) | "native decompile about 1 to 45 ms by function size; through Hydralysis about 25 ms on a small program and about 60 ms on KotOR (single runs)" | Z2 medians, or the quick-lane hint |
+| C10 "20 tools in about 7.4 KB" (`mcp-server.ts:35`) | "20 tools in about 8 KB of schema (8,172 bytes as the catalog test counts them)", generated from `tool_table()` | Z13a/Z13b `test_claims` |
+| C11 "two small fixes to Ghidra classes" (`architecture.ts:104`) | "three small fixes" today; "five" after E8 | E8 |
+| U1 "any number of agents" (`index.tsx:39`, README) | "several agents on several projects (tested with up to 4 clients)" | 9.17: then "tested with 24 agents on 6 projects, 4 hours" |
+| U2 "ten agents on one daemon, an agent that sends a hundred requests can't starve one that sends one" | "Waiting requests are admitted round-robin by connection; there was no cap on how many slots one connection ran" | E3a (V9) and 9.17 |
+| U3 "serialized and never corrupt" (unconditional) | "no corruption was seen in the tests listed" | E8, 9.15, 9.17 |
+| U4 "an unsaved change is replayed from the store, never lost" | "replayed from the store after a restart; the store is flushed and sealed; no power-loss test has been run; corrections are not committed back to the analysed project" | Y1, Y2, 9.15 (E12 for power loss) |
+| U5 demo scenarios shown as real work | label the panels "illustrative", or replace them by a recorded PE session | a recorded run exists |
+| U6 animation figures without a source (journal 1.9 ms, 12 functions 3 ms, 55 as seconds) | remove, or source each | S1 |
+| U7 "10,849 functions decompiled" (showcase) | "8,616 internal / 8,966 total" or the owner's confirmed denominator | owner |
+| U8 "your Ghidra scripts work unchanged" | "scripts that use the headless API run unchanged; GUI-only extensions do not apply" | |
+| U9 heading "No lost updates" | "No lost updates, when you pass `expect`" | Y5, 9.17 |
+| U10 "6.7-7.1 ms" without the size qualifier | "about 1 to 45 ms by function size (7 ms in the benchmark function)" | |
+| U11 "the same question through stock analyzeHeadless 7.0-7.8 s" under the 12.3 machine | "(stock Ghidra 12.1.4)" | |
+| U12 smaller items (a to e: parallel at the connection only; no commit-back yet; "the same saved state, not a byte check"; an orphaned shared writer keeps the project; the 1,971 changed KotOR functions) | the sentences of `D:/Projects/Hydra/_logs/claims-audit/` | |
+| U13 stale versions (`site.ts:9`, `installation.ts:34-35`, `clients.ts:71`, `:79`, `mcp-server.ts:60`, `api-reference.ts:7`) | the current release and protocol | R1's `bump_hydra.py` (extended to the site) |
+| U14 GUI mentions (`core-concepts.ts:54`, `projects.ts:25`, `installation.ts:54`; engine README lines 61, 170, 299; module README 193, 203, 692, 696; Hydralysis README 119-121, THIRD_PARTY.md:10) | "There is no GUI. Hydra Engine is headless only; projects it writes cannot be opened by Ghidra 12.2 or 12.1.4." Replace "a Ghidra window can read it" by "other processes can read it" | R0, S1, Z13a |
+
+The five FUTURE claims stay future until their packages land: F1 per-agent views by default (Y5), F2 durable
+commit-back and the second backup (Y2, E2), F3 supervision with auto-restart (E5, Y4a, with the journal), F4
+quick-lane scripts and the maint lane (E3a), F5 runtime evidence (Z9-Z11), memory write and watch only on fixtures
+(Z12).
+
 ### W0
+
+**X0 (Hydra, L): the oracle, the regression suites and the red table.**
+Goal: verification before any fix (D48): every guarantee of 6.1 has a test that can fail, and every fix of
+revision 6 has a test that was red on hydra.3.
+Files (8.1): new `examples/oracle.py` (the invariants K1-K17 of 3.12, a tree hash, a header-magic scan, a 50 ms
+watcher for any visible invalid final-named version file, the witness ledger, the sequential model fold, residue
+accounting, the evidence writer), `examples/chaos_lib.py` (the injectors: kill a client, kill the daemon at
+random and trigger-timed, suspend and resume, kill a native decompiler, a handle holder, a volume quota),
+`examples/conc/` (the measurement scripts imported as repeatable regression suites: the lock-map scenarios `s1`
+to `s13` and the helper `hx`, the capacity harness `lanetest`, `ramp`, `forkcost`, `savetest`, and the crash harness
+`run_c`, `run_ef`, `c_lib`), `examples/dt_x0.py` (the self-test).
+Depends on: E0. Parallel with: R0, S1, Z13a, Y0a-Y0d.
+Surface: none (no engine file is edited).
+Tests: the self-test plants X1-X10 (3.12) and the oracle must flag X1-X5 and X7-X10 and pass X6; it runs against
+the twelve kept corrupt forks of `crash-C` (the zero-header newest version files) and against an unkilled
+control; each imported scenario reproduces its recorded defect on `hydra-3-candidate` and on `hydra-session-after`
+(the red table, with the recorded numbers beside the new ones) and is deterministic in two runs; every daemon uses a
+fresh state root under `D:/Projects/Hydra/_logs/<stream>/` and the F: KotOR original is never opened (copies
+only, its tree hash `6d8ced789b9f0945ee2ade42e75cf6db0a92c97ea4e65b8a353fd624860240df` is checked before and after).
+Acceptance: gate 9.12; the red table is committed as a stream report, not into the repository.
+
+**R0 (Hydra docs, M): the wording pass on the engine documents.**
+Goal: the engine documents say what is true today and nothing stronger (D52), and say that there is no GUI.
+Files (8.1): the module `README.md` (the "window" comparisons and the sentence that a Ghidra window can read the
+project; the claims C1-C7 of 8.3 for the lanes, scripts, dead clients and cancel), `ARCHITECTURE.md`, and at the
+repository root `/README.md` (the line that names the full GUI build) and `/CHANGELOG.md`.
+Depends on: none. Parallel with: X0, S1, Z13a.
+Surface: none.
+Tests: a grep gate over the listed files for the banned phrases of D52 and for "GUI" or "window" used as a
+recommendation; each replaced sentence names its claim id. Acceptance: the replacement texts of 8.3 are applied.
+No claim becomes stronger.
+
+**S1 (site, M): the wording pass on hydrare.dev.**
+Goal: the website, which is where the strongest false claims live, says what is true today.
+Files (8.1): `src/routes/index.tsx`, `src/routes/changelog.tsx`, `src/routes/integrations.tsx`,
+`src/docs/pages/projects.ts`, `src/docs/pages/scheduling.ts`, `src/docs/pages/architecture.ts`,
+`src/docs/pages/mcp-server.ts`, `src/docs/pages/core-concepts.ts`, `src/docs/pages/installation.ts`,
+`src/docs/pages/evidence-ledger.ts`, `src/docs/pages/quick-start.ts`, `src/docs/pages/clients.ts`,
+`src/docs/pages/api-reference.ts`, `src/lib/site.ts`, `src/lib/llms.ts`, `src/lib/seo.ts`,
+`src/components/landing/Hydralysis.tsx`, `src/components/landing/HowItWorks.tsx` (the repository had no owner in
+revision 5).
+Depends on: none. Parallel with: X0, R0, Z13a.
+Surface: none.
+Tests: a grep gate over the site source for the banned phrases; the 25 claims of 8.3 each map to a sentence
+changed or kept. Acceptance: no sentence of the audit's 45-claim list stays CONTRADICTED; panels that are
+illustrations are labelled so; the unsourced figures (journal 1.9 ms, 12 functions 3 ms, 55 as seconds) are
+removed; the non-PE demo targets (a jar, an ELF, an ARM image) are not shown for Hydralysis.
+
+**Z13a (Hydralysis, S): wording and the claims ledger.**
+Goal: C1-16, C1-50, C1-51, C2-30, C2-50 of the audit that need no engine change, and a ledger that makes the numbers
+checkable.
+Files (8.1): `README.md` (the "Ghidra GUI" section and the claims C2, C3, C9 of 8.3), `THIRD_PARTY.md` (the GUI
+sentence), `docs/golden-harness.md` (one phrase), `skills/hydralysis/SKILL.md` and `skills/ghidra-project/SKILL.md`
+(the contained-script sentences), new `docs/data/claims.json` (one row per claim: id, text, class, evidence path, the
+package whose test flips it), new `tests/test_claims.py`.
+Depends on: none. Parallel with: X0, R0, S1.
+Surface: none.
+Tests: `tests/test_claims.py` fails when a ledger number differs from its source: the catalog size generated from
+`tool_table()` (8,172 bytes against the limit 8,192), the KotOR counts 8,966 / 8,616 / 60, the X0 baselines, and when a
+claim marked "gated" has no passing test. Acceptance: it passes; the no-stock tests keep passing (the files must
+never spell the stock-install names).
 
 **E0 (Hydra, M): failing tests first and the test loaders.**
 Goal: baselines and loaders before any engine change.
@@ -2614,6 +3331,56 @@ non-empty `ghidra_run` or `job` `options` bag answers `not_available` until its 
 
 ### W1
 
+**E8 (Hydra, M): storage integrity in the Ghidra core.**
+Goal: no unopenable newest version file after a hard kill during a save (D42, 3.12).
+Files (8.1): `/Ghidra/Framework/DB/src/main/java/db/buffers/LocalManagedBufferFile.java` (`saveCompleted`:
+`saveFile.flush()` before `saveFile.renameFile(newFile)`, `:696`), `/Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/db/VersionedDatabase.java`
+(the check of the newest version at open) and the new `/Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/db/VersionFileCheck.java`
+(header-magic validation, the quarantine of a writable disposable fork, the `corrupt_newest` report for a
+read-only or sealed tree), `/NOTICE-HYDRA` (the two core files and the added class), `examples/dt_e8.py`.
+Depends on: X0 (the oracle and the trigger-timed kill recipe). Parallel with: E1, E2a, Y0e, Y1, Z1.
+Surface: none protocol-visible; `repairs[]` in `health` once E5 exists.
+Tests: unit tests where the fork runs the DB module's tests; the trigger-timed kill loop of C (kill X ms after the
+version folder listing first changes) on NTFS and ReFS; a zero-header fixture (the kept evidence of `crash-C`) opens at
+`N-1` on a disposable fork and logs a repair, and a **read-only open of the same tree writes nothing** (tree hash
+before and after); SP5: the second `flush()` in `setReadOnly()` is idempotent and the version chain and index are
+unaffected; save time before and after (median and p95); the golden decompile diff identical.
+Acceptance: 9.15 (at least 400 trigger-timed kills, 0 unopenable and 0 unrepaired); no save-time regression beyond
+the recorded noise; the fourth and fifth patched Ghidra files are named in `/NOTICE-HYDRA`, and Z15's guard lists them.
+
+**E2a (Hydra, M): atomic, retryable fork publish and the sweeper.**
+Goal: a fork path is absent or complete, and a retry never meets a bare `conflict` caused by the engine's own
+half-finished fork (D41).
+Files (8.1): `S/ForkCommands.java` and `S/ProjectFork.java` (the order: stage with an intent record, `.rep`, the
+sidecar with `state:"publishing"`, `.gpr` last, the sidecar rewritten `state:"complete"`; `rk`; the retry that
+resumes or removes the engine's own half fork), new `S/ForkSweeper.java` (the lazy sweep at the first
+`fork_project` under a parent directory: dead-owner staging folders, `.rep` without `.gpr` whose intent names a
+dead process, `tmp*.tmp`, `tmp*.ps`, `.ghidra.test.lock~~` older than 10 minutes; everything else only reported),
+new `S/ForkIntent.java`, `examples/dt_e2a.py`.
+Depends on: X0. Parallel with: E1, E8, Y0e, Y1, Z1.
+Surface: sidecar field `state`; capability `forkAtomic` (registered by E1's `Advertised`, enabled here); no reply
+change.
+Tests: at least 300 kills (random and trigger-timed) during `fork_project` on NTFS and ReFS: the path is absent or
+complete, never `.rep` alone, never without a sidecar, and a retry to the same path succeeds; no staging folder
+after the next fork; a client-side kill still leaves nothing (0 of 18 measured); the sweeper never touches a path
+whose intent names a live process; `promote_overlay` is untouched (E2). Acceptance: 9.15 and K6; the v2 reply
+goldens identical.
+
+**Z1 (Hydralysis, S): concurrency regression guard.**
+Goal: pin the behaviour the owner measured, on the path agents use, before Y1 and Y2 rewrite it.
+Files (8.1): new `tests/test_concurrency.py` only.
+Depends on: none; **merges before Y1** (Y1 rewrites `workcopy.py` and `revisions.py`). Parallel with: E1, E8, E2a, Y0e.
+Surface: none.
+Tests: (1) a source guard that `query.py` and `hydra.py` never import `LaneLock` or create `.request.lock`; (2) an
+env-gated real-engine test, Barrier-started threads at N = 2, 3 and `maxLong`+1 through `QueryRunner.query`: all ok,
+no `busy`, no `EngineError`; (3) `SameAddressRace`: N threads with one `expect_revision` on one address, exactly one
+ok, N-1 conflicts, journal +1, plus a two-process variant; (4) `TwoWriters`: each of two clients sees the other's edit
+at once; (5) two-author journal; (6) a process killed holding the per-view lock mid-edit does not block the next edit;
+(7) **the multithread `_sync` test** (4 and 12 threads building 4 and 12 views in one process; the measured
+`no_project` error) marked a known issue until Y2 flips it; (8) N concurrent first-view builds produce one base
+build (counted), also marked until Y2.
+Acceptance: the file exits 0 in the CI engine job; no timing assertion.
+
 **Y0e (Hydralysis, S): W0 review follow-ups.** Goal: the work that the W0 reviews found but no W0 package
 could own (8.2). **Status (revision 5): landed as `8e696e2` on `feat/w1-hydralysis`.** Three items of revision 4
 had **already** been done by the W0 follow-up commits on `feat/w0-integration` and were verified, not redone:
@@ -2654,7 +3421,7 @@ one busy-details and the one `bad_request`-details helper, conditionals C12 and 
 `S/Operations.java` (`expect` on signature, data_type, v3 only), `S/EditCommands.java` (`withLastEditor`
 fields, `rk`, v3 only), `S/Journal.java` (`rk`); new `S/Identity.java` (paths, platform,
 analysisIdentity, cached decompiler hash), `S/Advertised.java` (capability, limit and policy names
-declared up front), `S/Settings.java`, `S/Preflight.java`, `S/DbVersions.java` (`program()` and a
+declared up front), `S/Settings.java`, `S/Preflight.java`, `S/Hooks.java` (the admission interface and the governor-statistics accessor, both inert), `S/Guarded.java` (a wrapper that restarts a daemon thread after a `Throwable`, unused until E9), `S/DbVersions.java` (`program()` and a
 `dataTypes()` that returns `null`; D31, 3.1, 3.2, 3.5, 3.7); `examples/contract_tests.py` (the tests below);
 `examples/check_ownership.py` (E1's **first commit**, section 8: the package ids read from the wave plan
 table, which fixes `Y0e` and `Y4e`; the `<id>-` golden prefix; refusal of frozen files; the root documents of the
@@ -2675,6 +3442,9 @@ values for every command and that the `-set` flag reaches `Settings`.
 Acceptance: seven old scenarios `identical` at protocol 2; the new goldens differ from nothing else;
 `dbVersions.program` non-null and equal to the constant; after E1 alone no engine behaviour differs
 at protocol 2.
+**Revision 6.** E1 also builds the two seams the governor needs (`Hooks.Admission`, whose default allows, called before
+`open_project`, `open_program`, `fork_project` and `import`; and `Guarded`), registers the new capability, limit and
+setting names of 3.1, 3.13 and 3.7 (a typo still fails a test), and changes no behaviour: the v2 goldens stay identical.
 
 **P1a (Hydra, S): client library protocol range and the protocol-2 compatibility harness.** Files:
 `support/ghidra_session.py` (`PROTOCOL=3`, `PROTOCOL_MIN=2`, `check_compatible`, endpoint overlap,
@@ -2706,7 +3476,7 @@ real-engine round trip is added, env-gated), and the existing tests that write o
 `tests/test_query_script.py` (the RusticQuery structure guards that the new outputs must keep passing),
 `tests/test_query.py` (`status show=changes`), and the second step of `tests/test_durable.py` (the two
 `save_overlay` rows and the counts, after Y0e).
-Depends on: Y0a and **Y0e** (in-wave order: `tests/test_durable.py`; Y1 merges after Y0e). Parallel with:
+Depends on: Y0a, Z1 (in-wave order: Z1 merges first) and **Y0e** (in-wave order: `tests/test_durable.py`; Y1 merges after Y0e). Parallel with:
 E1, P1a.
 Surface: store v3 (4.2), bundle format (4.9), `changes`.
 Tests: v2 to v3 migration is lossless and leaves `.v2.bak`; effects round trip for rename, comment,
@@ -2726,8 +3496,47 @@ archive-import tests at lines 33-38) pass unchanged, so Y1 keeps those signature
 
 ### W2
 
+**Z4 (Hydralysis, M): no-stock end-to-end proof and harness audit.**
+Goal: the "no stock Ghidra" criterion, proven rather than assumed (audit C2).
+Files (8.1): new `tests/test_engine_nostock.py`, new `tools/audit_harness.py`, `docs/ci.md`,
+`.github/workflows/tests.yml`, and the front matter of `skills/hydralysis/SKILL.md` and `skills/ghidra-project/SKILL.md`
+(the two skill files of the `re-*` family outside the repository are recorded in Z4's report, not governed by 8.1).
+Depends on: Z13a (the skill files). Parallel with: Y2, Z5, Z7.
+Surface: none.
+Tests: one sequential class that scrubs `os.environ` and `PATH` itself, then inspects (not ready), installs (a job),
+inspects (ready), prepares, adopts, runs `ghidra_query` and a small `ghidra_run`, with a process audit and a canary
+directory; the audit reads each harness configuration, launches the configured server, dumps `tools/list` and
+greps the skill directories for the stock-install names. Acceptance: the class exits 0 in the CI engine job; the
+audit exits 0.
+
+**Z5 (Hydralysis, L): real-engine matrix for prepare, adopt and scripts.**
+Goal: cover fresh import and script migration on a real engine.
+Files (8.1): new `tests/test_engine_prepare.py` (it also carries the tree-hash variant of the adopt test, so Z5 does not
+edit the file Y1 and Y2 own), new `tests/test_engine_scripts.py`, new `docs/verification-prepare.md`.
+Depends on: Y2 (the one-line edit of `targets.py` that derives `copied` and `imported` by observation is Y2's,
+8.3). Parallel with: Z4, Z7.
+Surface: none.
+Tests: whoami plus the 8 MSVC fixtures as a gated test; concurrent prepare against `maxImports`; cancel mid-import
+registers no program and no target; a killed worker; a local KotOR fresh prepare with seconds, count and first-query
+time recorded; adopt with the tree hash before and after and no import, analyze, fork or writable `open_program`
+in the daemon command log; a legacy 12.1.4 fixture; a staged `.java` run after daemon start; compile-error output;
+a mutating script on a copy leaves the tree hash unchanged. Acceptance: exits 0; the KotOR run is local evidence
+(counts and hashes only).
+
+**Z7 (Hydralysis, M): 12.1.4 to 12.3 golden comparison.**
+Goal: the owner's golden diff, explained and reported, never gated (owner decision).
+Files (8.1): new `tools/golden_classify.py` (a new file, because the golden harness is shared and frozen), new
+`docs/verification-golden.md`.
+Depends on: none. Parallel with: Y2, Z4, Z5.
+Surface: none.
+Tests: re-capture with the options held equal (`maxBadData` pinned; the other option, dropping it from the options
+hash, would edit a frozen file and is not chosen); classify the changed functions by cause; an accepted-difference
+list; stock-12.1.4 baselines for the 8 fixtures; fresh against upgraded analysis mode; no game C text in the
+repository. Acceptance: counts-only report committed; today 6,645 of 8,616 KotOR functions (77.124%) are identical
+and the 98% gate of the old harness is **reported, not enforced**.
+
 **E2 (Hydra, L): format, backup, gate, fork report.**
-Files (8.1): new `S/ProjectFormat.java`, `S/ProjectBackup.java` (with the canonical serializer of 3.4);
+Files (8.1): new `S/ProjectFormat.java`, `S/ProjectBackup.java` (with the canonical serializer of 3.4), `S/Seals.java` (`seal_project`, the seal registry, the `sealed` refusal, D38);
 `S/UpgradeCache.java` (`readStored`, no behaviour change; the DB-version constant is already
 `DbVersions`, E1), `S/ForkCommands.java` and `S/ProjectFork.java` (purpose, open, verify, cost, warnings,
 sidecar fields `purpose` and `disposable`, one validation method also registered with `Preflight`),
@@ -2740,7 +3549,7 @@ is committed under `examples/fixtures/legacy-12.1.4/`; it contains nothing deriv
 `examples/dt_e2.py`, `examples/char_e2.py`, `examples/cc_e2.py`. **E2 does not edit `Session.java`**
 (E1 placed the `ProjectEntry.info(client)` call sites) **and names no lane**: a backup reaches the `maint`
 lane through E3a's command mapping, with no dependency between the two packages.
-Depends on: E1 (and, for `cc_e2.py`, P1a). Parallel with: E3a, Y2.
+Depends on: E1, E2a (it edits `ForkCommands.java` and `ProjectFork.java` after E2a did) and E8 (and, for `cc_e2.py`, P1a). Parallel with: E3a, Y2.
 Surface: `format`, `fork_project` fields and manifest, gate, `backup_required` (3.4).
 Tests: characterization `format_fork` (format on a current-format fixture; a backup fork; sidecar and
 manifest masked, key order checked); `daemon_tests` `upgrade_gate` (needs `--legacy-project`: canonical
@@ -2762,6 +3571,12 @@ V7 the sidecar fields). `format_gate.py` fails when `ProgramDB.DB_VERSION`, `Dat
 `format-matrix.json` (values on the sync branch: 33, 3, 5, 1, 4).
 Acceptance: as the tests; old goldens identical at protocol 2; the data-type DB read is either tested
 against the fixture or reported `null`.
+**Revision 6.** E2 adds: `seal_project` and the `sealed` refusal of every writable path (V8, `cc_e2` `sealed_refusal`); `fork_project
+purpose:"view"` (a disposable fork whose sidecar names the owner agent, the lineage and the base generation) with the
+admission hook; `prepare_upgrade`, a job that finishes the master's 15 to 16.5 s upgrade-cache build under a single-flight
+lock before the first view is forked; the sidecar field `promote:"in-progress"` until a `promote_overlay` is acknowledged;
+and `backup_min_independent` 1 by default (the second root is configured, OD9). Test: a writable open of a pristine sealed
+project is refused with its tree hash unchanged (red on hydra.3: `~index.bak` changed, `~journal.bak` deleted).
 
 **E3a (Hydra, L): lanes, fair key, queue info, import wait, validate-before-wait.**
 Files (8.1): `S/Scheduler.java` (the bodies behind E1's signatures: MAINT, fair key, per-key cap, queue info,
@@ -2786,6 +3601,10 @@ golden. `cc_e3a` (the stock 1.0.0 client, hydra.3 behaviour recorded first): `v2
 progress event during a slot wait and an import wait: the import wait still carries `queue` and gains no
 `estimateScope`), `import_wait` and `import_wait_explicit` on a v2 connection (V2, both directions).
 Acceptance: old goldens identical at protocol 2; golden decompile diff identical (gate 9.1, run here).
+**Revision 6.** The defaults of D40 (`maintSlots` 4, `maxLong` `max(8, CPUs)`); the per-key running cap for v2 too (V9, test
+`v2_running_cap`); `RequestMonitor.addCancelHook` as E3a's first commit (so E3b needs no edit of the same method); the
+`Ticket.yieldSlot` and `reacquire` API, inert until E3c wires it behind `yieldSlots` (D39); the A lane test (`lanetest`) is the
+acceptance: a 7th client's script, save and fork in 1 s or less with six long scripts running (10.2-10.5 s before).
 
 **Y2 (Hydralysis, L): lineage, commit, revert, backups on hydra.2/3, shared base.**
 Files: new `lineage.py`, `commits.py`, `backups.py`; `targets.py` (stable key, `CURRENT.log` resolve),
@@ -2798,8 +3617,8 @@ tests is rewritten to patch `api.HANDLER_MODULES` with a module that never exist
 (a copy of E2's vector, asserted byte-identical at the release gate 9.8), additions to
 `tests/test_engine_integration.py`, `tests/test_exporting.py` (header, resume refusal), `tests/test_overlayjobs.py`
 (kind `commit`) and `tests/test_query.py` (`stop`, `show=lineage`). `backups.py` registers `backend action=backups` (`op=list|verify`) and `commits.py` registers the
-`job` `options` filters (`kind`, `cid`), so that no later package edits `api.py`.
-Depends on: Y1, Y0a (the `AppendLog` it builds the logs on, as streamed by the W0 follow-up `2bf90c7`), Y0b (`tests/fakehydra.py`), Y0d (`api.py`) and Y0e (`tests/test_cli.py`, whose stub tests it rewrites). Parallel with: E2, E3a.
+`job` `options` filters (`kind`, `cid`), so that no later package edits `api.py`. **Revision 6 adds** (8.1): `hydra.py` (the launch configuration: `maxLong` and `maxQuick` from the expected number of agents, D54), new `integrity.py` and `tests/test_integrity.py` (the header-magic check and quarantine of every Hydralysis-owned fork before it is opened; D42, D44), `tests/test_concurrency.py` (the `_sync` and single-base tests that Z1 marked as known issues now pass), and the capability names `views`, `publish`, `environment` and `evidenceBundle` in `api.HANDLER_MODULES`.
+Depends on: Y1, Z1, Y0a (the `AppendLog` it builds the logs on, as streamed by the W0 follow-up `2bf90c7`), Y0b (`tests/fakehydra.py`), Y0d (`api.py`) and Y0e (`tests/test_cli.py`, whose stub tests it rewrites). Parallel with: E2, E3a.
 Surface: 4.4-4.7.
 Tests: **the rewritten stub tests of `tests/test_contracts.py` and `tests/test_cli.py` pass with Y2's own handlers
 registered and would pass unchanged when Y4b and Y4e register theirs (they patch the registry with a module that
@@ -2823,8 +3642,68 @@ two-process torn-tail test of 4.1 on `CURRENT.log`** (a long-lived process appen
 process was killed mid-line), with oracle O1-O6, fresh roots. Golden: **commit round trip** (after-commit touched functions against the
 reference snapshot; its own comparison, never mixed with the hydra.3/hydra.4 diff).
 Acceptance: all O1-O6 hold at every fault point; two simultaneous commits give one `commit_busy`.
+**Revision 6.** The shared base per `(lineage, generation, engine release)` with a cross-process single-flight lock and a completion
+marker; one writer connection per view with a reference-counted reset and a per-view lock replacing `.sync.lock` (D44); the
+launch configuration; `integrity.py`; the candidate verification (K2, K3) before the `CURRENT.log` append; `adopt` produces
+generation 0 with the upgrade-cache build finished. Test: 12 processes building views at once finish near fork + open +
+replay (a prediction, measured by Z2), `base_upgrade` is absent for the second to Nth view, and the 4-thread and 12-thread
+tests of Z1 pass (red before: `no_project`).
 
 ### W3
+
+**Z2 (Hydralysis, M): measurement harness.**
+Goal: replace single-run figures by recorded medians (report-only), and measure the two numbers revision 6 leaves
+open: the named-view cost with the shared base (9.16) and the publish latency (SP7).
+Files (8.1): new `benchmarks/mcp_latency.py`, `benchmarks/concurrency_bench.py`, `benchmarks/named_view_cost.py`,
+`benchmarks/bench_cold_start.py`, `benchmarks/bench_install.py`, `benchmarks/budgets.json`, `tests/test_output_size.py`
+(rule 3 freezes the existing benchmark files, so these are new files with their own rows).
+Depends on: Y2 (the shared base it measures), Y1. Parallel with: Y3, Z3, Z6, Z8.
+Surface: none.
+Tests: the harness spawns the real stdio MCP server against a pinned target, discards warm-up, N of at least 30
+warm calls, and records median, p95 and maximum with the engine release, machine, program SHA-256, file system
+and the **foreign load**; the concurrency bench prints serial and concurrent times, the speed-up and the lane
+`everQueued` for the native and the `ghidra_query` paths separately; `named_view_cost` runs at least 5 times at
+1, 4 and 12 simultaneous new views, shared base against rebuilt base, with each phase (`fork`, `base_upgrade`,
+`open`, `replay`) on NTFS and ReFS; a publish run at 1, 4 and 12 publishers. Acceptance: each script exits 0 and
+writes JSON under `_logs/<stream>/`; budgets are three times the recorded median and report-only; owner machine
+only, never hosted CI for time.
+
+**Z3 (Hydralysis, M): environment, config and an early doctor slice.**
+Goal: every harness launch reports the same root, engine and configuration; no surprise JVM from `backend status`.
+Files (8.1): new `environment.py`, new `tests/test_environment.py`, `config.py`, `paths.py`, `mcp.py` (the launch
+banner in the MCP `initialize` metadata and on stderr). **Z3 does not edit `cli.py` or `api.py`** (8.3): the
+initial command is `python -m hydralysis.environment init`, and the `environment` handler registers through Y2's
+`api.HANDLER_MODULES`.
+Depends on: Y2 (the registry), Y0c (`mcp.py`). Parallel with: Y3, Z2, Z6, Z8.
+Surface: `backend action=status` with `start=False`.
+Tests: the same root and configuration from any working directory with a scrubbed environment; a process-level
+server from a foreign directory; `backend status` with no daemon spawns nothing; a banner with root, source,
+configuration source, engine release and file system; a warning on a system-drive root and on a non-COW volume;
+8 server processes, one root, exactly one `java.exe`. Acceptance: exits 0; `backend --action doctor` leaves the
+`java.exe` list unchanged.
+
+**Z6 (Hydralysis, M): corpus export parity and resume.**
+Goal: a full export that provably equals the corpus.
+Files (8.1): `exporting.py` (the snapshot at export start, after Y2's header edit), `export_worker.py`, new
+`tests/test_engine_export.py`, `tools/verify_corpus.py`, and the resume-refusal assertion of the existing exporting
+test file (the package that makes a frozen assertion false owns it, rule of section 8).
+Depends on: Y2. Parallel with: Y3, Z2, Z3, Z8.
+Surface: none.
+Tests: the expected count is read from the engine (8,616 internal functions on KotOR, 60 thunks included; the 350
+non-internal of the 8,966 are excluded) with a `written+failed==expected` field separate from `all_succeeded`;
+per-row cost measured before any refactor; a kill at 50% and a resume equals an uninterrupted run; cancel latency;
+cancel while paused; the KotOR run pinned by SHA-256. Acceptance: fixture-scale export in CI; the KotOR run is the
+local tier.
+
+**Z8 (Hydralysis, M): surface parity tests.**
+Goal: move tool-mapping rows from "to verify" to tested.
+Files (8.1): `tests/fixtures/verify_fixtures.py` (new check groups `listing`, `callgraph`, `namemap`; the
+file is a harness, extended not replaced), new `tests/test_parity_surface.py`.
+Depends on: none. Parallel with: Y3, Z2, Z3, Z6.
+Surface: none.
+Tests: listing, call graph, name to address and read-memory against the linker-map ground truth of the MSVC
+fixtures (x86 and x64); documented gaps for segments, namespaces, classes and Ghidra-memory reads. Acceptance: the
+harness exits 0 for those groups.
 
 **E3b (Hydra, L): cancel-aware waits, bounded release, abandoned holders, `applied`.**
 Files (8.1): new `S/Waits.java` (the single timed `tryLock` and the registration state machine of 3.5);
@@ -2852,21 +3731,69 @@ client closes its connection while another client's read runs, and the next join
 their `wait`). Characterization
 unchanged at protocol 2.
 Acceptance: the ownership-bits question (3.5) is decided in review and recorded; golden diff identical.
+**Revision 6.** E3b's first commit takes the `makeWritable` wait out of `synchronized (s.registry)` in `openProject`
+(`ProjectCommands.java:70-77`), the cheap half of BP8; E3c replaces the registry. E3b also: re-checks `client.leaving` after a
+lock is acquired so a dead client's queued write is never applied (BP11); dispatches read-class commands of a v3 connection in
+parallel unless the request says `ordered` (BP15); bounds the per-connection outbound queue and disconnects a client that stalls
+its reply for `writeStallMs` (BP23, test `stalled_socket` first); and removes the 600 s `CLEANUP_WAIT_MS` waits for owners
+and writers (readers are E3c's).
 
 **Y3 (Hydralysis, M): rebase, publish, merge.** Files: new `views.py`; `workcopy.py`, `query.py`,
 `tests/test_views.py`, additions to `tests/test_query.py`. Depends on: Y2. Surface: 4.7-4.8. Tests: stale-after-commit; rebase outcomes
 clean, converged, conflict, and "already in the master" decided from the generation manifests' `store.ids`
 (a record published from another view matches by `merged_from`); publish idempotent through `published_through`; `stale_view` refusal with
 `next`. Acceptance: no conflict outcome is silently resolved.
+**Revision 6.** Y3 also builds the publish queue of 4.10: sealed `pending` changesets, the leader on `publish.lock`, the FIFO
+drain with `publishBatchMax` 1, the verification of the candidate before the `CURRENT.log` append, the per-changeset result,
+exactly-once through the manifest's ids, and the polling job (`publish_pending{position, etaMs}`). Tests: a publish storm
+with 24 publishers and kills of the leader and of the daemon (K12, K16), merge-order independence, no reader or view
+waits (K13). No latency figure is stated (SP7).
 
 ### W4
+
+**E3c (Hydra, L): the non-blocking core.**
+Goal: no reader of any program waits for another client's leave, a project command or a registry monitor; the
+readers of a sealed generation meet no lock another client can hold (NB1-NB6, 3.10, D37, D39, D57).
+Files (8.1): `S/Session.java` (the join of a program under analysis answers `analyzing` at once, the registry
+replaced by the state machine, `reap` disposes by refcount), `S/Access.java` (a project pin instead of the
+whole-command project lock; the project lock covers structure changes only), `S/ProgramEntry.java` (the user
+count as a refcount, deferred and non-blocking disposal of the last user), `S/ProgramCommands.java` (the reader leave
+for every non-owner, non-writer, non-last user, `close_program`), `S/ProjectCommands.java` (`open_project`,
+`refresh` as a repoint, `leaveProject` without a wait under a monitor), `S/ProjectEntry.java` (the state machine
+fields) and new `S/ProjectRegistry.java` (a `ConcurrentHashMap` from project key to a slot with the states
+`OPENING`, `OPEN`, `CLOSING`; single-flight opens; nothing waits for a lock inside it), `examples/dt_e3c.py`,
+`examples/char_e3c.py`, `examples/cc_e3c.py`. The per-request waiter caps for every v3 request (D39) and the optional
+`Ticket.yieldSlot` wiring behind `yieldSlots` (default off) are here too.
+Depends on: E3b (and, through it, E3a and E2), P1a (`cc_e3c.py`), X0. Parallel with: E4, P1b, Y5.
+Surface: `busy` `details.reason` `analyzing` and `lock_queue_full` for all v3 requests (3.13); V10 (5.1).
+Tests: B's `s1` (a, b, c), `s5`, `s7`, `s13` rerun with the red values recorded in 3.10 (BP3, BP7, BP8, BP9); a test
+that enumerates the 17 rows of `lock_matrix.json` and fails if a row has no decision in 3.10; a refcount leak test
+(users return to zero after 200 cancels raced against release, no stray interrupt, the daemon log has no
+`ClosedByInterruptException`); `last_user_leave_disposes` and `reader_leave_all` on a protocol-2 and a protocol-3
+connection; a deadlock stress of `yieldSlots` (SP9) before it may be switched on.
+Acceptance: 9.13; the v2 goldens identical; the golden decompile diff identical (9.1).
+
+**Y5 (Hydralysis, L): per-agent default views.**
+Goal: every agent edits only in its own view, readers read the sealed master, and views are evicted safely (D43,
+4.10). This replaces the deferred Y5 of revision 5: its preconditions are now packages (Y3 soaked in the chaos PR
+lane, the stable agent id, the eviction, Z2's per-phase cost).
+Files (8.1): `workcopy.py` (lazy creation at the first edit, routing, eviction hooks), `query.py` (the default view,
+`options.as` and the fallback `<client name>@<boot id>`, `scope:"master"`, `follow:"head"`, the structured `busy` to
+`next` mapping), `views.py` (the view records of 4.10), new `viewgov.py` (LRU, idle time, `max_views`, the atomic
+pin-or-evict step of 3.11), `tests/test_views.py` (additions), new `tests/test_viewgov.py`.
+Depends on: Y3, Y2, Z2. Parallel with: E3c, E4, P1b.
+Surface: 4.10; `ghidra_query action=status options.show=views`.
+Tests: K11 with 12 real agents (separate processes, `options.as`) on 3 projects: no unpublished tag visible to
+another agent; 24 agents: no `no_project` error, no shared mutable state; a kill of an agent process rebuilds its view
+from the store (K15); an evicted view is rebuilt and answers the same (K8); eviction never closes a view with a running
+request; the shared view keeps its mandatory `expect_revision`. Acceptance: 9.16 reported; 9.17 PR lane against hydra.3.
 
 **E4 (Hydra, M): script isolation.** Files: `S/ScriptCommands.java` (`isolation`, `scriptSha256`,
 `attemptedChanges` measured before the rollback, `basedOn`, and the `lane` and `laneNote` **copied from the
 request monitor**, where E3a stored the decision; E4 does not decide a lane; the `script` validation
 method registered with `Preflight`), `S/OverlayCommands.java` (`loadOverlay` extracted), new
 `S/PrivateInstance.java`; `examples/dt_e4.py`, `examples/char_e4.py`, `examples/cc_e4.py`.
-Depends on: E3b (and, through it, E3a, E2) and P1a (`cc_e4.py`). Parallel with: E5, P1b.
+Depends on: E3b (and, through it, E3a, E2) and P1a (`cc_e4.py`). Parallel with: E3c, P1b.
 Surface: 3.4 `script`, 3.6.
 Tests: a mutating user script with a concurrent decompile reader in each mode (shared: attempted and
 rolled back; exclusive and private: readers never see it); the master file hash and revision unchanged;
@@ -2875,18 +3802,10 @@ program holds unsaved edits; **the private open cost on KotOR is measured and wr
 timings**; the `Program.lock` spike result recorded either way. `cc_e4`: a v2 `script` with `isolation`,
 `lane` and a wrong `scriptSha256` runs as today (G7). Golden decompile diff identical.
 Acceptance: `shared` unchanged for protocol 2.
-
-**E5 (Hydra, M): health and watchdog.** Files: `S/Session.java` (`isInline`, `case health`, starting the
-watchdog), new `S/Health.java`, `S/Watchdog.java`, `S/Scheduler.java` (`describe` with `tryLock` for v3,
-lane stats), `S/HeadlessSession.java` (parse `testHooks`); `examples/dt_e5.py`, `examples/cc_e5.py`.
-Depends on: E3b (lane stats) and P1a (`cc_e5.py`). Parallel with: E4, P1b.
-Surface: `health` (3.4), `debug_stall` behind the launch property.
-Tests: `health` answers while a long request runs; a daemon suspended from outside (`NtSuspendProcess`)
-is seen by the Python probe as a live pid with no answer; with the hook, `tick.ageMs` grows and
-`schedulerLockOk` is false while `ping` still answers; a v3 `status` no longer blocks on a held
-scheduler lock (`cc_e5`: the same held lock makes a v2 `status` block as on hydra.3, G6);
-`hello.platform.testHooks` true and `health.state:"degraded"` with the hook on.
-Acceptance: the hook cannot be enabled from `config.json` or a request.
+**Revision 6.** Overlays are opened from the stored file with a timed wait, so opening a new overlay during an exclusive hold
+of the base no longer fails `busy` (BP24); a user script never runs `shared` (D47); `scriptMaxS`, CPU and allocated-bytes
+sampling and the quarantine of a script that ignores cancel (`health.leakedWorkers`, the owner's long cap drops to 1) are
+here. Parallel with: E3c, P1b (not E5, which moved to W5).
 
 **P1b (Hydra, M): launcher.** Files: `support/ghidra_session.py` (deadline, `LaunchError`, registry,
 `DuplicateDaemonError`, `Daemon.health()`, `Daemon.attach()`), `examples/dt_p1b.py`. Depends on: P1a.
@@ -2896,10 +3815,77 @@ warns), `call_deadline` (a hung call cancels and raises `deadline_exceeded`, the
 N concurrent launchers start exactly one daemon per root. Fresh roots only. The deadline exists only in
 the library that ships with hydra.4 (3.8); against a hydra.2/3 engine Hydralysis uses the client-side
 watchdog of 7.6 (Y4a).
+**Revision 6.** P1b also starts the daemon in a Windows Job Object with kill-on-close (3.11, D46); test: after
+`TerminateProcess` of the daemon with 12 decompilers running, no decompiler process remains (K7); SP3 checks the behaviour for
+processes Ghidra spawns.
 
 ### W5
 
-**E6 (Hydra, M): soak harness.** Files: new `examples/soak_tests.py`. Depends on: E2, E3a, E3b, E4, E5. R1
+**E5 (Hydra, M): health and watchdog.** Files: `S/Session.java` (`isInline`, `case health`, starting the
+watchdog), new `S/Health.java`, `S/Watchdog.java`, `S/Scheduler.java` (`describe` with `tryLock` for v3,
+lane stats), `S/HeadlessSession.java` (parse `testHooks`); `examples/dt_e5.py`, `examples/cc_e5.py`.
+Depends on: E3b (lane stats), E3c (it edits `Session.java` after E3c did) and P1a (`cc_e5.py`). Parallel with: E6, Z13b, Z15.
+Surface: `health` (3.4), `debug_stall` behind the launch property.
+Tests: `health` answers while a long request runs; a daemon suspended from outside (`NtSuspendProcess`)
+is seen by the Python probe as a live pid with no answer; with the hook, `tick.ageMs` grows and
+`schedulerLockOk` is false while `ping` still answers; a v3 `status` no longer blocks on a held
+scheduler lock (`cc_e5`: the same held lock makes a v2 `status` block as on hydra.3, G6);
+`hello.platform.testHooks` true and `health.state:"degraded"` with the hook on.
+Acceptance: the hook cannot be enabled from `config.json` or a request.
+**Revision 6.** `health` also reports `waits.foreignBlocked`, `governor{...}`, `leakedWorkers` and `repairs[]` (3.13), read through
+E1's `Hooks`; E9 (same wave) starts the governor after E5 starts the watchdog in `HeadlessSession.java`. E5 moved from W4
+to W5 because E3c owns `Session.java` in W4 (D56).
+
+**E9 (Hydra, L): the resource governor.**
+Goal: overload is refused with a structured `busy`, never an out-of-memory; one client cannot take the daemon down
+(3.11, D46).
+Files (8.1): new `S/Governor.java` (admission: heap after GC, the watermarks, `maxViews`, the per-client cap, the
+disk estimate; the `degraded` state), new `S/Budgets.java` (the `Settings` keys and the learned `estHeap`), new
+`S/DecompilerGate.java` (the fair semaphore), `S/ProgramEntry.java` and `S/Overlay.java` (the gate at
+`borrowDecompiler`, the crash circuit breaker, the negative cache), `S/HeadlessSession.java` (starts the governor
+**after** E5 starts the watchdog), `examples/dt_e9.py`, `examples/cc_e9.py`.
+Depends on: E5, E3c (it edits `ProgramEntry.java` after E3c), E1 (the seams `Hooks.Admission` and `Guarded`), X0.
+Parallel with: E6, Z13b, Z15.
+Surface: `busy` `details.reason` `capacity`, `decompiler_failed`, `runaway_quarantined`; `limits`; `health.governor` (3.13).
+Tests: `-Xmx256m` with 24 views ends in structured `busy`, 0 `OutOfMemoryError`, the reaper alive (red on hydra.3);
+`-Xmx512m` with 24 views runs; a 100-view probe is refused at `maxViews`; kill -9 of a native decompiler during a
+12-client load fails one request and the next works; a hang and a timeout; a daemon kill leaves no orphan
+decompiler (with P1b's Job Object); a runaway script is quarantined and counted; SP4 (dispose and recreate a
+`DecompInterface`). Acceptance: 9.14; no daemon thread dies in any lap; heap after GC below the hard watermark.
+
+**Z13b (Hydralysis, M): documentation, surfaces and numbers.**
+Goal: the tool mapping, the verification table and the numbers come from the ledger.
+Files (8.1): `README.md` (the "Evidence and limits" section), `THIRD_PARTY.md`, `docs/tool-mapping.md`, new
+`docs/data/tool-surfaces.json`, `docs/verification.md` (a dated table of owner-reported third-party figures, each
+labelled "not reproduced"), new `tools/count_surfaces.py`, new `tests/test_tool_mapping.py`, `docs/data/claims.json`,
+`tests/test_claims.py`.
+Depends on: Z13a, Z4. Parallel with: E9, E6, Z15.
+Surface: none.
+Tests: the doc table equals `api.TOOL_NAMES`; no row says "to verify" once declared complete; the catalog size in
+the documents is generated from `tool_table()`; the 8-outstanding-per-lane MCP cap is documented. Acceptance:
+the tests exit 0; `tools/count_surfaces.py` writes the three counts.
+
+**Z15 (Hydra, M): fork maintenance and policy.**
+Goal: the fork keeps its upstream merges safe, and its guard knows the patched core files.
+Files (8.1): `/.github/CONTRIBUTING.md`, `/.github/SECURITY.md`, new `/.github/workflows/upstream-sync.yml`, new
+`/.github/hydra-touched-files.txt` (the patched core classes: the three of hydra.2 and 3 plus the two E8 adds).
+Depends on: E8. Parallel with: E9, E6, Z13b.
+Surface: none.
+Tests: a scheduled upstream-sync workflow (merge, `buildHeadless`, the three suites, the golden diff, a pull request with
+the shortlog and a file-overlap report); a guard that fails when a patched core file changes upstream; a
+supported-versions table and a fix-time statement; the real release archives contain LICENSE, NOTICE and
+NOTICE-HYDRA. Acceptance: the workflow's dry run passes; the root documents say "Merge, never rebase". R1 keeps
+the README and CHANGELOG.
+
+**S2 (site, S): the claims that a passed gate flips.**
+Goal: the site claims exactly what the gates proved, in the same change as each release (D52).
+Files (8.1): the same files as S1 (the version constants among them are edited by R1's bump script and owned here).
+Depends on: S1, R1, Z13b. Parallel with: none (it runs after R1).
+Surface: none.
+Tests: the site build fails if its copy of the ledger differs from its source; the grep gate of 9.19. Acceptance: a
+claim changes wording only when its flipping test changed from red to green (8.3).
+
+**E6 (Hydra, M): the soak and chaos gate runner.** Files: new `examples/soak_tests.py`, new `examples/chaos_tests.py`. Depends on: E2, E3a, E3b, E3c, E4, E5, E9, X0. R1
 follows it in W5.
 12 client processes with distinct labels over mixed work (quick decompiles, quick scripts, long sleeps,
 fork and save, cancels), seeded client kills. Pass criteria: no lost, duplicated or reordered
@@ -2908,21 +3894,70 @@ clients exit; quick-lane p99 under the bound recorded by E0 on hydra.3; no `aban
 cooperative scripts; **a backup (`fork_project purpose:"backup"`) started while the long lane is
 saturated runs in the `maint` lane** (the combined check of E2 and E3a, which share no code). PR lane
 about 2 minutes; nightly longer.
+**Revision 6 replaces the rev5 criteria above by gate 9.17**: the PR lane (4 agents x 2 projects, 10 minutes), the nightly lane (16 x
+4, 2 hours) and the release run (24 x 6, at least 4 hours), the fault classes with minimum hit counts, the oracle K1-K17 and
+`waits.foreignBlocked` (D49, D50). E0's recorded failing latency is not a bound. The counted kill batches of 9.15 run on X0's
+library; E6 only schedules them.
 
 **R1 (both, M): hydra.4 release preparation.**
-Files: Hydra: `S/HydraInfo.java` (version), `CHANGELOG.md`, `README.md` (a protocol 3 section pointing here;
+Files: Hydra: `S/HydraInfo.java` (version), `/CHANGELOG.md`, `/NOTICE-HYDRA` (the verified list of patched core files), `/README.md` and `README.md` (a protocol 3 section pointing here;
 the new limits and the config keys of 3.7; the "Protocols" matrix), `ARCHITECTURE.md` (rows for the new
 classes), `certification.manifest` (its own release entries; every package appends its own files, 8), the
 release workflow (a dry run); Hydralysis: new `tools/bump_hydra.py` and `tests/test_bump_hydra.py`. The **release notes** carry the items
-of 5.2 (D4 `minClient` unchanged, the pin refusal of Hydralysis 0.4.x, V1 to V7 by name) and the full v3 hello
+of 5.2 (D4 `minClient` unchanged, the pin refusal of Hydralysis 0.4.x, V1 to V10 by name) and the full v3 hello
 golden. `tools/bump_hydra.py` generates `RELEASE`, `PROTOCOL` and `ASSETS` (with SHA-256 and sizes) in `hydra.py`, the
 `fakehydra` constants and the one pin sentence of `README.md`, `THIRD_PARTY.md` and `docs/upstream-setup.md`,
 and **edits no other file** (5; `tests/test_bump_hydra.py` asserts the edit set); **R1 is its only owner**,
 Y4a runs it. **No tag, no push, no release by this stream**; the tag is an
 owner action. Until then Hydralysis tests run against the candidate install with `hydra_allow_unpinned`.
-Depends on: every engine package, **including E6** (R1 runs after E6 within W5).
+Depends on: every engine package, **including E6** (R1 runs after E6 within W5), E8, R0.
+**Revision 6.** `tools/bump_hydra.py` also writes the site's release and protocol constants (the files of S1; S2 owns the edit,
+as Y4a owns the Hydralysis pins); R1 states the headless-only sentence in the release notes and the guarantees of 6.1 that
+hold in hydra.4, and no claim a gate has not passed (D52).
 
 ### W6
+
+**Z9 (Hydralysis, L): evidence v2 and bundles.**
+Goal: content-addressed evidence with coverage and limitation objects, and bundles that two exports compare equal
+(audit C1-25, C1-42, C2-25 to C2-28). Runtime evidence and coverage come before memory write (owner decision).
+Files (8.1): `evidence.py` (in place, legacy rows backfilled), new `evidence_bundle.py` (its own `__main__`; **Z9 does not edit `cli.py` or `api.py`**; the `evidenceBundle` handler registers through Y2's `api.HANDLER_MODULES`, 8.2),
+new `tests/test_evidence_model.py`, `tests/test_evidence_bundle.py`, `tests/test_evidence_parity.py`,
+`docs/upstream-runtime.md` (the correction of its line 64).
+Depends on: Y1 (view, sequence and generation provenance), Y2. Parallel with: Y4a, Z10, Z14.
+Surface: none.
+Tests: an `evidence_id` stable across key order and sessions that rejects a flipped byte; a coverage and
+limitation catalog stored with each row; bundle export, verify, compare and import; parity cases loaded from the
+reference checkout; no game payload bytes. Acceptance: the three test files exit 0; two independent bundle exports
+compare equal modulo volatile fields.
+
+**Z10 (Hydralysis, L): runtime evidence on the existing fixtures, capture, snapshot, export-name hooks.**
+Goal: audit C1-24, C1-41, C2-17 to C2-21, C2-24; fixture-first.
+Files (8.1): `runtime.py` and `runtime_worker.py` (after Y0e; the 805-line worker is split into agent templates,
+event log, action handlers and lifecycle before features are added), the existing fixture harness `tests/fixtures/verify_fixtures.py`
+(new checks `break_continue`, `export_hook`, `capture`, `snapshot`; `mcp_typed_read` gains the view-revision
+assertion), `tests/fixtures/flow_fixture.c` (an exported function for the export-name test),
+`tests/fixtures/build_fixtures.py` (the runtime fixture source folded into `BUILDS`), `tests/fixtures/runtime_fixture.c`,
+the fakes under `tests/fakefrida/`, new `tests/test_runtime_capture.py` and `tests/test_runtime_snapshot.py`.
+Depends on: Y0e, Z8, Z9. Parallel with: Y4a, Z14.
+Surface: none.
+Tests: for each new action a fake-Frida unit test (every pull request); hook by module export name verified
+against the file's export table; a durable append-only event log with sequence and hash chain, counters independent
+of recorded events; `runtime snapshot` and `runtime compare` with volatile masks; the real-process side is the
+fixture harness on the owner machine (MSVC and Frida; not CI). Acceptance: the two new test files and the runtime
+tests exit 0 in CI (fake); the harness checks exit 0 on the owner machine; no CI claim for the real side before a run
+shows it.
+
+**Z14 (Hydralysis, M): Hydralysis release.**
+Goal: audit C1-34 and the policy half of C1-49.
+Files (8.1): new `CHANGELOG.md`, new `.github/workflows/release.yml`, new `docs/versioning.md` (in the Hydralysis
+repository).
+Depends on: R1 (`bump_hydra.py`), Y4a (the pin), Z13b. Parallel with: Z9, Z10.
+Surface: none.
+Tests: a workflow dry run (`workflow_dispatch`) builds the sdist and wheel, runs the unit and engine jobs and attaches the
+artifacts with SHA256SUMS; a version policy (which version pins which engine, what 0.x means, how to roll back
+a pin); release notes carry the limits (Windows x64, ReFS-only copy-on-write, the one-way upgrade, a restart once).
+Acceptance: in a fresh environment the installed wheel reports the tag version and `backend inspect` reports ready.
+No tag by this stream.
 
 **Y4a (Hydralysis, L): engine adoption and supervisor.** Files: `hydra.py` (capabilities, pin, `Supervisor`,
 deadlines: P1b's on hydra.4, the abandon helper of 7.6 on hydra.2/3 with its pool of entries, the registry of
@@ -2938,13 +3973,16 @@ that no frozen test changes), new `tests/test_deadline.py` and `tests/test_super
 `tools/bump_hydra.py` to produce the pin bump and owns **exactly the files the script edits** (5): `hydra.py`,
 `tests/fakehydra.py` and the three pin statements of `README.md`, `THIRD_PARTY.md` and `docs/upstream-setup.md`
 (8.1 has a W6 cell for each); it does not own the script. Depends on: R1, Y0b, **Y2** (`tests/fakehydra.py`) and
-**Y1, Y2, Y3** (`query.py`); **Y4b and Y4d merge after it** (8).
+**Y1, Y2, Y3, Y5** (`query.py`) and **Z13b** (`README.md`, `THIRD_PARTY.md`); **Y4b and Y4d merge after it** (8).
 Tests: the
 deadline helper of 7.6 (abandon without a FIN, a gated close, never an early `close()`) against the fake and the real hydra.3 (the
 cases L, S, C of 7.6, the abandoned-connection budgets, the leave gate, the pool entry with `replacement_context`,
 `wait_below_deadline` and `leave_gate_no_freeze`: the list in 7.6); 7.2 policy against the fake and
 the real engine (a suspended daemon is restarted within budget; `lost_on_restart` recorded; a slow daemon
 with non-recoverable unsaved edits is not restarted); degrade matrix 7.5 against hydra.3.
+**Revision 6.** The supervisor's auto-restart is gated on `journal.durable` and waits for process exit (D55); read tools send `parallel`
+by default; the structured `busy` reasons of 3.13 map to a ready `next`; the doctor (Y4b) reports `repairs[]`, unfinished candidates
+and the engine's integrity-cut status. Y4a depends on Y5 because it edits `query.py` after Y5.
 
 **Y4b (Hydralysis, M): doctor.** Files: new `doctor.py` (it registers `backend action=doctor` with the
 handler registry that Y2 built and does not touch the dispatcher file, 8.2), `tests/test_doctor.py`. Depends on: P1b, E5, Y2 (the registry) and **Y4a** (the abandoned-connection registry in `hydra.py`, 7.6,
@@ -2966,10 +4004,69 @@ otherwise; the reply shows `attemptedChanges`, `isolation`, `basedOn`.
 
 ### W7
 
-**Y5 (Hydralysis, M, deferred): per-agent default views.** Preconditions (all): Y3 has soaked; a stable
-agent identity exists (`options.as`, replacing `rusticre:<pid>`); view eviction exists (`max_views`);
-the named-view cost is measured per phase (`last_sync.phases_ms`, not the single 1.4 s figure). Default
-stays `shared` until then.
+**Z11 (Hydralysis, M): runtime scenario end to end.**
+Goal: audit C2-29 and the KotOR halves of C2-17 to C2-19; fixture-first.
+Files (8.1): new `tools/scenarios/kotor_vfs_lookup.py`, new `tests/test_runtime_scenario_fixture.py` (the fake-Frida
+mirror, CI), and the `scenario` check of the fixture harness `tests/fixtures/verify_fixtures.py` (the game-free
+analogue on `flow_fixture.exe`; manual).
+Depends on: Z9, Z10; the owner's decision on a live game run (profile copy only). Parallel with: Z12.
+Surface: none.
+Tests: the 12-step scenario of the old toolchain (verify sites, spawn paused from a profile copy, observe, export
+hooks, capture, resume, typed read, snapshot, writers, detach, evidence add, bundle export); the install tree hash
+unchanged. Acceptance: the pass sequence equals the recorded one, zero silent drops or an explicit limitation, the
+second bundle compares with zero non-volatile deltas.
+
+**Z12 (Hydralysis, M, gated): runtime memory write and watchpoints, fixture-only.**
+Goal: audit C2-20 (write), C2-22, C2-23; only after the owner's decisions and only on fixtures.
+Files (8.1): `runtime.py`, `runtime_worker.py`, new `tools/watch_conformance.py`, new `tests/test_runtime_watch.py`,
+`tests/test_runtime_write.py`, `tests/fixtures/flow_fixture.c` and `tests/fixtures/build_fixtures.py` (a watch case).
+Depends on: Z10. Parallel with: Z11.
+Surface: none.
+Tests: compare-and-swap write with a required reason, an executable-range guard and an undo log that reports
+DIVERGED; a watch state machine to verified-clear, a tainted session on a failed disarm, a per-architecture
+conformance stamp; an x86 and x64 teardown matrix with debug-register readback and a 100-iteration race loop (the
+target exits 0, never `0x80000004`). Acceptance: the conformance tool exits 0 for both architectures. Not built
+without the decisions; carries a process-fault risk and is never marketed before a fixture proof.
+
+### W8
+
+Hydra hydra.5 packages. Each is conditional: it starts only when its spike (9.20) says go.
+
+**E7 (Hydra, L): a killable script worker.**
+Goal: an untrusted `ghidra_run` script that ignores cancel is killed (D47).
+Files (8.1): `S/ScriptCommands.java` (the routing of a script not pinned by `scriptSha256` to a worker), new
+`S/ScriptWorker.java` (a pooled child JVM that opens a clone of the saved view read-only, speaks over a pipe, is
+killed on cancel, timeout, heap breach or client disconnect and exits when its parent dies), `examples/dt_e7.py`.
+Depends on: E4, E9, SP10. Parallel with: E10, E11, E12.
+Surface: `isolation:"worker"`; the worker count in `health`.
+Tests: a deaf script is gone at its timeout; a daemon kill leaves no worker (K7); the start-up and RAM cost from
+SP10. Acceptance: the owner's long cap is released on kill. RusticQuery stays in process.
+
+**E10 (Hydra, M): overlay-backed views for direct clients.**
+Goal: a cheaper per-agent view where the spike says it is cheaper than a fork.
+Files (8.1): `S/Overlay.java`, `S/OverlayCommands.java` (an overlay opened from the stored file with a durable
+journal), `examples/dt_e10.py`.
+Depends on: E4, E9, SP2. Parallel with: E7, E11, E12.
+Surface: none new.
+Tests: first-edit time, heap and disk against a fork view on KotOR and on the large program (SP2); RusticQuery
+`apply_overlays` on an overlay equals the fork-based working copy. Acceptance: go only if both measures win.
+
+**E11 (Hydra, M): read replicas of a hot program.**
+Goal: DB-bound reads of one program scale beyond the 1.4x to 1.8x of one `Program` instance.
+Files (8.1): new `S/ReplicaPool.java`, `S/ProgramEntry.java`, `examples/dt_e11.py`.
+Depends on: E9, SP1, SP8. Parallel with: E7, E10, E12.
+Surface: none new; replicas are internal.
+Tests: B's `s12_instances` and `t3_scaling` rerun: `functions` x N toward the 4.1x measured on private instances; a read
+of a replica while the stored file is saved by another instance (SP1). Acceptance: go or no-go recorded.
+
+**E12 (Hydra, M): power-loss durability.**
+Goal: the only package that may allow a power-loss claim (6.1).
+Files (8.1): `/Ghidra/Framework/DB/src/main/java/db/buffers/LocalManagedBufferFile.java` (the version file, its header
+and the directory entry flushed), `examples/dt_e12.py`.
+Depends on: E8. Parallel with: E7, E10, E11.
+Surface: none.
+Tests: a simulated power-loss matrix (a virtual machine or a crash simulator; a process kill keeps the OS page
+cache and proves nothing here). Acceptance: only after it passes may a document say anything about power loss.
 
 ---
 
@@ -2985,13 +4082,38 @@ Fresh state roots; the live daemons (18220, 17936) are never touched; no game-de
 | 9.2 | **Commit round trip** (separate comparison, never mixed with 9.1) | After a commit on the KotOR copy, the touched functions of the new generation decompile identically to the working copy; 25 untouched functions identical to the previous generation. |
 | 9.3 | **Characterization** | the seven scenarios `identical` at `--protocol 2`; the v3 run is always made with `--require-v3` (without it an engine that serves no v3 is a SKIP with exit 0, which E0's review found and which a gate must not accept); every v3 scenario golden recorded, reviewed as a diff of additions, committed; the full v3 hello golden recorded by R1 (3.1) |
 | 9.4 | **Engine suites** | `session_smoke.py`, `contract_tests.py`, `daemon_tests.py` (all, with `--legacy-project`, so `legacy_overlay` and the older-format half of `upgrade_cache` run: the sync stream skipped them), `client_compat_tests.py` (with every `cc_*.py`: the protocol-2 behaviour tests of 5.1, run by the stock 1.0.0 client), `format_gate.py`; plus the fork tests on a ReFS volume |
-| 9.5 | **Soak, 12 clients** | `soak_tests.py` PR lane green; one nightly-length run recorded (E6 criteria) |
-| 9.6 | **Upgrade and backup round trip** on the legacy fixture | backup (engine) then gate refusal without it, success with it, on a fork; commit to a new generation; restore the backup alongside; the restored tree hash equals the original; stock Ghidra 12.1.4 opens the restored backup read-only and does **not** open the committed generation (the documented one-way step, shown rather than asserted); source tree hash unchanged throughout |
+| 9.5 | **Soak, 12 clients** (superseded by 9.17 in revision 6) | the PR lane of `soak_tests.py` green as part of 9.17 |
+| 9.6 | **Upgrade and backup round trip** on the legacy fixture | backup (engine) then gate refusal without it, success with it, on a fork; commit to a new generation; restore the backup alongside; the restored tree hash equals the original; the one-way format step is asserted by `format_gate.py` (9.7), not shown in a stock Ghidra GUI (headless only, D36); source tree hash unchanged throughout |
 | 9.7 | **DB-version check** | `format_gate.py` exit 0: the constants (`ProgramDB` 33, `DataTypeManagerDB` 3, `DataTypeArchiveDB` 5, `ProgramUserDataDB` 1, `SlaFormat` 4 on the sync branch) equal `format-matrix.json`; `hello.analysisIdentity.dbVersions` equal them at runtime and are not `-1`. A changed constant without a matrix entry and release note fails the merge, and also fails any future upstream sync |
 | 9.8 | **Compatibility** | a raw protocol-2 transcript against hydra.4; the 1.1.0 client against hydra.3 (real install) and a fake protocol-2 server; Hydralysis 0.5.x test suite against hydra.3 (degraded set) and hydra.4; `bump_hydra.py` output verified against the zip SHA-256 and its edit set equal to the list of 5; the two copies of `canonical-manifest.json` (engine and Hydralysis) are byte-identical and both languages verify the other's manifest (3.4) |
 | 9.9 | **Fault matrices** | Hydralysis commit points (4.6) with oracle O1-O6; engine `backup_fault`; Y0a torn and zero-length files; all green |
 | 9.10 | **Measurements recorded before any constant is fixed** | fsync latency per volume (F: Dev Drive on USB NVMe, C:, D:, E: HDD); store write cost at 1, 4, 16 writers, **including `write_json` of job and progress records, which now does a read, a `.bak` write and a main write (two fsyncs, two replaces: about 16 ms per 600-byte record on D: in Y0a's review, unmeasured on F:, C: and E:) and is rewritten often by export workers**; backup hash throughput; clone against copy on KotOR (122 MB) with the 1.5 GB program as a stress case only; private-instance open cost on KotOR; quick-lane p99 with the long lane saturated, before and after; the per-phase named-view cost. `quickScriptMaxS`, grace times, ETA budgets, `SYNC_LOCK_S`, copy limits and the private default derive from these |
 | 9.11 | **Hygiene** | every commit authored and committed as `KelpHect <kellhect@gmail.com>` (checked with `git log --format='%an <%ae> | %cn <%ce>'`); `certification.manifest` lists every new file and `buildHeadless` passes the IP check; docs state every limit of section 6; `examples/check_ownership.py` passes for every package branch (8.1) |
+| 9.12 | **Verification gate: red before green, and an oracle that can fail** (D48) | X0's self-test flags every planted violation X1-X5, X7-X10 and tolerates X6; the red table recorded on hydra-3-candidate and `hydra-session-after` reproduces each recorded defect within its range (BP3 refusals 2.5-12.0 s; BP7 all 9 probes; BP8 9,421 ms; BP9 6 of 6; BP10 10.2-10.5 s; BP11 write applied by a dead client; BP14 94 of 114 polls; the version-file poison 12 of 363 and 7 of 95; fork 12 of 162; Hydralysis `no_project` with 4 threads); a package's test is accepted as evidence only if it was red on the old build and is green on the new one; a row that does not reproduce is reported, not tuned away. Exit 0 verified |
+| 9.13 | **Non-blocking gate (NB, G-NB)** on the hydra.4 build | B's `s1` (three variants), `s2`, `s4`, `s5`, `s7`, `s11`, `s13` and A's `lanetest` re-run: `waits.foreignBlocked` is 0 for reads of a sealed generation and for view operations (K13); zero refused probes in the variants that refused before; another project's `open_project` during a writable wait in 100 ms or less (9,421 ms before); a 7th client's script, save and fork in 1 s or less with six long scripts running (10.2-10.5 s before); reader throughput under four view writers at least 0.9x the no-writer baseline (shared-mode writers: 0.27x); a dead client's queued write never applied; cancel and disconnect release a lock wait within `cleanupGraceS + abandonWaitS + 1 s`; E3c's enumeration of the 17 `lock_matrix.json` rows has a decision for every row; DB-bound reads at 8 clients scale at least 3x **only if E11 is built**. Latency thresholds come from a quiet-machine run (foreign load recorded below 25% CPU), are reproduced twice before they fail, and are report-only on a loaded machine |
+| 9.14 | **Resource gate (G-RES)** | 24 views at `-Xmx256m` end in structured `busy` with 0 `OutOfMemoryError` and a live reaper; 24 views at `-Xmx512m` run; a 100-view probe is refused at `maxViews`; decompiler kill -9, hang and timeout leave other requests unaffected and the next request working; a daemon kill leaves no orphan decompiler (K7); a runaway or deaf script is quarantined and counted; throughput not below the A baselines (9.18) |
+| 9.15 | **Crash gate (G-CRASH)**, counted | with trigger-timed kills (the method of C, X0's library): at least 400 save kills (200 NTFS, 200 ReFS) with 0 unopenable and 0 unrepaired; at least 300 `fork_project` kills with 0 blocked retries, 0 `.rep` without `.gpr`, 0 leftovers after the sweep; at least 200 publish and `promote_overlay` kills; at least 50 daemon kills with 8 clients; every kill followed by K1-K17; Wilson bounds reported, wording "below 0.75% at 95%" after 0 of 400; the canonical hash unchanged. Single-run results of rev5 are replaced by counted ones |
+| 9.16 | **View-cost gate (G-VIEW)** | Z2's `named_view_cost`: the median of at least 5 runs of the first-edit time at 1, 4 and 12 simultaneous new views, shared base against rebuilt base, NTFS and ReFS, foreign load recorded; the 0.3 to 0.55 s prediction is quoted nowhere until this gate reports; the result decides the spare-view pool (not in the first cut) and `publishBatchMax` (with SP7) |
+| 9.17 | **Chaos and soak gate (G-SOAK)** (replaces 9.5) | harness E6 on X0's library with a ground-truth ledger the harness itself flushes. Workload per agent: reads (decompile, `functions`, xrefs, Hydralysis queries), edits in its view, publish, rebase, analysis in a candidate, deaf and runaway scripts, bulk opens. Faults (each class must fire a minimum count or the run cannot pass): kill -9 of random clients, of the daemon (wait for exit) at random and trigger-timed, of a native decompiler, of a publish leader mid-build; suspend of the daemon and of a client; a client that stops reading its socket; a handle holder during saves; an out-of-memory probe that tries 100 views. **PR lane**: 4 agents x 2 projects, 10 min. **Nightly**: 16 agents x 4 projects, 2 h, at least 150 kills. **Release**: three consecutive green nightly runs on NTFS plus one on ReFS (a fixture under 10 GB on F:, cleaned up), plus **one** run of 24 agents x 6 projects (a KotOR copy, the fixture, imported executables) for at least 4 hours. Pass: zero oracle violations, `waits.foreignBlocked` 0, no unexplained `busy`, no leak. All daemons use fresh state roots under `D:/Projects/Hydra/_logs/<stream>/` and are stopped at the end |
+| 9.18 | **Compatibility and performance (G-COMPAT, G-PERF)** | the seven v2 goldens identical; every row of 5.1 (V1-V10, G1-G8) has its `cc_` test; the 12.1.4-against-12.3 decompile difference (77.124% of 8,616 identical on KotOR, confounded by `maxBadData` 4) is **reported, never gated** (owner); an interleaved A/B (A's method) of hydra.3 against hydra.4 at 12 agents: median throughput not below 0.9x and CPU-seconds per function (0.031 to 0.041) within 10% |
+| 9.19 | **Claims gate (G-CLAIMS)** | `tests/test_claims.py` passes against `docs/data/claims.json`; no sentence of the 25 claims of 8.3 is stronger than the status of its flipping test; the site build fails when its copy of the ledger differs from its source; the banned phrases of D52 are absent from the engine README, the module README, the CHANGELOG, the Hydralysis README and skills and the site (a grep gate) |
+
+**Spikes (revision 6).** A constant or a package that rests on an unmeasured Ghidra or Windows behaviour waits for its
+spike; a failed spike stops the dependent package and falls back to the decision named, never to a weaker claim. Each spike is
+a script and an output file under `D:/Projects/Hydra/_logs/<stream>/`, run on a quiet machine with the foreign load recorded.
+
+| # | Question | Decides |
+|---|---|---|
+| SP1 | Is a read-only open of the stored file safe, on Windows, while another instance saves a new version of the same program? | E11; whether readers of a program under analysis can be served from the stored file; otherwise D37 stands |
+| SP2 | Heap, disk and first-edit time of an overlay-backed view against a fork view, on KotOR and on the 1.5 GB program | E10; `estHeap` and `maxViews` defaults |
+| SP3 | Does a Job Object with kill-on-close take the decompilers that Ghidra spawns? | P1b |
+| SP4 | Can an in-process `DecompInterface` be disposed and recreated after its native process was killed? | E9 crash isolation |
+| SP5 | Does flushing before the rename keep Ghidra's version chain and index, and is the second flush idempotent; save time before and after | E8 |
+| SP6 | Does the fork publish survive a handle holder (antivirus, indexer) on NTFS and ReFS, with retry and backoff? | E2a |
+| SP7 | Publish latency at 1, 4 and 12 publishers (fork + replay + save + verify) | `publishBatchMax`, the bound of 4.10 |
+| SP8 | DB-bound read scaling and heap with K read-only instances of one stored file | E11 go or no-go |
+| SP9 | A stress test of `Ticket.yieldSlot` with a reserved re-entry slot: no deadlock, and `s5` improves | `yieldSlots` may leave off |
+| SP10 | Script worker JVM start-up time and RAM | E7 |
 
 ## 10. Open owner decisions
 
@@ -3000,17 +4122,24 @@ comes, and what it blocks.
 
 | # | Decision | Default | Blocks |
 |---|---|---|---|
-| OD1 | **Backup policy.** Add a second, independent copy by default (for example `E:\dev-cold\...`, a full copy), `backup_min_independent` 1 instead of 0, and who authorises the 50 GB threshold behaviour? A same-volume clone does not survive loss of the volume. | One primary clone, `min_independent` 0, second root opt-in, ask before any copy over 50 GB | Y2 config defaults, Y4d |
-| OD2 | **Generation mode against the Ghidra GUI.** The GUI opening the original `.gpr` sees none of the committed annotations. Provide a "materialise current generation" action (a COW clone to a path you choose) in Hydralysis, and keep in-place replace permanently out? | Add materialise later (not in this plan); in-place never | the 0.5.0 documentation wording |
+| OD1 | **Backup policy.** DECIDED (revision 6): a second independent copy by default (`backup_min_independent` 1); the second root is configured, OD9; the 50 GB ask-first rule stays. A same-volume clone does not survive loss of the volume. | decided | Y2 config defaults, Y4d |
+| OD2 | **Generation mode against the Ghidra GUI.** REMOVED (revision 6): there is no GUI and none is planned (D36). | removed | |
 | OD3 | **Daemon singleton and the two live daemons** (18220 `default` at `F:\dev-cache\hydra-state`, 17936 `rusticre` at `F:\dev-cache\rusticre-latest`): consolidate into one root and enforce `singleton:"per-install"`? Changing the instance id or state dir starts a second daemon, so a Hydralysis rename of `INSTANCE` must wait. | Warn only; no consolidation by this stream | P1b default policy |
-| OD4 | **Supervisor default.** Auto-restart on dead or wedged daemons within the 3-per-10-minutes budget, refusing while non-recoverable unsaved edits exist? | On, as 7.2 | Y4a default |
+| OD4 | **Supervisor default.** CHANGED (revision 6, D55): auto-restart only once a durable journal exists, waiting for the process to exit, within the 3-per-10-minutes budget, refusing while non-recoverable unsaved edits exist | on, gated by `journal.durable` | Y4a default |
 | OD5 | **Tag and publish hydra.4 and pin Hydralysis to it** (and the visibility of the private Hydralysis repo). This stream creates no tag, release, push or PR. | Not done | R1 follow-up, Y4a |
 | OD6 | **Legacy window.** hydra.4 and hydra.5 serve protocol 2; refuse it from hydra.6? | Review at hydra.5 | none now |
-| OD7 | **Per-agent default views and the agent identity** (`options.as`, replacing `rusticre:<pid>`): when, and who may commit when ten agents run (any holder of the confirmation, one integrator identity, or a human-approved flow)? | Not before Y5's preconditions; any caller may commit with the confirmation | Y5 |
+| OD7 | **Per-agent default views and the agent identity.** DECIDED (revision 6, D43, D45): views are the default; `options.as` with the fallback `<client name>@<boot id>`; any holder of the confirmation may publish through the queue; an optional `publish_policy` can name one integrator identity | decided | Y5 |
+| OD8 | **Retention of generations and views.** D28 forbids automatic deletion; a publish adds about 128 MB on NTFS for KotOR and 1.5 GB for the large benchmark program, and every view fork costs the same on NTFS. A listing and a manual removal command are needed; who may run it, and the disk budget (`viewDiskBudget`, `diskReserve`)? | Keep everything; the doctor lists and offers removal; admission refuses at the reserve; ask before any single creation over 50 GB | Y2, Y4b, Y5 |
+| OD9 | **The second backup root** (OD1 is decided: a second independent copy by default). The engine hard-codes no path. | `E:\dev-cold\hydralysis-backups`, configured in `config.json` | Y2 defaults, Y4d |
+| OD10 | **Name of the integrity cut** (E8 plus E2a on the hydra.3 line): a patch tag such as `12.3-hydra.3.1`, or fold into hydra.4 | a patch tag after the 9.15 batches pass | the hotfix release |
+| OD11 | **Labels** of the Hydralysis releases: 0.5.0 qualified (client only), 0.6.0 pinned to hydra.4 | as 5.3 | R1, Y4a |
+| OD12 | Pull E7 (the killable script worker) into hydra.4 | no, hydra.5, unless a deaf-script incident occurs | E7 |
+| OD13 | A small quota volume (a VHD, may need administrator rights) for ENOSPC tests | no; disk-full is not claimed | 9.15 disk lane |
+| OD14 | **Site and engine wording pass first.** R0 and S1 land in W0, before any engine package. May the site be corrected to the "true today" wording while the engine work is open? | yes | S1, S2 |
 
 Decided here rather than asked (veto by saying so): `minClient` stays 1.0.0 (D4; it is also a required
 line of the release notes, 5.2); `save` is in the maint lane for v3 connections (D16, 5.1); no inference of the quick lane (D16); commit and publish ride `type_edit` kinds (D25); no
-automatic deletion (D28).
+automatic deletion (D28). Revision 6 decided from the owner's list: per-agent views required, the second backup by default, runtime evidence and coverage before memory write, fixture-first runtime proof, the 12.1.4-against-12.3 diff reported and never gated, auto-restart only after the journal exists, no daemon-root consolidation, ReFS warn only, Hydralysis 0.5.0 qualified, work on D:.
 
 ---
 
@@ -3069,6 +4198,12 @@ Branch `feat/session-extract` @ `b6df709e1e` (Hydra) and `feat/hydralysis-0.5` @
 | Overlays have no journal; the overlay lifecycle takes untimed `lock()` calls | `OverlayCommands.java:228, 238, 251, 319, 352, 404`; no `journal` in `OverlayCommands.java` or `Overlay.java` |
 | `AppendLog` at Hydralysis `589432e` read whole logs through `localio.read_bytes` (32 MiB budget; streamed since `2bf90c7`); the write gate freezes 41 (file, function, kind) keys outside `durable.py` (43 call sites): 11 non-record keys, 8 record-bearing and 22 artifact keys | `durable.py` (`AppendLog`), `localio.py:18`, `tests/test_durable.py` (`FOLLOW_UP`, `NOT_A_RECORD`) |
 | hydra.3 candidate: `decompile.exe` sha256 starts `4f4680aa1c22`; gate PASS, KotOR 8616/8616 identical to hydra-2 | `t2_impl_gate.json` (stream report) |
+| Revision 6: `LocalManagedBufferFile.saveCompleted` renames the pre-save file to `db.N+1.gbf` (`renameFile`) and only then calls `setReadOnly()`; `LocalManagedBufferFile.setReadOnly` calls `super.setReadOnly` (`:375`) whose `flush()` writes the header and syncs (`LocalBufferFile.java:822-825`, `flush` `:768`, `raf.getFD().sync()` `:785`) | `LocalManagedBufferFile.java:677-710` (`:696`, `:709`), `:360-375`; `LocalBufferFile.java:502`, `:768-790`, `:822-825` |
+| Revision 6: `ProjectFork.copy` stages into `.<name>.fork-<hex>.tmp`, moves `.rep` then `.gpr`; the sidecar is written afterwards and a failure only warns | `ProjectFork.java:155-185`, `ForkCommands.java:246-257` |
+| Revision 6: `openProject` calls `makeWritable` (which waits for the project lock) inside `synchronized (s.registry)`; the same monitor guards `leaveProject` and `reap` | `ProjectCommands.java:70-77`, `:104`, `:309`; `Session.java:177` |
+| Revision 6: the decompiler pool is per program entry or overlay (`borrowDecompiler`, a new `DecompInterface` per borrow when none is free), with no bound across clients | `Decompilers.java:15-28`, `ProgramEntry.java:45`, `:287`, `:299`, `Overlay.java:47`, `:89` |
+| Revision 6: `Connection` has one single-thread worker per connection; `run` waits `awaitTermination(1, HOURS)` for it and the parallel pool | `Connection.java:63`, `:99-102` |
+| Revision 6: measurement streams A, B, C, D | `D:/Projects/Hydra/_logs/measA/`, `lockmap/`, `crash-C/`, `claims-audit/` |
 
 ## Appendix B: what the source designs got wrong or left out
 
@@ -3091,7 +4226,71 @@ Found by reading the code; each is handled in the section named.
 14. **The generation sidecar hole**: "no sidecar means canonical" exempts every generation from the second on (D12).
 15. **Test files would collide**: every package wanted `daemon_tests.py` (D30).
 
+16. **(Revision 6) The three revision-6 drafts left gaps the judges and the code found.** Draft A's directory-rename fork publish cannot cover a
+    destination folder that already exists (`ProjectFork.java:155-159`), and its engine `view_*` family and four-lane scheduler are not needed (D41, D43, D40).
+    Draft B's repair-on-open renamed a version file on **read-only** opens, which would break the master-unchanged guarantee and could race a second
+    daemon's in-flight save (D42), and its XL core rewrite rested on spikes that had not run (D37). Draft C's reorder of locks before slots lets a lock holder
+    wait for a saturated lane (D39), and its `mutant=` switches put test branches into the release jar (D48). All three described the save-time defect
+    imprecisely or not at all: it is an ordering bug (rename before the header flush), not a missing temporary name (D42).
+17. **(Revision 6) The rev5 text itself:** "`_base` is built once per master revision" is false in the code (D44); "bounded waits satisfy 'locks do not block'"
+    is false by measurement (D37); the README, the CHANGELOG and the site disagreed on eleven claims (D52).
+
 ## Revision history
+
+**Revision 6 (the multi-agent, never-corrupt, non-blocking objective; headless only).** Docs only; no code in any repository this stream owns; one commit on `design/protocol-3-rev6` (worktree `D:/Projects/Hydra/wt/hydra-design6`, from `f03963af91`). Inputs: the owner's objective of 2026-10-27 (several harnesses on several projects at once, no corruption, locks must not block other clients, no GUI, the two old daemons are dead); four measurement streams run on the real daemon (A capacity `_logs/measA`, B lock map `_logs/lockmap`, C crash `_logs/crash-C`, D claims `_logs/claims-audit`); three competing drafts (A isolation first, B engine concurrency, C verification first); three judges (correctness, implementation risk and code fit, agent ergonomics and truthful claims); the PR #6 traceability audit (`rre-trace` `627b5b5`, Z1-Z15 and its eight ownership conflicts). The synthesis took Draft A's structure as the base (a verified candidate becomes head only by one `CURRENT.log` append; views are disposable caches; a complete list of residual serialisation points), Draft C's sealed generation as the read path and its falsifiability machinery (without its test switches in the jar), and Draft B's source-level fix of the version-file ordering, its deterministic `waits.foreignBlocked` gate and its release-to-claim table. **Code checked while writing:** the version-file ordering (`LocalManagedBufferFile.java:696` renames the pre-save file before `:709` `setReadOnly()` writes the header, `LocalBufferFile.java:822-825`, `:768-790`), the fork publish order (`ProjectFork.java:155-185`, `ForkCommands.java:246-257`), the registry monitor (`ProjectCommands.java:70-77`), the lock sites (`Access.java:105-109`, `ProgramEntry.java:191-196`, `OverlayCommands.java:139-143`), the decompiler pool (`ProgramEntry.java:287-299`, `Overlay.java:89`), and every `File.java:line` citation of the new text by a script against `b6df709e1e`. Site line citations were read in `F:/Projects/hydra-engine-site/src`. No daemon was started; none was touched.
+
+| Item | Disposition | Where | Note |
+|---|---|---|---|
+| Owner: per-agent views required, not deferred | applied; reverses D26 | D43, D44, D45, 4.10, Y5 (W4) | Y5 moves from W7 to W4 and becomes a real package; its preconditions are gates |
+| Owner: a second independent backup by default | applied | OD1 decided, OD9, E2 | `backup_min_independent` 1; the second root is configured, the engine hard-codes none |
+| Owner: runtime evidence and coverage first, memory write and watchpoints later and fixture-only | applied | D53, Z9-Z12, waves W6-W7 | Z12 stays gated |
+| Owner: 12.1.4-against-12.3 decompile diff reported, never gated | applied | Z7, 9.18 | 77.124% of 8,616 identical, confounded by `maxBadData` 4 |
+| Owner: supervisor auto-restart only once a durable journal exists | applied | D55, 7.2, Y4a | `journal.durable` |
+| Owner: no daemon-root consolidation; ReFS warn only; Hydralysis 0.5.0 shipped qualified; work on D: | applied | OD3 unchanged, D35, 5.3 | 0.5.0 is client-only on the hydra.2/3 pin |
+| Owner: headless only, no GUI | applied | D36, 4.7, 6.2, 9.6, OD2 removed, R0/S1/Z13a | the GUI rows of 4.7, the stock-Ghidra clause of 9.6 and the GUI limit are gone; U14 lists the sentences to change |
+| Owner: locks must not block other clients; multiple projects at once | applied as contracts NB and ISO, honestly bounded | D37, D39, D57, 3.9, 3.10, GR6 | 24 blocking points each have a decision and a red test; the residual list is complete; open (legacy) projects, protocol 2 and the shared view keep their locks and carry no claim |
+| Judge 1, adopt 1: Draft A's structure as the base | adopted | D45, 3.9, 4.10 | verified candidate, one `CURRENT.log` append, disk queue with a non-blocking leader lock, disposable views, residual list |
+| Judge 1, adopt 2: B's F1a, flush and sync before `renameFile`, shipped early | adopted | D42, E8, 5.3 | confirmed in source; the integrity cut is protocol-neutral |
+| Judge 1, adopt 3 / judge 3, adopt 1: `waits.foreignBlocked` and `waited{}` attribution as the primary non-blocking gate | adopted | D49, K13, 9.13, 3.13 | `waited` appears from 250 ms only |
+| Judge 1, adopt 4 / judge 2, adopt 6: planted violations, red before green, deterministic crash points, a 50 ms watcher, the model fold | adopted | D48, X0, K2, K16, 9.12 | the shipped-jar `mutant=` switches are replaced by compiling the old class back over the new engine through `Ghidra/patch/`; crash points are trigger-timed external kills |
+| Judge 1, adopt 5: exactly-once publish through the manifest's ids | adopted | D45, 4.10 step 5, K12 | |
+| Judge 1, adopt 6: quarantine never writes a read-only or sealed tree | adopted | D42, `corrupt_newest` | B's F1b as written is rejected |
+| Judge 1, adopt 7: waiters never hold a slot, and never hold a lock while waiting for a slot | **partly adopted, with the conflict resolved explicitly** | D39, BP9, SP9 | C's locks-before-slots is rejected; slot-first stays (deadlock-free), bounded by waiter caps for every v3 request; A's slot-yield is built behind `yieldSlots` (off) only if SP9 shows no deadlock. The residual (up to the cap of waiters hold slots) is stated in 3.10 |
+| Judge 1, adopt 8: atomic fork publish with a recognisable half state, idempotent retry, a sweeper that only removes what the engine made | adopted | D41, E2a, K6 | `.gpr` last (A's single rename cannot cover an existing destination folder) |
+| Judge 1, adopt 9 / judge 2, adopt 2: engine refusal of a writable open of a sealed or non-disposable project | adopted | D38, E2, V8 | one predicate; a project with no marker is not sealed, so legacy use is unchanged |
+| Judge 1, adopt 10 / judge 2, adopt 3: refcount leave, no wait inside the registry monitor, interruptible waits, `leaving` re-check | adopted | BP3, BP8, BP11, E3b, E3c, V10 | un-nesting is E3b's first commit |
+| Judge 1, adopt 11 / judge 2, adopt 4: spikes before the unmeasured assumptions, failing back to the sealed path | adopted | 9.20 (SP1-SP10), D37 | |
+| Judge 1, adopt 12: rule-of-three wording, process-crash scope, per-release availability, a not-guaranteed list | adopted | 6.1, D50, D58 | |
+| Judge 1, adopt 13: structured `busy` before heap or native memory runs out, Throwable-safe threads, eviction by an atomic compare against a pin count | adopted | 3.11, E9 | |
+| Judge 2, adopt 5: the Hydralysis-only work as its own client release on the hydra.3 pin | adopted | D35, 5.3 | Hydralysis 0.5.0 qualified |
+| Judge 2, adopt 7: seams for the governor only | adopted | E1 (`Hooks`, `Guarded`), D46 | |
+| Judge 2, adopt 8: one owner per file per wave, the site row, the wording pass at W0 | adopted | 8.1, 8.3, R0, S1, Z13a | the proof of this table is below |
+| Judge 3, adopt 2-14: one claims ledger, the W0 wording pass, the release-to-claim table, one error contract, the `maxLong` interim, the residual list in health and docs, red-before-green, ranges and bounds, visible limits, a stable `options.as`, the corruption fix early, a non-blocking publish, the ownership resolutions | adopted | D52, D54, D43, D35, 5.3, 3.13, 3.9, 3.11, 8.3 | |
+| Judge 1, reject 1: B's quarantine on a read-only open | rejected | D42 | |
+| Judge 1, reject 2 / judge 2, reject 5: C's locks before slots | rejected | D39 | |
+| Judge 1, reject 3: bounded waits as the answer to "locks must not block" | rejected | D37, 3.10 | bounded waits stay for the legacy paths only |
+| Judge 1, reject 4 / judge 2, reject 7: random-time kills or one 8-hour all-or-nothing run as the proof | rejected | D50, 9.15, 9.17 | counted trigger-timed batches, a nightly lane and one release run |
+| Judge 1, reject 5 / judge 3, reject 5: claims ("never corrupts", "any number", "never blocks") before the gates | rejected | D52, 6.1 | |
+| Judge 1, reject 6: optimistic parallel builds | rejected | D45 | |
+| Judge 1, reject 7 / judge 3, reject 9: ReFS as protection; the PR #6 fork figure | rejected | 6.1, D52 | 3 of 80 trigger-timed ReFS kills still poisoned a version file |
+| Judge 1, reject 8: per-view base rebuilds | rejected | D44 | |
+| Judge 1, reject 9: in-process stopping of a deaf script | rejected | D47 | |
+| Judge 1, reject 10 / judge 2, adopt 9: any GUI feature or mention | rejected | D36 | |
+| Judge 2, reject 1-2: B's N1 as one XL package; replica pools, immutable snapshots and a snapshot-only read semantic in hydra.4 | rejected; E3c is bounded and the rest is conditional | D37, D51, E11 | |
+| Judge 2, reject 3-4: Draft A's engine `view_*` family, four lanes, FFM nested limits, decompiler negative cache | rejected, **except one conflict resolved**: judge 1 praised crash isolation, judge 2 rejected the negative cache; the minimal form (3 failures per minute on one function, a 10-minute negative cache, E9) stays, so a client cannot drive a crash loop | D43, D40, D46 | FFM limits and the fourth lane are not built |
+| Judge 2, reject 6: `mutant=` and `crashAt=` hooks; the E8 ".part" scheme | rejected | D48, D42 | the file is already a temporary pre-save file |
+| Judge 2, reject 8-9: E7/E10/E11 on the hydra.4 critical path; stacking E8, E2, E3a, E3c in one wave; `Session.java` with four owners and no gate | rejected / answered | D56, D47 | E8 and E2a are W1, E2 and E3a W2, E3c W4; `Session.java` has four owners over W1-W5, each wave gated by the characterization diff and its red-table rows |
+| Judge 3, reject 1, 4: always-on reply fields; silent staleness | rejected | D51 | |
+| Judge 3, reject 2: a pid-based agent id | rejected | D43 | |
+| Judge 3, reject 6, 7, 8, 10: loaded-machine latency thresholds; extra lane taxonomy; deferring all truth to the XL refactor; spare pools, group commit and replica pools in the first cut | rejected | D49, D40, D35, D45 | |
+| The audit's 8 ownership conflicts and 2 conditionals | resolved | 8.3 | table "The eight conflicts" |
+| The audit's Z1-Z15 | integrated | 8, 8.1, 8.3, D53 | Z2 moved from W4 to W3; Z13 and S are split by wave (a, b) |
+| Claims audit: 11 contradicted, 14 unsupported or stale claims | wording, ledger, owner, flip tests | D52, 8.3, 9.19 | 25 claims with replacement text and flipping package |
+| Rev5 decisions reversed or changed | marked in place and listed | 2.1 | D26 reversed; D19, D16, D17, D20, D12, D1 changed; D5, D22, D28 preserved; OD1, OD2, OD4, OD7 decided or removed; gate 9.5 replaced, 9.6 stock clause removed |
+| The two old daemons | not touched | | this stream started no daemon and touched none |
+
+**Proof output** (`D:/Projects/Hydra/_logs/spec-rev6/prove_disjoint_rev6.py`, run on this file with the default inventories: Hydra `f47ff15934`, Hydralysis `d0466bc`, `589432e`, `f46788b`, `8e696e2` and `627b5b5`; output `prove_disjoint_rev6_out.txt`; exit 0): *52 package ids identical in the wave plan table and the proof's plan (the pattern sees Y0e, Y4e, X0, E2a, E3c, Z13a, S2); 116 matrix rows, 330 (repo, wave, file) owner cells in a Hydra, a Hydralysis and a Site table; 52 package blocks; files edited by the text but granted by no row or rule: none; files owned by more than one package in one wave: none besides the two declared `then` sequences (`S/HeadlessSession.java`, E5 then E9; `tests/test_durable.py`, Y0e then Y1); every package's Files text equals its matrix files (the union of its `Files` paragraphs; S2 by the stated waiver "the same files as S1"); 57 existing test, example, tool and benchmark files: 29 with a row, 0 by rule, 28 frozen; dependency cycles: none; no package depends on a later wave; a later owner of a file that does not depend on the earlier one: none; frozen tests asserting a stub answer: `tests/test_cli.py` and `tests/test_contracts.py`, both owned in W2 by Y2; frozen tests asserting a catalog epoch: only `tests/test_contracts.py`, no later package changes it; frozen tests asserting a value a revision-6 package changes (`SYNC_LOCK_S`, `.sync.lock`, the default identity, `maxLong`/`maxQuick`, and in the Hydra examples a default lane size or the cleanup wait): none; pinned `12.3-hydra.<n>` literals in the Hydralysis tree: all in the bump list, the Y4a rewrite list or the historical list (the audit report `docs/pr6-traceability.md` is now historical); the site's five files with the release literal all have S1 and S2 cells; 120 matrix files exist, 96 are created and all 96 are marked created; the Ghidra-core and root paths exist in the tree they name; RESULT: 0 violations.* The same script on the **revision 5 text** exits 1 (25 violations: the plan has 24 ids, no row for the revision 6 packages, no site table), `prove_disjoint_rev6_on_rev5_out.txt`; four **planted** failures on the revision 6 text each exit 1 (a deleted row of E9's three files: six violations; Y2's W2 cell of `tests/test_contracts.py` removed: `FROZEN-TEST-ASSERTS-A-STUB-NO-OWNER`; `S/Access.java` given to E4 in W4: three violations; E9 named beside E5 in the W5 cell of `S/Scheduler.java` without a sequence: `EXTRA-NAME-IN-CELL`), `prove_disjoint_rev6_plants_out.txt`. Counts: 52 packages in 9 waves (W0 to W8), 116 matrix rows, 330 owner cells, 2 declared in-wave sequences, 13 reply-shape conditionals, 6 behaviour gates, 8 G rows, 10 V rows (V8 to V10 new), 58 decisions (D35 to D58 new, 10 rev5 rows marked), 14 owner decisions (OD8 to OD14 new), 8 gates added (9.12 to 9.19) and 10 spikes.
+
 
 **Revision 5 (answers the fourth independent review: three blocking items and nine nits, and four items folded in from the W0 package reviews).** Docs only; no code in any repository this stream owns; one commit on `design/protocol-3`.
 The review's verdict was that revision 4 was not clean: two frozen tests that no row could edit would break
