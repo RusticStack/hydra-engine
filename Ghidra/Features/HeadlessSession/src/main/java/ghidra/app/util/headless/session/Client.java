@@ -122,7 +122,10 @@ final class Client {
 		if (v.compareTo(java.math.BigInteger.valueOf(HydraInfo.PROTOCOL_MAX)) >= 0) {
 			return HydraInfo.PROTOCOL_MAX;
 		}
-		return Math.max(HydraInfo.PROTOCOL_MIN, v.intValue());
+		if (v.compareTo(java.math.BigInteger.valueOf(HydraInfo.PROTOCOL_MIN)) <= 0) {
+			return HydraInfo.PROTOCOL_MIN; // before intValue(), which wraps to the low 32 bits
+		}
+		return v.intValue();
 	}
 
 	String label() {

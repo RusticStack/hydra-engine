@@ -309,7 +309,9 @@ def t_protocol(c: Ctx):
         # the protocol a hello asks for, answered as 3.1 says (JSON integers only; anything else
         # is "absent": the request is not refused)
         want = [("<absent>", 2), (2, 2), (3, 3), (9, 3), (1, 2), (0, 2), (-5, 2), ("3", 2),
-                (3.0, 2), (True, 2), (None, 2), ([3], 2), (10 ** 20, 3), (-10 ** 20, 2)]
+                (3.0, 2), (True, 2), (None, 2), ([3], 2), (10 ** 20, 3), (-10 ** 20, 2),
+                # negative values whose low 32 bits are 3 or 4 (a wrapped intValue() would answer them)
+                (-4294967293, 2), (-4294967292, 2), (-9223372036854775805, 2)]
         for ask, got in want:
             r = Raw(ep)
             try:

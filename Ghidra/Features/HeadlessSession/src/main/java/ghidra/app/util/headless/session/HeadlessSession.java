@@ -683,8 +683,9 @@ public class HeadlessSession implements GhidraLaunchable {
 				"{\"protocol\":1}", "{\"protocol\":0}", "{\"protocol\":-5}", "{\"protocol\":\"3\"}",
 				"{\"protocol\":3.0}", "{\"protocol\":true}", "{\"protocol\":null}",
 				"{\"protocol\":[3]}", "{\"protocol\":99999999999999999999}",
-				"{\"protocol\":-99999999999999999999}" };
-			int[] want = { 2, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 2 };
+				"{\"protocol\":-99999999999999999999}", "{\"protocol\":-4294967293}",
+				"{\"protocol\":-4294967292}", "{\"protocol\":-9223372036854775805}" };
+			int[] want = { 2, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 2, 2, 2, 2 };
 			boolean all = true;
 			StringBuilder sb = new StringBuilder();
 			for (int i = 0; i < asks.length; i++) {
