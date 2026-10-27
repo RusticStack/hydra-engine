@@ -19,7 +19,8 @@ long-lived JVM, driven by JSON lines over an authenticated loopback socket (or s
 - runs auto-analysis on request, decompiles, renames, comments, saves;
 - runs any GhidraScript (Java, or Python through a script provider) with arguments;
 - lets several clients change things at once: several writers in one project, several writers
-  of one program (shared mode, with an author journal and `expect` against lost updates), a
+  of one program (shared mode, with an author journal and an opt-in `expect` against lost
+  updates; without it the last writer wins per value), a
   private **overlay** per client over a program others read, and **working copies**
   (`fork_project`, a block clone on ReFS) of a project others keep reading;
 - notices when another process saves a project it serves read-only, and reopens it for all its
@@ -30,7 +31,7 @@ long-lived JVM, driven by JSON lines over an authenticated loopback socket (or s
   client dies;
 - stays up (or stops after an idle time you choose).
 
-It is one new module, plus two small fixes to Ghidra classes that the session's measurements
+It is one new module, plus three small fixes to Ghidra classes that the session's measurements
 found (see "Changes outside this module"). No launcher is changed, and there are no `.bat`, `.sh`
 or PowerShell launchers: `support/ghidra_session.py` (Python 3.10+, standard library only, any
 OS) starts the JVM itself.
@@ -356,7 +357,9 @@ owner may turn its program shared by opening it again with `share`.
   transaction (Ghidra joins concurrent transactions on one program into one, which would let one
   client's rollback undo another's work). Readers share the lock between changes. A committed
   change is visible to every client at once: they share one program object.
-- **Last writer wins** per value (a name, a comment of a type at an address, ...). To detect a
+- **Writes are serialized and never corrupt the program, but they are not collision-checked
+  unless you ask.** **Last writer wins** per value (a name, a comment of a type at an address,
+  ...) by default; `expect` is optional on each call, not required. To detect a
   lost update instead, pass `"expect"` (the value you read; `null`: none) on `rename`, `comment`
   or an `edit` operation of those kinds: if the value changed since, the change is refused with `conflict`,
   `reason: "changed"`, the `current` value, and the last editor (`lastEdit`, `holderInfo`).
@@ -1065,6 +1068,11 @@ module" and "Deferred start-up"; "this branch" is with them.
 | Daemon: first client's `open_program` | 803 ms (782-979) | 4111 ms (3898-6478) | **832 ms** (754-869) |
 | Daemon: start until the first answer | 1684 ms (1624-2392) | 5049 ms (4892-7491) | **1637 ms** (1589-1765) |
 | Warm `decompile` | 7.0-7.3 ms | 7.1 ms | 6.7-7.1 ms |
+
+The warm `decompile` rows here and below time one function of this program, whose size was not
+recorded; a warm decompile depends on the function's size. Measured by the owner on a KotOR
+executable (2026-10-27): 0.7-2.1 ms for a one-byte function and 35-45 ms for a 6.7 KB function of
+29 basic blocks. Read "about 7 ms" as one function in one program, not as a constant.
 
 Master's `open_program` cost depends on the volume the install is on: it is the language service
 opening a lock file per language (see "Changes outside this module"), which measured 1.1-1.9 s

@@ -2,24 +2,66 @@ Hydra Engine
 
 Copyright 2026 RusticStack and contributors.
 
-Hydra Engine is derived from Ghidra (https://github.com/NationalSecurityAgency/ghidra), the
-software reverse engineering framework developed by the National Security Agency, and is
-distributed under the same license, the Apache License, Version 2.0 (see LICENSE). Ghidra's own
-notice is in NOTICE, and the licenses of the third-party components Ghidra uses are in the
-licenses/ and GPL/ directories; all of them apply to Hydra Engine unchanged.
+Hydra Engine is a fork of Ghidra (https://github.com/NationalSecurityAgency/ghidra), the
+software reverse engineering framework developed by the National Security Agency. It is based on
+Ghidra's `master` branch (12.3 DEV); the upstream commit each release is based on is named in
+CHANGELOG.md, and upstream changes are merged in as they land. Ghidra's project format, decompiler,
+analyzers, processor modules, loaders and scripting API are Ghidra's own, unchanged except as
+listed below, and Hydra Engine depends on them. It is distributed under the same license as
+Ghidra, the Apache License, Version 2.0 (see LICENSE). Ghidra's own notice is in NOTICE, and the
+licenses of the third-party components Ghidra uses are in the licenses/ and GPL/ directories; all
+of them apply to Hydra Engine unchanged.
 
-What Hydra Engine adds to Ghidra:
+This file is the notice of modifications required by section 4(b) of the Apache License,
+Version 2.0. Release archives ship it next to NOTICE and LICENSE.
+
+
+Files of upstream Ghidra that Hydra Engine modified or replaced
+(every file below exists in upstream Ghidra; compared with the upstream commit named in
+CHANGELOG.md):
+
+  Ghidra/Framework/DB/src/main/java/db/buffers/LocalBufferFile.java
+      A temporary buffer file is truncated to zero length before it is closed and deleted, so
+      that ReFS (as on a Windows Dev Drive) does not write its unwritten pages back first.
+      A comment at the top of the file says so.
+  Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/local/LocalDatabaseItem.java
+      A new private database item gets its file type only once its content is complete, so an
+      item whose writer was killed is removed as incomplete instead of being listed as a program
+      that cannot be opened. A comment at the top of the file says so.
+  Ghidra/Framework/SoftwareModeling/src/main/java/ghidra/app/plugin/processors/sleigh/SleighLanguageFile.java
+      The language lock file is created the first time a language needs it instead of for every
+      language description at start-up. A comment at the top of the file says so.
+  gradle/distributableGhidraModule.gradle
+      Two lines: a module's support/ folder is copied into the distribution without
+      __pycache__ folders and .pyc files.
+  build.gradle
+      One line at the end: `apply from: 'gradle/hydra/headless.gradle'`.
+  .gitattributes
+      Three lines: scripts in .github/scripts keep LF line endings.
+  README.md
+      Replaced by Hydra Engine's README. Ghidra's original README is kept, byte for byte, as
+      README-GHIDRA.md (a new file).
+  .github/ISSUE_TEMPLATE/bug_report.md, feature_request.md, question.md
+      Removed; replaced by issue forms (bug_report.yml, feature_request.yml, config.yml).
+
+Every other file of upstream Ghidra, including its .github/workflows, is as published by its
+authors.
+
+
+What Hydra Engine adds to Ghidra (new files, none of them in upstream Ghidra):
   - the HeadlessSession module (Ghidra/Features/HeadlessSession): a shared headless session
     daemon, its Python launcher and client, and their tests;
   - a headless-only build (gradle/hydra/headless.gradle, the buildHeadless task);
-  - the repository's own documentation, assets and CI (README.md, NOTICE-HYDRA,
-    CHANGELOG.md and the files in .github/).
-Everything else is Ghidra as published by its authors. Ghidra's original README is
-README-GHIDRA.md.
+  - the repository's own documentation, assets and CI (NOTICE-HYDRA, CHANGELOG.md,
+    README-GHIDRA.md, and the files in .github/: CONTRIBUTING.md, SECURITY.md, issue forms, the
+    pull request template, assets, scripts, and the ci.yml and release.yml workflows).
 
-Hydra Engine is an independent project. It is not affiliated with, sponsored by or endorsed by
-the National Security Agency, the United States Government or the Ghidra project. "Ghidra" is
-used only to describe where the code comes from.
+
+Status and affiliation
+
+Hydra Engine is not affiliated with, sponsored by or endorsed by the National Security Agency,
+the United States Government or the Ghidra project. "Ghidra" is used to say where the code comes
+from and what it is compatible with.
 
 Hydra Engine is named after the many-headed serpent of Greek myth. It is not affiliated with,
 sponsored by or endorsed by Marvel or The Walt Disney Company, and it uses none of their
