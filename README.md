@@ -29,11 +29,13 @@ Many agents work in it at the same time, on any number of projects. Warm decompi
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset=".github/assets/architecture-dark.svg">
-    <img src=".github/assets/architecture-light.svg" width="860" alt="Diagram: on the left, six heads (Claude Code, Codex, OpenCode, QoderCLI, RusticRE as an MCP server, a script), each busy at the same moment, wired to one Hydra Engine daemon in the middle. Its quick lane holds four requests answered in milliseconds while its long lane runs an import and an analysis. On the right, five programs in five projects, each opened in place, wired to the requests working on them">
+    <img src=".github/assets/architecture-light.svg" width="860" alt="Animated diagram: four agent harnesses (Claude Code, Codex, OpenCode, QoderCLI) send requests through the RusticRE MCP server into one Hydra Engine daemon. Its quick lane answers decompiles, renames and lookups in milliseconds while its long lane runs an import and an analysis at the same time; on the right, programs in five projects light up with the operation and the harness working on them, and long jobs fill a progress bar.">
   </picture>
 </p>
 
-<p align="center"><i>Every head at work at once. One body holds them all.</i></p>
+<p align="center"><i>Every head at work at once. One body holds them all.</i><br>
+<sub>Here Claude Code, Codex, OpenCode and QoderCLI all reach the engine through the
+<a href="https://github.com/RusticStack/RusticRE">RusticRE</a> MCP server; any client can also connect directly.</sub></p>
 
 In the myth, the Hydra has one body and many heads. Here the body is one long-lived JVM holding
 Ghidra, its open projects, its analysed programs and its warm decompilers. The heads are the
@@ -51,9 +53,10 @@ headless-only build. It is upstream Ghidra `master` plus those, kept in sync.
 
 ## What it does
 
-- **One daemon per user, many clients.** Claude Code, Codex, OpenCode, QoderCLI,
-  RusticRE (RusticStack's RE server) and your own scripts share one JVM. The first client starts
-  it; the rest find it through a per-user endpoint file and join in milliseconds.
+- **Many agents at the same time.** Claude Code, Codex, OpenCode, QoderCLI, MCP servers such as
+  [RusticRE](https://github.com/RusticStack/RusticRE) and your own scripts all work in one daemon at
+  once: one JVM per user. The first client starts it; the rest find it through a per-user endpoint
+  file and join in milliseconds.
 - **Many projects and programs at once.** Open any number of projects in place, by their `.gpr`
   or folder, and switch between programs without importing them again.
 - **Read-only without a lock.** A project opens the way *File > View Project* does: no lock file,
@@ -110,6 +113,16 @@ search caches on. Medians from the
 
 The same question through stock `analyzeHeadless` (`-process ... -readOnly -postScript`, one
 decompile) took 7.0-7.8 s per question, and needed a copy of the project (measured on 12.1.4).
+
+Several at once (same machine; the module README has the method):
+
+| | |
+|---|---|
+| Four large PEs imported in parallel (`maxImports` 4) | 63.9 s, against 165.1 s one after another |
+| Decompiles while two 128 MB imports write into the same project | median 4.9 ms (5.7 ms before) |
+| Working copy of a 1.5 GB project on ReFS (`fork_project`) | 204-225 ms, 2.8-5.0 MB |
+| Four clients x two threads, shared writing on one program | 3,200 renames and comments with 64 saves in 6.0 s, none lost |
+
 ## Quick start
 
 You need a JDK 25 and Python 3.10 or later.
@@ -191,12 +204,26 @@ with gs.connect(client="my-tool", harness="claude-code") as s:   # joins the dae
   `default.json` in the state directory (`%LOCALAPPDATA%\GhidraSession`,
   `~/Library/Application Support/GhidraSession` or `~/.local/state/ghidra-session`), connect to
   its loopback port, and send JSON lines, the first being `hello` with the token.
-- **MCP servers** (RusticRE is one) wrap the client: one daemon connection for the server, one
-  tool per command they expose. The session is a generic Ghidra front end; the tools belong to the
-  client.
+- **MCP servers** wrap the client: one daemon connection for the server, one tool per command
+  they expose, and a per-request `client`/`harness` label for each agent they serve. The session
+  is a generic Ghidra front end; the tools belong to the client.
+
+**Through an MCP server.** [RusticRE](https://github.com/RusticStack/RusticRE) is RusticStack's:
+twenty reverse-engineering tools for programs you own, on Hydra Engine. Its `backend install`
+fetches the pinned Hydra Engine release; register it in any harness that reads the common
+`mcpServers` shape:
+
+```json
+{
+  "mcpServers": {
+    "rusticre": { "command": "/path/to/RusticRE/.venv/Scripts/rusticre.exe", "args": ["mcp"] }
+  }
+}
+```
 
 The protocol, every command and every error code are in the
-[module README](Ghidra/Features/HeadlessSession/README.md#protocol-version-2).
+[module README](Ghidra/Features/HeadlessSession/README.md#protocol-version-2); task-by-task guides
+are in the [docs](https://www.hydrare.dev/docs/quick-start).
 
 ## Compared with stock headless Ghidra
 
@@ -282,7 +309,8 @@ For Ghidra's own GUI build and usage docs, see Ghidra's original README:
 
 `main` is upstream Ghidra `master` plus the additions above, merged (never rebased) when
 upstream moves. Few upstream files are changed: `README.md`, one line of `build.gradle`, two
-lines of `gradle/distributableGhidraModule.gradle`, `.gitattributes`, two issue templates, and
+lines of `gradle/distributableGhidraModule.gradle`, `.gitattributes`, the issue templates (replaced
+by issue forms), and
 three small Java fixes (`LocalBufferFile`, `LocalDatabaseItem`, `SleighLanguageFile`; see the
 module README's "Changes outside this module"), so a sync conflicts in those at most. The steps
 and the resolutions are in [CONTRIBUTING](.github/CONTRIBUTING.md#upstream-sync).
