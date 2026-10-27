@@ -167,6 +167,92 @@ def client_protocol(gs, n):
             gs.PROTOCOL, gs.check_compatible, gs.Daemon._check_install = saved
 
 
+def selftest(gs):
+    """Regression test of ``client_protocol`` (no daemon, no project, a few ms): what the shim
+    relaxes and what it must leave in force, on the launcher library ``gs`` of the engine under
+    test. Prints one line per check; returns the exit code (0 only when every check held)."""
+    bad = []
+
+    def check(what, cond):
+        print(("ok   " if cond else "FAIL ") + what)
+        if not cond:
+            bad.append(what)
+
+    def raises(fn, exc):
+        try:
+            fn()
+        except exc:
+            return True
+        except Exception as e:  # noqa: BLE001
+            print(f"     raised {type(e).__name__}, expected {exc.__name__}: {e}")
+            return False
+        return False
+
+    def accepts(fn):
+        try:
+            fn()
+        except Exception as e:  # noqa: BLE001
+            print(f"     raised {type(e).__name__}: {e}")
+            return False
+        return True
+
+    class _D:
+        instance = "selftest"
+
+    inst = type("_Inst", (), {"dir": pathlib.Path(__file__).resolve().parent})()
+    here = str(inst.dir)
+    orig = (gs.PROTOCOL, gs.check_compatible, gs.Daemon._check_install)
+    cur = gs.CLIENT_VERSION
+    inc, lau = gs.IncompatibleError, gs.LaunchError
+
+    def compat(info, **kw):
+        return lambda: gs.check_compatible(info, **kw)
+
+    def install(ep):
+        return lambda: gs.Daemon._check_install(_D(), ep, inst)
+
+    with client_protocol(gs, 3):
+        check("n=3: PROTOCOL is 3 inside", gs.PROTOCOL == 3)
+        check("n=3: an engine answering 2 or 3 is accepted",
+              accepts(compat({"protocol": 2})) and accepts(compat({"protocol": 3, "minClient": cur})))
+        check("n=3: a minClient above this client is still rejected",
+              raises(compat({"protocol": 3, "minClient": "99.0.0"}), inc)
+              and raises(compat({"protocol": 2, "minClient": "99.0.0"}), inc))
+        check("n=3: an unreadable minClient is still rejected",
+              raises(compat({"protocol": 2, "minClient": "x"}), inc))
+        check("n=3: protocols 1, 4, None, True and '3' are rejected",
+              all(raises(compat(i), inc) for i in ({"protocol": 1}, {"protocol": 4}, {},
+                                                   {"protocol": True}, {"protocol": "3"})))
+        check("n=3: an explicit protocol=3 call with an answer of 2 is rejected",
+              raises(compat({"protocol": 2}, protocol=3), inc))
+        check("n=3: install check accepts protocol 2 and 3 of this install",
+              accepts(install({"protocol": 2})) and accepts(install({"protocol": 3,
+                                                                    "install": here})))
+        check("n=3: an install mismatch raises LaunchError",
+              raises(install({"protocol": 2, "install": here + "-other"}), lau))
+        check("n=3: an endpoint protocol outside 2..3 raises LaunchError",
+              raises(install({"protocol": 4}), lau) and raises(install({"protocol": 1}), lau))
+        with client_protocol(gs, 2):
+            check("nested n=2: PROTOCOL is 2 inside", gs.PROTOCOL == 2)
+            check("nested n=2: an answer of 3 is rejected",
+                  raises(compat({"protocol": 3}), inc))
+        check("nested: the outer n=3 is back after the inner block",
+              gs.PROTOCOL == 3 and accepts(compat({"protocol": 3})))
+    check("after the block the original three are back",
+          (gs.PROTOCOL, gs.check_compatible, gs.Daemon._check_install) == orig)
+    try:
+        with client_protocol(gs, 3):
+            raise RuntimeError("inside")
+    except RuntimeError:
+        pass
+    check("after a raise inside the block the original three are back",
+          (gs.PROTOCOL, gs.check_compatible, gs.Daemon._check_install) == orig)
+    check("outside the block the original rejects an answer of 3 (when PROTOCOL is 2)",
+          gs.PROTOCOL != 2 or raises(compat({"protocol": 3}), inc))
+    print(f"{'FAILED: ' + str(len(bad)) + ' check(s)' if bad else 'all client_protocol checks ok'}")
+    return 1 if bad else 0
+
+
 class Ctx:
     def __init__(self, a, gs):
         self.a = a
@@ -2750,9 +2836,12 @@ def run_test(c, n, secs):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ghidra", required=True)
-    ap.add_argument("--work", required=True)
-    ap.add_argument("--exe", required=True)
-    ap.add_argument("--dll", required=True)
+    ap.add_argument("--selftest", action="store_true",
+                    help="check the client_protocol shim against this install's launcher library "
+                    "(needs only --ghidra: no --work, --exe, --dll, no daemon) and exit")
+    ap.add_argument("--work", help="an empty working directory (required except with --selftest)")
+    ap.add_argument("--exe", help="a PE file to import (required except with --selftest)")
+    ap.add_argument("--dll", help="a second PE file (required except with --selftest)")
     ap.add_argument("--project", help="an analysed project to open read-only (never written)")
     ap.add_argument("--legacy-project", dest="legacy_project",
                     help="a project saved by an older Ghidra, for upgrade_cache (only copied)")
@@ -2779,6 +2868,14 @@ def main():
                     "children killed (default: 600 with --baseline, else none)")
     ap.add_argument("--report", help="also write the results here, as JSON")
     a = ap.parse_args()
+    if a.selftest:
+        sys.path.insert(0, str(pathlib.Path(a.ghidra) / "Ghidra" / "Features" / "HeadlessSession" /
+                               "support"))
+        import ghidra_session as gs
+        sys.exit(selftest(gs))
+    for opt in ("work", "exe", "dll"):
+        if not getattr(a, opt):
+            ap.error(f"--{opt} is required (except with --selftest)")
     sys.modules.setdefault("daemon_tests", sys.modules[__name__])  # dt_*.py import this file
     for n in TESTS:
         REGISTRY[n] = globals()["t_" + n]

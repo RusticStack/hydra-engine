@@ -48,7 +48,14 @@ import daemon_tests as dt
 SLEEP = 8000          # ms: how long the long-lane occupiers of lane_starvation run
 QUICK_BOUND_MS = 3000  # a quick script must start and finish within this, long lane or not
 TRANSIENT_NAME = "baseline_transient"
-QUEUED_THIRD_MIN_MS = 19000  # import_wait: the queued import's 10 s gate wait + 10 s scheduler wait
+# import_wait signature, all in ms. The slowest import waited 10 s for the import gate and then the
+# default 10 s for the scheduler: it fails 20 s in, so inside [LAST_MIN, LAST_MAX]. The imports
+# admitted at once fail 10 s in, so the slowest one ends 10 s (SPREAD_MIN..SPREAD_MAX) after the
+# fastest. A failure at 24 s, or all failures at the same instant, is a different behaviour.
+SLOWEST_IMPORT_MIN_MS = 19000
+SLOWEST_IMPORT_MAX_MS = 23000
+SPREAD_MIN_MS = 8000
+SPREAD_MAX_MS = 12000
 
 QUICK = """// @category HeadlessSession.Test
 import ghidra.app.script.GhidraScript;
@@ -333,31 +340,40 @@ def t_import_wait(c):
             return (f"three imports waited for the occupied long lane and succeeded "
                     f"({ev['importsMs']} ms)")
         # Two observations are told apart. The weaker one: each failing import is busy on the long
-        # lane after the 10 s default wait. The premise needs the stronger one: the queued third
-        # import (admitted to the gate only when an earlier one left it, 10 s in) fails busy about
-        # 10 s *after* that, so about 20 s in total (10 s gate wait + 10 s scheduler wait). Two
-        # imports failing at 10 s alone only show that they were admitted at once.
+        # lane after the 10 s default wait. The premise needs the stronger one: the import that
+        # queued for the gate (admitted only when an earlier one left it, 10 s in) fails busy about
+        # 10 s *after* that, so about 20 s in total (10 s gate wait + 10 s scheduler wait), and
+        # about 10 s after the fastest one. The signature is bounded on both sides: the slowest
+        # import ends within [SLOWEST_IMPORT_MIN_MS, SLOWEST_IMPORT_MAX_MS] and the spread between
+        # the slowest and the fastest within [SPREAD_MIN_MS, SPREAD_MAX_MS]. Imports failing at
+        # 10 s alone only show that they were admitted at once.
         ms = sorted(r["ms"] for r in res)
+        spread = ms[-1] - ms[0]
         busy10 = all(r["ok"] or (busy_long(r) and r["details"].get("waitedMs") == 10000)
                      for r in res) and any(not r["ok"] for r in res)
-        queued_third = busy10 and ms[-1] >= QUEUED_THIRD_MIN_MS
-        ev["observation"] = ("queued third import failed busy ~10 s after reaching the front"
-                             if queued_third else
-                             "failures at the 10 s default wait only; no import showed the extra "
-                             "gate wait" if busy10 else "no busy/long/10000 signature")
-        ev["queuedThirdMs"] = ms[-1]
-        ev["admittedAtOnceMs"] = ms[:-1]
-        ev["queuedThirdMinMs"] = QUEUED_THIRD_MIN_MS
+        queued = (busy10 and SLOWEST_IMPORT_MIN_MS <= ms[-1] <= SLOWEST_IMPORT_MAX_MS
+                  and SPREAD_MIN_MS <= spread <= SPREAD_MAX_MS)
+        ev["observation"] = ("the slowest import failed busy ~10 s after the fastest, ~20 s in "
+                             "(gate wait + scheduler wait)" if queued else
+                             "failures busy at the 10 s default wait, but outside the bounded "
+                             "signature of a queued import" if busy10 else
+                             "no busy/long/10000 signature")
+        ev["slowestImportMs"] = ms[-1]
+        ev["earlierImportsMs"] = ms[:-1]
+        ev["spreadMs"] = spread
+        ev["slowestImportBoundsMs"] = [SLOWEST_IMPORT_MIN_MS, SLOWEST_IMPORT_MAX_MS]
+        ev["spreadBoundsMs"] = [SPREAD_MIN_MS, SPREAD_MAX_MS]
         what = (f"imports ended {ev['codes']} after {ev['importsMs']} ms (occupiers hold the lane "
                 f"{occupy_ms} ms; total {total:.1f} s)")
-        if queued_third:
-            raise dt.PremiseFail(what + f": the queued import failed busy {ms[-1]} ms in (10 s "
-                                 "gate wait + the default 10 s scheduler wait), not the wait of "
-                                 "the queue", ev)
+        if queued:
+            raise dt.PremiseFail(what + f": the slowest import failed busy {ms[-1]} ms in, "
+                                 f"{spread} ms after the fastest (10 s gate wait + the default "
+                                 "10 s scheduler wait), not the wait of the queue", ev)
         if busy10:
-            raise dt.Fail(what + f": only the weaker observation (busy at the 10 s default wait); "
-                          f"the premise needs the slowest import at >= {QUEUED_THIRD_MIN_MS} ms "
-                          f"(10 s gate wait + 10 s scheduler wait), saw {ms[-1]} ms")
+            raise dt.Fail(what + f": busy at the 10 s default wait but not the signature: the "
+                          f"premise needs the slowest import in {SLOWEST_IMPORT_MIN_MS}.."
+                          f"{SLOWEST_IMPORT_MAX_MS} ms and {SPREAD_MIN_MS}..{SPREAD_MAX_MS} ms "
+                          f"after the fastest; saw {ms[-1]} ms, spread {spread} ms")
         raise dt.Fail(what)
 
 

@@ -1355,7 +1355,7 @@
       "method": "<masked>",
       "cloned": "<masked>",
       "clonedBy": "<masked>",
-      "bytes": 4425400,
+      "bytes": "<masked>",
       "files": 14,
       "copyMs": "<masked>",
       "freeSpaceUsedBytes": "<masked>",
@@ -1401,7 +1401,7 @@
         "mode": "full",
         "method": "<masked>",
         "cloned": "<masked>",
-        "bytes": 4425400,
+        "bytes": "<masked>",
         "depth": 1
        },
        "opened": true
@@ -1567,7 +1567,7 @@
         "mode": "full",
         "method": "<masked>",
         "cloned": "<masked>",
-        "bytes": 4425400,
+        "bytes": "<masked>",
         "depth": 1
        },
        "joined": true,

@@ -27,8 +27,11 @@ script of requests, and stores request and whole response (``ok``, ``result`` or
 ``code``, ``message`` and ``details``, and the ``stale``/``refreshed`` markers), in the order
 the daemon wrote the keys. Only what differs between two runs of the same build is masked:
 timings, pids, ports, paths (as ``<WORK>``, ``<INSTALL>``), file-system dependent copy figures,
-and revision fingerprints (renumbered by first appearance, so equal and different revisions stay
-visible as such). The fixture is two tiny x64 PE files this script writes itself, so the golden
+the total size (``bytes``) of a copied project (it depends on the length of the program file IDs
+Ghidra writes into the project, which follows the host's network address and uptime; the masker
+checks that it is a positive int, and ``files`` stays), and revision fingerprints (renumbered by
+first appearance, so equal and different revisions stay visible as such). ``--selftest`` checks the
+masker offline. The fixture is two tiny x64 PE files this script writes itself, so the golden
 files carry nothing derived from any real program and do not depend on the Windows version.
 
 Golden files: ``examples/characterization/<scenario>.json`` (``--golden`` to use another
@@ -44,7 +47,8 @@ changes because a v3 one is recorded. An engine without v3 answers 2 to a reques
 that an exit 2), because a golden recorded from such an engine would be a v2 golden in the v3
 directory. That exit 0 is a SKIP, not a pass: the run prints ``SKIP ...`` and a summary line that
 starts ``*** SKIPPED ***`` and says NOT VERIFIED. ``--require-v3`` and the environment variable
-``HYDRA_REQUIRE_V3=1`` are the same switch (the flag wins when given, the variable is the default).
+``HYDRA_REQUIRE_V3=1`` are the same switch: either one turns it on, and the flag cannot turn it off
+again when the variable is set (unset the variable instead).
 **Gate 9.3 (PROTOCOL-3.md) must set ``HYDRA_REQUIRE_V3=1`` (or pass ``--require-v3``) as soon as a v3
 engine exists**: without it a CI whose engine lost v3, or whose path points at a v2 engine, passes
 this check silently while verifying nothing.
@@ -187,6 +191,17 @@ VOLATILE = {
 }
 VOLATILE.add("at")
 VOLATILE_SUFFIX = re.compile(r"(Ms|MsAgo|Mb|PerMb|Seconds|Bytes)$")
+# The total size of a copied project, ``bytes`` in the answer of ``fork_project`` / ``refresh``
+# and, without ``files``, the ``fork`` descriptor of a project (the dicts that also have ``mode``,
+# ``full`` or ``copy-on-write``). It is not a function of the request: the project files carry the file ID of every program (``~index.dat``, ``~journal.bak``
+# and each ``<n>.prp``, three times per program), and Ghidra builds that ID as
+# ``hex(host IPv4 octets) + hex(port) + System.nanoTime()`` (FileIDFactory.createFileID), so its
+# length follows the address the host resolves to (100.123.249.118 is 8 hex digits, an address with
+# small octets has fewer) and the machine's uptime, and the total moves by 6 bytes per character. Only the figure is masked; the
+# key, its position, its type (a positive int, checked in ``Masker.total``) and ``files`` stay.
+# The ``bytes`` of a listed program file has no ``mode`` next to it, is a multiple of the 4 KiB
+# database page and stays in the golden.
+PROJECT_TOTAL = ("bytes", "mode")
 REV = re.compile(r"^[0-9a-f]{16}$")
 ISO_TIME = re.compile(r"^\d{4}-\d\d-\d\dT[\d:.]+Z$")
 
@@ -208,9 +223,18 @@ class Masker:
         s = re.sub(r"\b\d{10,}\b", "<n>", s)
         return s
 
+    def total(self, v):
+        """The masked project total. A value that is not a positive int is an error, not a mask:
+        the figure is hidden, its type and sign are not."""
+        if isinstance(v, bool) or not isinstance(v, int) or v <= 0:
+            raise Fail(f"the copied project's total size ({PROJECT_TOTAL[0]}) must be a positive "
+                       f"int, got {v!r}")
+        return "<masked>"
+
     def value(self, v, key=None):
         if isinstance(v, dict):
-            return {k: self.value(x, k) for k, x in v.items()}
+            total = PROJECT_TOTAL[0] if PROJECT_TOTAL[1] in v else None
+            return {k: self.total(x) if k == total else self.value(x, k) for k, x in v.items()}
         if isinstance(v, list):
             return [self.value(x, key) for x in v]
         if v is not None and key is not None and (key in VOLATILE or VOLATILE_SUFFIX.search(key)):
@@ -885,6 +909,49 @@ def served_protocol(c):
         c.stop(d)
 
 
+def selftest():
+    """The masker, offline: what it hides, and what it must keep. Returns the exit code."""
+    bad = []
+
+    def check(what, cond):
+        print(("ok   " if cond else "FAIL ") + what)
+        if not cond:
+            bad.append(what)
+
+    def fork(total, files=14, **extra):
+        return {"mode": "full", "bytes": total, "files": files, "copyMs": 5, **extra}
+
+    def raises(v):
+        try:
+            Masker([]).value({"bytes": v, "mode": "full"})
+        except Fail:
+            return True
+        return False
+
+    m = lambda v: Masker([]).value(v)  # noqa: E731
+    # the environment's figure: a 27 and a 24 character file ID give 4425400 and 4425382
+    check("totals of different file ID lengths mask the same", m(fork(4425400)) == m(fork(4425382)))
+    check("the key, its place and the other keys stay",
+          list(m(fork(4425400))) == ["mode", "bytes", "files", "copyMs"]
+          and m(fork(1))["bytes"] == "<masked>" and m(fork(1))["mode"] == "full")
+    check("files (a count of behaviour) is not masked", m(fork(4425400, 14)) != m(fork(4425400, 13)))
+    check("the fork descriptor (mode, no files) is masked too",
+          m({"mode": "full", "bytes": 4425400, "depth": 1}) == m({"mode": "full", "bytes": 9, "depth": 1})
+          and m({"mode": "full", "bytes": 1, "depth": 1})["depth"] == 1)
+    check("a missing bytes stays missing (key presence)",
+          m({"mode": "full", "files": 14}) != m(fork(4425400)) and "bytes" not in
+          m({"mode": "full", "files": 14}))
+    check("nested in lists and dicts", m({"r": [{"x": fork(4425400)}]}) == m({"r": [{"x": fork(7)}]}))
+    check("the bytes of a listed file (no mode next to it) stay",
+          m({"kind": "file", "bytes": 1032192})["bytes"] == 1032192
+          and m({"kind": "file", "bytes": 1032192}) != m({"kind": "file", "bytes": 1179648}))
+    check("0, a negative, a bool, a float, a string and null are errors, not masks",
+          all(raises(v) for v in (0, -5, True, False, 1.5, "4425400", None)))
+    check("a positive int is accepted", not raises(1) and not raises(4425400))
+    print(f"{'FAILED: ' + str(len(bad)) + ' check(s)' if bad else 'all masker checks ok'}")
+    return 1 if bad else 0
+
+
 # ---- driver --------------------------------------------------------------------------------
 
 def render(R):
@@ -896,8 +963,10 @@ def render(R):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--ghidra", required=True, help="the install to test")
-    ap.add_argument("--work", required=True, help="an empty working directory")
+    ap.add_argument("--ghidra", help="the install to test (required except with --selftest)")
+    ap.add_argument("--work", help="an empty working directory (required except with --selftest)")
+    ap.add_argument("--selftest", action="store_true",
+                    help="check the masker (no engine, no --ghidra, no --work) and exit")
     ap.add_argument("--tmpdir", help="java.io.tmpdir for the daemon (default: <work>/tmp)")
     ap.add_argument("--golden", default=None,
                     help="the golden directory (default: examples/characterization, and "
@@ -917,6 +986,10 @@ def main():
     ap.add_argument("--tests-dir", dest="tests_dir", default=str(HERE),
                     help="where the char_*.py files are (default: next to this script)")
     a = ap.parse_args()
+    if a.selftest:
+        return selftest()
+    if not a.ghidra or not a.work:
+        ap.error("--ghidra and --work are required (except with --selftest)")
     if a.golden is None:
         base = HERE / "characterization"
         a.golden = str(base if a.protocol == 2 else base / "v3")
