@@ -109,7 +109,7 @@ final class ImportCommands {
 		String saved;
 		double importS;
 		try {
-			slot = s.scheduler.admit(c, "import", m, waitMs(req));
+			slot = s.scheduler.admit(c, "import", req, m, waitMs(req));
 			long t0 = System.nanoTime();
 			Lock pl = lockProject(p, false, waitMs(req), "import");
 			try {

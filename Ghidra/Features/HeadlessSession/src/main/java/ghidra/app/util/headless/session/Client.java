@@ -20,7 +20,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
 
 /**
  * One connected caller. Like a tool window, each client has an <i>active project</i> and an
@@ -41,6 +43,15 @@ final class Client {
 	/** The {@code CLIENT_VERSION} the client said in {@code hello}, if it did. */
 	volatile String clientVersion = "";
 	volatile boolean authenticated;
+
+	/**
+	 * The protocol this connection speaks, fixed by its first {@code hello} for its whole life
+	 * (PROTOCOL-3.md 3.1): 2 until then, and whatever the first {@code hello} negotiated after.
+	 * Written once by {@link #negotiate} before that hello is answered, and read-only afterwards,
+	 * so every reply, event and gating decision of the connection sees a final value.
+	 */
+	private volatile int protocol = HydraInfo.PROTOCOL;
+	private boolean protocolFixed; // guarded by this
 	/** Set when its connection reached end of input; its cleanup may still be running. */
 	volatile boolean leaving;
 
@@ -67,6 +78,51 @@ final class Client {
 		this.transport = transport;
 		this.launcher = launcher;
 		this.events = events;
+	}
+
+	/** The protocol of this connection: 2, or 3 when its first {@code hello} asked for it. */
+	int protocol() {
+		return protocol;
+	}
+
+	/** True on a protocol 3 connection: the one test every v3 gate makes. */
+	boolean v3() {
+		return protocol >= 3;
+	}
+
+	/**
+	 * Fixes the protocol from a {@code hello} request, if no {@code hello} has fixed it yet; a
+	 * later call (a second {@code hello}) changes nothing. Returns the connection's protocol.
+	 */
+	synchronized int negotiate(JsonObject hello) {
+		if (!protocolFixed) {
+			protocol = requestedProtocol(hello);
+			protocolFixed = true;
+		}
+		return protocol;
+	}
+
+	/**
+	 * The protocol a {@code hello} asks for, as the engine answers it: the requested value when it
+	 * lies in {@code [PROTOCOL_MIN, PROTOCOL_MAX]}, {@code PROTOCOL_MAX} when it is larger, and
+	 * {@code PROTOCOL_MIN} when the field is absent, smaller, or not a JSON integer (a string, a
+	 * float, a boolean, {@code null}: such a request is not refused, so no existing client can be
+	 * broken by the type of the field).
+	 */
+	static int requestedProtocol(JsonObject hello) {
+		JsonElement e = hello.get("protocol");
+		if (e == null || !e.isJsonPrimitive()) {
+			return HydraInfo.PROTOCOL_MIN;
+		}
+		JsonPrimitive p = e.getAsJsonPrimitive();
+		if (!p.isNumber() || !p.getAsString().matches("-?[0-9]+")) {
+			return HydraInfo.PROTOCOL_MIN;
+		}
+		java.math.BigInteger v = new java.math.BigInteger(p.getAsString());
+		if (v.compareTo(java.math.BigInteger.valueOf(HydraInfo.PROTOCOL_MAX)) >= 0) {
+			return HydraInfo.PROTOCOL_MAX;
+		}
+		return Math.max(HydraInfo.PROTOCOL_MIN, v.intValue());
 	}
 
 	String label() {

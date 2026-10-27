@@ -169,7 +169,12 @@ final class ProjectEntry {
 		}
 	}
 
-	JsonObject info() {
+	/**
+	 * The project as the answers describe it. {@code client} is the one that asked (null for the
+	 * start-up event): the seam of reply conditional C6 (the {@code format} block of protocol 3).
+	 * Today the value does not depend on it.
+	 */
+	JsonObject info(Client client) {
 		JsonObject o = Json.of("id", id, "name", resolved.name(), "dir", resolved.dir().getPath(),
 			"gpr", resolved.gpr().getPath(), "writable", writable(), "openMs", openMs,
 			"idleMs", System.currentTimeMillis() - lastUsed);

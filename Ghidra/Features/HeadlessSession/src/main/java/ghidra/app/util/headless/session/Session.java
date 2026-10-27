@@ -48,7 +48,6 @@ import ghidra.util.Msg;
  */
 final class Session {
 
-	static final int PROTOCOL_VERSION = 2;
 	static final long CLEANUP_WAIT_MS = 600_000;
 
 	private final long startedAt = System.currentTimeMillis();
@@ -245,7 +244,7 @@ final class Session {
 		// An import queues for the import gate (maxImports) first and takes its long slot only
 		// when it is its turn (importProgram), so that queued imports do not occupy the slots
 		// that analysis and scripts need.
-		Scheduler.Ticket slot = cmd.equals("import") ? null : scheduler.admit(c, cmd, m, waitMs(req));
+		Scheduler.Ticket slot = cmd.equals("import") ? null : scheduler.admit(c, cmd, req, m, waitMs(req));
 		try {
 			if (cmd.equals("script") || cmd.equals("import") || cmd.equals("analyze")) {
 				DeferredInit.await(); // the TLS context and the script framework
@@ -263,7 +262,7 @@ final class Session {
 				case "refresh", "reopen" -> projectCmds.refresh(c, req, m);
 				case "close_project" -> projectCmds.closeProject(c, req);
 				case "project" -> access.inProject(access.projectFor(c, req), req, cmd,
-					ProjectEntry::info);
+					x -> x.info(c));
 				case "list" -> {
 					ProjectEntry p = access.projectFor(c, req);
 					yield access.inProject(p, req, cmd, x -> projectCmds.list(x, req));
@@ -311,14 +310,18 @@ final class Session {
 		c.name = Json.str(req, "client", c.name);
 		c.harness = Json.str(req, "harness", c.harness);
 		c.clientVersion = Json.str(req, "clientVersion", c.clientVersion);
-		JsonObject o = info();
+		JsonObject o = info(c);
 		Json.put(o, "client", c.id);
 		return o;
 	}
 
-	JsonObject info() {
+	/**
+	 * The hello result and the head of {@code status}. {@code c} is the asking client (null for the
+	 * {@code ready} event, which is a protocol 2 shape).
+	 */
+	JsonObject info(Client c) {
 		Runtime rt = Runtime.getRuntime();
-		JsonObject o = Json.of("protocol", PROTOCOL_VERSION, "minClient", HydraInfo.minClient(),
+		JsonObject o = Json.of("protocol", c == null ? HydraInfo.PROTOCOL : c.protocol(), "minClient", HydraInfo.minClient(),
 			"hydraVersion", HydraInfo.hydraVersion(), "ghidraVersion",
 			Application.getApplicationVersion(), "installId", HydraInfo.installId(), "startedAt",
 			startedAt, "ghidra", Application.getApplicationVersion(), "install",
@@ -330,14 +333,14 @@ final class Session {
 				rt.totalMemory() >> 20, "maxMb", rt.maxMemory() >> 20));
 		JsonArray ps = new JsonArray();
 		for (ProjectEntry p : projectsById.values()) {
-			ps.add(p.info());
+			ps.add(p.info(c));
 		}
 		o.add("projects", ps);
 		return o;
 	}
 
 	private JsonElement status(Client c) {
-		JsonObject o = info();
+		JsonObject o = info(c);
 		Json.put(o, "you", c.id);
 		JsonArray ps = new JsonArray();
 		for (ProjectEntry p : projectsById.values()) {
@@ -356,7 +359,7 @@ final class Session {
 			ovs.add(x.describe());
 		}
 		o.add("overlays", ovs);
-		o.add("scheduler", scheduler.describe());
+		o.add("scheduler", scheduler.describe(c.v3()));
 		o.add("imports", ImportGate.GLOBAL.describe());
 		Caller.Identity me = Caller.current(c);
 		if (me != null) {
@@ -424,7 +427,7 @@ final class Session {
 	private JsonElement projectsCmd(Client c) {
 		JsonArray a = new JsonArray();
 		for (ProjectEntry p : projectsById.values()) {
-			JsonObject j = p.info();
+			JsonObject j = p.info(c);
 			Json.put(j, "joined", c.projects.contains(p.id));
 			Json.put(j, "active", p.id.equals(c.activeProject));
 			a.add(j);

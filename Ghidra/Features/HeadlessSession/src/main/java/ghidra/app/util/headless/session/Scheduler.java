@@ -55,8 +55,13 @@ final class Scheduler {
 		}
 	}
 
-	/** The lane of a command, or null for commands that need no slot (bookkeeping). */
-	static Lane laneOf(String cmd) {
+	/**
+	 * The lane of a command, or null for commands that need no slot (bookkeeping). {@code req} and
+	 * {@code v3} are the seam of PROTOCOL-3.md D17 and behaviour gate 2: the lane may later depend
+	 * on the request ({@code lane:"quick"} scripts) and on the connection's protocol ({@code save}
+	 * and the others in the {@code maint} lane for v3 only). Today neither is read.
+	 */
+	static Lane laneOf(String cmd, JsonObject req, boolean v3) {
 		return switch (cmd) {
 			case "analyze", "import", "script", "save", "fork_project", "refresh", "reopen",
 					"promote_overlay" ->
@@ -132,11 +137,13 @@ final class Scheduler {
 
 	/**
 	 * Waits for a slot in the command's lane. Returns null when the command needs none.
+	 * {@code req} is the request that asked (the lane hint and the validation before the wait of
+	 * protocol 3 will read it; today it is only passed on to {@link #laneOf}).
 	 *
 	 * @throws SessionException {@code busy} after {@code waitMs}, {@code cancelled} on cancel
 	 */
-	Ticket admit(Client c, String cmd, RequestMonitor m, long waitMs) {
-		Lane lane = laneOf(cmd);
+	Ticket admit(Client c, String cmd, JsonObject req, RequestMonitor m, long waitMs) {
+		Lane lane = laneOf(cmd, req, c.v3());
 		if (lane == null) {
 			return null;
 		}
@@ -282,7 +289,12 @@ final class Scheduler {
 		}
 	}
 
-	JsonObject describe() {
+	/**
+	 * The {@code status.scheduler} object. {@code v3} is the seam of reply conditional C2 (the
+	 * {@code maint} lane, queue positions and ETAs, starvation figures): protocol 2 gets today's
+	 * object, and so does protocol 3 until those fields exist.
+	 */
+	JsonObject describe(boolean v3) {
 		lock.lock();
 		try {
 			JsonObject o = new JsonObject();

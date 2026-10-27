@@ -40,6 +40,18 @@ final class HydraInfo {
 	 */
 	static final String MIN_CLIENT = "1.0.0";
 
+	/**
+	 * The protocol of the endpoint file and of a hello that does not ask for more: the contract a
+	 * client that knows nothing newer can use. It is deliberately the lowest protocol served; the
+	 * honest statement of what is served is {@link #PROTOCOL_MIN} to {@link #PROTOCOL_MAX}
+	 * (PROTOCOL-3.md 3.1).
+	 */
+	static final int PROTOCOL = 2;
+	/** The lowest protocol this engine serves. */
+	static final int PROTOCOL_MIN = 2;
+	/** The highest protocol this engine serves. */
+	static final int PROTOCOL_MAX = 3;
+
 	private HydraInfo() {
 	}
 

@@ -89,7 +89,7 @@ final class ProjectCommands {
 			c.activeProject = p.id;
 			p.lastUsed = System.currentTimeMillis();
 		}
-		JsonObject info = p.info();
+		JsonObject info = p.info(c);
 		Json.put(info, "opened", opened);
 		return info;
 	}
@@ -392,7 +392,7 @@ final class ProjectCommands {
 		JsonObject out = Json.of("project", p.id, "refreshed", true, "from", from, "revision",
 			rev, "generation", p.generation, "programs", progs, "ms",
 			(System.nanoTime() - t0) / 1_000_000);
-		out.add("info", p.info());
+		out.add("info", p.info(c));
 		return out;
 	}
 
