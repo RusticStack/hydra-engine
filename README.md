@@ -14,7 +14,7 @@ Many agents work in it at the same time, on any number of projects. Warm decompi
 
 <p align="center">
   <a href="#quick-start"><img src="https://img.shields.io/badge/Quick_start-build_%26_connect-15803D?style=for-the-badge" height="40" alt="Quick start: build and connect"></a>
-  <a href="https://hydra-engine-site.vercel.app"><img src="https://img.shields.io/badge/Website-docs_%26_showcase-0B0D0D?style=for-the-badge&labelColor=0B0D0D&color=1F6A3C" height="40" alt="Website: docs and showcase"></a>
+  <a href="https://www.hydrare.dev"><img src="https://img.shields.io/badge/Website-docs_%26_showcase-0B0D0D?style=for-the-badge&labelColor=0B0D0D&color=1F6A3C" height="40" alt="Website: docs and showcase"></a>
 </p>
 
 <p align="center">
@@ -294,9 +294,9 @@ to a database version that 12.1.4 cannot read; open older projects from a copy.
 ## Built with Hydra Engine
 
 Games remade in new engines, drivers brought back, tools rebuilt: projects made by
-reverse-engineering programs their authors own are on the [showcase](https://hydra-engine-site.vercel.app/examples),
-which reads the [RusticStack/showcase](https://github.com/RusticStack/showcase) repository. Add yours
-there, by pull request or with its [form](https://github.com/RusticStack/showcase/issues/new?template=project.yml).
+reverse-engineering programs their authors own are on the [showcase](https://www.hydrare.dev/examples),
+which reads the [RusticStack/hydra-re-showcase](https://github.com/RusticStack/hydra-re-showcase) repository. Add yours
+there, by pull request or with its [form](https://github.com/RusticStack/hydra-re-showcase/issues/new?template=project.yml).
 
 ## License and credits
 
