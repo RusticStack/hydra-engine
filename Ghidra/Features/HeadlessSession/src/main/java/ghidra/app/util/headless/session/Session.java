@@ -21,10 +21,9 @@ import static ghidra.app.util.headless.session.Access.lockProject;
 import static ghidra.app.util.headless.session.Access.notOwner;
 import static ghidra.app.util.headless.session.Access.suggestFork;
 import static ghidra.app.util.headless.session.Access.unlockProject;
-import static ghidra.app.util.headless.session.Addresses.address;
 import static ghidra.app.util.headless.session.Addresses.hex;
-import static ghidra.app.util.headless.session.Requests.DEFAULT_TEXT_CAP;
-import static ghidra.app.util.headless.session.Requests.MAX_TEXT_CAP;
+import static ghidra.app.util.headless.session.EditCommands.journal;
+import static ghidra.app.util.headless.session.Operations.ops;
 import static ghidra.app.util.headless.session.Requests.cancelled;
 import static ghidra.app.util.headless.session.Requests.waitMs;
 import static ghidra.app.util.headless.session.Requests.waitsForCache;
@@ -38,21 +37,14 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.Lock;
 import java.util.function.Consumer;
 import java.util.regex.Pattern;
-import java.util.regex.PatternSyntaxException;
 
 import com.google.gson.*;
 
 import generic.jar.ResourceFile;
-import ghidra.app.decompiler.*;
-import ghidra.app.plugin.core.analysis.AutoAnalysisManager;
 import ghidra.framework.Application;
 import ghidra.framework.model.*;
-import ghidra.framework.options.OptionType;
-import ghidra.framework.options.Options;
 import ghidra.framework.store.LockException;
-import ghidra.program.model.address.*;
 import ghidra.program.model.listing.*;
-import ghidra.program.model.symbol.*;
 import ghidra.program.util.GhidraProgramUtilities;
 import ghidra.util.Msg;
 import ghidra.util.NotOwnerException;
@@ -107,6 +99,9 @@ final class Session {
 	final Access access = new Access(this);
 	final ScriptCommands scripts = new ScriptCommands(this);
 	final ImportCommands imports = new ImportCommands(this);
+	final Operations operations = new Operations(this);
+	final EditCommands edits = new EditCommands(this);
+	final QueryCommands queries = new QueryCommands(this);
 
 	Session(Scheduler scheduler, long keepWarmSeconds, UpgradeCache upgradeCache) {
 		this.scheduler = scheduler;
@@ -290,22 +285,22 @@ final class Session {
 				case "open_program", "switch" -> openProgram(c, req, m);
 				case "info" -> access.withProgram(c, req, cmd, false, false, e -> programInfo(e, c));
 				case "close_program" -> closeProgram(c, req);
-				case "save" -> access.withProgram(c, req, cmd, true, true, e -> save(e, req, m));
+				case "save" -> access.withProgram(c, req, cmd, true, true, e -> edits.save(e, req, m));
 				case "functions" -> access.withProgram(c, req, cmd, false, false,
-					e -> functions(e.program, req));
+					e -> queries.functions(e.program, req));
 				case "decompile" -> access.withProgram(c, req, cmd, false, false,
-					e -> decompile(e.program, e, req, m));
+					e -> queries.decompile(e.program, e, req, m));
 				case "rename" -> access.withProgram(c, req, cmd, true, true,
-					e -> journal(c, e, cmd, "rename", renameIn(e.program, req)));
+					e -> journal(c, e, cmd, "rename", operations.renameIn(e.program, req)));
 				case "edit" -> access.withProgram(c, req, cmd, true, true,
-					e -> editProgram(c, e, ops(req, null)));
-				case "journal" -> access.withProgram(c, req, cmd, false, false, e -> journalOf(e, req));
+					e -> edits.editProgram(c, e, ops(req, null)));
+				case "journal" -> access.withProgram(c, req, cmd, false, false, e -> edits.journalOf(e, req));
 				case "discard_edits" -> access.withProgram(c, req, cmd, true, true,
-					e -> discardEdits(c, e, req));
+					e -> edits.discardEdits(c, e, req));
 				case "comment" -> access.withProgram(c, req, cmd, true, true,
-					e -> journal(c, e, cmd, "comment", commentIn(e.program, req)));
+					e -> journal(c, e, cmd, "comment", operations.commentIn(e.program, req)));
 				case "analyze" -> access.withProgram(c, req, cmd, true, true, e -> {
-					JsonObject r = (JsonObject) analyze(e, req, m);
+					JsonObject r = (JsonObject) edits.analyze(e, req, m);
 					return journal(c, e, cmd, "analyze", Json.of("functions", r.get("functions")));
 				});
 				case "import" -> imports.importProgram(c, req, m);
@@ -1133,177 +1128,6 @@ final class Session {
 		}
 	}
 
-	// ---- shared writing: edits, journal, discard_edits ---------------------------------
-
-	/**
-	 * Compare-and-set: when the request carries {@code "expect"}, the value it changes must still
-	 * be that (null: none), or the change is refused with {@code conflict} ({@code reason:
-	 * "changed"}). Changes to one program are serialized, so the check and the write are one step.
-	 */
-	private static void expect(JsonObject req, Address a, String field, String current) {
-		if (!req.has("expect")) {
-			return;
-		}
-		String want = req.get("expect").isJsonNull() ? null : req.get("expect").getAsString();
-		if (!Objects.equals(want, current)) {
-			throw new SessionException(SessionException.CONFLICT,
-				"the " + field + " at " + hex(a) + " is '" + current + "', not the expected '" +
-					want + "': someone changed it since you read it",
-				Json.of("reason", "changed", "address", hex(a), "field", field, "expected", want,
-					"current", current));
-		}
-	}
-
-	/** Names who last changed the value a {@code changed} conflict is about. */
-	static SessionException withLastEditor(ProgramEntry e, SessionException ex) {
-		JsonObject d = ex.details();
-		if (!ex.code().equals(SessionException.CONFLICT) || d == null || !d.has("reason") ||
-			!"changed".equals(d.get("reason").getAsString())) {
-			return ex;
-		}
-		String f = d.get("field").getAsString();
-		JsonObject last = e.journal.lastAt(d.get("address").getAsString(),
-			f.equals("name") ? "name"
-					: "comment:" + (d.has("type") ? d.get("type").getAsString() : "eol"));
-		if (last == null && f.equals("comment")) {
-			for (String t : List.of("eol", "pre", "post", "plate", "repeatable")) {
-				last = last != null ? last
-						: e.journal.lastAt(d.get("address").getAsString(), "comment:" + t);
-			}
-		}
-		if (last != null) {
-			d.add("lastEdit", last.deepCopy());
-			d.add("holderInfo", Json.of("client", last.get("client"), "name", last.get("name"),
-				"harness", last.get("harness"), "command", last.get("cmd"), "seq",
-				last.get("seq")));
-		}
-		Json.put(d, "suggest", "reread");
-		return ex;
-	}
-
-	/** Journals a committed change by {@code c}; returns the result with its {@code seq}. */
-	static JsonObject journal(Client c, ProgramEntry e, String cmd, String op,
-			JsonObject result) {
-		JsonObject change = result.deepCopy();
-		Json.put(change, "op", op);
-		if (change.has("name") && !change.has("new")) {
-			change.add("new", change.get("name"));
-		}
-		if (change.has("text") && !change.has("new")) {
-			change.add("new", change.get("text"));
-		}
-		long seq = e.journal.add(c, cmd, change);
-		Json.put(result, "seq", seq);
-		return result;
-	}
-
-	/**
-	 * {@code edit}: operations on a program this client may change (as owner or shared writer),
-	 * applied in one transaction, all or none, and journalled.
-	 */
-	private JsonElement editProgram(Client c, ProgramEntry e, JsonArray ops) {
-		JsonArray results = applyOps(e.program, ops);
-		JsonArray seqs = new JsonArray();
-		for (JsonElement r : results) {
-			JsonObject o = r.getAsJsonObject();
-			journal(c, e, "edit", o.get("op").getAsString(), o);
-			seqs.add(o.get("seq"));
-		}
-		return Json.of("program", e.key, "applied", ops.size(), "results", results, "seqs", seqs,
-			"unsavedEdits", e.journal.seq() - e.savedSeq);
-	}
-
-	/** {@code journal}: who changed what in a program, oldest first. */
-	private JsonElement journalOf(ProgramEntry e, JsonObject req) {
-		long after = Json.num(req, "since", 0, 0, Long.MAX_VALUE);
-		Integer client = Json.has(req, "author") ? (int) Json.num(req, "author", 0, 0,
-			Integer.MAX_VALUE) : null;
-		int limit = (int) Json.num(req, "limit", 10_000, 1, Journal.CAP);
-		JsonArray a = e.journal.since(after, client, limit);
-		return Json.of("program", e.key, "seq", e.journal.seq(), "savedSeq", e.savedSeq,
-			"dropped", e.journal.dropped(), "entries", a, "returned", a.size());
-	}
-
-	/**
-	 * {@code discard_edits}: reverts one client's unsaved changes (rename, label, comment), newest
-	 * first, each only while the value is still what that client wrote: a value someone changed
-	 * since is kept and reported. Analysis and script changes cannot be reverted one by one
-	 * (close with {@code discard}, or not at all).
-	 */
-	private JsonElement discardEdits(Client c, ProgramEntry e, JsonObject req) throws Exception {
-		if (!Json.has(req, "author")) {
-			throw new SessionException(SessionException.BAD_REQUEST,
-				"missing field: author (the client id whose changes to revert, as in the journal)");
-		}
-		int who = (int) Json.num(req, "author", 0, 0, Integer.MAX_VALUE);
-		Program p = e.program;
-		JsonArray reverted = new JsonArray();
-		JsonArray skipped = new JsonArray();
-		List<JsonObject> todo = e.journal.newestFirst(e.savedSeq);
-		Set<String> later = new HashSet<>(); // fields someone else changed after
-		for (JsonObject j : todo) {
-			String op = j.get("op").getAsString();
-			String field = Journal.fieldOf(j);
-			String addr = j.has("address") ? j.get("address").getAsString() : null;
-			boolean mine = j.get("client").getAsInt() == who;
-			if (!mine || op.equals("revert")) {
-				if (addr != null) {
-					later.add(addr + "|" + field);
-				}
-				continue;
-			}
-			long seq = j.get("seq").getAsLong();
-			if (addr == null || !(op.equals("rename") || op.equals("label") ||
-				op.equals("comment"))) {
-				skipped.add(Json.of("seq", seq, "op", op, "reason", "not revertible"));
-				continue;
-			}
-			if (later.contains(addr + "|" + field)) {
-				skipped.add(Json.of("seq", seq, "op", op, "address", addr, "reason",
-					"changed since by another client"));
-				continue;
-			}
-			later.add(addr + "|" + field);
-			Address a = address(p, addr);
-			String nv = j.has("new") && !j.get("new").isJsonNull() ? j.get("new").getAsString()
-					: null;
-			String ov = j.has("old") && !j.get("old").isJsonNull() ? j.get("old").getAsString()
-					: null;
-			JsonObject undo;
-			if (op.equals("comment")) {
-				undo = Json.of("address", addr, "type", j.get("type"), "text", ov, "expect", nv);
-				journal(c, e, "discard_edits", "comment", commentIn(p, undo));
-			}
-			else if (j.has("created") && j.get("created").getAsBoolean()) {
-				int tx = p.startTransaction("discard_edits");
-				boolean ok = false;
-				try {
-					Symbol s = p.getSymbolTable().getPrimarySymbol(a);
-					if (s == null || !s.getName().equals(nv)) {
-						skipped.add(Json.of("seq", seq, "op", op, "address", addr, "reason",
-							"the label is not there any more"));
-						ok = true;
-						continue;
-					}
-					s.delete();
-					ok = true;
-				}
-				finally {
-					p.endTransaction(tx, ok);
-				}
-				journal(c, e, "discard_edits", "label",
-					Json.of("address", addr, "old", nv, "name", ov, "deleted", true));
-			}
-			else {
-				undo = Json.of("address", addr, "name", ov, "kind", j.get("kind"), "expect", nv);
-				journal(c, e, "discard_edits", op, renameIn(p, undo));
-			}
-			reverted.add(seq);
-		}
-		return Json.of("program", e.key, "author", who, "reverted", reverted, "skipped", skipped,
-			"unsavedEdits", e.journal.seq() - e.savedSeq);
-	}
-
 	// ---- overlays --------------------------------------------------------------------------
 
 	/** Every client's overlays, by {@link Overlay#id}. */
@@ -1426,8 +1250,8 @@ final class Session {
 				}
 				return switch (cmd) {
 					case "info" -> overlayInfo(o);
-					case "functions" -> withOverlay(o, functions(o.program, req));
-					case "decompile" -> withOverlay(o, decompile(o.program, o, req, m));
+					case "functions" -> withOverlay(o, queries.functions(o.program, req));
+					case "decompile" -> withOverlay(o, queries.decompile(o.program, o, req, m));
 					case "script" -> {
 						ResourceFile src = findScript(Json.str(req, "script"));
 						m.deadline(Json.num(req, "timeout", 0, 0, 7 * 86_400));
@@ -1456,28 +1280,6 @@ final class Session {
 			j.add("overlay", o.describe());
 		}
 		return r;
-	}
-
-	/** The operations of a request: {@code ops}, or the request itself as one {@code op}. */
-	private static JsonArray ops(JsonObject req, String single) {
-		if (single != null) {
-			JsonObject op = req.deepCopy();
-			for (String k : List.of("id", "cmd", "overlay", "program", "project", "wait",
-				"parallel")) {
-				op.remove(k);
-			}
-			op.addProperty("op", single);
-			JsonArray a = new JsonArray();
-			a.add(op);
-			return a;
-		}
-		if (!Json.has(req, "ops") || !req.get("ops").isJsonArray() ||
-			req.getAsJsonArray("ops").isEmpty()) {
-			throw new SessionException(SessionException.BAD_REQUEST,
-				"ops must be a non-empty array of {\"op\": rename|label|comment|signature|" +
-					"data_type, ...}");
-		}
-		return req.getAsJsonArray("ops");
 	}
 
 	/**
@@ -1585,7 +1387,7 @@ final class Session {
 		o.generation = e.project.generation;
 		o.error = null;
 		if (!o.log.isEmpty()) {
-			applyOps(prog, o.log);
+			operations.applyOps(prog, o.log);
 		}
 	}
 
@@ -1638,137 +1440,12 @@ final class Session {
 
 	/** Applies operations to the overlay as one unit, and logs them. Held: its write lock. */
 	private JsonObject applyOverlay(Overlay o, JsonArray ops) {
-		JsonArray results = applyOps(o.program, ops);
+		JsonArray results = operations.applyOps(o.program, ops);
 		for (JsonElement op : ops) {
 			o.log.add(op.deepCopy());
 		}
 		o.version++;
 		return Json.of("overlay", o.describe(), "applied", ops.size(), "results", results);
-	}
-
-	/**
-	 * Applies operations in one transaction: all of them, or (on the first failure) none. The
-	 * failure names the operation's index.
-	 */
-	private JsonArray applyOps(Program p, JsonArray ops) {
-		JsonArray results = new JsonArray();
-		int tx = p.startTransaction("overlay operations");
-		boolean ok = false;
-		int i = 0;
-		try {
-			for (JsonElement el : ops) {
-				if (!el.isJsonObject()) {
-					throw new SessionException(SessionException.BAD_REQUEST,
-						"ops[" + i + "] is not an object");
-				}
-				results.add(applyOp(p, el.getAsJsonObject()));
-				i++;
-			}
-			ok = true;
-		}
-		catch (SessionException ex) {
-			JsonObject d = ex.details() == null ? new JsonObject() : ex.details().deepCopy();
-			Json.put(d, "index", i);
-			Json.put(d, "rolledBack", true);
-			throw new SessionException(ex.code(),
-				"ops[" + i + "]: " + ex.getMessage() + " (nothing was applied)", d, ex);
-		}
-		catch (Exception ex) {
-			throw new SessionException(SessionException.FAILED,
-				"ops[" + i + "]: " + ex.getClass().getSimpleName() + ": " + ex.getMessage() +
-					" (nothing was applied)",
-				Json.of("index", i, "rolledBack", true), ex);
-		}
-		finally {
-			p.endTransaction(tx, ok);
-		}
-		return results;
-	}
-
-	/**
-	 * One operation: {@code rename} (address, name, kind auto|function|label), {@code label}
-	 * (address, name), {@code comment} (address, text, type), {@code signature} (address of a
-	 * function, a C prototype), {@code data_type} (address, a data type such as {@code int},
-	 * {@code char[16]} or {@code MyStruct *}).
-	 */
-	private JsonObject applyOp(Program p, JsonObject op) throws Exception {
-		String kind = Json.str(op, "op");
-		switch (kind) {
-			case "rename": {
-				JsonObject r = renameIn(p, op);
-				Json.put(r, "op", kind);
-				return r;
-			}
-			case "label": {
-				JsonObject req = op.deepCopy();
-				req.addProperty("kind", "label");
-				JsonObject r = renameIn(p, req);
-				Json.put(r, "op", kind);
-				return r;
-			}
-			case "comment": {
-				JsonObject r = commentIn(p, op);
-				Json.put(r, "op", kind);
-				return r;
-			}
-			case "signature": {
-				Address a = address(p, Json.str(op, "address"));
-				Function f = p.getFunctionManager().getFunctionContaining(a);
-				if (f == null) {
-					throw new SessionException(SessionException.NOT_FOUND,
-						"no function contains " + hex(a));
-				}
-				String text = Json.str(op, "signature");
-				String oldSig = f.getSignature().getPrototypeString();
-				ghidra.program.model.data.FunctionDefinitionDataType fd;
-				try {
-					fd = ghidra.app.util.cparser.C.CParserUtils.parseSignature(
-						(ghidra.app.services.DataTypeManagerService) null, p, text, false);
-				}
-				catch (ghidra.app.util.cparser.C.ParseException ex) {
-					throw new SessionException(SessionException.BAD_REQUEST,
-						"bad signature '" + text + "': " + ex.getMessage());
-				}
-				if (fd == null) {
-					throw new SessionException(SessionException.BAD_REQUEST,
-						"bad signature '" + text + "'");
-				}
-				ghidra.app.cmd.function.ApplyFunctionSignatureCmd cmd =
-					new ghidra.app.cmd.function.ApplyFunctionSignatureCmd(f.getEntryPoint(), fd,
-						SourceType.USER_DEFINED);
-				if (!cmd.applyTo(p)) {
-					throw new SessionException(SessionException.FAILED,
-						"could not apply the signature: " + cmd.getStatusMsg());
-				}
-				return Json.of("op", kind, "address", hex(f.getEntryPoint()), "signature",
-					f.getSignature().getPrototypeString(), "old", oldSig, "new",
-					f.getSignature().getPrototypeString());
-			}
-			case "data_type": {
-				Address a = address(p, Json.str(op, "address"));
-				String text = Json.str(op, "type");
-				Data before = p.getListing().getDefinedDataAt(a);
-				String oldType = before == null ? null : before.getDataType().getDisplayName();
-				ghidra.program.model.data.DataType dt;
-				try {
-					dt = new ghidra.util.data.DataTypeParser(p.getDataTypeManager(),
-						p.getDataTypeManager(), null,
-						ghidra.util.data.DataTypeParser.AllowedDataTypes.ALL).parse(text);
-				}
-				catch (ghidra.program.model.data.InvalidDataTypeException ex) {
-					throw new SessionException(SessionException.BAD_REQUEST,
-						"bad data type '" + text + "': " + ex.getMessage());
-				}
-				Data d = ghidra.program.model.data.DataUtilities.createData(p, a, dt, -1,
-					ghidra.program.model.data.DataUtilities.ClearDataMode.CLEAR_ALL_CONFLICT_DATA);
-				return Json.of("op", kind, "address", hex(a), "type",
-					d.getDataType().getDisplayName(), "length", d.getLength(), "old", oldType,
-					"new", d.getDataType().getDisplayName());
-			}
-			default:
-				throw new SessionException(SessionException.BAD_REQUEST,
-					"unknown op '" + kind + "': rename, label, comment, signature or data_type");
-		}
 	}
 
 	/** {@code info} of an overlay: the program as this overlay shows it. */
@@ -1846,11 +1523,11 @@ final class Session {
 		}
 		JsonObject areq = Json.of("program", info.get("key").getAsString());
 		JsonElement results =
-			access.withProgram(c, areq, "promote_overlay", true, true, t -> applyOps(t.program, log));
+			access.withProgram(c, areq, "promote_overlay", true, true, t -> operations.applyOps(t.program, log));
 		JsonElement saved = null;
 		if (Json.bool(req, "save", true)) {
 			saved = access.withProgram(c, areq, "save", true, true,
-				t -> save(t, Json.of("comment", "promote overlay " + name), m));
+				t -> edits.save(t, Json.of("comment", "promote overlay " + name), m));
 		}
 		Msg.info(this, c.label() + " promoted overlay " + name + " of " + e.key + " (" +
 			log.size() + " operations) into " + info.get("key").getAsString());
@@ -2625,277 +2302,5 @@ final class Session {
 		Json.put(j, "journalSeq", e.journal.seq());
 		Json.put(j, "unsavedEdits", Math.max(0, e.journal.seq() - e.savedSeq));
 		return j;
-	}
-
-	JsonElement save(ProgramEntry e, JsonObject req, RequestMonitor m)
-			throws IOException, CancelledException {
-		boolean changed = e.program.isChanged();
-		long upTo = e.journal.seq();
-		if (changed) {
-			e.program.save(Json.str(req, "comment", "headless session"), m);
-			e.stampRevision();
-			e.project.invalidateRevision();
-			e.savedSeq = upTo;
-		}
-		return Json.of("program", e.key, "saved", changed, "revision", e.revision,
-			"projectRevision", e.project.revision(), "savedSeq", e.savedSeq);
-	}
-
-	private Function function(Program p, JsonObject req) {
-		if (Json.has(req, "address")) {
-			Address a = address(p, Json.str(req, "address"));
-			Function f = p.getFunctionManager().getFunctionContaining(a);
-			if (f == null) {
-				throw new SessionException(SessionException.NOT_FOUND,
-					"no function contains " + hex(a), Json.of("address", hex(a)));
-			}
-			return f;
-		}
-		String name = Json.str(req, "name");
-		List<Function> found = new ArrayList<>();
-		for (Symbol s : p.getSymbolTable().getSymbols(name)) {
-			if (s.getSymbolType() == SymbolType.FUNCTION) {
-				found.add((Function) s.getObject());
-			}
-		}
-		if (found.size() == 1) {
-			return found.get(0);
-		}
-		if (found.isEmpty()) {
-			throw new SessionException(SessionException.NOT_FOUND, "no function named " + name);
-		}
-		List<String> at = new ArrayList<>();
-		found.forEach(f -> at.add(hex(f.getEntryPoint())));
-		JsonObject d = new JsonObject();
-		Json.put(d, "candidates", at);
-		throw new SessionException(SessionException.CONFLICT,
-			"several functions are named " + name + "; pass an address", d);
-	}
-
-	private JsonElement functions(Program prog, JsonObject req) {
-		Pattern pat = null;
-		if (Json.has(req, "regex")) {
-			try {
-				pat = Pattern.compile(Json.str(req, "regex"));
-			}
-			catch (PatternSyntaxException ex) {
-				throw new SessionException(SessionException.BAD_REQUEST,
-					"bad regex: " + ex.getMessage());
-			}
-		}
-		String sub = Json.str(req, "contains", null);
-		int limit = (int) Json.num(req, "limit", 200, 1, 10_000);
-		int offset = (int) Json.num(req, "offset", 0, 0, Integer.MAX_VALUE);
-		JsonArray a = new JsonArray();
-		int seen = 0;
-		boolean truncated = false;
-		for (Function f : prog.getFunctionManager().getFunctions(true)) {
-			String n = f.getName(true);
-			if (pat != null && !pat.matcher(n).find()) {
-				continue;
-			}
-			if (sub != null && !n.contains(sub)) {
-				continue;
-			}
-			if (seen++ < offset) {
-				continue;
-			}
-			if (a.size() >= limit) {
-				truncated = true;
-				break;
-			}
-			a.add(Json.of("name", n, "address", hex(f.getEntryPoint()), "size",
-				f.getBody().getNumAddresses(), "thunk", f.isThunk(), "external", f.isExternal()));
-		}
-		return Json.of("functions", a, "offset", offset, "returned", a.size(), "truncated",
-			truncated);
-	}
-
-	private JsonElement decompile(Program prog, Decompilers e, JsonObject req,
-			RequestMonitor m) {
-		Function f = function(prog, req);
-		int timeout = (int) Json.num(req, "timeout", 60, 1, 3600);
-		int cap = (int) Json.num(req, "maxChars", DEFAULT_TEXT_CAP, 1, MAX_TEXT_CAP);
-		DecompInterface d = e.borrowDecompiler();
-		boolean healthy = false;
-		try {
-			DecompileResults res = d.decompileFunction(f, timeout, m);
-			if (m.isCancelled()) {
-				throw cancelled(m);
-			}
-			JsonObject r = Json.of("name", f.getName(true), "entry", hex(f.getEntryPoint()));
-			boolean ok = res != null && res.decompileCompleted();
-			Json.put(r, "completed", ok);
-			if (!ok) {
-				Json.put(r, "error", res == null ? "no result" : res.getErrorMessage());
-				Json.put(r, "timedOut", res != null && res.isTimedOut());
-				return r;
-			}
-			healthy = true;
-			DecompiledFunction df = res.getDecompiledFunction();
-			String c = df.getC();
-			Json.put(r, "signature", df.getSignature());
-			Json.put(r, "chars", c.length());
-			Json.put(r, "truncated", c.length() > cap);
-			Json.put(r, "c", c.length() > cap ? c.substring(0, cap) : c);
-			return r;
-		}
-		finally {
-			e.returnDecompiler(d, healthy);
-		}
-	}
-
-	// ---- edits -----------------------------------------------------------------------------
-
-	private JsonObject renameIn(Program p, JsonObject req) throws Exception {
-		Address a = address(p, Json.str(req, "address"));
-		String name = Json.str(req, "name");
-		String kind = Json.str(req, "kind", "auto");
-		if (!kind.equals("auto") && !kind.equals("function") && !kind.equals("label")) {
-			throw new SessionException(SessionException.BAD_REQUEST,
-				"kind must be auto, function or label");
-		}
-		String old = null;
-		boolean created = false;
-		int tx = p.startTransaction("session rename");
-		boolean ok = false;
-		try {
-			Function f = p.getFunctionManager().getFunctionAt(a);
-			if (kind.equals("function") && f == null) {
-				throw new SessionException(SessionException.NOT_FOUND,
-					"no function starts at " + hex(a));
-			}
-			if (f != null && !kind.equals("label")) {
-				old = f.getName();
-				expect(req, a, "name", old);
-				f.setName(name, SourceType.USER_DEFINED);
-				kind = "function";
-			}
-			else {
-				Symbol s = p.getSymbolTable().getPrimarySymbol(a);
-				if (s != null && s.getSymbolType() == SymbolType.LABEL && !s.isDynamic()) {
-					old = s.getName();
-					expect(req, a, "name", old);
-					s.setName(name, SourceType.USER_DEFINED);
-				}
-				else {
-					old = s == null ? null : s.getName();
-					expect(req, a, "name", old);
-					Symbol n = p.getSymbolTable().createLabel(a, name, SourceType.USER_DEFINED);
-					n.setPrimary();
-					created = true;
-				}
-				kind = "label";
-			}
-			ok = true;
-		}
-		finally {
-			p.endTransaction(tx, ok);
-		}
-		return Json.of("address", hex(a), "name", name, "old", old, "kind", kind, "created",
-			created);
-	}
-
-	private JsonObject commentIn(Program p, JsonObject req) {
-		Address a = address(p, Json.str(req, "address"));
-		CommentType ct = switch (Json.str(req, "type", "eol")) {
-			case "eol" -> CommentType.EOL;
-			case "pre" -> CommentType.PRE;
-			case "post" -> CommentType.POST;
-			case "plate" -> CommentType.PLATE;
-			case "repeatable" -> CommentType.REPEATABLE;
-			default -> throw new SessionException(SessionException.BAD_REQUEST,
-				"type must be eol, pre, post, plate or repeatable");
-		};
-		String text = Json.has(req, "text") ? Json.str(req, "text") : null;
-		String old = p.getListing().getComment(ct, a);
-		expect(req, a, "comment", old);
-		int tx = p.startTransaction("session comment");
-		try {
-			p.getListing().setComment(a, ct, text);
-		}
-		finally {
-			p.endTransaction(tx, true);
-		}
-		return Json.of("address", hex(a), "type", Json.str(req, "type", "eol"), "old", old,
-			"text", text);
-	}
-
-	/**
-	 * The window's <i>Analysis &gt; Auto Analyze</i>, the same way {@code analyzeHeadless} runs
-	 * it: optional analysis options first, then all analyzers (or those triggered by a restricted
-	 * address set) in this thread, under one transaction.
-	 */
-	JsonElement analyze(ProgramEntry e, JsonObject req, RequestMonitor m) {
-		Program p = e.program;
-		JsonObject opts = Json.obj(req, "options");
-		if (opts != null) {
-			setAnalysisOptions(p, opts);
-		}
-		AddressSet restrict = null;
-		if (Json.has(req, "ranges")) {
-			restrict = new AddressSet();
-			for (JsonElement r : req.getAsJsonArray("ranges")) {
-				JsonArray pair = r.getAsJsonArray();
-				restrict.add(address(p, pair.get(0).getAsString()),
-					address(p, pair.get(1).getAsString()));
-			}
-		}
-		m.deadline(Json.num(req, "timeout", 0, 0, 7 * 86_400));
-		long t0 = System.nanoTime();
-		AutoAnalysisManager mgr = AutoAnalysisManager.getAnalysisManager(p);
-		int tx = p.startTransaction("Analysis");
-		try {
-			mgr.initializeOptions();
-			mgr.reAnalyzeAll(restrict);
-			mgr.startAnalysis(m);
-			if (m.isCancelled()) {
-				mgr.cancelQueuedTasks();
-			}
-			else {
-				GhidraProgramUtilities.markProgramAnalyzed(p);
-			}
-		}
-		finally {
-			p.endTransaction(tx, true);
-		}
-		if (m.isCancelled()) {
-			throw new SessionException(SessionException.CANCELLED,
-				"analysis stopped " + (m.timedOut() ? "at its timeout" : "on cancel") +
-					"; what ran so far is kept in memory (unsaved)",
-				Json.of("program", e.key));
-		}
-		return Json.of("program", e.key, "analyzed", true, "seconds",
-			(System.nanoTime() - t0) / 1e9, "functions", p.getFunctionManager().getFunctionCount(),
-			"changed", p.isChanged());
-	}
-
-	private static void setAnalysisOptions(Program p, JsonObject opts) {
-		Options options = p.getOptions(Program.ANALYSIS_PROPERTIES);
-		int tx = p.startTransaction("session analysis options");
-		try {
-			for (Map.Entry<String, JsonElement> o : opts.entrySet()) {
-				String n = o.getKey();
-				if (!options.contains(n)) {
-					throw new SessionException(SessionException.BAD_REQUEST,
-						"no analysis option named '" + n + "'");
-				}
-				OptionType t = options.getType(n);
-				JsonElement v = o.getValue();
-				switch (t) {
-					case BOOLEAN_TYPE -> options.setBoolean(n, v.getAsBoolean());
-					case INT_TYPE -> options.setInt(n, v.getAsInt());
-					case LONG_TYPE -> options.setLong(n, v.getAsLong());
-					case DOUBLE_TYPE -> options.setDouble(n, v.getAsDouble());
-					case STRING_TYPE -> options.setString(n, v.getAsString());
-					default -> throw new SessionException(SessionException.BAD_REQUEST,
-						"option '" + n + "' has type " + t + ", which a session cannot set; " +
-							"use a script");
-				}
-			}
-		}
-		finally {
-			p.endTransaction(tx, true);
-		}
 	}
 }

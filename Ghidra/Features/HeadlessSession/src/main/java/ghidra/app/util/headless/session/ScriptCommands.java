@@ -17,10 +17,10 @@ package ghidra.app.util.headless.session;
 
 import static ghidra.app.util.headless.session.Access.lockProject;
 import static ghidra.app.util.headless.session.Addresses.address;
+import static ghidra.app.util.headless.session.EditCommands.journal;
 import static ghidra.app.util.headless.session.Requests.DEFAULT_TEXT_CAP;
 import static ghidra.app.util.headless.session.Requests.MAX_TEXT_CAP;
 import static ghidra.app.util.headless.session.Requests.waitMs;
-import static ghidra.app.util.headless.session.Session.journal;
 
 import java.io.*;
 import java.lang.reflect.Method;

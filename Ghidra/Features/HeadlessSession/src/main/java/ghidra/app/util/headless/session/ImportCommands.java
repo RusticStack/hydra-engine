@@ -185,9 +185,9 @@ final class ImportCommands {
 					areq.add("timeout", req.get("timeout"));
 				}
 				r.add("analysis", s.access.withProgram(c, areq, "analyze", true, true,
-					e -> s.analyze(e, areq, m)));
+					e -> s.edits.analyze(e, areq, m)));
 				r.add("save", s.access.withProgram(c, areq, "save", true, true,
-					e -> s.save(e, Json.of("comment", "import + analysis"), m)));
+					e -> s.edits.save(e, Json.of("comment", "import + analysis"), m)));
 			}
 			return r;
 		}

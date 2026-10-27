@@ -15,9 +15,9 @@
  */
 package ghidra.app.util.headless.session;
 
+import static ghidra.app.util.headless.session.EditCommands.withLastEditor;
 import static ghidra.app.util.headless.session.Requests.waitMs;
 import static ghidra.app.util.headless.session.Session.findFile;
-import static ghidra.app.util.headless.session.Session.withLastEditor;
 
 import java.io.*;
 import java.util.*;
