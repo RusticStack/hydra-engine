@@ -535,6 +535,8 @@ Turn it off with `"upgradeCache": false`.
 
 ## Protocol (version 2)
 
+> Design for the next protocol (3, hydra.4), not implemented: see [PROTOCOL-3.md](PROTOCOL-3.md).
+
 One JSON object per line, UTF-8, `\n`-terminated, at most 64 MiB per line.
 
 Request:

@@ -9,5 +9,6 @@ examples/characterization/import_script.json||GHIDRA||||END|
 examples/characterization/overlays.json||GHIDRA||||END|
 examples/characterization/readonly.json||GHIDRA||||END|
 examples/characterization/session.json||GHIDRA||||END|
+PROTOCOL-3.md||GHIDRA||||END|
 README.md||GHIDRA||||END|
 src/main/resources/hydra.properties||GHIDRA||||END|
