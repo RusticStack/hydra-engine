@@ -294,9 +294,9 @@ to a database version that 12.1.4 cannot read; open older projects from a copy.
 ## Built with Hydra Engine
 
 Games remade in new engines, drivers brought back, tools rebuilt: projects made by
-reverse-engineering programs their authors own are on the [showcase](https://hydra-engine-site.vercel.app/examples). To add
-yours, open a [showcase issue](https://github.com/RusticStack/hydra-engine/issues/new?template=showcase.yml)
-with a public link.
+reverse-engineering programs their authors own are on the [showcase](https://hydra-engine-site.vercel.app/examples),
+which reads the [RusticStack/showcase](https://github.com/RusticStack/showcase) repository. Add yours
+there, by pull request or with its [form](https://github.com/RusticStack/showcase/issues/new?template=project.yml).
 
 ## License and credits
 
