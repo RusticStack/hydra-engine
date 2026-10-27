@@ -15,6 +15,7 @@ Many agents work in it at the same time, on any number of projects. Warm decompi
 <p align="center">
   <a href="#quick-start"><img src="https://img.shields.io/badge/Quick_start-build_%26_connect-15803D?style=for-the-badge" height="40" alt="Quick start: build and connect"></a>
   <a href="https://www.hydrare.dev"><img src="https://img.shields.io/badge/Website-docs_%26_showcase-0B0D0D?style=for-the-badge&labelColor=0B0D0D&color=1F6A3C" height="40" alt="Website: docs and showcase"></a>
+  <a href="#works-best-with-hydralysis"><img src="https://img.shields.io/badge/Works_best_with-Hydralysis-0B0D0D?style=for-the-badge&labelColor=0B0D0D&color=15803D" height="40" alt="Works best with Hydralysis"></a>
 </p>
 
 <p align="center">
@@ -27,12 +28,12 @@ Many agents work in it at the same time, on any number of projects. Warm decompi
 </p>
 
 <p align="center">
-  <img src=".github/assets/how-it-works.gif" width="900" alt="Animated: the website's How it works. Claude Code, Codex, OpenCode and QoderCLI, each through the RusticRE MCP server, send requests along their own wires into one Hydra Engine daemon. Its quick lane fills with millisecond decompiles and renames while its long lane runs an import, an analysis and an export at the same time. On the right, programs in five projects light up with the operation and the harness working on them, long jobs counting up their measured time.">
+  <img src=".github/assets/how-it-works.gif" width="900" alt="Animated: the website's How it works. Claude Code, Codex, OpenCode and QoderCLI, each through the Hydralysis MCP server, send requests along their own wires into one Hydra Engine daemon. Its quick lane fills with millisecond decompiles and renames while its long lane runs an import, an analysis and an export at the same time. On the right, programs in five projects light up with the operation and the harness working on them, long jobs counting up their measured time.">
 </p>
 
 <p align="center"><i>Every head at work at once. One body holds them all.</i><br>
 <sub>Here Claude Code, Codex, OpenCode and QoderCLI all reach the engine through the
-<a href="https://github.com/RusticStack/RusticRE">RusticRE</a> MCP server; any client can also connect directly.</sub></p>
+<a href="https://github.com/RusticStack/Hydralysis">Hydralysis</a> MCP server; any client can also connect directly.</sub></p>
 
 In the myth, the Hydra has one body and many heads. Here the body is one long-lived JVM holding
 Ghidra, its open projects, its analysed programs and its warm decompilers. The heads are the
@@ -51,7 +52,7 @@ headless-only build. It is upstream Ghidra `master` plus those, kept in sync.
 ## What it does
 
 - **Many agents at the same time.** Claude Code, Codex, OpenCode, QoderCLI, MCP servers such as
-  [RusticRE](https://github.com/RusticStack/RusticRE) and your own scripts all work in one daemon at
+  [Hydralysis](https://github.com/RusticStack/Hydralysis) and your own scripts all work in one daemon at
   once: one JVM per user. The first client starts it; the rest find it through a per-user endpoint
   file and join in milliseconds.
 - **Many projects and programs at once.** Open any number of projects in place, by their `.gpr`
@@ -120,16 +121,29 @@ Several at once (same machine; the module README has the method):
 | Working copy of a 1.5 GB project on ReFS (`fork_project`) | 204-225 ms, 2.8-5.0 MB |
 | Four clients x two threads, shared writing on one program | 3,200 renames and comments with 64 saves in 6.0 s, none lost |
 
+## Works best with Hydralysis
+
+[Hydralysis](https://github.com/RusticStack/Hydralysis) is the reverse-engineering toolkit made for
+Hydra Engine: twenty tools for programs you own, as one CLI and one MCP server. Register it in each
+of your harnesses (Claude Code, Codex, OpenCode, QoderCLI or any MCP client) and they all get the
+same tools on one warm engine. It prepares a binary once, as a durable job; answers bounded
+decompiles and references in milliseconds; finds and checks hook sites by signature and prologue;
+runs verified runtime sessions; and stores a finding only with its source. Its `backend install`
+fetches the pinned Hydra Engine release and a JDK, so setting up Hydralysis sets up both.
+
+Hydra Engine stays a generic Ghidra front end that any client can use directly; Hydralysis is the
+quickest way to put it to work.
+
 ## Quick start
 
 You need a JDK 25 and Python 3.10 or later.
 
 **With your AI.** Paste this into Claude Code, Codex, OpenCode or Qoder. It installs
-[RusticRE](https://github.com/RusticStack/RusticRE), the MCP server that runs on Hydra Engine, which
-installs the pinned Hydra Engine release and registers itself with your harness:
+[Hydralysis](https://github.com/RusticStack/Hydralysis), which installs the pinned Hydra Engine
+release and registers itself with your harness:
 
 ```text
-Set up RusticRE and Hydra Engine from github.com/RusticStack/RusticRE. Ask me which AI harnesses to add it to if you can; otherwise, use this one.
+Set up Hydralysis and Hydra Engine from github.com/RusticStack/Hydralysis. Ask me which AI harnesses to add it to if you can; otherwise, use this one.
 ```
 
 **Download (Windows x64).** Each [release](https://github.com/RusticStack/hydra-engine/releases)
@@ -205,18 +219,31 @@ with gs.connect(client="my-tool", harness="claude-code") as s:   # joins the dae
   they expose, and a per-request `client`/`harness` label for each agent they serve. The session
   is a generic Ghidra front end; the tools belong to the client.
 
-**Through an MCP server.** [RusticRE](https://github.com/RusticStack/RusticRE) is RusticStack's:
-twenty reverse-engineering tools for programs you own, on Hydra Engine. Its `backend install`
-fetches the pinned Hydra Engine release; register it in any harness that reads the common
-`mcpServers` shape:
+**Through Hydralysis.** By hand, from a checkout of
+[Hydralysis](https://github.com/RusticStack/Hydralysis) (Python 3.11 or later), with
+`HYDRALYSIS_ROOT` set to a directory for its engine, prepared projects, evidence and logs:
+
+```bash
+uv venv .venv
+.venv/Scripts/python.exe -m pip install -e .
+.venv/Scripts/hydralysis.exe backend install    # the pinned Hydra Engine release and a JDK, as a job
+```
+
+Then register it in any harness that reads the common `mcpServers` shape, and restart the harness:
 
 ```json
 {
   "mcpServers": {
-    "rusticre": { "command": "/path/to/RusticRE/.venv/Scripts/rusticre.exe", "args": ["mcp"] }
+    "hydralysis": {
+      "command": "/path/to/Hydralysis/.venv/Scripts/hydralysis.exe",
+      "args": ["mcp"],
+      "env": { "HYDRALYSIS_ROOT": "/path/to/hydralysis-data" }
+    }
   }
 }
 ```
+
+The [Hydralysis docs](https://www.hydrare.dev/docs/mcp-server) cover the tools and the workflow.
 
 The protocol, every command and every error code are in the
 [module README](Ghidra/Features/HeadlessSession/README.md#protocol-version-2); task-by-task guides
