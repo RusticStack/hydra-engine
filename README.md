@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/RusticStack/hydra-engine/main/.github/assets/logo-dark.svg">
-    <img src="https://raw.githubusercontent.com/RusticStack/hydra-engine/main/.github/assets/logo-light.svg" width="360" alt="Hydra Engine logo: the word HYDRA in green block letters with box-drawing shadows, as a terminal banner">
+    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/logo-dark.svg">
+    <img src=".github/assets/logo-light.svg" width="360" alt="Hydra Engine logo: the word HYDRA in green block letters with box-drawing shadows, as a terminal banner">
   </picture>
 </p>
 
@@ -28,8 +28,8 @@ Many agents work in it at the same time, on any number of projects. Warm decompi
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/RusticStack/hydra-engine/main/.github/assets/architecture-dark.svg">
-    <img src="https://raw.githubusercontent.com/RusticStack/hydra-engine/main/.github/assets/architecture-light.svg" width="860" alt="Diagram: on the left, six heads (Claude Code, Codex, OpenCode, QoderCLI, RusticRE as an MCP server, a script), each busy at the same moment, wired to one Hydra Engine daemon in the middle. Its quick lane holds four requests answered in milliseconds while its long lane runs an import and an analysis. On the right, five programs in five projects, each opened in place, wired to the requests working on them">
+    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/architecture-dark.svg">
+    <img src=".github/assets/architecture-light.svg" width="860" alt="Diagram: on the left, six heads (Claude Code, Codex, OpenCode, QoderCLI, RusticRE as an MCP server, a script), each busy at the same moment, wired to one Hydra Engine daemon in the middle. Its quick lane holds four requests answered in milliseconds while its long lane runs an import and an analysis. On the right, five programs in five projects, each opened in place, wired to the requests working on them">
   </picture>
 </p>
 
@@ -161,8 +161,8 @@ first (`call ping`), and one connection for a sequence, as below.
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/RusticStack/hydra-engine/main/.github/assets/session-dark.svg">
-    <img src="https://raw.githubusercontent.com/RusticStack/hydra-engine/main/.github/assets/session-light.svg" width="860" alt="A recorded Python session: connect starts the daemon, a project is opened writable, a small test program is imported and analysed, a second import of the same file is refused because its SHA-256 is already there, and a function is decompiled to C">
+    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/session-dark.svg">
+    <img src=".github/assets/session-light.svg" width="860" alt="A recorded Python session: connect starts the daemon, a project is opened writable, a small test program is imported and analysed, a second import of the same file is refused because its SHA-256 is already there, and a function is decompiled to C">
   </picture>
 </p>
 
