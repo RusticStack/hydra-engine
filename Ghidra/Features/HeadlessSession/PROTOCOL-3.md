@@ -12,7 +12,11 @@ Evidence conventions. Every `File.java:line` below was read on branch `feat/sess
 Hydralysis branch `feat/hydralysis-0.5` (commit `d0466bc`, package `src/hydralysis`, formerly
 RusticRE). The one exception is `README.md`: its line numbers are those of the design branch tip
 (`design/protocol-3`), where a two-line pointer to this file was inserted at `README.md:538`, so
-every README citation below that point is two lines later than at `b6df709e1e`. Anything not
+every README citation below that point is two lines later than at `b6df709e1e` (where it helps, the
+cited README phrase is quoted so the line can be found again after the branch moves). Three further
+kinds of evidence are cited by path: the characterization and baseline runs of the engine packages
+(`D:/Projects/Hydra/_logs/<stream>/`), the review runs (`.../spec-review/`) and the revision-3
+experiments (`.../spec-rev3/`: scripts and their recorded output, 3.8 and 7.6). Anything not
 marked that way is a proposal. A number marked *unmeasured* has no
 measurement behind it on this machine: it is a starting value to be replaced by the measurements in
 [Release gates](#9-release-gates). Appendix A lists the code facts the design depends on and where
@@ -79,7 +83,7 @@ ergonomics) and the investigation's critic.
 | # | Conflict | Decision | Why |
 |---|---|---|---|
 | D1 | Five analyses each wanted a `hydra.3`/protocol-3/`minClient` bump with different content; the upstream merge is also called hydra.3 | **hydra.3 is the upstream merge only** (no protocol change). **hydra.4 is protocol 3**, one tag. The engine packages merge separately to one integration branch and are gated one by one; the Hydralysis pin moves once. | The merge was golden-gated on its own (KotOR 8616/8616 identical to hydra-2; report in `_golden/baselines/hydra-3-candidate`). Mixing protocol work into it would make a decompile difference unattributable. |
-| D2 | `README.md:988-992` says additions need no protocol change; all three designs still bump to 3 | The bump is kept as a **negotiated contract level**, not a break. `hello` echoes the `protocol` the client sends (the hydra.2 client already sends `protocol=2`, `ghidra_session.py:850-852`), within `[2,3]`; absent means 2. Reply keys that only a v3 client can use are produced only for a v3 connection, at the bounded list of sites in 3.1 (nine table rows, fourteen conditionals). Behaviour that a v2 client could notice is gated on the same `Client.v3()` test (six behaviour gates) unless 5.1 declares it v2-visible with a reason and a test. | A v2 connection then stays byte-identical, so the seven existing scenarios (317 requests) remain an exact regression suite for a Java code base with no unit tests. Those goldens see replies only (they exclude progress events, older-format projects and lock timing: `characterization_tests.py` docstring), so each non-reply behaviour has a behaviour test of its own (5.1). The cost is fourteen reply-shape conditionals (3.1) plus six behaviour gates (5.1). The alternative (always additive reply keys, re-record goldens under a "superset of old keys" check) is wire-compatible and is the fallback if the **reply-shape** count grows past twenty or a gate needs more than `Client.v3()`; it changes no wire rule and cannot replace the behaviour gates. |
+| D2 | `README.md:988-992` says additions need no protocol change; all three designs still bump to 3 | The bump is kept as a **negotiated contract level**, not a break. `hello` echoes the `protocol` the client sends (the hydra.2 client already sends `protocol=2`, `ghidra_session.py:850-852`), within `[2,3]`; absent means 2. Reply keys that only a v3 client can use are produced only for a v3 connection, at the bounded list of sites in 3.1 (thirteen reply-shape conditionals, C1 to C13, enumerated there). Behaviour that a v2 client could notice is gated on the same `Client.v3()` test (six behaviour gates) unless 5.1 declares it v2-visible with a reason and a test. | A v2 connection then stays byte-identical, so the seven existing scenarios (317 requests) remain an exact regression suite for a Java code base with no unit tests. Those goldens see replies only (they exclude progress events, older-format projects and lock timing: `characterization_tests.py` docstring), so each non-reply behaviour has a behaviour test of its own (5.1). The cost is thirteen reply-shape conditionals (C1 to C13, 3.1) plus six behaviour gates (5.1). The alternative (always additive reply keys, re-record goldens under a "superset of old keys" check) is wire-compatible and is the fallback if the **reply-shape** count (13 now, checked by listing C1 to Cn in 3.1) grows past twenty or a gate needs more than `Client.v3()`; it changes no wire rule and cannot replace the behaviour gates. |
 | D3 | Endpoint file and `ready` event: protocol 3 only (A), or the lowest served plus a maximum (C) | Endpoint file and `ready` carry `"protocol": 2` (the lowest served), plus `protocolMin: 2`, `protocolMax: 3`. | The stock client refuses the endpoint on inequality (`ghidra_session.py:1000`) and the `hello` on inequality (`:113`). A hydra.4 client library accepts any overlap of `[2,3]` with the daemon's range and uses the highest. So: a hydra.2/3 stock client works against a hydra.4 daemon at protocol 2; a hydra.4 client works against a hydra.2/3 daemon at protocol 2. |
 | D4 | `minClient` bump now (B asked), or never | `minClient` stays `1.0.0`. The new client library is `CLIENT_VERSION 1.1.0` (something added). The one bump is reserved for the release that drops protocol 2. | Nothing is non-additive for a client that does not opt in. A bump would reject every existing client for no safety gain. |
 | D5 | Persistent op-log: engine WAL/ViewStore (B, C) versus the Hydralysis store (A) | **The Hydralysis store.** No engine-owned op-log in this train. Re-open only if (a) a non-Hydralysis client needs durable engine annotations, or (b) a spike shows bulk ops (`import_types`, `import_archive`, struct) replay on a changeable view program with the same result as the fork-based working copy. | Hydralysis never uses the engine edit path: it forks, then replays RusticQuery `apply_overlays` (`workcopy.py:352-405`, `RusticQuery.java:2305-2345`). The five native engine ops cover rename, label, comment, signature and data_type only; struct, variable, function_create/body/delete and the two bulk imports exist only as RusticQuery code. An engine log would need a second Java implementation of all of them, the biggest risk any design carried. The store already has atomic writes, a monotone revision, per-edit `by`/`at`, a subject journal, and mandatory `expect_revision` with subject-aware rebase (`revisions.py`). What it lacks is hardening (D14), `before` values, a master binding and a commit path, which this design adds. |
@@ -87,12 +91,12 @@ ergonomics) and the investigation's critic.
 | D7 | Two subject/conflict models (store revision plus `before` drift; seq plus subject rebase) | **One subject record** `{subject, field, before, after, seq, by, at}` inside each edit's `effects[]` (4.2). Conflict decisions use the **coarse subject** (the strings of `revisions.subjects_of`, unchanged); `field` only refines drift checks and the probe. | Existing rebase tests stay valid; a rename and a comment at one address still count as one subject for conflicts but are two effects for drift. |
 | D8 | Two backup components with different manifests | One: `fork_project purpose:"backup"` implemented in a new `ProjectBackup` class (not inside `ForkCommands`, 278 lines today). One manifest schema with a `writer` field (`engine` or `hydralysis`), so the Python-written manifest used on hydra.2/3 and the engine-written one are the same format. | The commit works before the engine change (H2 in design A) and later switches writer without a format change. |
 | D9 | Commit mechanism: fork+replay+publish, promote a fork's DB into `.rep`, or apply and save in place | Fork+replay+verify+publish as a **new generation**. No Ghidra-internals write, no promote, no in-place save of a canonical project. | Nothing in the commit path can corrupt the master; the one-way format step lands on the new generation only. |
-| D10 | Commit point: atomic replace of `targets.json` (A), pointer record in an append log (B), `lineage.json` replace (C) | **Append one CRC'd line to `CURRENT.log` and fsync.** `targets.json` is only a cache of it. | Replace-based pointers have no integrity check and no recovery rule; an append log with per-line CRC and a "last valid line wins, a torn tail is ignored by readers and repaired by the next writer under the lock (4.1), a mid-log gap is loud" rule does. |
+| D10 | Commit point: atomic replace of `targets.json` (A), pointer record in an append log (B), `lineage.json` replace (C) | **Append one CRC'd line to `CURRENT.log` and fsync.** `targets.json` is only a cache of it. | Replace-based pointers have no integrity check and no recovery rule; an append log with per-line CRC and a "last valid line wins, a torn tail is ignored by readers and repaired by the next writer on every acquisition of the writer lock (4.1), a mid-log gap is loud" rule does. |
 | D11 | **New finding, in none of the three designs:** `target["key"]` is `sha256(resolved gpr + program)` (`targets.py:114-117`) and keys the overlay store (`workcopy.py:46-47`), the working directory (`:105-106`), the view re-key (`:36-43`), the export header (`exporting.py:118`) and `stop()` (`query.py:224`). A pointer flip that changes `gpr` would orphan every store. | The target keeps a **stable `key` for life**: at lineage creation the existing key is stored in the record (`lineage.origin_key`) and `resolve()` returns it; only `gpr` follows `CURRENT.log`. `stop()` releases the programs of every generation of the lineage. | Without this, the first commit silently abandons the analyst's overlay store. |
 | D12 | "Canonical" for the upgrade gate: no sidecar (A, C) or not provably disposable (B) | **Decided from the project's own fork sidecar alone, because the engine cannot see `CURRENT.log` (Hydralysis-side).** A project is disposable iff its sidecar (`<name>.fork.json`) exists, parses, has `kind == "ghidra-session-fork"` and does not say `disposable:false`. A sidecar without the field (every hydra.2/3 fork: the sidecar is built at `ForkCommands.java:246-251`) is therefore disposable: that is the hydra.2/3 meaning of a fork and the only way Hydralysis's own base forks stay upgradable. hydra.4 `fork_project` writes `disposable:true` for `purpose:"fork"` and `disposable:false` for `purpose:"generation"` and `"backup"`. A generation made **before** the engine knows `purpose` (a commit on hydra.2/3, Y2) would carry no field and look disposable, so Hydralysis rewrites that sidecar to `disposable:false, purpose:"generation"` through `durable` right after the fork and **before** step 7 hashes the folder (4.6); the rewrite is part of what the manifest covers. No sidecar, an unparseable one, a sidecar write that failed (`ForkCommands.java:255-257` only warns), or any doubt: canonical. | Generations are made by `fork_project`, so "no sidecar" would exempt every generation from the second one on, and "not a published generation" is not decidable in the engine. A sidecar is an ordinary file a local process can edit: the gate is a guard against accidents (section 6). |
 | D13 | Backup freshness test | The gate checks `backup.source.revision == Revision.of(project)` **and** the manifest self-hash **and** every file's size. Integrity of content is the manifest's per-file SHA-256, re-verified by the client before it relies on a backup. | `Revision.of` identifies the large database files only by size and mtime (`Revision.java:51-80`, files above `HASH_LIMIT` = 1 MiB are not hashed): it proves "this is the same saved state", not "the bytes are intact". The engine gate is a guard against accidents, not a security boundary against a local process with the same rights. |
-| D14 | Durable IO: skipped (A: "proven"), engine-side CRC/WAL (B), not mentioned (C) | **First thing shipped, on hydra.2/3, no engine change:** `durable.py` (fsync before replace, write-through replace on Windows, retry on `PermissionError`, sealed JSON with a previous-version fallback, never "start empty"). | `_save_store` (`workcopy.py:72-80`) and `write_json` (`backends.py:50-54`) do `write_bytes` then `replace` with no fsync: a power cut can leave a zero-length or stale store, which is the only record on hydra.2/3. 52 other write sites go through the same two chokepoints or `write_text`. |
-| D15 | Idempotency: `rk`/`opId` everywhere (B, C) versus none (A) | Two parts. (1) The client **stops blindly retrying non-idempotent engine calls** after `closed` (`hydra.py:268-287` retries every command once), and reconciles through the program's `overlay_state` marker instead. (2) Engine mutating edit commands (`edit`, `rename`, `comment`, `apply_overlay`) accept an optional `rk` and answer a repeat with `replayed:true`. Commit and backup jobs are idempotent by their own id and intent log. | The marker already makes `apply_overlays` recoverable; the blind retry is the real hole. `rk` costs little where `expect` is being added anyway. |
+| D14 | Durable IO: skipped (A: "proven"), engine-side CRC/WAL (B), not mentioned (C) | **First thing shipped, on hydra.2/3, no engine change:** `durable.py` (fsync before replace, write-through replace on Windows, retry on `PermissionError`, sealed JSON with a previous-version fallback, never "start empty"). | `_save_store` (`workcopy.py:72-80`) and `write_json` (`backends.py:50-54`) do `write_bytes` then `replace` with no fsync: a power cut can leave a zero-length or stale store, which is the only record on hydra.2/3. Counted, not estimated: the AST write gate Y0a shipped (`tests/test_durable.py`, at Hydralysis `589432e`) finds **41** write sites outside `durable.py`: 11 that are not records in the four files Y0a owns (downloads, corpus copies, logs, markers), **8 call sites in 4 record-bearing writers that stay outside `durable`** (`analysis.save_overlay`, `hydra.write_daemon_config`, `runtime._write`, `runtime_worker._write`) and 22 artifact writes (logs, exports, staged copies). The owner of each is the table in 8.2. |
+| D15 | Idempotency: `rk`/`opId` everywhere (B, C) versus none (A) | Two parts. (1) The client **stops blindly retrying non-idempotent engine calls** after `closed` (`hydra.py:268-287` retries every command once), and reconciles through the program's `overlay_state` marker instead. (2) The engine's journaled edit commands (`edit`, `rename`, `comment`) accept an optional `rk` and answer a repeat with `replayed:true` (not `apply_overlay`: the engine's overlays have no journal, 3.4). Commit and backup jobs are idempotent by their own id and intent log. | The marker already makes `apply_overlays` recoverable; the blind retry is the real hole. `rk` costs little where `expect` is being added anyway. |
 | D16 | Lanes: where `save` goes; explicit hint versus inference | New **MAINT** lane for `fork_project`, `refresh`, `reopen`, `promote_overlay` and `save`. `script` is `quick` **only with an explicit `lane:"quick"` and a `timeout` of at most `quickScriptMaxS`**; no inference from the timeout or from the script's directory. The lane move is **gated on v3** (a v2 connection keeps `save` and the others in `long`, 5.1). | RusticRE 0.4.x already sends `timeout_s+5` (`query.py:91`) but pins hydra.2 and refuses hydra.4, so inference would help no one it could reach; and silent lane changes for unknown clients are not worth a hidden behaviour. (Judges disagreed; this is the safer reading.) |
 | D17 | Replace `Scheduler`/`ImportGate` with an `AdmissionController` (B, C), or extend | **Extend.** Fair key, caps, queue info, MAINT lane and the import wait fix are changes inside `Scheduler` and `ImportCommands`. | `laneOf(String)` is static and cmd-only (`Scheduler.java:59-69`), and `Scheduler.admit(c, cmd, m, waitMs)` (`Scheduler.java:138`) is called from two places, `Session.execute` (`Session.java:248`) and `ImportCommands` (`ImportCommands.java:112`). Lane-by-request and validate-before-wait therefore change **two** signatures, `laneOf(cmd, req)` and `admit(c, cmd, req, m, waitMs)`, and both call sites. E1 makes those edits first, as behaviour-free seams (8.1), so that no later package edits `Session.java` for them. |
 | D18 | Validate before queueing (C) | **Validate-before-wait:** the request-shape checks run only when the request would otherwise have to wait for a slot, and only for a v3 connection (5.1). | A request that is admitted at once keeps today's order of errors, so no existing golden changes; a v3 request that would sit in a queue for a minute and then fail `bad_request` fails at once instead. A v2 request keeps today's order and timing exactly. |
@@ -110,6 +114,8 @@ ergonomics) and the investigation's critic.
 | D30 | Test-file collisions | `daemon_tests.py` and `characterization_tests.py` get an extension loader in E0 (`examples/dt_*.py`, `examples/char_*.py`), so every later package adds its tests in its own file. | Lets packages in one wave touch disjoint files. |
 | D31 | Seams: which package may edit the cross-cutting files | **Seams first, then features.** E1 (W1) builds four small registries and makes the two signature changes of D17, so that later packages in one wave never edit the same shared file: `Advertised` (capabilities, limits, policy, 3.1), `Settings` (config keys, 3.7), `Preflight` (per-command request validators, 3.5), `DbVersions` (the constants behind `dbVersions`, 3.2). Ownership per file and wave is the matrix in 8.1. | The v1 plan said `Session.java` is edited by one package per wave while E2 and E3a both needed it in W2, and E1 needed a constant that only E2 could edit (review B4). |
 | D32 | Commit state: watermark or ids | **A committed-id set, not a watermark.** A record is committed iff its id is in the `ids` of a live (not reverted) commit entry; the replay set is every other record, in `seq` order (4.2). `commit` can take a subset (`only`) and `on_drift:"skip"` leaves records pending, so a single `committed_through` number could mark a skipped record as committed. | Review B2. |
+| D33 | Deadline on a stalled call against a hydra.2/3 engine (revision 2 said: `session.close()` on a timer) | **Half-close and abandon, chosen by experiment** (7.6): a worker thread owns `send`/`wait`, the caller waits on its own event, `cancel` goes through the same session, then `shutdown(SHUT_WR)`, never `close()`, and the thread and connection are abandoned (at most 8). The client never relies on an EOF or a reply coming back on hydra.3. | `SocketSession.close()` hangs when another thread is in `wait()` (it closes the file objects before it shuts the socket down), measured on the real 1.0.0 object on Python 3.14.7 and 3.15.0; `shutdown(SHUT_WR)` delivers the FIN and `Connection.run` cancels the request, but hydra.3 then waits in `awaitTermination(1, HOURS)`, so only a cooperative request answers; abandoning without the FIN leaks the engine-side client for good. P1b/E3b change this on hydra.4. |
+| D34 | Where each Python catalog stub gets its handler (Y0d left `not_available` stubs in `api.py`; the matrix gave `api.py` to Y2 and Y4b only, two packages in W6 needed it) | **A handler registry in `api.py`, built once by Y2 (W2)**; `backups.py`, `commits.py`, `doctor.py` and `userscripts.py` register their handlers and no later package edits `api.py` (8.2). | The seams-first rule of D31 applied to the Python side; it removes the one cell that two W6 packages would have shared. |
 
 ## 3. The engine contract
 
@@ -128,6 +134,19 @@ All of this is the target for hydra.4. "v3" means a connection whose `hello` ask
 A client library that cannot speak `reply.protocol` raises `IncompatibleError` naming both
 sides, as today.
 
+**The first `hello` fixes the protocol of the connection for its life.** The first request of a
+connection is handled synchronously on its reader thread (`Connection.authenticate`,
+`Connection.java:187-205`, which calls `respond` itself), before the next line is read, so every
+later request, progress event and reply is gated against a value that is already final and no
+gating decision can race the handshake. A later `hello` runs on the worker pool (`Session.execute`,
+`case "hello"`, `Session.java:230`; `hello` is not inline) and never changes `Client.protocol`
+(written once, before the first reply is sent, and then read-only); it is answered with the
+connection's own protocol whatever it asks for. A `protocol` that is not a JSON integer (a string,
+a float, `true`, `null`) is treated as absent, i.e. 2: the request is not refused, so no existing
+client can be broken by the type of the field. This is argued from the code, not run (no protocol-3
+engine exists yet); E1's contract tests pin it (a second `hello` asking 3 on a protocol-2
+connection answers 2 and adds no v3 key; `"protocol":"3"` answers 2).
+
 **Endpoint file and `ready` event** (`HeadlessSession.java:187`, `:356`):
 
 ```json
@@ -138,19 +157,30 @@ sides, as today.
 the lowest served; the honest statement is `protocolMin`/`protocolMax`.
 
 **Where v3 gating applies to replies (the complete list; everything else a v2 reply carries is
-byte-identical).** Nine rows, fourteen conditionals (the number D2 refers to):
+byte-identical).** Thirteen reply-shape conditionals, **C1 to C13**, one per row, each a single
+`if (v3)` at the one place that builds the key (the number D2 and 5.1 refer to):
 
-| Site | v3-only content |
-|---|---|
-| `Session.info(c)` (hello and the `status` header) | `protocolMin`, `protocolMax`, `capabilities`, `limits`, `policy`, `paths`, `platform`, `analysisIdentity` |
-| `Scheduler.describe(boolean v3)` (`status.scheduler`) | `maint` lane, `waiting[].position`, `waiting[].estimatedWaitMs`, `oldestWaitMs`, `longestRunningMs`, `starving`, `perKeyCap`; a v3 `describe` takes the scheduler lock with `tryLock(250 ms)` and may answer `{"unavailable":true}` (3.4, `health`), a v2 one keeps `lock.lock()` |
-| `status.programs[]` | `abandonedRequests[]` |
-| `RequestMonitor.waiting(what, queueInfo)`: `status.requests[].queue` and the `queue` key of progress events; the import queue's `estimateScope` | `queue` (3.4); `estimateScope:"load"`. The one-argument call stays for a v2 connection, so a v2 progress event is unchanged |
-| `ProjectCommands.openProject`, `project`, `info` | `format` |
-| `ForkCommands.forkProject` success | `cost`, `warnings`, `purpose`, `manifest` (backup) |
-| `ScriptCommands.script` reply | `isolation`, `lane`, `laneNote`, `attemptedChanges`, `attemptedChangesCount`, `basedOn`, `unsavedIgnored` |
-| `Connection.respond` | top-level `queue` (waited 250 ms or more); on errors `error.next` and `error.retryAfterMs`; `details.applied` on `cancelled` |
-| `busy` details | `reason`, `queue`, `abandoned` (`retryAfterMs` is **not** a details key: it sits in `error`, 3.3) |
+| # | The one site | v3-only content |
+|---|---|---|
+| C1 | `Session.info(c)` (one method builds the hello result and the `status` header) | `protocolMin`, `protocolMax`, `capabilities`, `limits`, `policy`, `paths`, `platform`, `analysisIdentity` |
+| C2 | `Scheduler.describe(boolean v3)` (`status.scheduler`; E1 adds the argument, 8.1) | `maint` lane, `waiting[].position`, `waiting[].estimatedWaitMs`, `oldestWaitMs`, `longestRunningMs`, `starving`, `perKeyCap`, and the `{"unavailable":true,"waitedMs":250}` form (the `tryLock(250 ms)` itself is behaviour gate 5, G6) |
+| C3 | the program description in `status.programs[]` | `abandonedRequests[]` |
+| C4 | `Scheduler.admit`: the `m.waiting(lane + " slot", ...)` call (`Scheduler.java:155`, one-argument today) | the `queue` key of a **slot wait**: in its progress events and in `status.requests[].queue` (3.4) |
+| C5 | `ImportGate.queueInfo(e)` (`ImportGate.java:309-315`) | `estimateScope:"load"` and nothing else. The `queue` object and the progress key of an **import** wait **already exist in protocol 2** (`m.waiting("import queue", q)`, `ImportGate.java:188-194`; `status.requests[].queue`, `RequestMonitor.describe`, `RequestMonitor.java:111`) and stay exactly as they are |
+| C6 | `ProjectEntry.info(client)` (callers: `openProject`, `ProjectCommands.java:92`; the `project` command, `Session.java:265`; `status.projects[]`, `Session.java:333`, `:427`) | `format` |
+| C7 | `ForkCommands.forkProject` success | `cost`, `warnings`, `purpose`, `manifest` (backup) |
+| C8 | `ScriptCommands.script` reply | `isolation`, `lane`, `laneNote`, `attemptedChanges`, `attemptedChangesCount`, `basedOn`, `unsavedIgnored` |
+| C9 | `Connection.respond`, success | top-level `queue` (waited 250 ms or more) |
+| C10 | `Connection.error` (gets the client, E1) | `error.next` and `error.retryAfterMs` |
+| C11 | `Connection.respond`, the `cancelled` path | `error.details.applied` and `error.details.phase` (3.3) |
+| C12 | the one busy-details helper that `Scheduler.admit`, `Access.lockProject`, `ProgramEntry.acquire` and the overlay lock call | `details.reason`, `queue`, `abandoned` (`retryAfterMs` is **not** a details key: it sits in `error`, 3.3) |
+| C13 | the one `bad_request` helper of `Requests`/`Preflight` | `details.field` and `allowed[]` (3.3; today a `bad_request` carries no `details`, `Json.java:36-80`) |
+
+Keys that have **no conditional of their own** because only a v3 request can provoke them (a v2
+connection cannot send the field, behaviour gate 1), so no v2 reply can contain them:
+`lock_queue_full` (needs `lane:"quick"`), `rk_expired` (needs `rk`), `script_changed` (needs
+`scriptSha256`). The v3 error code `backup_required` is a code choice, not a reply key: behaviour
+gate 6.
 
 **Behaviour gates (six).** These are not reply shapes, so the goldens cannot see them; each has its
 own v2 test (5.1): (1) every **new request field** takes effect only on a v3 connection (one helper
@@ -160,7 +190,7 @@ reads it: `purpose`, `open`, `verify`, `lane`, `isolation`, `scriptSha256`, `rk`
 protocol (5.1); (2) `laneOf(cmd, req, v3)` moves `save`, `fork_project`, `refresh`, `reopen`,
 `promote_overlay` to `maint` only for v3; (3) the fair key `connection id + scope` and the per-key
 cap apply only to a v3 connection's requests (a v2 request keeps the key `connection id`, 3.5);
-(4) validate-before-wait runs only for v3; (5) `describe` as above; (6) the upgrade gate's refusal is
+(4) validate-before-wait runs only for v3; (5) `describe`'s `tryLock(250 ms)` (C2 is its reply shape); (6) the upgrade gate's refusal is
 `conflict` with `details.reason:"backup_required"` for v2 and the code `backup_required` for v3.
 
 `health` is available at any protocol (a new command cannot change an old transcript).
@@ -173,17 +203,23 @@ An engine without `capabilities` (hydra.2/3) is "degraded": 7.5.
 
 **Who registers what.** Only E1 owns `hello`/`Session.info`, but every package adds its own
 capabilities, limits and policy values. E1 therefore ships the **advertisement registry**
-`Advertised.java`: all capability names above are declared up front (a registration of an unknown
-name throws, so a typo fails a test); a package **enables** its own capability from a class it owns
+`Advertised.java`: all capability, limit and policy **names** are declared up front (the lists of
+3.2; a registration of an unknown name throws, so a typo in a capability, a limit or a policy key
+fails a test); a package **enables** its own capability from a class it owns
 (`Advertised.capability("queueInfo", 1)` in the `Scheduler` constructor; `limit("maxMaint", supplier)`,
 `policy("requireBackupForUpgrade", supplier)` likewise) and never edits `Session.java`.
 `Session.info(c)` renders `capabilities`, `limits` and `policy` from the registry, in declaration
-order, so key order is stable. The v3 hello golden therefore changes **deliberately once per wave**:
-the capability block grows by exactly the names that wave's packages enable. To keep one package
-from re-recording another's golden, `char_e1.py` compares the block as a required subset (and
-masks it), each later package asserts its own names in its own `char_<package>.py`, and R1 records
-the full release golden of the whole hello. A capability a merged package does not enable is
-absent, which is what a client must handle anyway (7.5).
+order, so key order is stable. The v3 hello golden therefore changes **deliberately once per wave**,
+and not only in `capabilities`: `limits` and `policy` grow too (E3a: `maxMaint`, `quickScriptMaxS`,
+`maxRunningPerKey`; E3b: `cleanupGraceS`, `abandonWaitS`; E2: `requireBackupForUpgrade`) and
+`platform.testHooks` appears in W4 (E5). To keep one package from re-recording another's golden,
+`char_e1.py` compares **`capabilities`, `limits` and `policy` as required subsets** (every key E1
+itself sets must be present with its value; further keys are allowed and not compared), **masks**
+`paths`, `platform` and `analysisIdentity` (hashes, build date, versions and machine facts) and
+compares everything else exactly; each later package asserts its own names and values in its own
+`char_<package>.py`, `platform.testHooks` is asserted only by `dt_e5`/`cc_e5`, and R1 records the full
+release golden of the whole hello. A capability a merged package does not enable is absent, which
+is what a client must handle anyway (7.5).
 
 ### 3.2 `hello`/`status` identity block (v3)
 
@@ -223,7 +259,9 @@ New keys are appended after `memory` and before `projects` (their order is part 
   package-visible holder `DbVersions.program()` (same code, same `-1`) and makes `UpgradeCache` call
   it, so E2 builds on a constant E1 already owns (8.1). A `-1` is reported as `null`, `health.state` is `degraded`, and
   the DB-version release gate (9) fails. `dbVersions.dataTypes` is `null` until it is read and
-  tested against 12.1.4 data (E2); it is never guessed.
+  tested against 12.1.4 data (E2); it is never guessed. `DbVersions.java` is created by E1 with
+  `program()` and a `dataTypes()` that returns `null`; E2 fills `dataTypes()` in W2 (8.1 gives it the
+  W2 cell of `DbVersions.java`, so the registry needs no other mechanism).
 - `cow` reuses `ProjectFork.clones` (`ProjectFork.java:138-141`): Windows and ReFS only. No other
   copy-on-write file system is claimed.
 
@@ -235,9 +273,13 @@ Existing codes and their meanings are unchanged (`SessionException.java:27-51`).
 |---|---|---|
 | `backup_required` | `open_program writable:true upgrade:true` on a non-disposable project whose program is in an older or unknown format, without a valid `backup`. A **v2** connection gets the existing code `conflict` with `details.reason:"backup_required"` (and the same other details), the code its sibling refusal already uses (`ProgramCommands.java:428-431`), so protocol 2's error vocabulary does not grow | `project`, `program`, `format`, `suggest:"fork_project purpose backup"` |
 | `script_changed` | `scriptSha256` does not match the script file | `expected`, `actual`, `script` |
-| `bad_request` with `details.field` | unchanged code; v3 adds `field` and `allowed[]` where the value set is closed (`lane`, `isolation`, `purpose`, `verify`) | |
+| `bad_request` with `details.field` | unchanged code; v3 adds `field` and `allowed[]` where the value set is closed (`lane`, `isolation`, `purpose`, `verify`), and `field:"expect"` for `requireExpect` (conditional C13, 3.1) | |
+| `bad_request` with `details.reason:"rk_expired"` | an `rk` whose multi-op entries were partly evicted from the journal (3.4); only a request that carries `rk` (v3) can get it | `rk`, `foundOf`, `expectedOf` |
 
-`busy` gains `details.reason` (`slot_wait`, `lock_wait`, `lock_queue_full`, `abandoned`) for v3.
+`busy` gains `details.reason` (`slot_wait`, `lock_wait`, `lock_queue_full`, `abandoned`) for v3
+(conditional C12). `lock_queue_full` can only answer a request that carries the v3-only
+`lane:"quick"`. `cancelled` gains `details.phase` (`queued` for a slot wait, `lock_wait`, `running`)
+and, for the commands listed below, `details.applied`, both for v3 (conditional C11).
 `conflict` for `expect` on `signature` and `data_type` (v3 only, 3.4) has the same shape as for name and comment
 (`reason:"changed"`, `address`, `field`, `expected`, `current`, plus `lastEdit` and `holderInfo`
 when the journal knows the editor). The fields are `"signature"` and `"type"`.
@@ -280,8 +322,8 @@ Examples (all v3):
 ```
 
 `details.applied` on `cancelled` is present for `rename`, `comment`, `edit`, `apply_overlay`
-(always `false`: they are transactional and cancel only reaches them while queued or before the
-transaction), for `script` in owner mode (`applied` = the program's modification number moved,
+(the engine's overlay command: always `false`: they are transactional and cancel only reaches them
+while queued or before the transaction), for `script` in owner mode (`applied` = the program's modification number moved,
 the existing `changed`), and for `save` (`applied:false`: the stored file is untouched until the
 save completes). For other commands the key is absent, not guessed.
 
@@ -463,7 +505,8 @@ Written last, after the files, in the backup folder; never modified afterwards.
   backslash and the control characters U+0000 to U+001F (as `\b \t \n \f \r` where those exist,
   else `\u00xx` with lower-case hex) and **nothing else**: `<`, `>`, `&`, `'`, U+007F and every
   non-ASCII character, including U+2028 and U+2029, are written literally as UTF-8; an unpaired
-  surrogate is refused. `filesetSha256` is the sha256 of the canonical form of the `files` array.
+  surrogate is refused **in a manifest** (it has no UTF-8 form, and a manifest is verified by two
+  languages). `filesetSha256` is the sha256 of the canonical form of the `files` array.
   Python writes it with `json.dumps(obj, ensure_ascii=False, separators=(",", ":"),
   sort_keys=True).encode("utf-8")`. Gson cannot be configured to this form (even with
   `disableHtmlEscaping()` it escapes U+2028 and U+2029, and it does not sort keys), so the engine
@@ -473,13 +516,16 @@ Written last, after the files, in the backup folder; never modified afterwards.
   and by Python, each is verified by the other, and both match one fixed vector
   (`examples/vectors/canonical-manifest.json` with its expected sha256) checked in both languages.
   The store `seal` and `bundle_sha256` (4.1, 4.9) use the same form but are Python-only, so they may
-  contain floats (Python's `repr`); nothing outside Python verifies them.
+  contain floats (Python's `repr`) **and tolerate an unpaired surrogate** (Y0a's `canonical()` encodes
+  with `surrogatepass`, so a lone surrogate that came from a bad decode in an analyst's note does
+  not make the store unwritable; decided in revision 3, a deviation from "refused" that is confined
+  to forms nothing outside Python verifies).
 - `independent` is true only for a real copy on a different volume. A block clone on the same
   volume is `false` and the doctor says what that means.
 - The files are not touched after writing (read-only attribute set best-effort). Further copies
   of the same backup are recorded in Hydralysis's own append log (4.5), not by rewriting this file.
 
-#### `edit`, `rename`, `comment`, `apply_overlay`: `expect` and `rk`
+#### `edit`, `rename`, `comment`: `expect` and `rk`
 
 `expect` already exists for rename, label and comment (`Operations.java:48-60`, calls at `:229,
 237, 242, 271`). It is added to the two ops that already compute the old value and never compare
@@ -508,8 +554,12 @@ op name for everything but `rename`/`label` and `comment`; `Journal.lastAt`, `:1
 `expect_revision` itself. `struct` and `variable` edits are not engine ops, so their
 compare-and-set remains `verify_before` inside RusticQuery (4.2). This gap is stated, not hidden.
 
-`rk` (string, at most 64 characters; v3 only) on `edit`, `rename`, `comment`, `apply_overlay`: the
-journal entry stores it. What a journal entry stores is a deep copy of the **per-op result**
+`rk` (string, at most 64 characters; v3 only) on `edit`, `rename`, `comment`: the journal entry
+stores it. **Not `apply_overlay`**: the engine's overlay commands have no journal at all
+(`OverlayCommands.java` and `Overlay.java` contain none), so there is nowhere to store a key, and
+`OverlayCommands.java` is not in E1's files; idempotency of the Hydralysis `apply_overlays` script
+action is the `overlay_state` marker (D15, 4.3). The owners are E1 (`EditCommands`, `Journal`;
+`Session.java:282` and `:290` are the rename and comment dispatch). What a journal entry stores is a deep copy of the **per-op result**
 (`EditCommands.journal`, `EditCommands.java:76-88`: the op's own fields such as `address`, `old`,
 `new`, `op`, plus `seq`, `at`, `client`, `name`, `harness`, `cmd`, and now `rk`); it does **not**
 store the reply envelope (`applied`, `seqs`, `unsavedEdits`). A second request with the same `rk` on
@@ -572,11 +622,13 @@ A v3 success reply that waited 250 ms or more for a slot carries, next to `resul
 {"id":5,"ok":true,"result":{"...":"..."},"ms":4210,"queue":{"lane":"long","waitedMs":4000,"positionAtStart":3}}
 ```
 
-While it waits, the existing progress event carries `queue` **for a v3 connection only** (the
-plumbing exists: `RequestMonitor.waiting(what, queueInfo)`, `RequestMonitor.java:98-101`, and
-`:191-193`, but `Scheduler.admit` calls the one-argument form, `Scheduler.java:155`; E3a passes
-the queue information only when the client is v3, so a v2 progress event and a v2
-`status.requests[]` entry are unchanged, 5.1):
+While it waits **for a slot**, the existing progress event carries `queue` **for a v3 connection
+only** (the plumbing exists: `RequestMonitor.waiting(what, queueInfo)`, `RequestMonitor.java:98-101`,
+and `:191-193`, but `Scheduler.admit` calls the one-argument form, `Scheduler.java:155`; E3a passes
+the queue information only when the client is v3, so a v2 slot-wait progress event and a v2
+`status.requests[]` entry for a slot wait are unchanged, 5.1; conditional C4). This is about the
+**slot** wait only: a wait in the **import queue** already carries `queue` in protocol 2 (3.5, C5) and
+is not touched:
 
 ```json
 {"event":"progress","id":5,"message":"waiting for a long slot","queue":{"lane":"long","position":3,"ahead":2,"estimatedWaitMs":null,"estimate":true}}
@@ -597,7 +649,17 @@ behaviour change, so it is **gated on v3** (behaviour gate 2, 3.1): a v2 connect
 lane, today's busy text and today's queueing for these five commands, and the two kinds of
 connection share one scheduler, so a v2 `save` still queues in `long` while a v3 `save` runs in
 `maint` (test `v2_lane_unchanged`, 5.1). `import` and `analyze` stay long. `ImportGate` keeps its own queue and its own
-estimate, labelled `estimateScope:"load"` because it excludes analysis; it is not rewritten.
+estimate; it is not rewritten. Two things change in it, both E3a's (8.1 gives `ImportGate.java` to
+E3a in W2): the estimate gains `estimateScope:"load"` for a v3 connection (it excludes analysis;
+conditional C5), and, because `ImportGate.enter` receives only the client **id**
+(`ImportGate.java:165`, called with `c.id` from `ImportCommands.java:100`; the `Client` and so
+`Client.v3()` are not available inside the gate), `enter` takes the `Client` (or a `boolean v3`) and
+stores it on its `Entry`, so that `queueInfo(e)` can decide. What does **not** change: the `queue`
+object that an import wait already puts in its progress events (`m.waiting("import queue", q)`,
+`ImportGate.java:188-194`) and in `status.requests[].queue` (`RequestMonitor.java:111`) is
+**protocol 2 behaviour today**, so it is not new v3 content and not gated: only the `queue` key of
+a *slot* wait (C4) and `estimateScope` (C5) are new. `v2_progress_keys` (5.1, G5) pins the exact key
+set of both kinds of wait.
 
 **Fair key.** The round-robin map in `Scheduler.State.queue` is keyed by connection id
 (`Scheduler.java:84,152`). For a **v3 connection** it becomes keyed by `connection id +
@@ -607,8 +669,12 @@ its requests would otherwise see its own requests reordered). Unlabelled request
 per connection, as today. The key is attribution, not access control (any holder of the token can
 forge it; the README already says so).
 
-**Per-key running cap**, work-conserving (v3 keys only; a v2 request is never capped): it applies
-only while another key waits for that lane. Defaults: quick `max(1, slots/2)`, long `max(1, slots-1)`, maint `1`. It is one extra
+**Per-key running cap**, work-conserving (v3 keys only; a v2 request is never capped): a key at its
+cap is held back **only while another key waits for that lane that is itself under its own cap**
+(a key that has reached its cap and whose next request is queued does not count as "another key
+waiting", so two keys that each run one request and queue another never leave slots idle: with
+`maint` slots 4, cap 1 and two such keys, the cap does not apply and both queued requests run).
+Defaults: quick `max(1, slots/2)`, long `max(1, slots-1)`, maint `1`. It is one extra
 condition in `admit` and in `release`'s hand-over loop (`Scheduler.java:266-277`).
 
 **Queue information.** `Ticket` computes `position` and `ahead` on demand. ETA:
@@ -634,16 +700,31 @@ gate without a deadline, then calls `scheduler.admit(c, "import", m, waitMs(req)
 `lockProject(p, false, waitMs(req), "import")` (`ImportCommands.java:112-114`) with `waitMs`
 defaulting to 10 s (`Requests.java:30`): an import that waited an hour for its turn can fail `busy`
 ten seconds after reaching the front. Both calls take the remaining wait computed from
-`limited`/`deadline` (`:79-81`), unlimited when unlimited. A v2 client can only gain from this (an
-import that failed now succeeds); the goldens cannot see it, so `import_wait` runs on a v2
+`limited`/`deadline` (`:79-81`), unlimited when unlimited. **This moves a v2 outcome in both
+directions, and both are declared (V2, 5.1):** (1) a v2 import **without** a `wait` field, which
+waits unlimited in the gate, now also waits unlimited for the slot and the project lock instead of
+failing `busy` after 10 s (a failure becomes a success); (2) a v2 import with an **explicit numeric**
+`wait` that spent most of it in the gate now fails `busy` at the end of that one budget, where today
+its slot and lock waits each got a fresh full `wait` and it could succeed (a success can become a
+failure; the total is now what the caller asked for). The goldens cannot see either, so the tests
+`import_wait` (no `wait`) and `import_wait_explicit` (a numeric `wait` spent in the gate) run on a v2
 connection.
 
 **Cancel-aware lock waits (one timed `tryLock`, cancel by interrupting the waiting thread).**
 `Caller.enter(c, id)` (`Caller.java:86`, called from `Connection.respond`) also stores the request's
-`RequestMonitor`; `Caller.monitor()` returns it. Every lock a request waits on is a **fair**
-`ReentrantReadWriteLock` (`ProgramEntry.java:115`, `ProjectEntry.java:43`, `Overlay.java:54`), and
-today each wait is **one** timed `tryLock(wait)` (`ProgramEntry.java:195`, `Access.java:109`,
-`OverlayCommands.java:142`). The timed `tryLock(long, TimeUnit)` honours the fair policy: the thread
+`RequestMonitor`; `Caller.monitor()` returns it. The three locks a request waits on are **fair**
+`ReentrantReadWriteLock`s (`ProgramEntry.java:115`, `ProjectEntry.java:43`, `Overlay.java:54`), and
+today each of those waits is **one** timed `tryLock(wait)` (`ProgramEntry.java:195`,
+`Access.java:109`, `OverlayCommands.java:142`). **These three request-bound timed waits are what this
+section converts, and the claim stops there.** The overlay lifecycle also takes **untimed,
+uncancellable** `lock()` calls (`OverlayCommands.java:228`, `:238`, `:251` in `openOverlay`, `:319`
+in `rebuildOverlays`, `:352` in `dropOverlays`, which also runs from the cleanup path, and `:404` in
+`promoteOverlay`, which this design moves to the `maint` lane). They are **out of scope** of E3b: a
+request blocked there ignores `cancel`, the deadline and the dead-client release exactly as today
+(they are short, overlay-local critical sections, and an overlay is not the shared program), the
+limit is listed in section 6, and E3b's `abandoned_holder` test does not cover them. Converting
+them to `Waits.tryLock` is a later, separate decision (it needs a lock-order review of
+`promoteOverlay`). The timed `tryLock(long, TimeUnit)` honours the fair policy: the thread
 joins the lock's FIFO queue once and keeps its place for the whole wait, and while an exclusive
 locker is queued no later reader gets in ahead of it. Two obvious ways to make the wait cancellable
 break that, and both are **rejected**:
@@ -746,6 +827,11 @@ keeps everything else running. The only hard remedy is a helper JVM for user scr
 of scope and said so in the README. `RusticQuery` calls `monitor.checkCancelled()` at 17 sites
 (`RusticQuery.java:126, 254, ...`); new loops must call it.
 
+A client that ends a stalled call by half-closing its connection (the hydra.2/3 deadline of 7.6) is
+such a dead client from the engine's side: on hydra.3 it is released only when its requests end
+(measured in 7.6, because `Connection.run` waits in `awaitTermination(1, HOURS)`), on hydra.4 by this
+rule after about `cleanupGraceS + abandonWaitS`.
+
 **Orphan TTL (E3b, optional, default off).** With `orphanKeepS > 0`, `Session.reap` ages the
 unsaved edits of a shared program whose last writer died (`ProgramEntry.holdsOrphanedWork`,
 `orphanedSince`, `Session.java:171`), writes `<stateDir>/recovery/<project>-<program>-<ts>.journal.json`
@@ -764,8 +850,9 @@ Hydralysis never needs it (its work copies are replayable from the store).
 `getReadOnlyDomainObject`, or `UpgradeCache.openReady` when the shared program came from the
 cache): extracted to `PrivateInstance.java`, with a transient consumer, disposed in a `finally`,
 never put in the `overlays` map. The extraction touches `OverlayCommands`, so E4 follows E3b. Open
-cost is the README figure for an unedited overlay (26-116 ms, +54 MB on the benchmark program)
-and is *unmeasured on KotOR*: `private` becomes the Hydralysis default for `ghidra_run` only
+cost is the README figure for an unedited overlay (two README rows, not one: 26 ms and +3 MB on the
+174-function project, `README.md:410`; 116 ms and +54 MB on the 243,855-function benchmark program,
+`README.md:409`) and is *unmeasured on KotOR*: `private` becomes the Hydralysis default for `ghidra_run` only
 after that measurement (7.4). Reply adds `"basedOn":{"saved":true,"programRevision":"..."}` and
 `"unsavedIgnored":0`.
 
@@ -806,11 +893,13 @@ them in the README. No new environment variable is added.
   accepts any overlap of `[2,3]` with `[protocolMin, protocolMax]` (absent: the single `protocol`).
 - **P1b.** `SocketSession.call(cmd, deadline=None)`: replaces `sock.settimeout(None)`
   (`ghidra_session.py:845`) for the wait on that reply; on expiry sends `cancel target=<id>` and
-  raises `SessionError("deadline_exceeded")`; the connection stays usable. This exists only in the
+  raises `SessionError("deadline_exceeded")`; the connection stays usable (the library owns its
+  reader, so its own `wait` can be timed and no thread is ever left blocked in `readline`). This exists only in the
   1.1.0 library that ships with hydra.4: the hydra.2/3 install ships 1.0.0, whose `call` waits
   without a limit, and Hydralysis loads the session module **from the engine install**
   (`hydra.py:48` `SESSION_MODULE`, `:229-233` `Engine.module()` and its use in `_connect`), so against a hydra.2/3 engine it cannot
-  use P1b and runs the client-side watchdog of 7.6 instead. Structured
+  use P1b and runs the deadline helper of 7.6 instead (half-close and abandon, tested there; **not**
+  `session.close()`, which hangs on 1.0.0). Structured
   `LaunchError` (`:89`, stays a `RuntimeError`) with `code` in `no_jdk | jdk_too_old | bad_install |
   lock_held | heap_too_large | exited_early | no_answer | duplicate_daemon` and `details`
   (`javaMin`, `tried[]`, `logTail`, `holder`, `suggest`). `Daemon.health()`; `Daemon.attach()`
@@ -866,30 +955,60 @@ A new `src/hydralysis/durable.py` is the only way record-bearing state is writte
    (`torn_tail:{offset, bytes}` in `status` and the doctor). An invalid line **followed by a valid
    one** is corruption (4.4).
 
-   *Writers* repair before they append (the rule that was missing: without it the next append lands
-   after a fragment that has no LF, merges into one line, fails its CRC and the commit point is
-   lost, while starting a fresh line instead would make the fragment an invalid line before a valid
-   one, which the reader rule calls corruption). Under the log's writer lock (`.commit.lock` for
-   `CURRENT.log` and the intent logs, the log's own `.lock` for `backups.log`), **before every
-   first append in a process and after any failed append**, the writer: (a) scans the log; (b) on
-   corruption (an invalid line before a valid one) refuses with `lineage_corrupt` and appends
-   nothing; (c) on a torn tail first copies the tail bytes to `<log>.torn-<offset>-<sha8>` and
-   forces that copy, then truncates the log to the end of its last valid line and forces it, then
-   appends one line to `<log>.repairs` (`{at, offset, bytes, sha256, by}`; best effort, its loss
-   costs only the record of the repair); (d) appends its own line. Every step is idempotent, so a
-   crash inside the repair is repaired by the next writer. The tail is never part of a hash chain
-   (`prevHash` is the hash of the previous **valid** line). Truncating loses nothing acknowledged,
-   because only a fully written, fsynced line is ever acknowledged.
+   *Writers* repair before they append, **on every acquisition of the log's writer lock** (the
+   rule that was missing: without it the next append lands after a fragment that has no LF, merges
+   into one line, fails its CRC and the commit point is lost, while starting a fresh line instead
+   would make the fragment an invalid line before a valid one, which the reader rule calls
+   corruption). The trigger is **not** "the first append in a process": a long-lived writer process
+   (an MCP process doing `commit_revert`, a rollback, a `recover` or `backups.log` appends) has long
+   since made its first append, and if a second process is killed in the middle of an append after
+   the first released the lock, the long-lived process takes the lock again, would not rescan and
+   would append after the unterminated fragment, losing the commit point exactly as above. Only
+   the commit job (a new worker process per commit, 4.6) would be safe by accident. So, under the
+   log's writer lock (`.commit.lock` for `CURRENT.log` and the intent logs, the log's own `.lock`
+   for `backups.log`), on **every acquisition**, the writer first makes the **cheap check**: the
+   file ends in LF **and** its size equals the end of the last valid line it knows (the end it
+   verified, or wrote itself, at its previous acquisition in this process; nothing remembered
+   means a scan from the start; a failed append forgets what was remembered). Unchanged and clean:
+   append. Otherwise (another process appended, or the last byte is not LF): (a) scan from the last
+   known valid end (from the start when none is known); (b) on corruption (an invalid line before
+   a valid one) refuse with `lineage_corrupt` and append nothing; (c) on a torn tail first copy the
+   tail bytes to `<log>.torn-<offset>-<sha8>` and force that copy, then truncate the log to the
+   end of its last valid line and force it, then append one line to `<log>.repairs` (`{at, offset,
+   bytes, sha256, by}`; best effort, its loss costs only the record of the repair); (d) append its
+   own line. The check costs a `stat` and one byte when nothing changed, and the bytes another
+   process added otherwise. Every step is idempotent, so a crash inside the repair is repaired by
+   the next writer. The tail is never part of a hash chain (`prevHash` is the hash of the previous
+   **valid** line). Truncating loses nothing acknowledged, because only a fully written, fsynced
+   line is ever acknowledged.
+
+   *Reading budget.* The Y0a code of `589432e` reads a whole log through `localio.read_bytes`
+   (`durable.py`, `AppendLog.scan`, `repair`, `last`), which has a hard 32 MiB budget
+   (`localio.DEFAULT_MAX_BYTES`): a `CURRENT.log` or `backups.log` past 32 MiB would make every
+   reader and every writer raise `ValueError`, and every read is O(n). Required: logs are read by
+   streaming (no `localio` budget), a reader needs only the tail window (the last valid line) and
+   a full scan runs only where the whole log matters (the lineage open, `verify`, the doctor), with a
+   rotation or checkpoint policy owned by Y2 (`lineage.py` is its file; until it exists a log of
+   that size is a recorded limit, section 6). The removal of the `localio` read from `AppendLog` is
+   owned by Y0e (8.2), because `durable.py` is Y0a's file and Y0a is closed.
 
    *Tests* (`tests/test_durable.py`): for every byte offset of the last line of a log, cut the file
    there, read (the valid prefix, `torn_tail` reported, no error), append (the repair is recorded, the
    copy exists, the log is clean) and read again (the prefix plus the new line, never
    `lineage_corrupt`); a mid-log invalid line followed by a valid one is refused by the writer and
-   by the reader; a crash injected inside the repair (`durable.fault`) heals on the next append.
+   by the reader; a crash injected inside the repair (`durable.fault`) heals on the next append;
+   a log larger than 32 MiB is appended to and read without error. **Two-process test (the
+   trigger):** process A appends a line and releases the lock **and stays alive**; process B appends
+   through a fault (`torn:<n>`, for `n` at 1, mid-line and every byte but the LF) and is killed
+   mid-line; process A appends again: a `.repairs` record and a `.torn-*` copy exist, the log is
+   clean and holds A's two lines and no fragment, and **no `lineage_corrupt`** is raised by A or by a
+   reader. The same test with a rollback append (`reason:"rollback"`) and a `backups.log` append.
    The commit-level test is `publish_torn` followed by a successful new commit (4.6).
 4. Routed through `durable`: `workcopy._save_store`, `backends.write_json` (and so `targets.register`,
-   `working/state.json`, job records in `overlayjobs`), and every new file of 4.4-4.6. A grep gate in the
-   test suite fails when a new `write_text`/`write_bytes` of a record appears outside `durable`.
+   `working/state.json`, job records in `overlayjobs`), and every new file of 4.4-4.6. A write gate in the
+   test suite (Y0a's AST gate, `tests/test_durable.py`) fails when a new `write_text`, `write_bytes` or
+   `replace` of a record appears outside `durable`; the sites it freezes today, and who moves them, are
+   in 8.2.
 5. Test hook: `durable.fault(name)` is a no-op unless `HYDRALYSIS_TEST_FAULT=<name>:<action>` and
    `HYDRALYSIS_TEST_MODE=1` are both set (actions: `exit`, `raise`, `torn:<n>`).
 
@@ -968,7 +1087,11 @@ migration only adds keys, writes `<file>.v2.bak` once, and a v2 reader refuses a
   it (the strings of `revisions.subjects_of`; a record with subject `*`, a bulk import, shares one
   with every other); `S` must be closed under that relation, else the commit refuses
   `selection_not_closed` with the missing ids, or adds them when `include_dependencies:true`. The
-  records are applied in `seq` order. With `on_drift:"skip"`, a record whose first effect on a
+  records are applied in `seq` order. **A `batch` is selected whole or not at all**: an `only` that
+  names some records of a batch (or an author who owns only part of one) selects the rest of it too
+  through the closure (`selection_not_closed` names them, or `include_dependencies:true` adds
+  them), because `revert` already treats a batch as one unit and a commit must not split what a
+  revert cannot. With `on_drift:"skip"`, a record whose first effect on a
   `(subject, field)` no longer matches the master (4.6 step 5) is skipped **together with every
   later record of `S` that depends on it**; the rest of `S` is committed. The commit entry then holds
   `ids` = the committed records and `skipped` = the rest of `S`; records outside `S` are simply
@@ -977,9 +1100,30 @@ migration only adds keys, writes `<file>.v2.bak` once, and a v2 reader refuses a
   again at the commit that takes them. **Invariant:** for any coarse subject, the committed
   records are a prefix, in `seq` order, of that subject's non-reverted records. Only the dependency
   closure and skip propagation can keep it true, and it is what makes replaying a pending record
-  after a committed record with a later `seq` safe (they never share a subject).
-- `revert` of a record whose id is in a live commit's `ids` is refused (`already_committed`); undo it
-  with a new inverse edit or `commit_revert`.
+  after a committed record with a later `seq` safe (they never share a subject). **The invariant is
+  per coarse subject, not semantic.** A subject is an address, a type path or `structure:functions`
+  (`revisions.subjects_of`), so a subset commit can ship a `signature` or `data_type` edit (subject
+  `address:...`) without the pending `struct` edit it uses (subject `type:...` or
+  `structure:functions`); the closure cannot see that (section 6 already said a rebase cannot).
+  What happens is not assumed but tested (Y2, `subset_missing_type`): applying the signature in the
+  candidate must **fail closed**, i.e. `apply_overlays` rolls the whole transaction back and the
+  commit ends `ABORTED` with the effect named, and nothing is published. If the engine instead
+  accepts the signature and quietly substitutes an undefined type, the test fails and the closure
+  must be extended with type references (a `uses` list recorded in `effects`) before subset commits
+  ship; until then `only` is documented as "no semantic dependency tracking".
+- **`revert` of records.** `revert` of a record whose id is in a live commit's `ids` is refused
+  (`already_committed`); undo it with a new inverse edit or `commit_revert`. `revert` of a
+  **pending** record removes it from `edits[]` and accepts a record id or a `batch` id
+  (`workcopy.py:569-591`). Removing an earlier record leaves a later pending record on the same
+  `(subject, field)` with a stale `before` (it equals the removed record's `after`): the step 5
+  chain check and `verify_before` of 4.6 would flag it as drifted against the master, and with no
+  `overwrite` the owner could not commit it. **Rule: a `revert` that would leave such a record is
+  refused with `has_dependents` and the ids of the later records; `cascade:true` reverts the named
+  records and every later pending record of the same `(subject, field)` (a batch always goes
+  whole).** Recomputing the `before` chain is rejected: a recomputed `before` is no longer the value
+  the analyst saw when the edit was made. Test (Y1): the earlier record of a chain is refused with
+  its dependents named; `cascade` removes the chain; the last record of a chain reverts freely;
+  reverting by `batch` id removes the batch.
 - **Compaction (policy; the caps are real).** `MAX_OVERLAYS = 4096` (`analysis.py:26`) is checked on
   every `edit()` (`workcopy.py:~547`) and the 20 MiB `MAX_HISTORY_BYTES` on every load and save
   (`workcopy.py:54,74`); `effects` with `before` and `after` make a record larger than today's.
@@ -990,7 +1134,18 @@ migration only adds keys, writes `<file>.v2.bak` once, and a v2 reader refuses a
   count, ids_sha256, archive}` under `archived[]`. The latest commit's records stay in the store,
   because `commit_revert` needs them (a revert makes them pending again). Rebase and bundle export read
   an archive on demand; the committed ids needed by other views' rebase come from the generation
-  manifests (4.4), which list them. A reverted entry is kept as history (its ids are pending) and archiving skips it. After this the 4096 and 20 MiB limits bound the **live**
+  manifests (4.4), which list them. A reverted entry is kept as history (its ids are pending) and archiving skips it. **`commit_revert`
+and the archive:** after the latest commit c2 is reverted, the latest *live* commit is c1 again, but
+c1's records were archived when c2 finalised, so they are **not** in `edits[]`. `commit_revert` of
+c1 therefore **rehydrates**: it reads `overlays/archive/<store key>/<cid>.records.json`, verifies the
+file's seal and its `ids_sha256` against the entry, and in the same atomic store write moves the
+records back into `edits[]` (as pending, in `seq` order), drops c1's `archived[]` entry and marks
+the commit entry `reverted:true`; if the rehydrated records would exceed the 4096-record or
+20 MiB caps the revert is refused with `store_full` and nothing changes (the owner commits or
+exports first). A missing or mis-sealed archive refuses with `archive_unreadable`. The statement
+"the records are still in the store" holds only for the *latest* commit; for an earlier one the
+archive is the source. Test (Y2, `revert_chain`): commit c1, commit c2, revert c2 then c1: the
+records of both are pending again, in `seq` order, and the generation pointer is back at 0. After this the 4096 and 20 MiB limits bound the **live**
   records (pending plus the latest commit's), not the history. A store with more than 4096 pending
   records still cannot take another edit: commit it (a subset commit is allowed), or export a bundle
   (section 6).
@@ -1013,7 +1168,14 @@ correct for reads and wrong for a mutating call whose reply was lost. Rules: rea
 `fork_project`, `edit`, `rename`, `comment` are **not**: they raise `EngineError` with
 `code:"closed"`, `details.ambiguous:true`, and the caller reconciles (`_sync` re-reads the marker;
 `fork_project` checks whether the destination appeared). Hydralysis edits are identified by their
-`id`; a commit by its `cid`.
+`id`; a commit by its `cid`. What Y0b shipped beyond that list, recorded as decided: `close_project`,
+`refresh`, `switch` and `reopen` are also retried (a repeat of a close that landed answers `not_found`,
+which the caller reads as done); a lost `apply_overlays` reply now fails the **current** sync with
+`details.ambiguous` and the **next** sync self-heals from the marker (where the old blind re-send hid
+it); a mutating call on a connection that died before it was sent is reported ambiguous too
+(conservative: a cheap `ping` before the call would reduce false ambiguity, optional, not required);
+user scripts (`userscripts.py`) and `RusticSetup.java` are not re-sent after a drop, since 4.3 allows
+only a read action of `script`.
 
 ### 4.4 Lineage and generations (Y2)
 
@@ -1043,11 +1205,12 @@ Generation 0 is the adopted project in place, never written. `CURRENT.log` line:
 - **Torn tail** (an invalid suffix with no valid line after it, 4.1 item 3): a **reader** ignores it
   and reports it in `status` and the doctor; it never repairs and never raises. It can only show an
   older, consistent state, because a line is forced before any acknowledgement or later step. The
-  **next writer** repairs it first, under `.commit.lock`, before any append: it preserves the
+  **next writer** repairs it first, **on every acquisition of** `.commit.lock`, before any append (4.1 item 3: not only on a process's first append): it preserves the
   fragment as `CURRENT.log.torn-<offset>-<sha8>`, truncates the log to its last valid line and
   records the repair in `CURRENT.log.repairs` (the same rule applies to the intent logs and
   `backups.log`). So a crash in the middle of the commit-point append is followed by a normal,
-  successful new commit, not by a lost line or a false `lineage_corrupt`.
+  successful new commit, not by a lost line or a false `lineage_corrupt`. A long-lived writer process
+  is covered by the same rule: the two-process test of 4.1 is part of the Y2 fault matrix.
 - **Mid-log gap** (an invalid line with valid lines after it): `lineage_corrupt`. Reads resolve to
   the last good line before the gap with the error shown on every `status`; commits and reverts are
   refused until the owner repairs it. Silent repair of a mid-log gap is not done; the torn-tail
@@ -1200,16 +1363,19 @@ the post-commit state otherwise.
 | `BACKUP_DONE` | a verified backup exists | keep it (it is never deleted), `ABORTED` |
 | `CANDIDATE_RESERVED` ... `FILES_FORCED` | a partial or unverified `gen/000N` | invisible (no valid manifest); left in place, listed by `backups`; `ABORTED`; the client may resubmit with the same `cid` as a **new attempt** (the intent log's `attempt` number grows and a **new generation number** is reserved; the abandoned folder is never reused) |
 | `VERIFIED`, no `CURRENT.log` line | a verified, unpublished candidate | left unpublished; a resubmission publishes it after re-hashing against its manifest (opt-in `resume_verified`, default false) |
-| `PUBLISHED` written, `CURRENT.log` line torn or missing | the tail fails its CRC or has no LF | before the commit point: `ABORTED`. Readers ignore the torn tail and the **next writer repairs it** (4.1: preserve the fragment, truncate to the last valid line, record the repair) before any append, so a resubmission as a new attempt appends a clean line; the verified but unpublished candidate stays unpublished (`resume_verified` applies as in the row above) |
+| `PUBLISHED` written, `CURRENT.log` line torn or missing | the tail fails its CRC or has no LF | before the commit point: `ABORTED`. Readers ignore the torn tail and the **next writer repairs it** (4.1, on every acquisition of the lock: preserve the fragment, truncate to the last valid line, record the repair) before any append, so a resubmission as a new attempt appends a clean line; the verified but unpublished candidate stays unpublished (`resume_verified` applies as in the row above) |
 | `CURRENT.log` line valid for this `cid` | `FINALIZED` missing | **roll forward**: re-hash the candidate against the manifest named in the line; equal: run step 9 (its ids come from that manifest, so the store ends in the same state whenever and however often this runs); not equal: append a `rollback` line to the previous generation (`reason:"candidate_failed_reverify"`), report |
 | `FINALIZED` or `ABORTED` | | done |
 
 `commit_abort` is honoured before step 8; after it the answer is `cancel_too_late`.
 
-**Revert** (`options.kind=commit_revert`): only the latest commit. Check the previous generation's
-manifest still verifies; append a `rollback` line; the commit entry is marked `reverted:true` (its
-`ids` become pending again: the records are still in the store, because archiving always leaves the
-latest commit's records in place, 4.2) and every view is marked stale. Restoring from a
+**Revert** (`options.kind=commit_revert`): only the latest **live** (not reverted) commit. Check the
+previous generation's manifest still verifies; append a `rollback` line; the commit entry is marked
+`reverted:true` and its `ids` become pending again (for the latest commit its records are still in
+`edits[]`, because archiving leaves the latest commit's records in place; for the commit that becomes
+the latest after an earlier revert they are **rehydrated from the sealed archive** in the same
+atomic store write, or the revert is refused with `store_full` or `archive_unreadable`, all in 4.2)
+and every view is marked stale. Restoring from a
 backup is `fork_project` from the backup into a new generation folder, verified and registered the
 same way; nothing touches an existing folder.
 
@@ -1243,7 +1409,7 @@ Other views (a named view forks from the master, not from `shared`; `workcopy.wi
 | Open programs of other clients | The old generation is immutable, so their reads stay consistent; they get the existing `refreshed`/`stale` marker through `Session.annotate` only if the registered path changes, which it does not for them. A client that wants the new generation reopens. |
 | Runtime sessions and evidence | Not invalidated; provenance names the generation and a claim is flagged `superseded_by_generation` on read. |
 | A GUI user saving a generation | `Revision.of` of a generation folder differs from its manifest: the lineage is flagged `tampered`, commits are refused until the owner re-adopts. (`projectState` is already excluded from `Revision`.) |
-| The Ghidra GUI opening the original `.gpr` | Sees generation 0 with none of the committed annotations. This is a real regression against in-place commit; owner decision O2. |
+| The Ghidra GUI opening the original `.gpr` | Sees generation 0 with none of the committed annotations. This is a real regression against in-place commit; owner decision OD2. |
 
 ### 4.8 Publish and merge between named views (Y3, client only)
 
@@ -1294,7 +1460,7 @@ tests it); Y4a only runs it to produce the pin bump and owns the files it edits.
 | Hydralysis 0.5.x (this train) | degraded set (7.5) | full |
 
 The doctor shows connected clients by protocol so a mixed fleet is visible. The legacy window:
-hydra.4 and hydra.5 serve protocol 2; whether to refuse it from hydra.6 is for the owner then (O6).
+hydra.4 and hydra.5 serve protocol 2; whether to refuse it from hydra.6 is for the owner then (OD6).
 
 ### 5.1 Every change a protocol-2 client can observe
 
@@ -1318,23 +1484,26 @@ first and must pass unchanged on the hydra.4 candidate.
 | G2 | `save`, `fork_project`, `refresh`, `reopen`, `promote_overlay` move from `long` to `maint` (3.5) | queueing, ordering and the text of `busy` for these commands | **Gated on v3** (`laneOf(cmd, req, v3)`). The benefit is for the Hydralysis commit path, which is v3 | `cc_e3a` `v2_lane_unchanged`: long saturated, a v2 `save` waits and fails `busy` in `long` as on hydra.3; a v3 `save` runs (E3a) |
 | G3 | fair key `connection + scope` and the per-key cap (3.5) | the order in which a v2 client's own labelled requests are served | **Gated on v3**: a v2 request keeps the key `connection id` and is never capped | `cc_e3a` `v2_queue_order`: the hydra.3 service order of two labels on one v2 connection is reproduced (E3a) |
 | G4 | validate-before-wait (3.5) | a bad request on a full lane fails at once instead of after its wait | **Gated on v3**: timing and which error wins (`bad_request` or `busy`) are observable | `cc_e3a` `v2_no_preflight` (E3a) |
-| G5 | progress-event `queue` key, `status.requests[].queue`, import `estimateScope` (3.4) | one more key in an event or a `status` entry; **this key was missing from the v3-gated list of the first draft** | **Gated on v3**: `waiting(what)` stays the one-argument call for v2. Events are not replies, so the goldens cannot see them | `cc_e3a` `v2_progress_keys`: the exact key set of every progress event during a slot wait and an import wait (E3a) |
-| G6 | `Scheduler.describe` takes the scheduler lock with `tryLock(250 ms)` and may answer `unavailable` (3.3) | `status.scheduler` could say `unavailable` instead of blocking | **Gated on v3** (`describe(boolean v3)` already exists for the other v3 keys) | `cc_e5` (with `-Dghidra.session.testHooks=true` and `debug_stall` holding the scheduler lock): v2 `status` blocks as on hydra.3, v3 answers `unavailable` (E5) |
+| G5 | the `queue` key of a **slot wait**'s progress events and `status.requests[].queue`, and the import estimate's `estimateScope` (3.4; conditionals C4 and C5) | one more key in an event or a `status` entry. **Premise corrected in revision 3:** an **import** wait already carries `queue` in its progress events and in `status.requests[].queue` in protocol 2 today (`m.waiting("import queue", q)`, `ImportGate.java:188-194`; `RequestMonitor.java:111`), so for the import wait the `queue` key is **not new v3 content and not gated**; only the slot-wait `queue` key (today `Scheduler.admit` calls the one-argument `waiting`, `Scheduler.java:155`) and `estimateScope` are new | **Gated on v3**: `Scheduler.admit` keeps the one-argument `waiting(what)` for a v2 connection, and `ImportGate` (E3a's file, which needs the client: `enter` receives only `c.id`) adds `estimateScope` only for a v3 entry. Events are not replies, so the goldens cannot see them | `cc_e3a` `v2_progress_keys`: the exact key set of every progress event during a slot wait **and** an import wait, equal to hydra.3's (the import wait still carries `queue`, without `estimateScope`) (E3a) |
+| G6 | `Scheduler.describe` takes the scheduler lock with `tryLock(250 ms)` and may answer `unavailable` (3.4, `health`) | `status.scheduler` could say `unavailable` instead of blocking | **Gated on v3** (E1 adds the `describe(boolean v3)` overload, which does not exist yet: `Scheduler.java:285` takes no argument; the `tryLock` is behaviour gate 5, the reply shape C2) | `cc_e5` (with `-Dghidra.session.testHooks=true` and `debug_stall` holding the scheduler lock): v2 `status` blocks as on hydra.3, v3 answers `unavailable` (E5) |
 | G7 | new request fields: `purpose`, `open`, `verify`, `lane`, `isolation`, `scriptSha256`, `rk` (3.1, 3.4) | a v2 request that already used one of these names with another meaning would change behaviour. None is known (Hydralysis `workcopy.py:266` sends `writable` and a path; the 1.0.0 client and the README examples use none), which is a check, not a proof | **Gated on v3**: one helper reads them, so the answer does not depend on a search. (`backup` on `open_program` is the exception: it is read at any protocol because V1 applies to any protocol) | `cc_e1` (`rk` twice is applied twice), `cc_e2` (`purpose:"backup", open:false` is a plain fork, opened), `cc_e4` (`isolation`, `lane`, a wrong `scriptSha256` have no effect) |
 | G8 | the upgrade gate's refusal code (3.3) | a new error code | **Gated**: v2 gets the existing `conflict` with `details.reason:"backup_required"`; v3 gets `backup_required` | `cc_e2` (E2) |
 | V1 | the upgrade gate (3.4) | `open_program writable upgrade:true` on a canonical older-format project without a valid `backup` is refused, where it succeeded | **Visible to v2, by design.** The gate exists to stop a one-way upgrade of a project that is not a copy; gating it on v3 would protect nothing from the clients least likely to know. `README.md:1011-1014` already tells people to do it in a copy | `cc_e2` on the legacy fixture (`--legacy-project`): refused for v2 with `conflict`, allowed on a fork and with a valid `backup` (E2) |
-| V2 | import wait fix (3.5) | an import that waited for its turn no longer fails `busy` ten seconds after reaching the front | **Visible to v2**: it is a defect fix; no client can depend on the failure | `cc_e3a` `import_wait` on a v2 connection (E3a); fails on hydra.3 by E0's premise test |
+| V2 | import wait fix (3.5) | **both directions** (revision 3 corrected "can only gain"): (1) an import without a `wait` field no longer fails `busy` ten seconds after reaching the front; it waits unlimited for the slot and the project lock, as it already does for the gate; (2) an import with an explicit numeric `wait` that spent most of it in the gate now fails `busy` when that one budget is used up, where today its slot and lock waits each got a fresh full `wait` and it could succeed | **Visible to v2**: (1) is a defect fix, (2) makes `wait` the total a caller asked for; no client can depend on either behaviour (a 10-second failure after an hour is not a contract) | `cc_e3a` `import_wait` (no `wait`) and `import_wait_explicit` (a numeric `wait` spent in the gate) on a v2 connection (E3a); `import_wait` fails on hydra.3 by E0's premise test |
 | V3 | bounded release of a dead client (3.5): `shutdownNow()` after `cleanupGraceS`, `disconnect` bounded by `abandonWaitS` | other clients get a dead client's slots and locks after about 20 s instead of after an hour (`awaitTermination(1, HOURS)`) or 10 minutes per program (`CLEANUP_WAIT_MS`) | **Visible to v2**: it changes how long *others* wait, no reply shape | `cc_e3b` `dead_client_lock_wait` with a 1.0.0 client killed while blocked (E3b) |
 | V4 | a request for a program held by an **abandoned** request answers `busy` at once (3.5) | `busy` immediately, with the existing `holder`/`holderInfo` keys saying "abandoned", instead of waiting out `wait` | **Visible to v2**: waiting for a holder that is gone helps nobody; `details.reason` is v3 only | `cc_e3b` `abandoned_holder` (E3b) |
 | V5 | `cancel` (and a `timeout` deadline) now ends a lock wait (3.5) | a cancelled request that waits for a program, project or overlay lock answers `cancelled` within a second; today it keeps waiting until its `wait` ends in `busy` | **Visible to v2**: it is what `cancel` is documented to do. The single timed `tryLock` and its FIFO order are unchanged | `cc_e3b` `cancel_while_waiting` (E3b) |
-| V6 | endpoint file and `ready` event gain `protocolMin`, `protocolMax` (3.1) | two extra keys in a file and an event; `protocol` stays 2 | **Visible, additive**: needed for negotiation (D3); the 1.0.0 client reads `protocol` and `minClient` and ignores the rest | P1a: the 1.0.0 client against the E1 engine connects and works (P1a) |
+| V6 | endpoint file and `ready` event gain `protocolMin`, `protocolMax` (3.1) | two extra keys in a file and an event; `protocol` stays 2 | **Visible, additive**: needed for negotiation (D3); the 1.0.0 client reads `protocol` and `minClient` and ignores the rest | `cc_e1` (first test): the 1.0.0 client against the E1 engine connects and works (E1; the harness is P1a's) |
 | V7 | every `fork_project` sidecar gains `purpose` and `disposable` (3.4, D12) | a few keys in a file beside the fork; the reply is unchanged | **Visible, additive**: the upgrade gate decides from the sidecar | `cc_e2` `fork_sidecar` (E2) |
 
 The release identity strings (`hydraVersion`, `buildDate`) change with every release; the goldens mask
 them (`"hydraVersion": "<masked>"`). `health` is a new command, so an old transcript contains none.
-The counts D2 refers to: nine reply-shape rows and fourteen conditionals in 3.1 (G5 is one of those
-rows); six behaviour gates (G1 and G7 share the request-field helper; G2, G3, G4, G6 and G8 are one
-gate each); seven declared visible changes (V1 to V7).
+The counts D2 refers to: **thirteen reply-shape conditionals, C1 to C13, one per row of the table in
+3.1**; G5 is the behaviour test of C4 and C5, which are events and `status` entries that the goldens
+cannot see, while the other eleven are reply shapes that the seven v2 scenarios at `--protocol 2`
+check directly (a v2 reply must stay byte-identical); six behaviour gates (G1 and G7 share the
+request-field helper; G2, G3, G4, G6 and G8 are one gate each); seven declared visible changes (V1 to
+V7).
 
 ### 5.2 Release notes (R1) must say
 
@@ -1358,6 +1527,16 @@ gate each); seven declared visible changes (V1 to V7).
   keeps its program lock after its client is gone. The design bounds the wait, shows the holder and
   keeps the rest of the daemon running; restart is safe for Hydralysis work (the store is the
   record). Only a helper JVM for user scripts would be a hard guarantee; it is out of scope.
+- **The overlay lifecycle waits are not cancel-aware.** `openOverlay`, `rebuildOverlays`,
+  `dropOverlays` and `promoteOverlay` take untimed `lock()` calls on an overlay's lock
+  (`OverlayCommands.java:228, 238, 251, 319, 352, 404`). `cancel`, a `timeout` deadline and the
+  dead-client release do not reach a request blocked there (3.5); the three request-bound timed
+  waits are what E3b converts.
+- **A stalled call on hydra.2/3 is abandoned, not ended.** The client's deadline half-closes its
+  connection and abandons a worker thread (7.6); the engine keeps the request, its slot and any lock
+  until it ends by itself, and a request in a script that never polls its monitor can hold them for as
+  long as it runs. At most 8 abandoned connections per process are tolerated; the real remedy is
+  E3b's bounded release on hydra.4.
 - **The `lane:"quick"` hint is trust-based.** The engine cannot know that a script is quick. It
   honours the hint for `0 < timeout <= quickScriptMaxS`, and the `timeout` only sets the request's
   cancel flag (`m.deadline`, `ScriptCommands.java:75`): a script that never polls
@@ -1369,6 +1548,10 @@ gate each); seven declared visible changes (V1 to V7).
   are archived (4.2), but a store with 4096 pending records, or 20 MiB of them (`effects` make a
   record larger than a v2 one), cannot take another edit until some are committed (a subset commit
   works) or exported as a bundle; nothing is dropped automatically.
+- **An append log is bounded by what Y2 builds.** Until the Y0e/Y2 change of 4.1 (streamed reads, tail
+  window, rotation) lands, a `CURRENT.log` or `backups.log` of more than 32 MiB (`localio` budget)
+  makes readers and writers raise. At one line per commit or backup this is far from any realistic
+  size, and it fails loudly, never silently.
 - **Copy-on-write is ReFS only** (`ProjectFork.clones`: Windows and ReFS). On NTFS a fork is a full
   copy bounded by `forkCopyLimitMb`; NTFS CI cannot validate ReFS clone claims, so those tests run on
   the owner's Dev Drive and are recorded as manual gate evidence. A clone backup is not protection
@@ -1384,7 +1567,10 @@ gate each); seven declared visible changes (V1 to V7).
 - **Bulk edits have no per-subject `before`** (`import_types`, `import_archive`): drift is input-hash based.
   Subject granularity is the address, type path and `structure:functions`; a struct change and a
   prototype that uses it are different subjects (a dependency the rebase cannot see; as in `revisions.py`
-  today).
+  today). **The same blindness reaches a subset commit** (4.2): the selection closure is per coarse
+  subject, so `only` can ship a `signature` or `data_type` edit without the pending struct it uses.
+  4.2's `subset_missing_type` test decides whether that fails closed; until it has run, subset commits
+  carry "no semantic dependency tracking" in their documentation.
 - **The upgrade gate and the backup check are guards against accidents**, not a security boundary: a local
   process with the daemon's rights can forge a manifest.
 - **`private` isolation reads the stored file**, not unsaved edits; `shared` `attemptedChanges` is
@@ -1404,7 +1590,10 @@ What Hydralysis must do for the engine contract to hold. Package ids refer to se
 
 ### 7.1 Doctor module (`doctor.py`, Y4b)
 
-One module, one shape: `backend action=doctor` (and the CLI). It is read-only and **never starts a JVM
+One module, one shape: `backend action=doctor` and the CLI command that wraps the same handler.
+`cli.py` had **no owner**, so Y0d could not expose `backend --action doctor|backups` or `--options`
+there; it is Y0e's in W1 (8.2): the CLI passes the action and an `--options` JSON object straight
+through to the same dispatcher as the MCP tool, so no later package edits `cli.py`. It is read-only and **never starts a JVM
 or a daemon**: it reads the endpoint file and the launcher registry, attaches with
 `Daemon.attach()` (connect without start) only if the instance lock is held, and calls `hello`/`health`.
 Findings are `{id, level, what, why, fix}`; `fix` is a ready tool call or command.
@@ -1419,8 +1608,10 @@ protocol. Default output is findings only.
 ### 7.2 Supervisor policy (`hydra.py`, Y4a)
 
 - **Probe** `health` every 5 s while the engine is in use, on a **dedicated connection** and with a
-  deadline: P1b's `deadline` on a hydra.4 client library, the client-side watchdog of 7.6 against a
-  hydra.2/3 engine (where `health` does not exist either and the probe is `ping`, 7.5).
+  deadline: P1b's `deadline` on a hydra.4 client library, the deadline helper of 7.6 (half-close and
+  abandon) against a hydra.2/3 engine (where `health` does not exist either and the probe is `ping`,
+  7.5). A probe that expires abandons its connection and the next probe opens a new one, so the
+  supervisor counts abandoned connections (a cap of 8 per process, 7.6) as a finding of its own.
 - **Wedged** only when the pid is alive **and**, for 3 consecutive probes 5 s apart, one of: no answer
   to `ping`, `health.state == "suspect"`, `tick.ageMs > watchdogStallMs`, `schedulerLockOk == false`.
   A long request is never a wedge; lane figures are informational.
@@ -1464,8 +1655,8 @@ is a test failure.
 | `format` | treated as **unknown**: the commit always needs the one-way confirmation |
 | backup | Python-written manifest (`writer:"hydralysis"`) over a plain fork |
 | `ghidra_run` isolation | stays today's contained mode, no `private` |
-| `health` | `ping` with a deadline (the client-side watchdog of 7.6, on a dedicated connection: P1b is not available there); wedge detection needs the pid and the lock only |
-| deadlines (`deadline_s`) | the 7.6 watchdog; P1b's `deadline` only when the engine ships library 1.1.0 |
+| `health` | `ping` with a deadline (the deadline helper of 7.6, one connection per call: P1b is not available there); wedge detection needs the pid and the lock only |
+| deadlines (`deadline_s`) | the 7.6 helper (worker thread, `cancel`, half-close, abandon); P1b's `deadline` only when the engine ships library 1.1.0 |
 | `rk`, `expect` on signature/type | not used; Hydralysis does not rely on them |
 
 ### 7.6 Lane hints, deadlines, error contract (Y4a, Y0b)
@@ -1476,39 +1667,156 @@ is a test failure.
   depends on the engine, because Hydralysis loads the session library **from the engine install**
   (`hydra.py:229-233`):
   - *hydra.4 (library 1.1.0, P1b):* `call(cmd, deadline=...)`; on expiry the library sends `cancel
-    target=<id>` and raises `deadline_exceeded`, and the connection stays usable.
-  - *hydra.2/3 (library 1.0.0):* `call` waits with `sock.settimeout(None)` (`ghidra_session.py:845`), so
-    P1b does not exist there and the deadline is supplied by Hydralysis from what 1.0.0 has: `send`,
-    `wait` and `close`, which are thread-safe (`_lock` and `_read_lock`, `ghidra_session.py:681-682`;
-    `send` at `:732-738`). `rid = session.send(...)` and a `threading.Timer` for `deadline_s`; on expiry
-    it sends `cancel target=rid` through the same `send` (that ends a request still waiting for a slot;
-    a running one stops only if it polls) and arms a second timer of 5 s (`deadline_grace_s`); if
-    there is still no reply it **closes the connection** (`session.close()`), which makes the engine
-    cancel every request of that connection (`Connection.java:95-97`) and makes the blocked
-    `wait(rid)` raise `closed`; the client reports `deadline_exceeded` with
-    `details.connection_dropped:true`. Closing fails every other call in flight on that connection, so
-    the probe and every deadline-bound read use a **dedicated** connection (the `Engine` already keys
-    connections by `role`, `hydra.py:227`), never the one that carries a commit or an import, and a
-    mutating call never gets a closing deadline (it is reconciled as in 4.3). Test (Y4a, fake and real
-    hydra.3): a stalled call times out at `deadline_s + 5 s`, the dedicated connection is replaced, and
-    the other connections are untouched.
+    target=<id>` and raises `deadline_exceeded`, and the connection stays usable. Nothing is
+    abandoned.
+  - *hydra.2/3 (library 1.0.0): half-close and abandon.* Revision 2 specified `session.close()` on a
+    timer; **that does not work on 1.0.0** (it hangs and sends nothing, shown below) and is withdrawn.
+    The mechanism that replaces it was chosen by experiment against the real 1.0.0 library and a
+    real hydra.3 daemon and is the sub-section that follows. In one line: the deadline is a
+    worker-thread `send`/`wait` that the **caller** never enters; on expiry send `cancel` through
+    the same session, wait a grace, then `shutdown(SHUT_WR)` the socket, **never** `close()` or touch
+    the library's file objects, and abandon the worker thread and the connection; the engine's view
+    on hydra.3 is that the request goes on until it ends by itself, so the client **never relies on
+    an EOF or a reply coming back**.
 - Waits: `BUSY_WAIT_MS` (180 s, `query.py:29`) and `SYNC_LOCK_S` (900 s, `workcopy.py:33`) shrink to a
   patience budget (default 25 s) once the engine reports queue information; beyond it the tool call
   returns the engine's structured `busy` (queue position, `retryAfterMs`, `next`), not a hang. No
   detached-call state is introduced (D24).
 - `EngineError` (`hydra.py:51-63`) keeps `holder`, `holderInfo`, `heldMs`, `queue`, `retryAfterMs`,
-  `current`, `next`, with lists capped at 5 entries plus `more`.
+  `current`, `next`, with the **informational lists** (`queue`, `running`, `alternatives`, the holder
+  lists) capped at 5 entries plus `more`. The cap never applies to `next`: it is a ready request and
+  must stay complete (the Y0b review showed a recursive cap cutting `next.args` to 5 entries; Y0b's
+  code is to be corrected in W1 by Y0e, 8.2).
 - Pools: the MCP server splits PE-only tools (`fingerprint`, `imports`, `disasm`, `inspect`, `xrefs`,
   `callers`, `callees`, `function`, `bytes`, `strings`, `sigscan`, `prologue`, `evidence_*`) from tools
   that talk to the daemon, so four blocked engine calls (`TOOL_WORKERS = 4`, `mcp.py:22`) cannot starve
-  them (Y0c).
+  them (Y0c). **`MAX_OUTSTANDING` is per lane** (decided; it is what Y0c shipped): each pool has its
+  own budget of 8 accepted calls and its own 4 workers, so the total outstanding can reach 16 and a
+  saturated engine lane never makes a local tool answer `busy`. The `busy` answer of the MCP layer
+  names the lane and carries its retry hint as **text** (`retryAfterMs=2000` in the message) until the
+  engine's structured `busy` (queue position, `retryAfterMs`) exists; a client cannot parse the MCP
+  text and does not need to. Known edge: `prologue` with `checks` and a `session` can call the
+  runtime runner on the fast lane (`api.py`, a runtime call that may block outside the engine lane);
+  it stays on the fast lane because the PE-only list above names `prologue`, and enough hung live-session
+  prologue calls could occupy the four fast workers: a follow-up for Y4b's doctor to report, not a
+  change here.
+
+#### The hydra.2/3 deadline mechanism (tested)
+
+**What is wrong with `session.close()`** (the finding of the second review, reproduced here on the real
+object). `SocketSession.close()` (`ghidra_session.py:866-874`) closes the two `makefile` objects (`_w`
+then `_r`) and only then calls `sock.shutdown`. A thread inside `wait()` sits in `_r.readline()`
+(`:753`) holding `_read_lock` (`:748`); closing `_r` waits for the buffer lock that `readline` holds,
+so `close()` called from a second thread never gets as far as `shutdown`: nothing is sent, the
+engine sees no FIN, and the blocked `wait` does not raise. `sock.shutdown(...)` on its own returns at
+once and **does** deliver the FIN, but it does not wake the blocked reader either. Candidates
+tested: **(a)** abandon the session and its reader thread without touching it; **(b)**
+`shutdown(SHUT_WR)` only, makefiles untouched; (b') (b) plus `sock.close()` (deferred by the
+makefile references); `SHUT_RDWR`; **(c)** detach the OS handle and close it abortively
+(`SO_LINGER` 0); and the withdrawn `close()`. Scripts and recorded output are in
+`D:/Projects/Hydra/_logs/spec-rev3/`: `exp1_client_matrix.py` (real `SocketSession`, fake server,
+`exp1_out_py3.14.txt` and `exp1_out_py3.15.txt`), `exp2_engine.py` (real `hydra-3-candidate`
+daemon, fresh state root `work-*/state`, output `run1/exp2_run_with_cancel_L_S.log`,
+`exp2_run_nocancel_LSC.log`, digest `exp2_summary.txt`) and `exp3_lifecycle.py` (`exp3_out_py*.txt`).
+Python 3.14.7 and 3.15.0 on Windows 11 gave identical rows; the library of `hydra-2` and the one in
+`hydra-3-candidate` differ only in `HYDRA_RELEASE` (a `diff` of the two files).
+
+*Client side* (`exp1`; one thread blocked in `wait(rid)`, a second thread applies the mechanism; the
+server is silent or closes its end when it sees EOF, which is what a cooperative engine does):
+
+| Mechanism | The call | Reaches the server | Blocked `wait`, engine silent | Blocked `wait`, engine closes | A later `send` |
+|---|---|---|---|---|---|
+| `session.close()` (revision 2) | **hangs** (> 5 s) | nothing | still blocked | still blocked | `ValueError` |
+| (a) abandon | returns | nothing | still blocked | still blocked | works |
+| (b) `sock.shutdown(SHUT_WR)` | returns at once | **FIN** | still blocked | raises `SessionError("closed")` | `BrokenPipeError` |
+| (b') `SHUT_WR`, then `sock.close()` | returns | FIN | still blocked | raises `SessionError("closed")` | `BrokenPipeError` |
+| `sock.shutdown(SHUT_RDWR)` | returns | FIN | still blocked | raises `SessionError("closed")` | `BrokenPipeError` |
+| (c) detach, `SO_LINGER` 0, close | returns | **RST** | raises `OSError` (WinError 10053) at once | same | `OSError` |
+
+*Engine side, real hydra.3* (`exp2`: the 'doomed' client's request is **L** a `decompile` blocked
+for the program lock that another client's cooperative script holds (about 35 s), **S** a script
+that ignores `cancel` and swallows interrupts for 40 s, **C** a cooperative script; the client
+sends `cancel` after 3 s and the mechanism 3 s later (run 1) or only the mechanism (run 2, to see
+the effect of the FIN alone); an observer connection reads `status` every few seconds):
+
+| Mechanism | L: lock wait | S: non-cooperative script | C: cooperative script (run 2) |
+|---|---|---|---|
+| `close()` | call hangs; the engine sees nothing: client and request stay registered, released 0.5 s after the holder ended | hangs; released when the script ends (40.1 s) | not run |
+| (a) abandon | **never released**: 30 s after the holder ended the client is still listed and still a `users` entry of the program (`users:[2,4]`, `registered:true`) | **never released**: still listed, `requests:[]`, after the script ended | not run |
+| (b) `SHUT_WR` | `status.requests[].cancelled` false then true within 1 s of the FIN (run 2); the request stays registered with its lock wait until the holder ends, released 0.5 s later; the reply `cancelled` reaches the client then (after 21.3 s) | cancelled flag set, the script runs on, released when it ends (40.1 s), reply `cancelled` | **released 0.1 s after the FIN; the reply reached the client's waiter 0.01 s after it** |
+| (c) abort | as (b); the daemon log says `client N (...): Connection reset` | as (b) | released 0.1 s after the RST; the waiter raised `ConnectionAbortedError` |
+
+**What the engine sees on hydra.3, in words.** A FIN (or RST) ends `Connection.run`'s read loop; its
+`finally` sets `client.leaving`, calls `cancel()` on every running monitor (seen: the request's
+`cancelled` goes false to true within a second) and then waits in `awaitTermination(1, HOURS)`
+(`Connection.java:93-108`) for the request threads. It does **not** close the socket and does not
+unregister the client until they end. A request that polls its monitor ends at once and the
+client is released and answered (C). A request in a **lock wait** keeps its place in the lock's
+queue (hydra.3 does not end a lock wait on `cancel`, E0 `cancel_lock_wait`) and the program stays
+held by its client until the lock frees (L). A request in a script that **never polls** the monitor
+keeps its slot, and any lock, until the script ends (S). Therefore **the client must never rely on
+an EOF, or on any reply, coming back from hydra.3** to end its wait: only the cooperative case
+answers.
+
+**The mechanism (specified; Y4a, `hydra.py`).**
+1. *One connection per deadline-bound call*, taken from a small per-`role` pool (`hydra.py:227`)
+   and returned to it only after a normal reply; a connection that was abandoned is never reused.
+   No other call is ever in flight on it, so nothing else fails when it is abandoned.
+2. The call is `rid = session.send(...)` plus `session.wait(rid)` **in a daemon worker thread** of
+   Hydralysis; the caller waits on its own `threading.Event` with the timeout `deadline_s` and never
+   enters `wait`. A mutating call never gets a deadline that abandons (4.3).
+3. On expiry the worker's session gets `session.send("cancel", target=rid)` (thread-safe, `:732-738`;
+   it ends a request still waiting for a slot, and a cooperative one) and the caller waits
+   `deadline_grace_s` (5 s) more for the reply.
+4. If there is still none: `session.sock.shutdown(socket.SHUT_WR)`. **Nothing else**: no
+   `session.close()`, no `_r.close()`, no `sock.close()` while the worker is alive, and no `send` on
+   that session afterwards (a `send` after the half-close raises `BrokenPipeError` and leaves
+   buffered text that the `_w` finalizer reports on stderr, seen in `exp1_err_py*.txt`). The caller
+   gets `deadline_exceeded` with `details.connection_abandoned:true` after `deadline_s +
+   deadline_grace_s` (measured 2.01 s for 1 s + 1 s, `exp3`, C).
+5. The worker ends by itself when the engine answers or closes the connection, and then closes the
+   session **itself** (nothing is in `readline` any more: measured 0.0 s, `exp3`, A) and leaves the
+   registry. Abandoned workers are counted in a process-wide registry; **at most 8** at a time
+   (*unmeasured policy*: 40 abandoned connections cost 40 daemon threads and 40 sockets and all end
+   when the engine closes them, `exp3`, B); beyond the cap a deadline-bound call fails fast with
+   `daemon_unhealthy` and the doctor (7.1) lists the stuck requests, which is what an operator
+   needs on a daemon where eight requests ignore cancel.
+6. Rejected: `close()` on a timer (hangs); abandon alone (the engine keeps the client and the
+   program's `users` entry for good, measured); the abortive close (c), which works on Windows and
+   wakes the reader, but reaches into the library's private `sock` with `detach()`, raises a raw
+   `OSError` out of `wait` that 1.0.0 does not handle (`_closed` stays unset), depends on Winsock
+   behaviour, and buys only the early end of one thread.
+
+**What changes with P1b and E3b.** On a hydra.4 engine the library is 1.1.0 and P1b's `deadline`
+replaces steps 1 to 5 (the library times its own `wait`; the connection survives, so nothing is
+abandoned). E3b (V3, V5) also changes what the engine does with the half-close of an old library:
+a request in a lock wait now ends within a second of the `cancel` or the FIN, and a request that
+does not end is released after `cleanupGraceS + abandonWaitS` (about 20 s) with the program
+flagged `abandoned`, instead of staying registered for as long as it runs. Until then the cap of
+step 5 is the protection.
+
+**Tests (Y4a).** Against the fake: a blocked session never has `close()` called while its worker is
+alive (a fake that fails the test if it is); the caller gets `deadline_exceeded` at `deadline_s +
+deadline_grace_s`; the abandoned count never passes 8 and returns to 0 when the fake closes. Against
+the **real hydra.3**, one test per case above (L, S, C of `exp2`, reduced in time): the dedicated
+connection is replaced and the other connections are untouched; the engine shows the cancelled flag
+within 1 s of the half-close; C is released within 1 s and the call returns the engine's reply;
+L and S stay registered until the holder or the script ends and then the abandoned worker ends and
+the registry is empty.
 
 ### 7.7 The 20 tools: where each feature lives
 
 The 20 tools stay (`fingerprint`, `imports`, `disasm`, `inspect`, `xrefs`, `callers`, `callees`,
 `function`, `bytes`, `strings`, `sigscan`, `prologue`, `evidence_add`, `evidence_list`, `ghidra_run`,
 `ghidra_query`, `backend`, `prepare`, `job`, `runtime`). One catalog epoch in Y0d, before the 0.5.0
-tag, then a hash-checked freeze.
+tag, then a hash-checked freeze. **Where the epoch is reported (decided, and what shipped in Y0d):
+`backend action=status` and `backend help` carry `catalog:{epoch, hash}`, and nowhere else**:
+`ghidra_query action=status` is a target status built in `query.py` (a different file, owned by
+Y1/Y2/Y3) and is about a target, not about the tool surface; `backend inspect` and the MCP
+`initialize` reply (`mcp.py`, Y0c, closed) do not report it. The hash covers only the advertised tool
+table (names, descriptions, input schemas), **not** the `instructions()` text or the help output
+(a deviation Y0d disclosed and this section accepts): a change to either needs a manual epoch bump,
+which a reviewer checks, because no test can see it.
 
 | Feature | Carrier |
 |---|---|
@@ -1516,9 +1824,9 @@ tag, then a hash-checked freeze.
 | commit, revert, rebase, publish, merge, export/import bundle | `type_edit options.kind = commit | commit_revert | rebase | publish | merge | export_bundle | import_bundle` (no address needed, like `struct` and `revert` today) |
 | changes against master, views, lineage, queue, health | `ghidra_query action=status options.show = changes | views | lineage | queue | health` |
 | commit/backup/publish jobs | `job` (existing `status`/`cancel`), jobs of kind `commit` |
-| doctor | `backend action=doctor` (new enum value, Y0d) |
+| doctor | `backend action=doctor` (new enum value, Y0d; the handler is `doctor.py`, Y4b; reachable from the CLI too, 7.1) |
 | list, verify backups and generations | `backend action=backups` with `options.op = list | verify` (new enum value and an `options` bag, Y0d) |
-| user-script mode | `ghidra_run options.{isolation, readonly}` (`options` bag added in Y0d; `view` exists) |
+| user-script mode | `ghidra_run options.{isolation, readonly}` (`options` bag added in Y0d; `view` exists; until Y4e ships a non-empty bag answers `not_available` instead of running, a Y0d decision that is kept: nothing is silently dropped) |
 | lane hints, deadlines, identity | internal to the client; no schema |
 | format, health, platform facts | surfaced in `backend action=status` and the doctor |
 
@@ -1544,8 +1852,9 @@ Conventions that make the waves disjoint (the matrix in 8.1 is the authority; th
   belongs to the package that creates it, in that wave and later ones until another is named.
 - **Seams first (D31).** The shared files every feature wants to touch are opened once, early, as
   behaviour-free seams by E1 (W1): the two signature changes of D17 and their call sites
-  (`Scheduler.laneOf`/`admit`, `Session.java:248`, `ImportCommands.java:112`), the `project` dispatch
-  hook, and four registries (`Advertised`, `Settings`, `Preflight`, `DbVersions`). Later packages
+  (`Scheduler.laneOf`/`admit`, `Session.java:248`, `ImportCommands.java:112`), the call sites of
+  `ProjectEntry.info(client)` (a signature only, so that E2's `format` needs no `Session.java` edit), and
+  four registries (`Advertised`, `Settings`, `Preflight`, `DbVersions`). Later packages
   register into them from classes they own. So `Session.java` is edited by E1 (W1), E3b (W3) and
   E5 (W4) and by no one in W2, and E2 and E3a, which run in parallel in W2, share no file.
 - E0 adds loaders so each package adds tests in its **own** files: `examples/dt_<package>.py` for
@@ -1556,12 +1865,26 @@ Conventions that make the waves disjoint (the matrix in 8.1 is the authority; th
   scenarios run at `--protocol 2` and must stay `identical`.
 - **`certification.manifest` is the one deliberate exception** to "one owner per file per wave": every
   package appends its new files to it (the `buildHeadless` IP check fails otherwise), it is append-only,
-  and a textual merge conflict is resolved by keeping both lines. This file is the design: packages do
-  not edit it (a design change is a new revision by the coordinator, with the history at its end), and
-  status lives in the stream reports under `D:/Projects/Hydra/_logs/<stream>/`. README and CHANGELOG
-  are edited by R1 alone, from the packages' hand-over notes.
+  and a textual merge conflict is resolved by keeping both lines. (R1's own line items are its
+  release entries; the append rule holds for every package, R1 included.) **`PROTOCOL-3.md` is the
+  design**, a different file: packages do not edit it (a design change is a new revision by the
+  coordinator, with the history at its end), and status lives in the stream reports under
+  `D:/Projects/Hydra/_logs/<stream>/`. README and CHANGELOG are edited by R1 alone, from the
+  packages' hand-over notes.
+- **A package that changes the format of a stored file owns the existing tests that write that file by
+  hand.** Y0a sealed every record file, so two older tests that hand-edit a store or a record and keep
+  its stale seal had to drop the seal (`record.pop("seal")`, commit `c78be27`: `tests/test_address_maps.py`
+  and `tests/test_query.py`); 8.1 now gives those two files to Y0a explicitly (W0), and Y1 owns the
+  tests that hand-write a store when it moves to store v3. The same applies to later format changes.
 - Hydralysis hotspot files (`workcopy.py`, `query.py`, `analysis.py`, `hydra.py`, `api.py`,
-  `tests/fakehydra.py`) have one owner per wave (8.1).
+  `tests/fakehydra.py`) have one owner per wave (8.1). **`api.py` is opened once**: Y2 (W2) replaces
+  Y0d's `not_available` stubs with a **handler registry** (an action or option name to a callable;
+  modules `backups.py`, `commits.py`, `doctor.py` and `userscripts.py` register their handlers, and
+  `api.py` imports a fixed list of handler modules lazily and answers `not_available` for a module
+  that does not exist yet), so Y4b, Y4d and Y4e never edit `api.py`: the `ghidra_run` `options`
+  (`isolation`, `readonly`) dispatch, the `job` `options` and the `backend` `doctor` and `backups`
+  actions each have a named owner and wave in 8.2, which is the seams-first rule of D31 applied to the
+  Python side.
 - `examples/check_ownership.py` (E0) reads the matrix in 8.1 and fails when a wave cell names two packages
   or when the files changed on a package branch (`git diff --name-only` against its base) are not
   all in that package's rows for its wave; it runs at every package merge (gate 9.11).
@@ -1572,13 +1895,13 @@ Conventions that make the waves disjoint (the matrix in 8.1 is the authority; th
 
 | Wave | Hydra (engine) | Hydralysis | Notes |
 |---|---|---|---|
-| W0 baselines and hardening | E0 | Y0a, Y0b, Y0c, Y0d | no engine behaviour change; all parallel; disjoint files (8.1) |
-| W1 foundation and seams | E1, P1a | Y1 | E1 owns every shared-file seam (`Session.java`, `Scheduler`, `ImportCommands`, `UpgradeCache`, `ProjectCommands`, `HeadlessSession`, and the new `Advertised`, `Settings`, `Preflight`, `DbVersions`); P1a owns `ghidra_session.py` and the protocol-2 compatibility harness; disjoint |
-| W2 facts, gates, lanes | E2, E3a | Y2 | **neither edits `Session.java`** (E1 placed the seams). E2: format, backup, gate, fork; it names no lane. E3a: `Scheduler`, `ImportCommands`, `Requests`, `Connection.respond`, `RequestMonitor`; it decides the lane and the lane note. A backup reaches the `maint` lane through E3a's command mapping, with no code dependency between the two; the combined test is E6's |
+| W0 baselines and hardening | E0 | Y0a, Y0b, Y0c, Y0d | no engine behaviour change; all parallel; disjoint files (8.1). |
+| W1 foundation and seams | P1a, then E1 | Y1, Y0e | E1 owns every shared-file seam (`Session.java`, `Scheduler`, `ImportCommands`, `UpgradeCache`, `ProjectCommands`, `ProjectEntry` (signature only), `HeadlessSession`, and the new `Advertised`, `Settings`, `Preflight`, `DbVersions`); P1a owns `ghidra_session.py` and the protocol-2 compatibility harness and lands first (E1's `cc_e1.py` needs its loader and the vendored 1.0.0 client); Y0e takes the W0 review follow-ups that no W0 package could own (8.2); all disjoint |
+| W2 facts, gates, lanes | E2, E3a | Y2 | **neither edits `Session.java`** (E1 placed the seams). E2: format, backup, gate, fork; it names no lane. E3a: `Scheduler`, `ImportCommands`, **`ImportGate`**, `Requests`, `Connection.respond`, `RequestMonitor`; it decides the lane and the lane note. A backup reaches the `maint` lane through E3a's command mapping, with no code dependency between the two; the combined test is E6's |
 | W3 robustness | E3b | Y3 | E3b owns `Waits`, `Caller`, `Access`, `ProgramEntry`, `OverlayCommands`, `Connection`, `RequestMonitor`, `Session.disconnect`, `ProjectCommands.leaveProject`, `ProgramCommands.releaseUse` |
 | W4 isolation, health, launcher | E4, E5, P1b | (catch-up) | E4 after E3b (both touch `OverlayCommands`); E5 owns `Session.java`, `Scheduler`, `HeadlessSession`; disjoint |
-| W5 soak and release prep | E6, R1 | | R1 owns `tools/bump_hydra.py` and the docs; then **gate G** (section 9) |
-| W6 adoption on hydra.4 | | Y4a, Y4b, Y4d, Y4e | disjoint files; Y4a runs R1's `bump_hydra.py` and owns the files it edits |
+| W5 soak and release prep | E6, then R1 | | R1 owns `tools/bump_hydra.py` and the docs and runs after E6 (it depends on every engine package, E6 included); then **gate G** (section 9) |
+| W6 adoption on hydra.4 | | Y4a, Y4b, Y4d, Y4e | disjoint files; Y4a runs R1's `bump_hydra.py` and owns the files it edits. The package ids are Y4a, Y4b, Y4d and Y4e: **there is no Y4c** (the ids keep the labels of the first draft) |
 | W7 deferred | | Y5 | only after its preconditions |
 
 ### 8.1 File-ownership matrix (the disjointness assertion)
@@ -1593,27 +1916,30 @@ whose name they carry and appear in its package text.
 
 | File | W0 | W1 | W2 | W3 | W4 | W5 |
 |---|---|---|---|---|---|---|
-| `S/Session.java` | | E1 (hello, `info`, `admit` call with the request, `project` hook, `isInline` stays) | | E3b (`disconnect`, `reap`) | E5 (`isInline`, `case health`, watchdog start) | |
+| `S/Session.java` | | E1 (hello, `info`, `admit` call with the request, the call sites of `ProjectEntry.info(client)` at `:265`, `:333`, `:427`, `isInline` stays) | | E3b (`disconnect`, `reap`) | E5 (`isInline`, `case health`, watchdog start) | |
 | `S/Scheduler.java` | | E1 (`laneOf(cmd, req, v3)`, `admit(c, cmd, req, m, waitMs)`, `describe(boolean)`, all behaviour-free) | E3a (maint lane, fair key, cap, queue info, ETA, `Preflight` call) | | E5 (`describe` `tryLock`, lane stats) | |
-| `S/ImportCommands.java` | | E1 (the `admit` call at `:112` only) | E3a (remaining wait) | | | |
-| `S/Connection.java` | | E1 (`error()` emits `next`) | E3a (`respond`: `queue` header) | E3b (`run`: grace, `shutdownNow`) | | |
+| `S/ImportCommands.java` | | E1 (the `admit` call at `:112` only) | E3a (remaining wait; the `ImportGate.enter` call at `:100` passes the client) | | | |
+| **`S/ImportGate.java`** | | | E3a (`enter` takes the `Client`, `Entry` keeps it, `queueInfo` adds `estimateScope` for v3) | | | |
+| `S/Connection.java` | | E1 (`error()` gets the client and emits `next`, `retryAfterMs`) | E3a (`respond`: `queue` header) | E3b (`run`: grace, `shutdownNow`; `respond`: `cancelled` details `applied`, `phase`) | | |
 | `S/RequestMonitor.java` | | | E3a (queue, lane and lane-note carriers) | E3b (wait registration, `cancel()` override) | | |
 | `S/Requests.java` | | | E3a (generic `Preflight` checks) | | | |
 | `S/Caller.java`, `S/Access.java`, `S/ProgramEntry.java`, **`S/Waits.java`** | | | | E3b | | |
 | `S/OverlayCommands.java` | | | | E3b (lock site) | E4 (`loadOverlay` extracted) | |
-| `S/ProjectCommands.java` | | E1 (`projectInfo(x, c)` pass-through) | E2 (`format`) | E3b (`leaveProject`) | | |
+| `S/ProjectCommands.java` | | E1 (the call sites of `ProjectEntry.info(client)` at `:92`, `:395`) | E2 (`openProject` `format`) | E3b (`leaveProject`) | | |
 | `S/ProgramCommands.java` | | | E2 (`openWritable` gate) | E3b (`releaseUse`, `closeEntry`) | | |
 | `S/UpgradeCache.java` | | E1 (`currentDbVersion` moved to `DbVersions`) | E2 (`readStored`) | | | |
 | `S/EditCommands.java` | | E1 (`withLastEditor`, `rk`) | E2 (`save` stamp) | | | |
-| `S/ForkCommands.java`, `S/ProjectFork.java`, `S/ProjectEntry.java`, **`S/ProjectFormat.java`**, **`S/ProjectBackup.java`** | | | E2 | | | |
-| `S/Operations.java`, `S/Journal.java`, `S/Client.java`, `S/SessionException.java`, **`S/Identity.java`**, **`S/Advertised.java`**, **`S/Settings.java`**, **`S/Preflight.java`**, **`S/DbVersions.java`** | | E1 | | | | |
+| `S/ForkCommands.java`, `S/ProjectFork.java`, **`S/ProjectFormat.java`**, **`S/ProjectBackup.java`** | | | E2 | | | |
+| `S/ProjectEntry.java` | | E1 (`info(Client)`: the signature only, same value) | E2 (`format` for v3) | | | |
+| **`S/DbVersions.java`** | | E1 (`program()`, `dataTypes()` returning `null`) | E2 (`dataTypes()`) | | | |
+| `S/Operations.java`, `S/Journal.java`, `S/Client.java`, `S/SessionException.java`, **`S/Identity.java`**, **`S/Advertised.java`**, **`S/Settings.java`**, **`S/Preflight.java`** | | E1 (`SessionException`: the new codes, the busy-details and the bad-request-details helpers) | | | | |
 | `S/HeadlessSession.java` | | E1 (endpoint and `ready`, `-set`) | | | E5 (watchdog start) | |
 | `S/HydraInfo.java` | | E1 (protocol constants) | | | | R1 (version) |
 | `S/ScriptCommands.java`, **`S/PrivateInstance.java`** | | | | | E4 | |
 | **`S/Health.java`**, **`S/Watchdog.java`** | | | | | E5 | |
 | `support/ghidra_session.py` | | P1a (range, `engine` pass-through) | | | P1b | |
-| `examples/daemon_tests.py`, `examples/characterization_tests.py`, **`examples/check_ownership.py`** | E0 | | | | | |
-| `examples/contract_tests.py` | | E1 | | | | |
+| `examples/daemon_tests.py`, `examples/characterization_tests.py`, **`examples/check_ownership.py`**, **`examples/dt_baseline.py`**, `examples/characterization/v3/` (created by E0 as an empty directory with the loader) | E0 | | | | | |
+| `examples/contract_tests.py` | | E1 (the protocol and first-`hello` tests) | | | | |
 | `examples/client_compat_tests.py`, **`examples/stock/ghidra_session_1_0_0.py`** | | P1a | | | | |
 | `examples/soak_tests.py` | | | | | | E6 |
 | `format-matrix.json`, `examples/format_gate.py`, `examples/make_legacy_fixture.py`, `examples/vectors/canonical-manifest.json` | | | E2 | | | |
@@ -1623,15 +1949,21 @@ whose name they carry and appear in its package text.
 
 | File | W0 | W1 | W2 | W3 | W5 | W6 |
 |---|---|---|---|---|---|---|
-| **`durable.py`**, `backends.py` | Y0a | | | | | |
-| `hydra.py` | Y0b | | | | | Y4a |
+| `backends.py` | Y0a | | | | | |
+| **`durable.py`** | Y0a | Y0e (streamed log reads, the every-acquisition tail check, 4.1) | | | | |
+| `tests/test_durable.py` | Y0a | Y0e (the two-process test, the large-log test) | | | | |
+| `tests/test_address_maps.py`, `tests/test_query.py` | Y0a (one line each: drop the stale seal of a hand-edited record; commit `c78be27`) | | | | | |
+| `hydra.py` | Y0b | Y0e (`write_daemon_config` through `durable.atomic_write`; `EngineError` cap exempts `next`) | | | | Y4a |
+| `tests/test_client.py` | Y0b | Y0e (move the `unittest.main()` guard to the end of the file) | | | | |
 | `tests/fakehydra.py` | Y0b | | Y2 | | | Y4a |
-| `mcp.py` | Y0c | | | | | |
-| `api.py` | Y0d | | Y2 (dispatch of the Y0d stubs) | | | Y4b (`doctor` dispatch) |
-| `workflow_help.py` | Y0d | | | | | |
-| `workcopy.py` | Y0a (`_save_store`, `load_store`) | Y1 | Y2 | Y3 | | |
+| `mcp.py`, `tests/test_mcp_transport.py` | Y0c | | | | | |
+| `api.py` | Y0d | | Y2 (the handler registry that replaces the Y0d stubs, 8) | | | |
+| `workflow_help.py`, `tests/test_contracts.py` | Y0d | | | | | |
+| **`cli.py`** | | Y0e (`backend --action doctor` and `--action backups`, `--options`, passed through to the dispatcher) | | | | |
+| `runtime.py`, `runtime_worker.py` | | Y0e (`_write` through `durable.write_json`) | | | | |
+| `workcopy.py` | Y0a (`_save_store`, `load_store`) | Y1 (v3 store, `has_overlays` and `expected_state` through `durable.exists`, `require_seal=True`) | Y2 | Y3 | | |
 | `targets.py`, `overlayjobs.py` | Y0a | | Y2 | | | |
-| `revisions.py`, `analysis.py`, **`annotations.py`**, `scripts/RusticQuery.java` | | Y1 | | | | |
+| `revisions.py`, `analysis.py`, **`annotations.py`**, `scripts/RusticQuery.java` | | Y1 (`analysis.py`: new kinds, and the legacy v1 writer is deleted, 8.2) | | | | |
 | `query.py` | | Y1 (`status show=changes`) | Y2 (`stop`, `show=lineage`) | Y3 | | Y4a |
 | `exporting.py` | | | Y2 | | | |
 | **`lineage.py`**, **`commits.py`**, **`backups.py`** | | | Y2 | | | Y4d |
@@ -1641,9 +1973,42 @@ whose name they carry and appear in its package text.
 | **`tools/bump_hydra.py`** | | | | | R1 | |
 
 Per wave the disjointness reads off the columns: W0 = {E0 | Y0a | Y0b | Y0c | Y0d}, each with its own
-files; W1 = {E1 | P1a | Y1}; W2 = {E2 | E3a | Y2}; W3 = {E3b | Y3}; W4 = {E4 | E5 | P1b}; W5 = {E6 | R1};
+files; W1 = {P1a, then E1 | Y1 | Y0e}; W2 = {E2 | E3a | Y2}; W3 = {E3b | Y3}; W4 = {E4 | E5 | P1b}; W5 = {E6 | R1};
 W6 = {Y4a | Y4b | Y4d | Y4e}. Across waves a file may change hands only in the order the columns show,
 and a package depends on the packages whose files it builds on (the lists below).
+
+### 8.2 Ownership of what the first reviews found unowned
+
+Reviews of the W0 packages (Y0a to Y0d, E0) found files and behaviours that the matrix of revision 2
+gave to nobody. Each now has one owner and one wave. Y0e is the package that carries the W0 follow-ups
+no W0 package could take (the W0 packages are closed; Y0e's files are disjoint from Y1's in W1).
+
+| Gap found | Owner | Wave | Decision |
+|---|---|---|---|
+| `cli.py` had no owner: spec 7.1 says doctor is also a CLI command, and Y0d could not expose `backend` `doctor`, `backups` or `options` there | **Y0e** | W1 | `cli.py` passes `--action` and an `--options` JSON object through to the same dispatcher as the MCP tool; no later package edits it |
+| `api.py`: Y0d's stubs (`ghidra_run` `options.isolation`/`readonly`, `job` `options`, `backend` `doctor`, `backups`) need a replacement in the waves where Y2, Y4b, Y4d, Y4e deliver their handlers, and the matrix gave `api.py` to Y2 and Y4b only (two packages in W6 would have needed it) | **Y2** | W2 | Y2 builds a **handler registry** once (8): `backend backups` goes to `backups.py` (Y2, W2); `job` `options` (`kind`, `cid`) to `commits.py` (Y2, W2); `backend doctor` to `doctor.py` (Y4b, W6); `ghidra_run` `options` to `userscripts.py` (Y4e, W6). `api.py` has a cell in W0 (Y0d) and W2 (Y2) and none after; until a handler's module exists the answer stays `not_available` |
+| `workcopy.has_overlays` and `workcopy.expected_state` pre-check the **main** store path (`_store_path(...).is_file()`) and so bypass the `.bak` fallback: with the main file deleted and `.bak` intact, `load_store` answers but these two say "no overlays" | **Y1** | W1 | both use `durable.exists` (a store exists if the main file or its `.bak` does) and call `load_store`; test: delete the main store, keep the `.bak`, both report the overlays |
+| A v3 store is read with `require_seal=True`: with the default (`False`) a hand-stripped seal loads as a "pre-seal" v2 record and gives no tamper or truncation signal | **Y1** | W1 | `load_store` reads a version-3 file with `require_seal=True` (a file without a seal is `store_corrupt`); a version-1 or -2 file is still accepted unsealed once and sealed by its first write |
+| `AppendLog` reads whole logs through `localio.read_bytes` (32 MiB budget) and checks the tail on the first append of a process | **Y0e** | W1 | 4.1 item 3: streamed reads, tail window, the every-acquisition check with the size comparison, the two-process test; until it lands the 32 MiB limit is recorded in section 6 |
+| `EngineError` caps every list recursively, including `next.args` | **Y0e** | W1 | cap only the informational lists (7.6); `next` is exempt; test with an 8-argument `next` |
+| `tests/test_client.py` puts the `EngineRetryPolicy` class after `if __name__ == "__main__"` | **Y0e** | W1 | move the guard to the end |
+| Y0a edited `tests/test_address_maps.py` and `tests/test_query.py`, which it did not own | **Y0a** | W0 | amended: the two files are Y0a's explicitly in 8.1 (a package that changes a stored format owns the tests that hand-write it, 8) |
+| `MAX_OUTSTANDING` per lane or global (Y0c) | decision | | **per lane** (7.6): 8 for the engine pool and 8 for the fast pool, total up to 16 |
+| Where `catalog:{epoch, hash}` is reported (Y0d) | decision | | `backend action=status` and `backend help` only (7.7) |
+| `canonical()` seals an unpaired surrogate (`surrogatepass`) while 3.4 says it is refused | decision | | tolerated in **seals and bundles** (Python-only forms; 3.4, 4.1 item 2), refused in **manifests** (cross-language); 3.4 says so |
+| `*.tmp` files of killed writers are never swept | **Y4b** | W6 | the doctor reports and offers the removal; nothing deletes automatically (D28) |
+
+**Record-bearing writers that stay outside `durable` after Y0a** (the AST write gate in
+`tests/test_durable.py` at `589432e` freezes them as a ratchet; a **new** write site fails the gate and
+its author adds it to this table):
+
+| Writer | What it writes | Owner | Wave | How |
+|---|---|---|---|---|
+| `analysis.save_overlay` | the legacy v1 overlay store (no production caller; tests only) | Y1 | W1 | deleted; the tests that call it write fixtures through `workcopy._save_store` |
+| `hydra.write_daemon_config` | the daemon's `config.json` | Y0e | W1 | `durable.atomic_write` (fsync and write-through replace) **without a seal**: the engine's launcher reads this file and must see the plain JSON it expects |
+| `runtime._write` | runtime session state | Y0e | W1 | `durable.write_json` (sealed) |
+| `runtime_worker._write` | runtime worker state | Y0e | W1 | `durable.write_json` (sealed) |
+| 22 artifact writes (logs, exports, staged script copies, download and install renames) and 11 non-record writes in the four owned files | logs, exports, copies | none | | not records; frozen by the ratchet |
 
 ### W0
 
@@ -1663,16 +2028,25 @@ registered until the lock frees: `Connection.java:101`); `import_wait` (`maxImpo
 queued import reaching the front fails `busy` after 10 s: `ImportCommands.java:112`);
 `script_shared_visibility` (a mutating contained script and a concurrent reader: expected to show the
 transient write; if it does not, the premise "readers can observe transient writes" is dropped from
-3.6); `fork_save_behind_analysis` (timing of `fork_project`/`save` while the long lane is saturated);
+3.6; on hydra.3 it did show it: 94 of 115 polls, so the premise stays); `fork_save_behind_analysis` (timing of `fork_project`/`save` while the long lane is saturated);
 `cancel_lock_wait` (a request waiting on a program lock is cancelled by id: today it keeps waiting and
 ends `busy` when its `wait` ends, `ProgramEntry.java:195`; this is the premise of V5 and of 3.5's
 cancel-aware waits).
-Acceptance: the seven scenarios report `identical` at `--protocol 2`; the six tests fail on hydra.3 as
-stated; the loaders work with an empty `dt_*.py` set. Exit codes verified.
+`import_wait` must fail on its premise for the **third** import, the one that reaches the front: it
+shows about 20 s (10 s in the gate and 10 s for the slot), not merely `busy` at 10 s for every import
+(the first two fail at 10 s because they were admitted to the gate at once); the test asserts
+`max(importsMs) >= 19000`. `characterization_tests.py --protocol 3` against an engine that serves no v3
+returns a SKIP (exit 0) unless `--require-v3` is given; **gate 9.3 always passes `--require-v3`**.
+Acceptance: the seven scenarios report `identical` at `--protocol 2`; the tests fail on hydra.3 as stated,
+or, for a premise that does not hold, are dropped from the design and recorded as a finding (E0's
+own convention above; at `c774d9e7b1` all six were `CONFIRMED` on hydra.3 in two runs,
+`D:/Projects/Hydra/_logs/E0/baseline1.log` and `baseline2.log`); the loaders work with an empty `dt_*.py`
+set. Exit codes verified.
 
 **Y0a (Hydralysis, M): durable IO.** Goal: 4.1.
 Files: new `durable.py`; `backends.py` (`write_json`); `workcopy.py` (only `_save_store`, `load_store`);
-`targets.py` (`register`); `overlayjobs.py` (job record writes); new `tests/test_durable.py`.
+`targets.py` (`register`); `overlayjobs.py` (job record writes); new `tests/test_durable.py`;
+`tests/test_address_maps.py` and `tests/test_query.py` (one line each, 8.1).
 Depends on: none. Parallel with: E0, Y0b-d.
 Surface: none. Ships in 0.5.x against hydra.2/3.
 Tests: torn, zero-length, mis-sealed and missing-with-`.bak` files each return the old or new content,
@@ -1685,47 +2059,70 @@ Acceptance: `store_corrupt` raised, not "start empty"; no record-bearing write o
 **Y0b (Hydralysis, S): client retry policy and `EngineError`.** Files: `hydra.py` (retry only
 idempotent commands after `closed`, `details.ambiguous`; widened `EngineError`; `Engine.capabilities()`
 returning `{}` on protocol 2), `tests/fakehydra.py` (connection drop after a mutating call; busy with
-holderInfo), `tests/test_client.py`. Surface: none. Tests: a dropped `apply_overlays` reply is not
+holderInfo), `tests/test_client.py`. Review follow-ups (the `next` exemption from the list cap, the
+`unittest.main()` guard) are Y0e's (8.2). Surface: none. Tests: a dropped `apply_overlays` reply is not
 re-sent and the marker reconciles; reads are retried. Acceptance: no mutating call is blindly re-sent.
 
 **Y0c (Hydralysis, S): fast/engine pools.** Files: `mcp.py`, `tests/test_mcp_transport.py`.
 Tests: four blocked engine calls do not delay `fingerprint` or `disasm`. Acceptance: `MAX_OUTSTANDING`
-still answers `busy` with a retry hint.
+still answers `busy` with a retry hint. **`MAX_OUTSTANDING` is per lane** (7.6): 8 on the engine pool and
+8 on the fast pool, so the total outstanding can reach 16; the hint is text (`retryAfterMs=2000` in the
+message) until the engine's structured `busy` exists.
 
 **Y0d (Hydralysis, S): the one catalog epoch.** Files: `api.py` (`backend.action += doctor, backups`;
 `options` bag on `backend`, `ghidra_run`, `job`; pass-through to stub handlers returning
 `not_available`), `workflow_help.py`, `tests/test_contracts.py` (catalog hash, `CATALOG_EPOCH`).
-Acceptance: `status` and `backend help` report `catalog:{epoch, hash}`; changing the table without
-bumping the epoch fails the test. Later packages never edit the schema.
+Acceptance: **`backend action=status` and `backend help`** report `catalog:{epoch, hash}` (and nothing
+else does, 7.7); changing the tool table without bumping the epoch fails the test (the hash covers the
+tool table only, not `instructions()` or the help output). Later packages never edit the schema. A
+non-empty `ghidra_run` or `job` `options` bag answers `not_available` until its handler is registered
+(8.2); `cli.py` exposure is Y0e's.
 
 ### W1
+
+**Y0e (Hydralysis, S): W0 review follow-ups.** Goal: the work that the W0 reviews found but no W0 package
+could own (8.2). Files: `durable.py` (log reads streamed, no `localio` budget; the every-acquisition tail
+check with the size comparison; 4.1 item 3), `tests/test_durable.py` (the two-process test of 4.1 and a
+log larger than 32 MiB), `hydra.py` (`write_daemon_config` through `durable.atomic_write` without a seal;
+the `EngineError` cap exempts `next`), `tests/test_client.py` (the `unittest.main()` guard at the end),
+`cli.py` (`backend` `doctor` and `backups` actions and `--options` pass-through), `runtime.py` and
+`runtime_worker.py` (`_write` through `durable.write_json`). Depends on: Y0a, Y0b, Y0d. Parallel with: P1a,
+E1, Y1. Surface: none. Tests: those named above, plus the write-gate ratchet of `tests/test_durable.py`
+updated for the sites that now go through `durable`. Acceptance: the full unit suite green; the AST gate
+lists no record-bearing writer outside `durable` except the artifact writes of 8.2.
 
 **E1 (Hydra, M): negotiation, identity, error contract, `expect`, `rk`, and the seams.**
 Goal: everything the other engine packages build on, with no behaviour change for protocol 2.
 Files (8.1): `S/Session.java` (hello negotiation, `info(c)` rendering capabilities, limits and policy from
-`Advertised`; the status header; **the `admit` call at `:248` passes the request** and **the `project`
-case passes the client** to `ProjectCommands.projectInfo(x, c)`; the `case` dispatch otherwise
-untouched), `S/Scheduler.java` (only signatures: `laneOf(cmd, req, v3)`, `admit(c, cmd, req, m, waitMs)`
+`Advertised`; the status header; **the `admit` call at `:248` passes the request** and **the call
+sites of `ProjectEntry.info(client)` at `:265`, `:333`, `:427` pass the client**; the `case` dispatch
+otherwise untouched), `S/Scheduler.java` (only signatures: `laneOf(cmd, req, v3)`, `admit(c, cmd, req, m, waitMs)`
 and the `describe(boolean)` overload, all returning today's values), `S/ImportCommands.java` (the
-`admit` call at `:112` only), `S/ProjectCommands.java` (the `projectInfo(x, c)` pass-through),
+`admit` call at `:112` only), `S/ProjectCommands.java` (the call sites of `ProjectEntry.info(client)` at
+`:92` and `:395`), `S/ProjectEntry.java` (the `info(Client)` signature, same value),
 `S/UpgradeCache.java` (`currentDbVersion()` moved out, `CURRENT_DB_VERSION` now `DbVersions.program()`),
 `S/HydraInfo.java`, `S/HeadlessSession.java` (endpoint and `ready`: `protocolMin/Max`; `paths` set at
-start; the generic `-set key=value` flag), `S/Client.java` (`protocol`, `v3()`), `S/SessionException.java`
-(all new codes and `next`, `retryAfterMs` carriers), `S/Connection.java` (`error()` emits `next` for v3),
+start; the generic `-set key=value` flag), `S/Client.java` (`protocol`, `v3()`: written once by the first
+`hello`, 3.1), `S/SessionException.java` (all new codes, the `next` and `retryAfterMs` carriers, and the
+one busy-details and the one `bad_request`-details helper, conditionals C12 and C13),
+`S/Connection.java` (`error()` takes the client and emits `next` and `retryAfterMs` for v3, C10),
 `S/Operations.java` (`expect` on signature, data_type, v3 only), `S/EditCommands.java` (`withLastEditor`
 fields, `rk`, v3 only), `S/Journal.java` (`rk`); new `S/Identity.java` (paths, platform,
-analysisIdentity, cached decompiler hash), `S/Advertised.java`, `S/Settings.java`, `S/Preflight.java`,
-`S/DbVersions.java` (D31, 3.1, 3.2, 3.5, 3.7).
-Depends on: E0. Parallel with: P1a, Y1.
+analysisIdentity, cached decompiler hash), `S/Advertised.java` (capability, limit and policy names
+declared up front), `S/Settings.java`, `S/Preflight.java`, `S/DbVersions.java` (`program()` and a
+`dataTypes()` that returns `null`; D31, 3.1, 3.2, 3.5, 3.7).
+Depends on: E0 and P1a (its `cc_e1.py` runs on P1a's loader and vendored 1.0.0 client). Parallel with: Y1, Y0e.
 Surface: hello block (3.2), endpoint fields, `expect`/`rk` (3.4), `next`/`retryAfterMs`.
-Tests: `examples/char_e1.py` new goldens (hello at protocol 3 with paths, versions, hashes masked and the
-`capabilities` block compared as a required subset, 3.1; `expect` conflicts on signature and data_type
+Tests: `examples/char_e1.py` new goldens (hello at protocol 3 with `paths`, `platform` and
+`analysisIdentity` masked and `capabilities`, `limits` and `policy` compared as required subsets, 3.1; `expect` conflicts on signature and data_type
 with the same key order as rename; `rk` replay with the reconstructed reply of 3.4);
 `examples/contract_tests.py` (a protocol-2 hello is answered byte-identically to the committed shape;
 endpoint `protocol:2` + `protocolMax:3`; a request for 9 is answered 3; absent 2; registering an unknown
-capability name throws); `examples/cc_e1.py` (G1 and the `rk` half of G7 on the stock 1.0.0 client: a v2
-`edit` with a wrong `expect` on `signature` and on `data_type` succeeds, a v2 request with the same `rk` twice
-is applied twice); a seam test that `laneOf(cmd, req, v3)` and `describe(false)` return exactly today's
+capability, limit or policy name throws; the first `hello` fixes the protocol: a second `hello` asking 3 on
+a protocol-2 connection answers 2, `"protocol":"3"` answers 2); `examples/cc_e1.py` (V6 first: the
+vendored 1.0.0 client against the E1 engine connects and works, endpoint `protocol:2`; then G1 and the `rk`
+half of G7 on the stock 1.0.0 client: a v2 `edit` with a wrong `expect` on `signature` and on `data_type`
+succeeds, a v2 request with the same `rk` twice is applied twice); a seam test that `laneOf(cmd, req, v3)` and `describe(false)` return exactly today's
 values for every command and that the `-set` flag reaches `Settings`.
 Acceptance: seven old scenarios `identical` at protocol 2; the new goldens differ from nothing else;
 `dbVersions.program` non-null and equal to the constant; after E1 alone no engine behaviour differs
@@ -1739,26 +2136,33 @@ at protocol 2.
 that the protocol-2 behaviour tests really are a protocol-2 client). Surface: client side of 3.1. Tests:
 the 1.1.0 client against a fake protocol-2 server and against the real hydra.3 install (works at 2);
 against the hydra.4 candidate (3); an engine that sends `protocolMax` below 2 is refused with both versions
-named; the vendored 1.0.0 client against the E1 engine (V6). Acceptance: all pass; the 1.0.0 client
-still works against the E1 engine (endpoint `protocol:2`).
+named. P1a needs no engine of E1 to pass: the vendored 1.0.0 client against the E1 engine (V6) is the
+first test of E1's `cc_e1.py`. Depends on: none; **lands first in W1**, because every `cc_*` file of
+every later engine package (E1, E2, E3a, E3b, E4, E5) runs on its loader and its vendored client.
+Acceptance: all pass; the 1.1.0 client works at 2 against hydra.3 and at 3 against the E1 engine.
 
 **Y1 (Hydralysis, L): store v3, effects, bundles.**
-Files: `workcopy.py` (v3 load/migrate/save, effects capture in `edit`, `pending_of(store)` and the
-extended marker of 4.2 in `state_of` and `_prefix_matches`, the `commits[]`/`archived[]` schema),
-`revisions.py` (effect and field vocabulary), `analysis.py` (new kinds, option validation),
+Files: `workcopy.py` (v3 load/migrate/save **read with `require_seal=True`**, effects capture in
+`edit`, `pending_of(store)` and the extended marker of 4.2 in `state_of` and `_prefix_matches`, the
+`commits[]`/`archived[]` schema, `revert` with `has_dependents` and `cascade`, `has_overlays` and
+`expected_state` through `durable.exists` so that the `.bak` fallback applies, 8.2),
+`revisions.py` (effect and field vocabulary), `analysis.py` (new kinds, option validation; the legacy
+`save_overlay` is deleted, 8.2),
 `scripts/RusticQuery.java` (`effects` output, `annotation_probe`, `verify_before` in `apply_overlays`, and
 `state:null` to clear the `overlay_state` option, 4.6 step 5),
 `query.py` (`status options.show=changes`), new `annotations.py` (bundles), new
 `tests/test_store_v3.py`, `tests/test_bundles.py`, `tests/test_engine_integration.py` (real-engine round
-trip, env-gated).
-Depends on: Y0a. Parallel with: E1, P1a.
+trip, env-gated), and the existing tests that write a store by hand (8).
+Depends on: Y0a. Parallel with: E1, P1a, Y0e.
 Surface: store v3 (4.2), bundle format (4.9), `changes`.
 Tests: v2 to v3 migration is lossless and leaves `.v2.bak`; effects round trip for rename, comment,
 signature, type, label, variable, struct; `before_unknown` handling; subject rebase tests unchanged;
 bundle export then dry-run import on a fresh target reports hash, sha256 and base drift; the replay set
 with a committed subset and a skipped record **below** a committed one (the skipped record is pending and
 replayed, never taken for committed; the marker of a program built before the commit no longer matches).
-Golden: a
+`revert` of the earlier record of a chain is refused with `has_dependents`, `cascade` removes the chain, a
+batch reverts whole (4.2); a hand-stripped seal on a v3 store is `store_corrupt`; with the main store file
+deleted and the `.bak` intact, `has_overlays` and `expected_state` still see the overlays. Golden: a
 RusticQuery `effects` output check on the committed MSVC fixtures. Fault: kill between engine apply and
 store write (the marker heals it).
 Acceptance: all existing rebase tests green; `verify_before` mismatch rolls the whole transaction back and
@@ -1772,14 +2176,15 @@ Files (8.1): new `S/ProjectFormat.java`, `S/ProjectBackup.java` (with the canoni
 `DbVersions`, E1), `S/ForkCommands.java` and `S/ProjectFork.java` (purpose, open, verify, cost, warnings,
 sidecar fields `purpose` and `disposable`, one validation method also registered with `Preflight`),
 `S/ProgramCommands.java` (`openWritable` gate, `upgradeBackup`), `S/EditCommands.java` (`save` comment
-stamp), `S/ProjectCommands.java` and `S/ProjectEntry.java` (`format` for v3 in `openProject` and
-`projectInfo`); new `format-matrix.json`, `examples/format_gate.py`, `examples/make_legacy_fixture.py`
+stamp), `S/ProjectCommands.java` (`openProject`) and `S/ProjectEntry.java` (`info(client)` adds `format` for
+v3, the one conditional C6), `S/DbVersions.java` (`dataTypes()`: the data type database version read from
+a database header, tested against 12.1.4 data or left `null`); new `format-matrix.json`, `examples/format_gate.py`, `examples/make_legacy_fixture.py`
 (builds a small 12.1.4-format project from one of our own generated PEs with stock 12.1.4; the output
 is committed; it contains nothing derived from a game), `examples/vectors/canonical-manifest.json`,
 `examples/dt_e2.py`, `examples/char_e2.py`, `examples/cc_e2.py`. **E2 does not edit `Session.java`**
-(E1 placed the `project` hook) **and names no lane**: a backup reaches the `maint` lane through E3a's
-command mapping, with no dependency between the two packages.
-Depends on: E1. Parallel with: E3a, Y2.
+(E1 placed the `ProjectEntry.info(client)` call sites) **and names no lane**: a backup reaches the `maint`
+lane through E3a's command mapping, with no dependency between the two packages.
+Depends on: E1 (and, for `cc_e2.py`, P1a). Parallel with: E3a, Y2.
 Surface: `format`, `fork_project` fields and manifest, gate, `backup_required` (3.4).
 Tests: characterization `format_fork` (format on a current-format fixture; a backup fork; sidecar and
 manifest masked, key order checked); `daemon_tests` `upgrade_gate` (needs `--legacy-project`: canonical
@@ -1790,7 +2195,10 @@ unparseable or `disposable:false` sidecar is canonical; source tree hash unchang
 `format_readonly` (tree hash before and after), `backup_fault` (kill the daemon mid-backup: no folder with a
 verifying manifest, retry succeeds; corrupt one byte: client re-hash refuses; engine gate still passes by
 design, which the test documents; a failed `verify` leaves no project in the destination and no manifest,
-3.4), `fork_report` (NTFS asserts `method:"copy"` and a warning), `manifest_canonical` (the vector of 3.4,
+3.4), `fork_report` (NTFS asserts `method:"copy"` and a warning; **on the Dev Drive (ReFS) it also asserts that
+a freshly forked candidate has the same `Revision.of` as its source**, the property that the step 4 gate
+of 4.6, `backup.source.revision == Revision.of(candidate)`, relies on and that the NTFS check of the
+second review did not cover), `manifest_canonical` (the vector of 3.4,
 a non-ASCII path and U+2028 written by the engine and verified by Python and the reverse),
 `cc_e2.py` (G7 `purpose`/`open` ignored for v2, G8 and V1: v2 `conflict` with `reason:"backup_required"`,
 V7 the sidecar fields). `format_gate.py` fails when `ProgramDB.DB_VERSION`, `DataTypeManagerDB.DB_VERSION`,
@@ -1801,46 +2209,59 @@ against the fixture or reported `null`.
 
 **E3a (Hydra, L): lanes, fair key, queue info, import wait, validate-before-wait.**
 Files (8.1): `S/Scheduler.java` (the bodies behind E1's signatures: MAINT, fair key, per-key cap, queue info,
-ETA, history, the `Preflight` call), `S/ImportCommands.java` (remaining wait), `S/Requests.java` (the
-generic `Preflight` checks, registered under `*`), `S/Connection.java` (`respond`: the `queue` header),
+ETA, history, the `Preflight` call), `S/ImportCommands.java` (remaining wait; the `ImportGate.enter` call at `:100` passes the client),
+**`S/ImportGate.java`** (`enter` takes the `Client`, its `Entry` keeps it, and `queueInfo(e)` adds
+`estimateScope:"load"` for a v3 entry; the `queue` object of an import wait is v2 behaviour and
+stays, 3.5), `S/Requests.java` (the generic `Preflight` checks, registered under `*`), `S/Connection.java` (`respond`: the `queue` header),
 `S/RequestMonitor.java` (carriers for the queue information, the **lane** and the **lane note** the
 decision produced: E4 only copies them into the `script` reply), `examples/dt_e3a.py`,
 `examples/char_e3a.py`, `examples/cc_e3a.py`. **E3a does not edit `Session.java`.** Every v3 effect is
 gated on `Client.v3()` (3.1, 5.1).
-Depends on: E1. Parallel with: E2, Y2.
+Depends on: E1 (and P1a for `cc_e3a.py`). Parallel with: E2, Y2.
 Surface: `lane`, `maint`, `queue`, `busy` details (3.5).
 Tests: `lane_starvation` now passes (p99 bound recorded from the E0 baseline, not assumed), `maint_lane`
 (`fork_project`/`save` start while long is saturated, on a v3 connection), `fair_key` (two labels on one
 connection share; the cap holds only while another key waits), `queue_info` (position, ETA null without
 history, `estimate:true`), `import_wait`, `preflight_wait` (a bad request fails at once when the lane is
-full and keeps its old error order when it is not). Characterization: `status.scheduler` v3 shape new
+full and keeps its old error order when it is not), `per_key_cap_conserving` (maint with 4 slots and two
+keys that each run one request and queue another: both queued requests run, no slot idles, 3.5). Characterization: `status.scheduler` v3 shape new
 golden. `cc_e3a` (the stock 1.0.0 client, hydra.3 behaviour recorded first): `v2_lane_unchanged` (G2),
 `v2_queue_order` (G3), `v2_no_preflight` (G4), `v2_progress_keys` (G5: the exact key set of every
-progress event during a slot wait and an import wait), `import_wait` on a v2 connection (V2).
+progress event during a slot wait and an import wait: the import wait still carries `queue` and gains no
+`estimateScope`), `import_wait` and `import_wait_explicit` on a v2 connection (V2, both directions).
 Acceptance: old goldens identical at protocol 2; golden decompile diff identical (gate 9.1, run here).
 
 **Y2 (Hydralysis, L): lineage, commit, revert, backups on hydra.2/3, shared base.**
 Files: new `lineage.py`, `commits.py`, `backups.py`; `targets.py` (stable key, `CURRENT.log` resolve),
 `workcopy.py` (shared base key, `pending`, `stale`, `_directory`, clearing a stale `overlay_state` on a
 fresh generation base), `overlayjobs.py` (kind `commit`), `exporting.py` (header, resume refusal), `query.py`
-(`stop`, `status options.show=lineage`), `api.py` (dispatch only of the Y0d stubs), `tests/fakehydra.py`
-(fork purposes), new `tests/test_lineage.py`, `tests/test_commit.py`, `tests/vectors/canonical-manifest.json`
+(`stop`, `status options.show=lineage`), `api.py` (**the handler registry** that replaces the Y0d stubs: it
+imports the handler modules of the later packages lazily and answers `not_available` for a module that
+does not exist yet; 8, 8.2), `tests/fakehydra.py` (fork purposes), new `tests/test_lineage.py`, `tests/test_commit.py`, `tests/vectors/canonical-manifest.json`
 (a copy of E2's vector, asserted byte-identical at the release gate 9.8), `tests/test_engine_integration.py`
-additions.
-Depends on: Y1, Y0a. Parallel with: E2, E3a.
+additions. `backups.py` registers `backend action=backups` (`op=list|verify`) and `commits.py` registers the
+`job` `options` filters (`kind`, `cid`), so that no later package edits `api.py`.
+Depends on: Y1, Y0a, Y0b (`tests/fakehydra.py`), Y0d (`api.py`) and Y0e (the `AppendLog` it builds the
+logs on). Parallel with: E2, E3a.
 Surface: 4.4-4.7.
 Tests: key stability across a generation flip (the overlay store is found); commit preconditions;
 `dry_run` has zero side effects (tree hash); a commit on a KotOR-sized fixture produces a verified
 generation and an untouched master; revert; one-way confirmation required when format unknown; torn and
 gapped `CURRENT.log`; `tampered` detection; **subset and skip commits** (4.2: dependency closure,
 `selection_not_closed`, skip propagation, a skipped record below a committed one stays pending and is
-replayed by the next sync and taken by the next commit, revert of a commit makes its ids pending again);
+replayed by the next sync and taken by the next commit, revert of a commit makes its ids pending again;
+`revert_chain`: commit c1, commit c2, `commit_revert` c2 then c1, the records of both are pending again in
+`seq` order (c1's rehydrated from its archive) and the pointer is back at generation 0; `subset_missing_type`:
+a subset commit of a signature without the struct it uses ends `ABORTED` with the effect named and nothing
+published, or the test fails and the closure is extended (4.2); a `batch` split by `only` is refused or
+completed by the closure);
 **archival** (the previous commit's records leave `edits[]`, the caps then bound the live records);
 the **reference snapshot** (a commit while edits continue compares against the `upTo` texts, and a
 function touched by an outside record is `excluded`); the generation's sidecar rewrite on hydra.2/3 and
 that a fork of the generation carries no `overlay_state`. Fault matrix: every point of 4.6, including
-`publish_torn` followed by a successful new commit, `intent_torn` and the subset variants, with oracle
-O1-O6, fresh roots. Golden: **commit round trip** (after-commit touched functions against the
+`publish_torn` followed by a successful new commit, `intent_torn` and the subset variants, **and the
+two-process torn-tail test of 4.1 on `CURRENT.log`** (a long-lived process appends again after a second
+process was killed mid-line), with oracle O1-O6, fresh roots. Golden: **commit round trip** (after-commit touched functions against the
 reference snapshot; its own comparison, never mixed with the hydra.3/hydra.4 diff).
 Acceptance: all O1-O6 hold at every fault point; two simultaneous commits give one `commit_busy`.
 
@@ -1853,7 +2274,9 @@ the thread local), `S/Access.java`, `S/ProgramEntry.java` (waiters, `abandoned`)
 (lock site only), `S/Connection.java` (`run`: grace, `shutdownNow`, disconnect regardless), `S/Session.java`
 (`disconnect`, optional orphan TTL in `reap`), `S/ProjectCommands.java` (`leaveProject`),
 `S/ProgramCommands.java` (`releaseUse`, `closeEntry`); `examples/dt_e3b.py`, `examples/cc_e3b.py`.
-Depends on: E3a. Parallel with: Y3.
+Out of scope, stated: the untimed overlay-lifecycle `lock()` calls of `OverlayCommands.java` (3.5, 6).
+Depends on: E3a, **E2** (it edits `ProgramCommands.java` and `ProjectCommands.java` after E2 did) and P1a
+(`cc_e3b.py`). Parallel with: Y3.
 Surface: `cancelled.details.applied`, `busy.reason`, `abandonedRequests`, `lock_queue_full`.
 Tests: `cancel_queued` (slot wait and lock wait answer `cancelled` within 1 s), `dead_client_lock_wait`
 (kill a client blocked in `wait=3600000`: released within `cleanupGraceS + abandonWaitS + 2 s` for a
@@ -1881,7 +2304,7 @@ clean, converged, conflict, and "already in the master" decided from the generat
 request monitor**, where E3a stored the decision; E4 does not decide a lane; the `script` validation
 method registered with `Preflight`), `S/OverlayCommands.java` (`loadOverlay` extracted), new
 `S/PrivateInstance.java`; `examples/dt_e4.py`, `examples/char_e4.py`, `examples/cc_e4.py`.
-Depends on: E3b (and, through it, E3a). Parallel with: E5, P1b.
+Depends on: E3b (and, through it, E3a, E2) and P1a (`cc_e4.py`). Parallel with: E5, P1b.
 Surface: 3.4 `script`, 3.6.
 Tests: a mutating user script with a concurrent decompile reader in each mode (shared: attempted and
 rolled back; exclusive and private: readers never see it); the master file hash and revision unchanged;
@@ -1894,7 +2317,7 @@ Acceptance: `shared` unchanged for protocol 2.
 **E5 (Hydra, M): health and watchdog.** Files: `S/Session.java` (`isInline`, `case health`, starting the
 watchdog), new `S/Health.java`, `S/Watchdog.java`, `S/Scheduler.java` (`describe` with `tryLock` for v3,
 lane stats), `S/HeadlessSession.java` (parse `testHooks`); `examples/dt_e5.py`, `examples/cc_e5.py`.
-Depends on: E3b (lane stats). Parallel with: E4, P1b.
+Depends on: E3b (lane stats) and P1a (`cc_e5.py`). Parallel with: E4, P1b.
 Surface: `health` (3.4), `debug_stall` behind the launch property.
 Tests: `health` answers while a long request runs; a daemon suspended from outside (`NtSuspendProcess`)
 is seen by the Python probe as a live pid with no answer; with the hook, `tick.ageMs` grows and
@@ -1914,7 +2337,8 @@ watchdog of 7.6 (Y4a).
 
 ### W5
 
-**E6 (Hydra, M): soak harness.** Files: new `examples/soak_tests.py`. Depends on: E2, E3a, E3b, E4, E5.
+**E6 (Hydra, M): soak harness.** Files: new `examples/soak_tests.py`. Depends on: E2, E3a, E3b, E4, E5. R1
+follows it in W5.
 12 client processes with distinct labels over mixed work (quick decompiles, quick scripts, long sleeps,
 fork and save, cancels), seeded client kills. Pass criteria: no lost, duplicated or reordered
 acknowledged edit against the clients' own logs; every queue empty and no program owner left after the
@@ -1923,27 +2347,31 @@ cooperative scripts; **a backup (`fork_project purpose:"backup"`) started while 
 saturated runs in the `maint` lane** (the combined check of E2 and E3a, which share no code). PR lane
 about 2 minutes; nightly longer.
 
-**R1 (both, M): hydra.4 release preparation.** Hydra: `S/HydraInfo.java` (version), `CHANGELOG.md`,
-`README.md` (a protocol 3 section pointing here; the new limits and the config keys of 3.7; the
-"Protocols" matrix), `ARCHITECTURE.md` (rows for the new classes), `certification.manifest`, release
-workflow dry run; the **release notes** carry the items of 5.2 (D4 `minClient` unchanged, the pin
-refusal of Hydralysis 0.4.x, V1 to V7 by name) and the full v3 hello golden. Hydralysis: new
-`tools/bump_hydra.py` (generates `RELEASE`, `ASSETS` with SHA-256 and sizes, `fakehydra` constants;
-**R1 is its only owner**, Y4a runs it). **No tag, no push, no release by this stream**; the tag is an
+**R1 (both, M): hydra.4 release preparation.**
+Files: Hydra: `S/HydraInfo.java` (version), `CHANGELOG.md`, `README.md` (a protocol 3 section pointing here;
+the new limits and the config keys of 3.7; the "Protocols" matrix), `ARCHITECTURE.md` (rows for the new
+classes), `certification.manifest` (its own release entries; every package appends its own files, 8), the
+release workflow (a dry run); Hydralysis: new `tools/bump_hydra.py`. The **release notes** carry the items
+of 5.2 (D4 `minClient` unchanged, the pin refusal of Hydralysis 0.4.x, V1 to V7 by name) and the full v3 hello
+golden. `tools/bump_hydra.py` generates `RELEASE`, `ASSETS` with SHA-256 and sizes and the `fakehydra`
+constants; **R1 is its only owner**, Y4a runs it. **No tag, no push, no release by this stream**; the tag is an
 owner action. Until then Hydralysis tests run against the candidate install with `hydra_allow_unpinned`.
-Depends on: every engine package.
+Depends on: every engine package, **including E6** (R1 runs after E6 within W5).
 
 ### W6
 
 **Y4a (Hydralysis, L): engine adoption and supervisor.** Files: `hydra.py` (capabilities, pin,
-`Supervisor`, deadlines: P1b's on hydra.4, the client-side watchdog of 7.6 on hydra.2/3), `query.py`
+`Supervisor`, deadlines: P1b's on hydra.4, the half-close and abandon helper of 7.6 on hydra.2/3), `query.py`
 (lane hint, shorter waits), `tests/fakehydra.py` (v3 fake: queue info, `next`, health). It **runs** R1's
 `tools/bump_hydra.py` to produce the pin bump and owns the files the script edits; it does not own the
-script. Depends on: R1, Y0b. Tests: the watchdog deadline of 7.6 against the fake and the real hydra.3; 7.2 policy against the fake and
+script. Depends on: R1, Y0b, **Y2** (`tests/fakehydra.py`) and **Y1, Y2, Y3** (`query.py`). Tests: the
+deadline helper of 7.6 (half-close and abandon, never `close()`) against the fake and the real hydra.3 (the
+cases L, S, C of 7.6 and the abandoned-connection cap); 7.2 policy against the fake and
 the real engine (a suspended daemon is restarted within budget; `lost_on_restart` recorded; a slow daemon
 with non-recoverable unsaved edits is not restarted); degrade matrix 7.5 against hydra.3.
 
-**Y4b (Hydralysis, M): doctor.** Files: new `doctor.py`, `api.py` (the `doctor` dispatch), `tests/test_doctor.py`. Depends on: P1b, E5.
+**Y4b (Hydralysis, M): doctor.** Files: new `doctor.py` (it registers `backend action=doctor` with the
+handler registry that Y2 built and does not touch the dispatcher file, 8.2), `tests/test_doctor.py`. Depends on: P1b, E5, Y2 (the registry). The doctor reports leftover `*.tmp` files and abandoned connections (7.6).
 Tests: zero daemon spawns and zero engine calls when no daemon exists; cites `hello.paths/platform/
 analysisIdentity`; one finding per section of 7.1.
 
@@ -1953,8 +2381,9 @@ analysisIdentity`; one finding per section of 7.1.
 accepted by the engine gate and the reverse; fault matrix re-run.
 
 **Y4e (Hydralysis, S): `ghidra_run` modes.** Files: `userscripts.py`, `tests/test_query_script.py`.
-Depends on: E4. Tests: `private` only on a clean working copy, `exclusive` otherwise; the reply shows
-`attemptedChanges`, `isolation`, `basedOn`.
+Depends on: E4, Y2 (the handler registry: it registers the `ghidra_run` `options` handler from
+`userscripts.py` and does not touch the dispatcher file). Tests: `private` only on a clean working copy, `exclusive`
+otherwise; the reply shows `attemptedChanges`, `isolation`, `basedOn`.
 
 ### W7
 
@@ -1975,14 +2404,14 @@ Fresh state roots; the live daemons (18220, 17936) are never touched; no game-de
 |---|---|---|
 | 9.1 | **Golden decompile diff**, hydra.3 against the hydra.4 candidate | `tools/golden.py capture` then `diff` on fresh **copies** of KotOR (program pinned by SHA-256, function count read from the engine, not hard-coded: the 8616 seen on 2026-10-27 is an observation) on **both** paths, `production` (RusticQuery, the path agents use) and `explicit`; plus the **8 public MSVC fixture programs, 4 x86 and 4 x64** (`flow`, `vcall`, `diff1` and `diff2` for each architecture; `D:/Projects/Hydra/_golden/sets/fixtures.json` lists exactly these eight, and an earlier report of "6 x86 and 4 x64" is wrong), profile `fixtures`. Their function counts are read from the engine like KotOR's: the set file totals 4,497 functions while `docs/golden-harness.md:143` says 3,959, a difference this gate does not depend on and does not resolve. Identical on all (hydra.3 against itself is deterministic: 8616 identical). Source tree hash before and after each capture equal. Run after E1 (the seams must change nothing), after E3a, after E4, and at release. Any difference blocks. The hydra.2-to-hydra.3 difference (one x64 `strncmp` function per fixture, GP-7212) is **not** in this comparison. |
 | 9.2 | **Commit round trip** (separate comparison, never mixed with 9.1) | After a commit on the KotOR copy, the touched functions of the new generation decompile identically to the working copy; 25 untouched functions identical to the previous generation. |
-| 9.3 | **Characterization** | the seven scenarios `identical` at `--protocol 2`; every v3 scenario golden recorded, reviewed as a diff of additions, committed; the full v3 hello golden recorded by R1 (3.1) |
+| 9.3 | **Characterization** | the seven scenarios `identical` at `--protocol 2`; the v3 run is always made with `--require-v3` (without it an engine that serves no v3 is a SKIP with exit 0, which E0's review found and which a gate must not accept); every v3 scenario golden recorded, reviewed as a diff of additions, committed; the full v3 hello golden recorded by R1 (3.1) |
 | 9.4 | **Engine suites** | `session_smoke.py`, `contract_tests.py`, `daemon_tests.py` (all, with `--legacy-project`, so `legacy_overlay` and the older-format half of `upgrade_cache` run: the sync stream skipped them), `client_compat_tests.py` (with every `cc_*.py`: the protocol-2 behaviour tests of 5.1, run by the stock 1.0.0 client), `format_gate.py`; plus the fork tests on a ReFS volume |
 | 9.5 | **Soak, 12 clients** | `soak_tests.py` PR lane green; one nightly-length run recorded (E6 criteria) |
 | 9.6 | **Upgrade and backup round trip** on the legacy fixture | backup (engine) then gate refusal without it, success with it, on a fork; commit to a new generation; restore the backup alongside; the restored tree hash equals the original; stock Ghidra 12.1.4 opens the restored backup read-only and does **not** open the committed generation (the documented one-way step, shown rather than asserted); source tree hash unchanged throughout |
 | 9.7 | **DB-version check** | `format_gate.py` exit 0: the constants (`ProgramDB` 33, `DataTypeManagerDB` 3, `DataTypeArchiveDB` 5, `ProgramUserDataDB` 1, `SlaFormat` 4 on the sync branch) equal `format-matrix.json`; `hello.analysisIdentity.dbVersions` equal them at runtime and are not `-1`. A changed constant without a matrix entry and release note fails the merge, and also fails any future upstream sync |
 | 9.8 | **Compatibility** | a raw protocol-2 transcript against hydra.4; the 1.1.0 client against hydra.3 (real install) and a fake protocol-2 server; Hydralysis 0.5.x test suite against hydra.3 (degraded set) and hydra.4; `bump_hydra.py` output verified against the zip SHA-256; the two copies of `canonical-manifest.json` (engine and Hydralysis) are byte-identical and both languages verify the other's manifest (3.4) |
 | 9.9 | **Fault matrices** | Hydralysis commit points (4.6) with oracle O1-O6; engine `backup_fault`; Y0a torn and zero-length files; all green |
-| 9.10 | **Measurements recorded before any constant is fixed** | fsync latency per volume (F: Dev Drive on USB NVMe, C:, D:, E: HDD); store write cost at 1, 4, 16 writers; backup hash throughput; clone against copy on KotOR (122 MB) with the 1.5 GB program as a stress case only; private-instance open cost on KotOR; quick-lane p99 with the long lane saturated, before and after; the per-phase named-view cost. `quickScriptMaxS`, grace times, ETA budgets, `SYNC_LOCK_S`, copy limits and the private default derive from these |
+| 9.10 | **Measurements recorded before any constant is fixed** | fsync latency per volume (F: Dev Drive on USB NVMe, C:, D:, E: HDD); store write cost at 1, 4, 16 writers, **including `write_json` of job and progress records, which now does a read, a `.bak` write and a main write (two fsyncs, two replaces: about 16 ms per 600-byte record on D: in Y0a's review, unmeasured on F:, C: and E:) and is rewritten often by export workers**; backup hash throughput; clone against copy on KotOR (122 MB) with the 1.5 GB program as a stress case only; private-instance open cost on KotOR; quick-lane p99 with the long lane saturated, before and after; the per-phase named-view cost. `quickScriptMaxS`, grace times, ETA budgets, `SYNC_LOCK_S`, copy limits and the private default derive from these |
 | 9.11 | **Hygiene** | every commit authored and committed as `KelpHect <kellhect@gmail.com>` (checked with `git log --format='%an <%ae> | %cn <%ce>'`); `certification.manifest` lists every new file and `buildHeadless` passes the IP check; docs state every limit of section 6; `examples/check_ownership.py` passes for every package branch (8.1) |
 
 ## 10. Open owner decisions
@@ -1992,13 +2421,13 @@ comes, and what it blocks.
 
 | # | Decision | Default | Blocks |
 |---|---|---|---|
-| O1 | **Backup policy.** Add a second, independent copy by default (for example `E:\dev-cold\...`, a full copy), `backup_min_independent` 1 instead of 0, and who authorises the 50 GB threshold behaviour? A same-volume clone does not survive loss of the volume. | One primary clone, `min_independent` 0, second root opt-in, ask before any copy over 50 GB | Y2 config defaults, Y4d |
-| O2 | **Generation mode against the Ghidra GUI.** The GUI opening the original `.gpr` sees none of the committed annotations. Provide a "materialise current generation" action (a COW clone to a path you choose) in Hydralysis, and keep in-place replace permanently out? | Add materialise later (not in this plan); in-place never | the 0.5.0 documentation wording |
-| O3 | **Daemon singleton and the two live daemons** (18220 `default` at `F:\dev-cache\hydra-state`, 17936 `rusticre` at `F:\dev-cache\rusticre-latest`): consolidate into one root and enforce `singleton:"per-install"`? Changing the instance id or state dir starts a second daemon, so a Hydralysis rename of `INSTANCE` must wait. | Warn only; no consolidation by this stream | P1b default policy |
-| O4 | **Supervisor default.** Auto-restart on dead or wedged daemons within the 3-per-10-minutes budget, refusing while non-recoverable unsaved edits exist? | On, as 7.2 | Y4a default |
-| O5 | **Tag and publish hydra.4 and pin Hydralysis to it** (and the visibility of the private Hydralysis repo). This stream creates no tag, release, push or PR. | Not done | R1 follow-up, Y4a |
-| O6 | **Legacy window.** hydra.4 and hydra.5 serve protocol 2; refuse it from hydra.6? | Review at hydra.5 | none now |
-| O7 | **Per-agent default views and the agent identity** (`options.as`, replacing `rusticre:<pid>`): when, and who may commit when ten agents run (any holder of the confirmation, one integrator identity, or a human-approved flow)? | Not before Y5's preconditions; any caller may commit with the confirmation | Y5 |
+| OD1 | **Backup policy.** Add a second, independent copy by default (for example `E:\dev-cold\...`, a full copy), `backup_min_independent` 1 instead of 0, and who authorises the 50 GB threshold behaviour? A same-volume clone does not survive loss of the volume. | One primary clone, `min_independent` 0, second root opt-in, ask before any copy over 50 GB | Y2 config defaults, Y4d |
+| OD2 | **Generation mode against the Ghidra GUI.** The GUI opening the original `.gpr` sees none of the committed annotations. Provide a "materialise current generation" action (a COW clone to a path you choose) in Hydralysis, and keep in-place replace permanently out? | Add materialise later (not in this plan); in-place never | the 0.5.0 documentation wording |
+| OD3 | **Daemon singleton and the two live daemons** (18220 `default` at `F:\dev-cache\hydra-state`, 17936 `rusticre` at `F:\dev-cache\rusticre-latest`): consolidate into one root and enforce `singleton:"per-install"`? Changing the instance id or state dir starts a second daemon, so a Hydralysis rename of `INSTANCE` must wait. | Warn only; no consolidation by this stream | P1b default policy |
+| OD4 | **Supervisor default.** Auto-restart on dead or wedged daemons within the 3-per-10-minutes budget, refusing while non-recoverable unsaved edits exist? | On, as 7.2 | Y4a default |
+| OD5 | **Tag and publish hydra.4 and pin Hydralysis to it** (and the visibility of the private Hydralysis repo). This stream creates no tag, release, push or PR. | Not done | R1 follow-up, Y4a |
+| OD6 | **Legacy window.** hydra.4 and hydra.5 serve protocol 2; refuse it from hydra.6? | Review at hydra.5 | none now |
+| OD7 | **Per-agent default views and the agent identity** (`options.as`, replacing `rusticre:<pid>`): when, and who may commit when ten agents run (any holder of the confirmation, one integrator identity, or a human-approved flow)? | Not before Y5's preconditions; any caller may commit with the confirmation | Y5 |
 
 Decided here rather than asked (veto by saying so): `minClient` stays 1.0.0 (D4; it is also a required
 line of the release notes, 5.2); `save` is in the maint lane for v3 connections (D16, 5.1); no inference of the quick lane (D16); commit and publish ride `type_edit` kinds (D25); no
@@ -2012,12 +2441,12 @@ Branch `feat/session-extract` @ `b6df709e1e` (Hydra) and `feat/hydralysis-0.5` @
 
 | Fact | Where |
 |---|---|
-| Inline commands are `ping`, `cancel`, `status`; `hello` is not inline; admit happens before the command runs | `Session.java:219-221`, `:223-250` |
+| Inline commands are `ping`, `cancel`, `status`; a **repeat** `hello` is not inline (the first `hello` of a connection is answered synchronously by `Connection.authenticate`, `Connection.java:187-205`); admit happens before the command runs | `Session.java:219-221`, `:223-250` |
 | `Session.info()` builds both hello and the status header; `PROTOCOL_VERSION = 2`; `CLEANUP_WAIT_MS = 600_000` | `Session.java:319-337`, `:51-52` |
 | `disconnect` cancels, then `leaveProject(c, p, true, CLEANUP_WAIT_MS)` | `Session.java:109-129` |
 | `reap` uses non-blocking `tryLock` on the project and program | `Session.java:167-214` |
 | `laneOf(String cmd)`: `script`, `save`, `fork_project`, `refresh`, `reopen`, `promote_overlay` are LONG; the queue is keyed by `c.id`; `m.waiting(lane + " slot")` has no queue info; `describe()` takes `lock.lock()`; release is round-robin by client; the slot wait polls its own condition in 100 ms steps and checks cancel | `Scheduler.java:59-69`, `:84`, `:152`, `:155`, `:285-290`, `:266-277`, `:157-183` |
-| `Scheduler.admit(c, cmd, m, waitMs)` has two callers: `Session.execute` (not for `import`) and `ImportCommands` | `Scheduler.java:138`, `Session.java:248`, `ImportCommands.java:112` |
+| `Scheduler.admit(c, cmd, m, waitMs)` has two callers: `Session.execute` (not for `import`) and `ImportCommands`; `ImportGate.enter(kind, who, clientId, project, what, bytes, m, waitMs)` receives only `c.id` (`ImportGate.java:165`, called at `ImportCommands.java:100`); the import wait already puts `queue` in progress events (`ImportGate.java:188-194`) and `status.requests[].queue` (`RequestMonitor.java:111`) in protocol 2; `Scheduler.describe()` takes no argument (`Scheduler.java:285`) | `Scheduler.java:138`, `Session.java:248`, `ImportCommands.java:100`, `:112`, `ImportGate.java:165`, `:188-194`, `RequestMonitor.java:111`, `Scheduler.java:285` |
 | `Connection.run`: cancel, `awaitTermination(1, HOURS)` twice, then `session.disconnect`; `Caller.enter` in `respond`; `annotate` adds `stale`/`refreshed` | `Connection.java:93-108`, `:211-250` |
 | Lock waits are one timed `tryLock(wait)` and ignore cancel; the three locks are **fair** `ReentrantReadWriteLock`s | `Access.java:105-109`, `ProgramEntry.java:191-196`, `OverlayCommands.java:142`; `ProgramEntry.java:115`, `ProjectEntry.java:43`, `Overlay.java:54` |
 | `RequestMonitor.cancel()` is `TaskMonitorAdapter.cancel()` (public, overridable); the deadline timer calls it; `Session.cancel` and `Connection.run` call it | `TaskMonitorAdapter.java:123`, `RequestMonitor.java:118-121`, `Session.java:393,409`, `Connection.java:95-97` |
@@ -2050,6 +2479,10 @@ Branch `feat/session-extract` @ `b6df709e1e` (Hydra) and `feat/hydralysis-0.5` @
 | Gson 2.13.2 with `disableHtmlEscaping()` still writes U+2028/U+2029 as `\u2028`/`\u2029`, control characters as lower-case `\u00xx`, and keeps insertion order (run against the jar in the hydra-3 candidate install) | `Ghidra/Framework/Generic/lib/gson-2.13.2.jar` |
 | Hydralysis depends on `pefile` and `capstone` only; the 8 fixture programs of the golden set | `pyproject.toml:9-12`; `D:/Projects/Hydra/_golden/sets/fixtures.json` |
 | `Engine.module()` loads the session library from the engine install; connections are keyed by role; the 1.0.0 `send`/`wait` are thread-safe and `SocketSession` waits with `settimeout(None)` | `hydra.py:229-233`, `:227`; `ghidra_session.py:681-682`, `:732-738`, `:845` |
+| `SocketSession.close()` closes `_w` and `_r` before `sock.shutdown`; `wait()` holds `_read_lock` (`:748`) inside `_r.readline()` (`:753`): `close()` from a second thread hangs and sends nothing (experiment, 7.6); the hydra.2 library and the one in the hydra-3 candidate differ only in `HYDRA_RELEASE` | `ghidra_session.py:740-776`, `:866-874`; `D:/Projects/Hydra/_logs/spec-rev3/exp1_client_matrix.py` |
+| `Connection.run` on EOF or reset: `leaving`, cancel every running monitor (observed: `cancelled` false to true), `awaitTermination(1, HOURS)`, no socket close and no unregister until the request threads end (observed on a real hydra.3 daemon) | `Connection.java:93-108`; `D:/Projects/Hydra/_logs/spec-rev3/exp2_engine.py`, `exp2_summary.txt` |
+| Overlays have no journal; the overlay lifecycle takes untimed `lock()` calls | `OverlayCommands.java:228, 238, 251, 319, 352, 404`; no `journal` in `OverlayCommands.java` or `Overlay.java` |
+| `AppendLog` at Hydralysis `589432e` reads whole logs through `localio.read_bytes` (32 MiB budget); the write gate freezes 8 record-bearing and 22 artifact write sites outside `durable.py` | `durable.py` (`AppendLog`), `localio.py:18`, `tests/test_durable.py` (`FOLLOW_UP`, `NOT_A_RECORD`) |
 | hydra.3 candidate: `decompile.exe` sha256 starts `4f4680aa1c22`; gate PASS, KotOR 8616/8616 identical to hydra-2 | `t2_impl_gate.json` (stream report) |
 
 ## Appendix B: what the source designs got wrong or left out
@@ -2074,6 +2507,59 @@ Found by reading the code; each is handled in the section named.
 15. **Test files would collide**: every package wanted `daemon_tests.py` (D30).
 
 ## Revision history
+
+**Revision 3 (answers the second independent review of revision 2 and the reviews of the W0 packages).**
+Docs only; no code; one commit on `design/protocol-3`. B1, B2 and B3 below are the three blocking items of
+the second review, N1 to N17 its seventeen nits (numbered in the order the review listed them), W the
+findings of the W0 package reviews (Y0a to Y0d, E0) that belong to the design. Every change was checked
+against the code or by experiment before the text was written. Experiments (new in this revision):
+`D:/Projects/Hydra/_logs/spec-rev3/exp1_client_matrix.py`, `exp2_engine.py`, `exp3_lifecycle.py` with their
+recorded output (7.6); the disjointness proof was re-run with `prove_disjoint_rev3.py` (output
+`prove_disjoint_rev3_out.txt`). **Rejected: none.** Two items are fixed in part and have an owner for the
+rest, both marked below (N9, N17).
+
+| Item | Disposition | Where | Note |
+|---|---|---|---|
+| B1 deadline fallback on hydra.2/3 | fixed, **by experiment** | 7.6 (new sub-section), 3.8, 7.2, 7.5, D33, 3.5, 6, Appendix A, Y4a | `session.close()` hangs on the real 1.0.0 `SocketSession` (Python 3.14.7 and 3.15.0): it closes the makefiles before `shutdown`; the reviewer was right. `shutdown(SHUT_WR)` returns at once and delivers the FIN (the reviewer's `close_test2` is right that it does not wake the reader, but the FIN does reach the server). Chosen: half-close and abandon (worker thread owns `wait`, `cancel`, `SHUT_WR`, never `close()`, cap 8). On a real hydra.3 daemon the request goes on until it ends by itself (cooperative: released in 0.1 s; lock wait and non-cooperative script: until the holder or script ends); an abandoned-without-FIN connection leaks the engine-side client for good. The client never relies on an EOF coming back. P1b/E3b change this on hydra.4. N8 of revision 2 is superseded by this row |
+| B2 `ImportGate.java` ownership and premise | fixed | 3.1 (C4, C5), 3.5, 5.1 G5, 8.1, W2 plan, E3a, Appendix A | `ImportGate.java` added to E3a's files and to the 8.1 matrix (W2, E3a); `ImportGate.enter` receives only `c.id` (`ImportGate.java:165`), so E3a gives it the `Client`; premise corrected: an import wait already carries `queue` in v2 progress events and `status.requests[].queue` (`ImportGate.java:188-194`, `RequestMonitor.java:111`); only the slot-wait `queue` key and `estimateScope` are new; `v2_progress_keys` kept and extended. Disjointness re-proved with `prove_disjoint_rev3.py`: 50 matrix rows, 123 (repo, wave, file) cells, no cell with two packages, no file with two owners in one wave, no dependency cycle |
+| B3 torn-tail repair trigger | fixed | 4.1 item 3, 4.4, D10, recovery table of 4.6, Y0e, Y2 | the trigger is every acquisition of the writer lock, with the cheap check (ends in LF and size equals the last valid end); the two-process test (A appends and stays alive, B killed mid-line, A appends again: a repair record, no `lineage_corrupt`) is in 4.1, Y0e and the Y2 fault matrix |
+| N1 untimed overlay locks | fixed | 3.5, 6 | listed as out of scope (`OverlayCommands.java:228, 238, 251, 319, 352, 404`); the claim now says the three request-bound timed waits are what E3b converts |
+| N2 V2 "can only gain" | fixed | 3.5, 5.1 V2, E3a | both directions declared (no `wait`: success where it failed; explicit numeric `wait` spent in the gate: failure where it could succeed); tests `import_wait`, `import_wait_explicit` |
+| N3 G6 cites | fixed | 5.1 G6 | cites 3.4; `describe(boolean)` is added by E1, it does not exist today (`Scheduler.java:285`) |
+| N4 `O` label collision | fixed | 10, 4.7, 5 | owner decisions renamed **OD1 to OD7**; the commit-fault oracles keep **O1 to O6** (so "O2/O5" in the Revision 2 rows means the oracles) |
+| N5 3.1 list incomplete; "fourteen" | fixed | 3.1, 3.3, 5.1, D2 | the table is one row per conditional, **C1 to C13: the count is thirteen** (the reviewer's 13 reproduced; "fourteen" was wrong), now including `bad_request` `details.field`/`allowed[]`, `cancelled` `details.phase`, `lock_queue_full`, `rk_expired`; keys with no conditional of their own are named; D2's threshold (twenty) is checked against 13 |
+| N6 hello golden per wave; `DbVersions` | fixed | 3.1, 3.2, 8.1, E1, E2 | `capabilities`, `limits`, `policy` compared as required subsets, `paths`/`platform`/`analysisIdentity` masked, `platform.testHooks` asserted only by E5's tests; `Advertised` declares limit and policy names too; `DbVersions.java` has an E1 (W1) and an E2 (W2) cell |
+| N7 revert leaves a stale `before` | fixed | 4.2, Y1 | `revert` refused with `has_dependents`; `cascade:true` reverts the chain; a batch always goes whole; recomputing the chain rejected |
+| N8 `commit_revert` after archival | fixed | 4.2, 4.6, Y2 | rehydrated from the sealed archive in the same atomic store write, or `store_full` / `archive_unreadable`; test `revert_chain` |
+| N9 subset commit and semantic dependencies | **fixed in part** | 4.2, 6, Y2 | the invariant is stated as per coarse subject, a `batch` is selected whole, and `subset_missing_type` must show fail-closed (ABORTED); whether closure needs type references is **decided by that test's result, owner Y2**, not guessed here |
+| N10 undeclared dependencies | fixed | 8, every package's "Depends on", wave plan | Y2 (Y0b, Y0d, Y0e), E3b (E2), Y4a (Y2, Y1, Y3), Y4b (Y2), Y4e (Y2), E4 (E2) and P1a before E1 and every later `cc_*` file; the V6 test moved to `cc_e1`; R1 after E6 and E1 after P1a are declared in-wave sequences ("then" in the wave plan; the proof prints them) |
+| N11 `rk` on `apply_overlay` | fixed | D15, 3.4 | dropped: overlays have no journal; `rk` is on `edit`, `rename`, `comment` |
+| N12 26 ms figure | fixed | 3.6 | two README rows: 26 ms / +3 MB on 174 functions (`README.md:410`), 116 ms / +54 MB on 243,855 (`README.md:409`) |
+| N13 work-conserving cap | fixed | 3.5, E3a | the cap holds a key back only while another key waits that is itself under its cap; test `per_key_cap_conserving` |
+| N14 "This file is the design" | fixed | 8, R1 | it names `PROTOCOL-3.md`; R1's text has a `Files:` label and says every package appends to `certification.manifest` |
+| N15 `Client.protocol` | fixed | 3.1, Appendix A, E1 | the first `hello` fixes the protocol (it is handled synchronously in `Connection.authenticate`); a repeat `hello` is answered with the connection's own protocol; a non-integer `protocol` is treated as absent |
+| N16 `Y4c`; E0 "six tests" | fixed | wave plan, E0 | no Y4c exists, said; E0's wording follows the E0 convention (a premise that does not hold is dropped); on hydra.3 all six were CONFIRMED (`_logs/E0/baseline1.log`, `baseline2.log`) |
+| N17 citation hygiene | **accepted, no renumbering** | header | README citations stay at the design-branch tip (the header already says so); revision 3 adds that the cited phrase is quoted where it helps and that the other evidence is cited by path |
+| W `cli.py` unowned | fixed | 7.1, 8.1, 8.2, Y0e | Y0e, W1 |
+| W `api.py` stubs need owners | fixed | 8, 8.1, 8.2, D34, Y2, Y4b, Y4e | one handler registry built by Y2 (W2); no other package edits `api.py` |
+| W `has_overlays`/`expected_state` bypass the `.bak` | fixed | 8.2, 8.1, Y1 | Y1 (W1), `durable.exists`; test |
+| W record-bearing writers outside `durable`; "~52 sites" | fixed | D14, 8.2, 4.1 item 4 | counted from the AST gate at `589432e`: 41 sites outside `durable.py` (11 non-record, 8 record-bearing in 4 writers, 22 artifacts); owner table in 8.2 (Y1, Y0e) |
+| W Y0a edited unowned test files | fixed | 8, 8.1 | `tests/test_address_maps.py` and `tests/test_query.py` are Y0a's explicitly, with the rule that a format change owns the tests that hand-write it |
+| W `MAX_OUTSTANDING` | decided | 7.6, Y0c, 8.2 | per lane (8 and 8, total up to 16) |
+| W where `catalog` is reported | decided | 7.7, Y0d, 8.2 | `backend action=status` and `backend help` only; the hash covers the tool table only |
+| W `AppendLog` 32 MiB budget | fixed | 4.1 item 3, 6, 8.2, Y0e | streamed reads and a tail window; owner Y0e (W1); the interim limit is recorded in section 6 |
+| W v3 store read with `require_seal=True` | fixed | 8.2, Y1 | Y1 (W1) |
+| W lone surrogate in a seal | decided | 3.4 | tolerated in seals and bundles (Python-only), refused in manifests |
+| W `EngineError` cap on `next`; `unittest.main()` guard; `write_daemon_config`, `runtime` writers | fixed | 7.6, 8.1, 8.2, Y0e | Y0e (W1); `config.json` goes through `atomic_write` without a seal (the engine's launcher reads it) |
+| W Y0b retry decisions (`close_project` and others, lost-reply behaviour) | recorded | 4.3 | recorded as decided; no behaviour change |
+| W E0 review (`import_wait` signature, `--require-v3`, 8.1 rows) | fixed | E0, 9.3, 8.1 | `max(importsMs) >= 19000`; gate 9.3 always passes `--require-v3`; `dt_baseline.py` and `characterization/v3/` are in the matrix |
+| W Y0a write cost | recorded | 9.10 | about 16 ms per record on D:, added to the gate-9.10 measurements |
+
+Also while re-reading the whole file: the Contents, D1 to D34, G1 to G8, V1 to V7, C1 to C13, the packages (now
+including Y0e), the waves and 8.1 were cross-checked (counts: 34 decisions, 13 reply-shape conditionals, 6
+behaviour gates, 8 G rows, 7 V rows); the `OD` labels and the oracles no longer collide; the 8.1 matrix, the
+wave plan and the packages' `Files` lists agree (the proof script's remaining differences are test files, which
+are owned by name).
 
 **Revision 2 (answers the independent review).** Docs only; no code. Every claim changed here was checked
 against the code named in the text before the text was changed. Nothing in the review was rejected; where
