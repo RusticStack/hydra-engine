@@ -217,8 +217,7 @@ if (headlessRequested) {
 	// Ship Ghidra's NOTICE and our modification notice (Apache-2.0 section 4) next to LICENSE,
 	// which assembleDistribution already copies to the install root.
 	assembleDistribution {
-		// Exactly these two files, not a filtered from(rootProject.projectDir), which scans the
-		// whole checkout for them.
+		// Exactly these two files, named, rather than a filtered from(rootProject.projectDir).
 		from(rootProject.files('NOTICE', 'NOTICE-HYDRA'))
 	}
 	// The software bill of materials (bom.json) opens every jar of the install, one after another,

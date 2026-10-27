@@ -134,9 +134,17 @@ cd D:/Projects/Hydra/hydra-engine
 git switch main
 git merge --no-ff release/hydra-3-rc
 git push origin main
-git tag v12.3-hydra.3
+git tag -a v12.3-hydra.3 -m "12.3-hydra.3"
 git push origin v12.3-hydra.3
 ```
+
+The earlier tags (`v12.3-hydra.1`, `v12.3-hydra.2`) are annotated, hence `-a`. The dry run uses
+`--ref release/hydra-3-rc` on purpose: `release.yml` already exists on `main`, and the dry run tests
+this branch's content before anything is merged. The merge into `main` adds one `--no-ff` merge
+commit on top of the existing upstream merge; that is intended (merge, never rebase).
+
+The Gradle comment in `headless.gradle` was reworded after the tested build (comment only; the code
+line that was built and tested is unchanged).
 
 After the release, check that it has the engine zip, the client zip and `SHA256SUMS`, and that
 the release body names upstream commit `1b9e58a915cf867e106495eaa2a4b18eb4971c9d`. Do not merge
