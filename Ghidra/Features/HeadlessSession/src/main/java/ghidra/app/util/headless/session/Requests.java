@@ -61,8 +61,9 @@ final class Requests {
 	/**
 	 * Registers the generic checks of {@link Preflight} under {@link Preflight#ALL} (once), each
 	 * a call of the helper the command itself uses, so that the preflight and the command cannot
-	 * drift: {@code timeout} (script, analyze, import), the required {@code address} and
-	 * {@code name} of {@code decompile}, {@code rename} and {@code comment}, and the type of
+	 * drift: {@code timeout} (script, analyze, import), the required fields of
+	 * {@code decompile} ({@code address}, or else {@code name}), {@code rename} ({@code address}
+	 * and {@code name}) and {@code comment} ({@code address}), and the type of
 	 * {@code rk} and {@code expect}. The checks of one command's own fields ({@code lane},
 	 * {@code isolation}, {@code purpose}, {@code verify}) are registered by the package that
 	 * owns the command. They run for a protocol 3 request that would have to queue, before it
@@ -76,7 +77,12 @@ final class Requests {
 		Preflight.register(Preflight.ALL, (cmd, req) -> {
 			switch (cmd) {
 				case "script", "analyze", "import" -> Json.num(req, "timeout", 0, 0, 7 * 86_400);
-				case "decompile" -> Json.str(req, "address");
+				case "decompile" -> {
+					// QueryCommands.function(): an address, or else a name (one of the two)
+					if (!Json.has(req, "address")) {
+						Json.str(req, "name");
+					}
+				}
 				case "rename" -> {
 					Json.str(req, "address");
 					Json.str(req, "name");

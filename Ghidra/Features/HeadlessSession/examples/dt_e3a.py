@@ -32,7 +32,9 @@ protocol 3 (``c.connect(..., 3)``); the protocol 2 behaviour is ``cc_e3a.py``'s.
   number afterwards, ``estimate`` true; a ``busy`` carries ``reason:"slot_wait"``, the ``queue`` object
   and ``error.retryAfterMs``; a request that waited says so in ``queue`` and ``waited``.
 * ``preflight_wait``: a bad request fails at once when the lane is full, and keeps its old error when
-  it is not.
+  it is not. On a full quick lane, the generic checks (``address``/``name`` of ``decompile``,
+  ``rename`` and ``comment``, ``rk``, ``expect``) refuse a bad request at once and let every valid
+  form queue, among them a ``decompile`` by ``name`` (``Requests.registerPreflight``).
 * ``per_key_cap_conserving``: four slots, cap 1, two keys that each run one request and queue another:
   when the other two finish, both queued requests run and no slot idles.
 """
@@ -301,8 +303,85 @@ def t_preflight_wait(c):
             except Exception:  # noqa: BLE001
                 pass
     d.stop(force=True)
+    fields = preflight_fields(c)
     return (f"lane free: {free['code']} after {free['ms']} ms; lane full: {full['code']} after "
-            f"{full['ms']} ms (wait 20000)")
+            f"{full['ms']} ms (wait 20000); quick lane full: {fields}")
+
+
+def preflight_fields(c):
+    """The generic checks of ``Requests.registerPreflight`` on a full quick lane: a request with a
+    bad field is refused at once and does not queue; every valid form of the same command queues
+    (is not refused), in particular ``decompile`` by ``name`` (the command takes an address or a
+    name) and ``rename``/``comment`` with ``rk`` and ``expect``."""
+    exe = bl.prepare(c)
+    gpr = c.copy_fixture("e3aPreflight")
+    d = c.daemon("e3a-prefq", maxQuick=1)
+    refused, queued = [], []
+    with c.connect(d, "occupier", "e3a", 3) as S, c.connect(d, "asker", "e3a", 3) as B:
+        B.call("open_project", path=str(gpr))
+        B.call("open_program", path=exe)
+        fn = B.call("functions", limit=1)["functions"][0]
+        addr, name = fn["address"], fn["name"]
+        warm(c, S)
+        ids = [start_sleep(c, S, 40000)]
+        dt.wait_for(lambda: lane_status(S, "quick")["inUse"] >= 1, "the quick slot taken", 30)
+        try:
+            bad = {
+                "decompile with neither address nor name": ("decompile", {}),
+                "rename without address": ("rename", {"name": "e3a_x"}),
+                "rename without name": ("rename", {"address": addr}),
+                "comment without address": ("comment", {"text": "t"}),
+                "rename with a numeric rk": ("rename", {"address": addr, "name": "e3a_x", "rk": 5}),
+                "comment with an empty rk": ("comment", {"address": addr, "text": "t", "rk": ""}),
+                "rename with an object expect": ("rename", {"address": addr, "name": "e3a_x",
+                                                            "expect": {"a": 1}}),
+                "comment with a list expect": ("comment", {"address": addr, "text": "t",
+                                                           "expect": ["a"]}),
+            }
+            for what, (cmd, f) in bad.items():
+                r = bl.timed(c, B, cmd, wait=3000, **f)
+                dt.check(not r["ok"] and r["code"] == "bad_request" and r["ms"] < 1500,
+                         f"{what}: expected bad_request at once with the lane full: {r}")
+                dt.check(lane_status(S, "quick")["queued"] == 0, f"{what}: it was queued")
+                refused.append(what)
+            good = {
+                "decompile by address": ("decompile", {"address": addr}),
+                "decompile by name": ("decompile", {"name": name}),
+                "decompile with a null address and a name": ("decompile",
+                                                             {"address": None, "name": name}),
+                "rename with rk and expect": ("rename", {"address": addr, "name": "e3a_y",
+                                                         "rk": "e3a-pre-1", "expect": name}),
+                "rename with a null expect": ("rename", {"address": addr, "name": "e3a_y",
+                                                         "expect": None}),
+                "comment with rk and a null expect": ("comment", {"address": addr, "text": "t",
+                                                                   "rk": "e3a-pre-2",
+                                                                   "expect": None}),
+            }
+            for what, (cmd, f) in good.items():
+                rid = B.send(cmd, wait=30000, **f)
+                try:
+                    dt.wait_for(lambda: lane_status(S, "quick")["queued"] >= 1,
+                                f"{what}: queued behind the full lane (not refused)", 10)
+                finally:
+                    try:
+                        B.call("cancel", target=rid)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    try:
+                        B.wait(rid)
+                    except Exception:  # noqa: BLE001
+                        pass
+                dt.wait_for(lambda: lane_status(S, "quick")["queued"] == 0,
+                            f"{what}: the queue emptied after the cancel", 10)
+                queued.append(what)
+        finally:
+            finish(c, S, ids)
+            try:
+                B.call("close_program", discard=True)
+            except Exception:  # noqa: BLE001
+                pass
+    d.stop(force=True)
+    return f"{len(refused)} bad forms refused at once, {len(queued)} valid forms queued"
 
 
 # ---- per_key_cap_conserving -----------------------------------------------------------------
