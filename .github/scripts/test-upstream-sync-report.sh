@@ -37,6 +37,13 @@ git checkout -q ours1
 set +e; bash "$script" base up3 list.txt >/dev/null; rc=$?; set -e
 check "patched file deleted: exit 1" 1 "$rc"
 
+# upstream renames a patched file: the old path must still be caught
+git checkout -q -b up4 base; git mv core/Patched.java core/Renamed.java; git commit -qm up4
+git checkout -q ours1
+set +e; out=$(bash "$script" base up4 list.txt); rc=$?; set -e
+check "patched file renamed: exit 1" 1 "$rc"
+check "guard names the old path" 1 "$(printf '%s' "$out" | grep -c 'core/Patched.java')"
+
 # bad use
 set +e; bash "$script" base nosuchref list.txt >/dev/null 2>&1; rc=$?; set -e
 check "unknown ref: exit 2" 2 "$rc"

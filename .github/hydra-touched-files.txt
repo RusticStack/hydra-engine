@@ -1,6 +1,6 @@
 # Upstream Ghidra files that Hydra Engine patches (the "patched core files").
-# One repository path per line; '#' starts a comment. Read by scripts/upstream-sync-report.sh and
-# by workflows/upstream-sync.yml: if upstream changed any of these since the last sync, the sync
+# One repository path per line; '#' starts a comment. Read by .github/scripts/upstream-sync-report.sh and
+# by .github/workflows/upstream-sync.yml: if upstream changed any of these since the last sync, the sync
 # job fails and the merge has to be done by hand (CONTRIBUTING.md, "Upstream sync").
 # Keep this list equal to the Java files under "Files of upstream Ghidra that Hydra Engine
 # modified" in NOTICE-HYDRA; a new patch to an upstream file is added here in the same commit.

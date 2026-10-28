@@ -16,8 +16,8 @@ fi
 git rev-parse --verify -q "$base^{commit}" >/dev/null && git rev-parse --verify -q "$up^{commit}" >/dev/null \
   || { echo "unknown commit: $base or $up" >&2; exit 2; }
 
-changed=$(git diff --name-only "$base" "$up")
-ours=$(git diff --name-only "$base" HEAD)
+changed=$(git diff --no-renames --name-only "$base" "$up")
+ours=$(git diff --no-renames --name-only "$base" HEAD)
 touched=$(sed -e 's/#.*//' -e 's/[[:space:]]*$//' -e '/^$/d' "$list")
 
 hits=$(printf '%s\n' "$changed" | grep -Fxf <(printf '%s\n' "$touched") || true)

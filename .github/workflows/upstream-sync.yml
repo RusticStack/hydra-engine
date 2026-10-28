@@ -53,16 +53,30 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      - name: Guard script test
-        run: bash .github/scripts/test-upstream-sync-report.sh
+      - name: Guard and archive-check script tests
+        run: |
+          bash .github/scripts/test-upstream-sync-report.sh
+          bash .github/scripts/test-check-archive-notices.sh
+
+      - name: Client zip carries LICENSE, NOTICE and NOTICE-HYDRA
+        run: |
+          bash .github/scripts/package-client.sh 0.0.0-sync "$RUNNER_TEMP/client-zip"
+          bash .github/scripts/check-archive-notices.sh "$RUNNER_TEMP"/client-zip/hydra-client-*.zip
 
       - name: Fetch upstream and decide whether there is anything to merge
         id: up
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           git remote add upstream https://github.com/NationalSecurityAgency/ghidra.git
           git fetch --no-tags upstream "$UPSTREAM_REF:refs/remotes/upstream/sync-target"
           n=$(git rev-list --count HEAD..upstream/sync-target)
           echo "new upstream commits: $n"
+          open=$(gh pr list --state open --json headRefName --jq '[.[] | select(.headRefName | startswith("sync/upstream-"))] | length' || echo 0)
+          if [ "$open" != "0" ] && [ "$n" != "0" ]; then
+            echo "::notice::a sync pull request is already open; not opening a second one"
+            n=0
+          fi
           echo "count=$n" >> "$GITHUB_OUTPUT"
           echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
 
@@ -160,7 +174,7 @@ jobs:
         if: steps.up.outputs.count != '0'
         run: >
           python Ghidra/Features/HeadlessSession/examples/characterization_tests.py
-          --ghidra "$GHIDRA_INSTALL" --work "$RUNNER_TEMP/golden3" --protocol 3
+          --ghidra "$GHIDRA_INSTALL" --work "$RUNNER_TEMP/golden3" --protocol 3 --require-v3
 
       # The pull request is opened even when the guard hit, so the report reaches a person; the
       # job then fails below.
@@ -175,6 +189,11 @@ jobs:
             echo "Merge of upstream Ghidra \`$UPSTREAM_REF\` ($(git rev-parse --short upstream/sync-target))."
             echo
             echo "buildHeadless, the three session suites and the golden diff passed on this branch."
+            if [ "${{ steps.merge.outputs.guard }}" = "0" ]; then
+              echo "Guard on the patched core files: passed (upstream changed none of them)."
+            else
+              echo "Guard on the patched core files: **FAILED**. Upstream changed a patched file; merge it by hand (report below)."
+            fi
             echo "Not checked here: the decompile golden set (CONTRIBUTING.md, \"Upstream sync\"). Compare it before merging."
             echo "Merge this pull request with a merge commit, never rebase or squash."
             echo

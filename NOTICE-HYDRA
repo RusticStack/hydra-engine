@@ -67,8 +67,7 @@ What Hydra Engine adds to Ghidra (new files, none of them in upstream Ghidra):
     version file);
   - the repository's own documentation, assets and CI (NOTICE-HYDRA, CHANGELOG.md,
     README-GHIDRA.md, and the files in .github/: CONTRIBUTING.md, SECURITY.md, issue forms, the
-    pull request template, assets, scripts, hydra-touched-files.txt, and the ci.yml, release.yml and
-    upstream-sync.yml workflows).
+    pull request template, assets, scripts, and the ci.yml and release.yml workflows).
 
 
 Status and affiliation
