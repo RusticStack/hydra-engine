@@ -488,5 +488,50 @@ def t_e2a_sweeper(c):
     return "dead owners swept, live owner and foreign folders untouched, publishing sidecar finished"
 
 
+def t_e2a_self_leftover(c):
+    """A staging folder that THIS daemon left behind (its delete failed, e.g. against a handle
+    holder) carries the daemon's own pid and start time in its intent. It is nobody's work in
+    progress: a retry of the name must not be answered ``fork_in_progress`` for as long as the
+    daemon runs, and the sweeper must remove it (review of E2a, blocking defect 1)."""
+    if os.name != "nt":
+        return "skipped: the daemon's start time needs the Windows helper"
+    src = make_source(c, "self")
+    base = c.work / "e2a-self"
+    if base.exists():
+        shutil.rmtree(base)
+    base.mkdir(parents=True)
+    d = c.daemon("e2a-self")
+    with d.connect("e2a-self", "tests") as s:
+        pid = int(d.read_endpoint()["pid"])
+        mine = dict(pid=pid, procStartMs=proc_start_ms(pid))
+        check(mine["procStartMs"] > 0, "cannot read the start time of the daemon")
+        # K: only a staging folder (a fork that failed or finished, its delete failed)
+        _plant_intent(base / ".K.fork-self1.tmp", id="self1", name="K", **mine)
+        # L: the same after the .rep move, with the half fork the intent made
+        (base / "L.rep").mkdir()
+        (base / "L.rep" / "f").write_bytes(b"half fork")
+        born = int(os.stat(base / "L.rep").st_birthtime_ns // 1_000_000)
+        _plant_intent(base / ".L.fork-self2.tmp", id="self2", name="L", phase="moving",
+                      repCreatedMs=born, **mine)
+        # M: planted after the daemon swept this directory (the sweep of the first fork is past):
+        # only the retry's own admission and per-name sweep can see it
+        r = s.call("fork_project", project=str(src), path=str(base), name="First", mode="full",
+                   wait=60000)
+        check(r["name"] == "First", f"first fork: {r}")
+        _plant_intent(base / ".M.fork-self3.tmp", id="self3", name="M", **mine)
+        for n in ("K", "L", "M"):
+            try:
+                r = s.call("fork_project", project=str(src), path=str(base), name=n, mode="full",
+                           wait=60000)
+            except Exception as e:  # noqa: BLE001
+                raise Fail(f"retry of {n} after the daemon's own leftover: {e}") from e
+            check(r["name"] == n, f"fork {n}: {r}")
+            check_fork_matches_source(src, base / f"{n}.gpr")
+        left = [x for x in os.listdir(base) if STAGING.match(x)]
+        check(not left, f"a staging folder of the daemon's own is left: {left}")
+    d.stop()
+    return "a leftover of the daemon's own pid never blocks a retry and is swept"
+
+
 TESTS = {"e2a_kill_fork": t_e2a_kill_fork, "e2a_client_kill": t_e2a_client_kill,
-         "e2a_sweeper": t_e2a_sweeper}
+         "e2a_sweeper": t_e2a_sweeper, "e2a_self_leftover": t_e2a_self_leftover}

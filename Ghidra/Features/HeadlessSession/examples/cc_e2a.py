@@ -227,8 +227,24 @@ def t_fork_sidecar_state(c):
     return "sidecar state complete, v2 reply keys unchanged"
 
 
+def t_fork_capability(c):
+    """E2a enables the ``forkAtomic`` capability, which E1's Advertised declares (section 3.2).
+    That file is not E2a's: until the coordinator adds the name there, this check is enforced only
+    when E2A_REQUIRE_FORKATOMIC=1 is set (the integration gate sets it); without it, it says so."""
+    c.need_engine()
+    d = c.new_daemon("e2a-cap")
+    with d.connect("cc-e2a-cap", "tests") as s:
+        caps = dict(s.hello.get("capabilities", {}))
+    d.stop()
+    if os.environ.get("E2A_REQUIRE_FORKATOMIC") != "1" and "forkAtomic" not in caps:
+        return ("skipped: forkAtomic is not advertised yet (Advertised.java is E1's file, "
+                "the coordinator adds the name); set E2A_REQUIRE_FORKATOMIC=1 to enforce")
+    check(caps.get("forkAtomic") == 1, f"forkAtomic is not advertised at 1: {caps}")
+    return "forkAtomic advertised at 1"
+
+
 TESTS = {"fork_race_conflict": t_fork_race_conflict, "fork_race_rk": t_fork_race_rk,
-         "fork_sidecar_state": t_fork_sidecar_state}
+         "fork_sidecar_state": t_fork_sidecar_state, "fork_capability": t_fork_capability}
 
 if __name__ == "__main__":
     cc.run_file(__file__)

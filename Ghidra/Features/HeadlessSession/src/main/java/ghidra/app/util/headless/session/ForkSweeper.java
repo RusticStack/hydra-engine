@@ -190,8 +190,30 @@ final class ForkSweeper {
 	}
 
 	/**
+	 * True when {@code i} belongs to a publisher that is running now. Another process's intent
+	 * is live while that process runs. An intent of this very process is live only while a
+	 * {@link Claim} of this process holds its id: a staging folder this process left behind (its
+	 * delete failed, for example against a handle holder) is nobody's work in progress, and must
+	 * neither block a retry of the name nor survive the sweeper for as long as the daemon runs.
+	 */
+	static boolean isLive(ForkIntent i) {
+		if (!i.ownerAlive()) {
+			return false;
+		}
+		if (i.pid() != ProcessHandle.current().pid()) {
+			return true;
+		}
+		for (Claim c : CLAIMS.values()) {
+			if (c.id.equals(i.id())) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
 	 * A live intent for {@code name} in {@code destDir}, written by a running process (this one
-	 * included, except the intent {@code exceptId}).
+	 * included, except the intent {@code exceptId}; see {@link #isLive}).
 	 */
 	static Optional<ForkIntent> livePublisher(File destDir, String name, String exceptId) {
 		File[] kids = destDir.listFiles();
@@ -204,7 +226,7 @@ final class ForkSweeper {
 			}
 			Optional<ForkIntent> i = ForkIntent.read(k.toPath());
 			if (i.isPresent() && i.get().name().equals(name) && !i.get().id().equals(exceptId) &&
-				i.get().ownerAlive()) {
+				isLive(i.get())) {
 				return i;
 			}
 		}
@@ -310,8 +332,8 @@ final class ForkSweeper {
 		if (onlyName != null && !i.name().equals(onlyName)) {
 			return;
 		}
-		if (i.ownerAlive()) {
-			return; // a live publisher, this process or another: never touched
+		if (isLive(i)) {
+			return; // a live publisher, this process (a claim holds it) or another: never touched
 		}
 		String name = i.name();
 		Path rep = destDir.toPath().resolve(name + ProjectLocator.getProjectDirExtension());
