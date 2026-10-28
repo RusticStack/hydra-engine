@@ -46,6 +46,14 @@ verification runs on a clone; the boot id and the adoption of orphaned views are
 legacy backups are adopted; the lock order of FINALIZED is stated; and the replay cost of an idle return has a per-call
 threshold. It adds D65 and D66, section 2.3, and a unbackticked-name check to the proof. Nothing is implemented.
 
+**Revision 8.1 (2026-10-28) records seven amendments of the W1 coordinator to revision 8** (section 8.5; docs only, no design
+decision changes). The package-id pattern of `examples/check_ownership.py` now sees every id of the plan (X0, S1, S2 and the
+Z packages were invisible) and reads `then` cells and the site table (A2); E8 also owns `LocalDatabaseItem.java`, the
+private-database open path (A3); E2a may add the capability name `forkAtomic` to `Advertised.java` after E1, a declared
+sequence (A4); S1 owns `src/routes/embed/how-it-works.tsx` (A5); the kept corrupt forks of `crash-C` are nine, not twelve
+(A6); the `--client {stock,install}` option of `characterization_tests.py` is recorded as an E0 amendment (A7); the grep
+gate of R0 is Z13a's and S1's, and X0 needs no `certification.manifest` line for files that carry an IP header (A8).
+
 Evidence conventions. Every `File.java:line` below was read on branch `feat/session-extract`
 (commit `b6df709e1e`, the tree this file is committed on); every `file.py:line` was read on
 Hydralysis branch `feat/hydralysis-0.5` (commit `d0466bc`, package `src/hydralysis`, formerly
@@ -132,6 +140,7 @@ out, as found by reading the code.
     - [8.2 Ownership of what the first reviews found unowned](#82-ownership-of-what-the-first-reviews-found-unowned)
     - [8.3 Revision 6: the Z packages, the eight ownership conflicts and the claims](#83-revision-6-the-z-packages-the-eight-ownership-conflicts-and-the-claims)
     - [8.4 Revision 7: ownership additions and what the proof checks](#84-revision-7-ownership-additions-and-what-the-proof-checks)
+    - [8.5 Revision 8.1: amendments of the W1 coordinator](#85-revision-81-amendments-of-the-w1-coordinator)
 9. [Release gates](#9-release-gates)
 10. [Open owner decisions](#10-open-owner-decisions)
 11. [Appendix A: code facts and where they were read](#appendix-a-code-facts-and-where-they-were-read)
@@ -2981,7 +2990,7 @@ Conventions that make the waves disjoint (the matrix in 8.1 is the authority; th
   loader, `examples/cc_<package>.py` for the protocol-2 behaviour tests of 5.1. The seven existing
   scenarios run at `--protocol 2` and must stay `identical`.
 - **`certification.manifest` is the one deliberate exception** to "one owner per file per wave": every
-  package appends its new files to it (the `buildHeadless` IP check fails otherwise), it is append-only,
+  package appends its new files to it (the `buildHeadless` IP check fails otherwise for a file that carries no `IP:` header of its own: 8.5, A8), it is append-only,
   and a textual merge conflict is resolved by keeping both lines. (R1's own line items are its
   release entries; the append rule holds for every package, R1 included.) **`PROTOCOL-3.md` is the
   design**, a different file: packages do not edit it (a design change is a new revision by the
@@ -3028,7 +3037,9 @@ Conventions that make the waves disjoint (the matrix in 8.1 is the authority; th
   (`examples/check_ownership.py:57`, `:145` on the E0 branch), so **E1's first commit** makes it read the
   package ids from the wave plan table, accept the golden prefix of rule 2, enforce rule 4 and resolve the
   repository-root documents of the Hydralysis table (`README.md`, `THIRD_PARTY.md`, `docs/...`, which it would
-  look for under `src/hydralysis/` today) (a row in 8.1, W1); until E1 merges, Y0e's branch is checked with E1's copy of the script. The proof that these rules hold
+  look for under `src/hydralysis/` today) (a row in 8.1, W1); until E1 merges, Y0e's branch is checked with E1's copy of the script. **Revision 8.1 (A2, 8.5):** the
+  coordinator has already widened the id pattern to all 52 ids, made the script read the docs and site column of the wave
+  plan, `then` cells and the site table; what stays in E1's first commit is the resolution of the Hydralysis root documents. The proof that these rules hold
   for this file is `D:/Projects/Hydra/_logs/spec-rev8/prove_disjoint_rev8.py` (the descendant of the scripts of `spec-rev5/`, `spec-rev6/` and `spec-rev7/`, which stay as history; revisions 7 and 8 add the checks of 8.4): besides the revision 3 and 4
   checks it lists every file that appears in **no** row yet is edited by some package's text, every file that
   two packages of one wave cite, the existing files that are frozen, **and (revision 5) every frozen test that
@@ -3058,13 +3069,14 @@ Conventions that make the waves disjoint (the matrix in 8.1 is the authority; th
 - `examples/check_ownership.py` (E0) reads the matrix in 8.1 and fails when a wave cell names two packages
   or when the files changed on a package branch (`git diff --name-only` against its base) are not
   all in that package's rows for its wave; it runs at every package merge (gate 9.11). Its package-id parser and
-  its handling of frozen files are E1's first commit (the rules above).
+  its handling of frozen files are E1's first commit (the rules above), except that revision 8.1 (A2) fixed the id pattern,
+  the docs and site column, the `then` cells and the site table in the script itself.
 - **In-wave order (revision 7, completed in revision 8).** The proof prints every dependency between two packages of one wave;
-  there are **22**, and this is the whole list: E1 after P1a; E2a after P1a; E6 after E5, E7 and E9; E7 after E5 and E9; E9
+  there are **23** (revision 8.1, A4, adds E2a after E1), and this is the whole list: E1 after P1a; E2a after P1a and E1; E6 after E5, E7 and E9; E7 after E5 and E9; E9
   after E5; R1 after E5, E6, E7 and E9; S2 after R1 and Z13b; X0 after E0; Y1 after Y0e and Z1; Y4b, Y4d and Z14 after Y4a;
-  Z10 after Z9; Z5 after Y2. Each is named in the later package's `Depends on:`. Only two of them are also **file
+  Z10 after Z9; Z5 after Y2. Each is named in the later package's `Depends on:`. Only three of them are also **file
   sequences** and declared in the script's sequence form (a `**then**` cell, or a "second step" row that also requires the
-  dependency and the wave): `S/HeadlessSession.java`, E5 then E9, and `tests/test_durable.py`, Y0e then Y1. The others share no
+  dependency and the wave): `S/HeadlessSession.java`, E5 then E9; `tests/test_durable.py`, Y0e then Y1; and (A4) `S/Advertised.java`, E1 then E2a. The others share no
   file (Y4b, Y4d and Z14 after Y4a: the registry the doctor lists, the fake daemon Y4d's tests run on, the pin Z14 documents;
   E7 after E5 and E9: the `Health` contributor list, the process budgets; E6 and R1 after the packages whose gates they run
   and document), so the sequence form would be a false statement for them.
@@ -3076,7 +3088,7 @@ Conventions that make the waves disjoint (the matrix in 8.1 is the authority; th
 | Wave | Hydra (engine) | Hydralysis | Docs, site, policy | Notes |
 |---|---|---|---|---|
 | W0 verification and wording | E0, X0 | Y0a, Y0b, Y0c, Y0d | R0, S1, Z13a | no engine behaviour change; all parallel; disjoint files (8.1). X0 builds the oracle K1-K17 with its planted-violation self-tests, imports the measurement scripts of A, B and C as regression suites and records the **red table** on hydra-3-candidate (9.12). R0, S1 and Z13a correct the wording of the engine documents, the website and the Hydralysis documents to what is true today (D52, 8.2). |
-| W1 foundation, seams, integrity | P1a, then E1; E8; E2a | Y0e, then Y1; Z1 | | E1 owns every shared-file seam (`Session.java`, `Scheduler`, `ImportCommands`, `UpgradeCache`, `ProjectCommands`, `ProjectEntry` (signature only), `HeadlessSession`, and the new `Advertised`, `Settings`, `Preflight`, `DbVersions`, **`Hooks` and `Guarded`**); P1a owns `ghidra_session.py` and the protocol-2 compatibility harness and lands first; **E8** fixes the version-file ordering in the Ghidra core and **E2a** makes the fork publish atomic and sweepable (E8 is not protocol-visible and E2a only through V11; together they are the integrity packages of 5.3, which ship in hydra.4, OD10); Y0e takes the W0 review follow-ups (8.2); **Z1 merges before Y1** (it pins the concurrency behaviour Y1 and Y2 must keep, and holds the multithread `_sync` test as a known issue); disjoint except one declared sequence, `tests/test_durable.py`: Y0e, then Y1 |
+| W1 foundation, seams, integrity | P1a, then E1; E8; E2a | Y0e, then Y1; Z1 | | E1 owns every shared-file seam (`Session.java`, `Scheduler`, `ImportCommands`, `UpgradeCache`, `ProjectCommands`, `ProjectEntry` (signature only), `HeadlessSession`, and the new `Advertised`, `Settings`, `Preflight`, `DbVersions`, **`Hooks` and `Guarded`**; **E2a** adds the capability name `forkAtomic` to `Advertised` after E1, a declared `then` sequence on that one file, A4); P1a owns `ghidra_session.py` and the protocol-2 compatibility harness and lands first; **E8** fixes the version-file ordering in the Ghidra core and **E2a** makes the fork publish atomic and sweepable (E8 is not protocol-visible and E2a only through V11; together they are the integrity packages of 5.3, which ship in hydra.4, OD10); Y0e takes the W0 review follow-ups (8.2); **Z1 merges before Y1** (it pins the concurrency behaviour Y1 and Y2 must keep, and holds the multithread `_sync` test as a known issue); disjoint except two declared sequences, `tests/test_durable.py`: Y0e, then Y1, and `S/Advertised.java`: E1, then E2a |
 | W2 facts, gates, lanes, shared base | E2, E3a | Y2; Z4, Z5, Z7 | | **neither E2 nor E3a edits `Session.java`** (E3a edits the lane defaults in `HeadlessSession.java`; the owners of that file are E1, E3a, then E5 and E9, one per wave, 8.4). E2: format, backup, gate, fork purposes, **seal**, `prepare_upgrade`, the second independent backup; it names no lane. E3a: `Scheduler`, `ImportCommands`, `ImportGate`, `Requests`, `Connection.respond`, `RequestMonitor`; lanes, caps (v2 too), the import wait. Y2: lineage, commit, backups, **the shared base, the per-view connection and lock, `integrity.py`, the launch configuration (`maxLong`, `maxQuick`)** the stub-test rewrites (8, 8.2) and **the removal of the saver process `workcopy_saver.py` with the `locks.py` changes the per-view lock needs (D61)**. Z4, Z5, Z7 need no engine change |
 | W3 robustness | E3b | Y3; Z2, Z3, Z6, Z8 | | E3b owns `Waits`, `Caller`, `Access`, `ProgramEntry`, `OverlayCommands` (lock site), `Connection`, `RequestMonitor`, `Session.disconnect`, `ProjectCommands` (the registry un-nesting and `leaveProject`), `ProgramCommands.releaseUse` (the owner and writer leave, bounded; the plain-reader fast path is E3c's, D63). Y3: rebase, publish queue, merge. Z2 measures the named-view cost and the publish latency (9.16, SP7) |
 | W4 the non-blocking core, isolation, launcher, views | E3c, E4, P1b | Y5 | | **E3c** owns `Session.java`, `Access`, `ProgramEntry`, `ProgramCommands`, `ProjectCommands`, `ProjectEntry` and the new `ProjectRegistry`: refcount join and leave for every reader (the plain-reader leave stall, D63b), the per-project state machine, `analyzing`, waiter caps; **E4** owns `ScriptCommands`, `OverlayCommands`, `PrivateInstance`; the two share no file. P1b is the launcher (deadline, `LaunchError`, registry) and owns no Job Object (D60). **Y5** makes per-agent views the default (it does not need E3c: it works on hydra.3 through forks) |
@@ -3123,7 +3135,8 @@ Paths are relative to `Ghidra/Features/HeadlessSession` unless they begin with `
 | **`S/ProjectFormat.java`**, **`S/ProjectBackup.java`**, **`S/Seals.java`** | | | E2 | | | | |
 | `S/ProjectEntry.java` | | E1 (`info(Client)`: the signature only, same value) | E2 (`format` for v3) | | E3c (state machine fields) | | |
 | **`S/DbVersions.java`** | | E1 (`program()`, `dataTypes()` returning `null`) | E2 (`dataTypes()`) | | | | |
-| `S/Operations.java`, `S/Journal.java`, `S/Client.java`, `S/SessionException.java`, **`S/Identity.java`**, **`S/Advertised.java`**, **`S/Settings.java`**, **`S/Preflight.java`**, **`S/Hooks.java`**, **`S/Guarded.java`** | | E1 (`SessionException`: the new codes, the busy-details and the bad-request-details helpers; `Hooks.Admission` and `Guarded`, both inert) | | | | | |
+| `S/Operations.java`, `S/Journal.java`, `S/Client.java`, `S/SessionException.java`, **`S/Identity.java`**, **`S/Settings.java`**, **`S/Preflight.java`**, **`S/Hooks.java`**, **`S/Guarded.java`** | | E1 (`SessionException`: the new codes, the busy-details and the bad-request-details helpers; `Hooks.Admission` and `Guarded`, both inert) | | | | | |
+| **`S/Advertised.java`** | | E1 (capability, limit and policy names declared up front) **then** E2a (adds the capability name `forkAtomic`, A4) | | | | | |
 | `S/HeadlessSession.java` | | E1 (endpoint and `ready`, `-set`) | E3a (the `maxLong` and `maintSlots` defaults at `:133-134` and the usage text at `:78-79`; the option parser stays E1's) | | | E5 **then** E9 (E5: the watchdog and `testHooks`; E9: the governor start and the process job) | |
 | `S/HydraInfo.java` | | E1 (protocol constants) | | | | R1 (version) | |
 | `S/ScriptCommands.java` | | | | | E4 | E7 (the routing to a worker, D64) | |
@@ -3134,7 +3147,8 @@ Paths are relative to `Ghidra/Features/HeadlessSession` unless they begin with `
 | **`S/ReplicaPool.java`** | | | | | | | E11 |
 | `/Ghidra/Framework/DB/src/main/java/db/buffers/LocalManagedBufferFile.java` | | E8 | | | | | E12 |
 | `/Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/db/VersionedDatabase.java`, **`/Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/db/VersionFileCheck.java`** | | E8 | | | | | |
-| `/NOTICE-HYDRA` | | E8 (the two added core files and the one added class) | | | | R1 | |
+| `/Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/local/LocalDatabaseItem.java` | | E8 (the private-database open path, so that repair-on-open reaches forks, A3) | | | | | |
+| `/NOTICE-HYDRA` | | E8 (the three patched core files and the one added class, A3) | | | | R1 | |
 | `support/ghidra_session.py` | | P1a (range, `engine` pass-through) | | | P1b (deadline, `LaunchError`, registry; the caller-job detection and the breakaway-then-WMI spawn of D65; the JVM flag `--enable-native-access` of D60; the `maxLong` comment `:425-426`; no Job Object) | | |
 | `examples/daemon_tests.py`, `examples/characterization_tests.py`, **`examples/dt_baseline.py`**, `examples/characterization/v3/` (created by E0 as an empty directory with the loader) | E0 | | | | | | |
 | `examples/characterization/clients.json`, `examples/characterization/edits.json`, `examples/characterization/fork_refresh.json`, `examples/characterization/import_script.json`, `examples/characterization/overlays.json`, `examples/characterization/readonly.json`, `examples/characterization/session.json` | E0 (the seven v2 goldens; `fork_refresh.json` and `overlays.json` were re-recorded once, in `f47ff15934`, to mask the copied project's total size, E0; **amendment A1, revision 7, D62: six goldens are re-recorded once more to mask the scheduler `slots`**; no later package edits them, E3a included) | | | | | | |
@@ -3231,8 +3245,9 @@ Paths are relative to `Ghidra/Features/HeadlessSession` unless they begin with `
 | `src/docs/pages/projects.ts`, `src/docs/pages/scheduling.ts`, `src/docs/pages/architecture.ts`, `src/docs/pages/mcp-server.ts`, `src/docs/pages/core-concepts.ts`, `src/docs/pages/installation.ts`, `src/docs/pages/evidence-ledger.ts`, `src/docs/pages/quick-start.ts`, `src/docs/pages/clients.ts`, `src/docs/pages/api-reference.ts` | S1 | S2 (version constants through `tools/bump_hydra.py`, 5) |
 | `src/lib/site.ts`, `src/lib/llms.ts`, `src/lib/seo.ts` | S1 | S2 (the release and protocol constants, edited by `tools/bump_hydra.py`) |
 | `src/components/landing/Hydralysis.tsx`, `src/components/landing/HowItWorks.tsx` | S1 (panels labelled illustrative; unsourced figures removed) | S2 |
+| `src/routes/embed/how-it-works.tsx` | S1 (the embed route of the HowItWorks panel: its notes repeat claim C3, A5) | S2 |
 
-Per wave the disjointness reads off the columns. Hydra: W0 = {E0 | X0 | R0}; W1 = {P1a, then E1 | E8 | E2a}; W2 =
+Per wave the disjointness reads off the columns. Hydra: W0 = {E0 | X0 | R0}; W1 = {P1a, then E1 | E8 | E2a (after E1 on `S/Advertised.java` only)}; W2 =
 {E2 | E3a}; W3 = {E3b}; W4 = {E3c | E4 | P1b}; W5 = {E5 then E9 | E6 | E7 | R1 | Z15}; W8 = {E10 | E11 | E12}.
 Hydralysis: W0 = {Y0a | Y0b | Y0c | Y0d | Z13a}; W1 = {Y0e | Y1 | Z1} (Y1 after Y0e on the second
 `tests/test_durable.py` row only, and after Z1); W2 = {Y2 | Z4 | Z5 | Z7}; W3 = {Y3 | Z2 | Z3 | Z6 | Z8}; W4 = {Y5};
@@ -3417,6 +3432,30 @@ the table above; the existence of a gate numbered 9.20 and of every `9.<n>` the 
 leave-stall and identity statements are not checked by the script but by the consistency check of the revision history
 (`consistency_rev7.txt`).
 
+### 8.5 Revision 8.1: amendments of the W1 coordinator
+
+Revision 8.1 records what the W1 coordinator found while integrating W0 and W1 on `feat/w1-hydra`. It changes no design
+decision of revision 8; each amendment is an ownership or a wording correction, with a row in 8.1 or a sentence in the
+package it concerns. A1 is the amendment of revision 7 (E0, D62).
+
+| Amendment | What changes | Owner, wave | Where in this file | Check |
+|---|---|---|---|---|
+| A2 | the package-id pattern of `examples/check_ownership.py` sees all 52 ids; the docs and site column, `then` cells and the site table are read | E0's file, changed by the coordinator in W1; E1's first commit keeps the Hydralysis root documents | E0 (amendment A2), section 8 rule 4, the `check_ownership.py` bullet | `check_ownership.py --selftest`: 33 checks, 0 failures; the script on this file: 120 rows, 52 packages, 0 violations |
+| A3 | E8 also owns `LocalDatabaseItem.java`, the private-database open path | E8, W1 | 8.1 (new row), E8 Files, `/NOTICE-HYDRA` row | the proof: matrix and Files text agree; the file exists in the tree |
+| A4 | E2a may add the capability name `forkAtomic` to `Advertised.java`, declared as the sequence E1 then E2a | E1 then E2a, W1 | 8.1 (`S/Advertised.java` has its own row), E2a Files, Depends on and Surface, wave plan W1, the in-wave list (23 dependencies, three file sequences) | the proof: the `then` cell needs E2a to depend on E1, both in W1 |
+| A5 | S1 owns `src/routes/embed/how-it-works.tsx` (and S2 in W5, like the other panels) | S1, W0; S2, W5 | 8.1 site table, S1 Files | the proof: the site pin-literal scan needs S1 and S2 cells; the file exists in the site repository |
+| A6 | the kept corrupt forks of `crash-C` are nine, not twelve | X0 | X0 Tests | text only |
+| A7 | `characterization_tests.py --client {stock,install}` is an E0 amendment | E0 (W0 row), edit by the coordinator in W1 | E0 (amendment A7) | `characterization_tests.py --selftest`; the seven goldens `identical` at `--protocol 2` |
+| A8 | the grep gate of R0 is Z13a's `tests/test_claims.py` and the site claims gate of S1; X0 needs no manifest line for headered files | Z13a, S1 (W0); X0 | R0 Tests, Z13a Tests, X0 Manifest paragraph, section 8 (manifest bullet) | read of `gradle/support/ip.gradle` and of `gradle/hydra/headless.gradle`; the IP scan of the X0 tree finds no file without an IP |
+
+**What the IP check really does (A8).** The coordinator's premise was that `buildHeadless` does not list `examples/` files. It
+does scan them: `buildHeadless` depends on `assembleHeadless`, which depends on `assembleDistribution`, which depends on the
+`ip` task of every module (`gradle/support/ip.gradle`, line 58); the task walks every file of the module directory except
+`bin`, `build`, the manifests and a few IDE files, reads the IP from the header of a C-style or Bash-style source file, and falls
+back to `certification.manifest` only for a file without a header. The conclusion for X0 is the same: its files are `.py`,
+`.ps1` and `.java` with headers, so no line is needed. The manifest already lists the JSON goldens and the Markdown files for
+that reason.
+
 ### W0
 
 **X0 (Hydra, L): the oracle, the regression suites and the red table.**
@@ -3432,12 +3471,19 @@ to `s13` and the helper `hx`, the capacity harness `lanetest`, `ramp`, `forkcost
 Depends on: E0. Parallel with: R0, S1, Z13a, Y0a-Y0d.
 Surface: none (no engine file is edited).
 Tests: the self-test plants X1-X11 (3.12) and the oracle must flag X1-X5 and X7-X11 and pass X6; it runs against
-the twelve kept corrupt forks of `crash-C` (the zero-header newest version files) and against an unkilled
+the nine kept corrupt forks of `crash-C` (the zero-header newest version files) and against an unkilled
 control; each imported scenario reproduces its recorded defect on `hydra-3-candidate` and on `hydra-session-after`
 (the red table, with the recorded numbers beside the new ones) and is deterministic in two runs; every daemon uses a
 fresh state root under `D:/Projects/Hydra/_logs/<stream>/` and the F: KotOR original is never opened (copies
 only, its tree hash `6d8ced789b9f0945ee2ade42e75cf6db0a92c97ea4e65b8a353fd624860240df` is checked before and after).
 Acceptance: gate 9.12; the red table is committed as a stream report, not into the repository.
+
+**Manifest (revision 8.1, A8).** X0 needs no `certification.manifest` line for the files it creates: `buildHeadless` runs the
+`ip` task of every module (`assembleDistribution` depends on it, `gradle/support/ip.gradle`), the task scans every file under
+the module directory including `examples/`, and it reads the IP of a `.py`, `.ps1` or `.java` file from an `IP:` header in
+its first four lines; only a file of a type that cannot carry the header (`.json`, `.md`, `.properties`) needs a manifest
+line. X0 creates `.py`, `.ps1` and `.java` files only, each with the header. A package that adds a JSON, Markdown or
+properties file (E2's vectors and fixtures, any `v3` golden) appends its line.
 
 **R0 (Hydra docs, M): the wording pass on the engine documents.**
 Goal: the engine documents say what is true today and nothing stronger (D52), and say that there is no GUI.
@@ -3448,7 +3494,7 @@ Depends on: none. Parallel with: X0, S1, Z13a.
 Surface: none.
 Tests: a grep gate over the listed files for the banned phrases of D52 and for "GUI" or "window" used as a
 recommendation; each replaced sentence names its claim id. Acceptance: the replacement texts of 8.3 are applied.
-No claim becomes stronger.
+No claim becomes stronger. **Revision 8.1 (A8): R0 does not edit `tests/test_claims.py`; the grep gate over R0's files is owned by Z13a's tests/test_claims.py (Hydralysis, W0, 9.19), and for the site by the site claims gate of S1 (9.19); R0 has no test file.**
 
 **S1 (site, M): the wording pass on hydrare.dev.**
 Goal: the website, which is where the strongest false claims live, says what is true today.
@@ -3457,7 +3503,7 @@ Files (8.1): `src/routes/index.tsx`, `src/routes/changelog.tsx`, `src/routes/int
 `src/docs/pages/mcp-server.ts`, `src/docs/pages/core-concepts.ts`, `src/docs/pages/installation.ts`,
 `src/docs/pages/evidence-ledger.ts`, `src/docs/pages/quick-start.ts`, `src/docs/pages/clients.ts`,
 `src/docs/pages/api-reference.ts`, `src/lib/site.ts`, `src/lib/llms.ts`, `src/lib/seo.ts`,
-`src/components/landing/Hydralysis.tsx`, `src/components/landing/HowItWorks.tsx` (the repository had no owner in
+`src/components/landing/Hydralysis.tsx`, `src/components/landing/HowItWorks.tsx`, `src/routes/embed/how-it-works.tsx` (the repository had no owner in
 revision 5).
 Depends on: none. Parallel with: X0, R0, Z13a.
 Surface: none.
@@ -3479,7 +3525,8 @@ Surface: none.
 Tests: `tests/test_claims.py` fails when a ledger number differs from its source: the catalog size generated from
 `tool_table()` (8,172 bytes against the limit 8,192), the KotOR counts 8,966 / 8,616 / 60, the X0 baselines, and when a
 claim marked "gated" has no passing test. Acceptance: it passes; the no-stock tests keep passing (the files must
-never spell the stock-install names).
+never spell the stock-install names). **Revision 8.1 (A8):** the same test carries the grep gate for the banned phrases of D52
+over the engine documents that R0 edits (the list of 9.19); R0 has no test file of its own.
 
 **E0 (Hydra, M): failing tests first and the test loaders.**
 Goal: baselines and loaders before any engine change.
@@ -3552,6 +3599,24 @@ so key presence, key order and the lane shape are compared, as for `bytes` above
 fails on any other changed line. E3a edits no golden; the number itself is asserted by `cc_e3a` `v2_lane_defaults` (V9).
 Accepted trade-off: the goldens no longer catch a regression of the slot counts; that test does.
 
+**Amendment A2 (revision 8.1): the package ids of `examples/check_ownership.py`.** The file is E0's and its pattern was
+`[EPYR]\d+[a-e]?`: it could not see `X0`, `S1`, `S2` or any `Z` package, so on the matrix of revision 8 it stopped at the wave
+plan ("the package id(s) X0 are not parsed", exit 2). The coordinator changed the script (W1, not a package): the pattern is
+the 52 ids of the plan (E0 to E12 with E2a and E3a to E3c, X0, P1a, P1b, Y0a to Y0e, Y1 to Y3, Y4a, Y4b, Y4d, Y4e, Y5, R0, R1,
+S1, S2, Z1 to Z15 with Z13a and Z13b; a typo such as Y0f or an invented Y4c is still an error); the wave plan is read in its
+three package columns (Hydra, Hydralysis, docs, site and policy); a cell `A **then** B` is the declared sequence and not two
+owners; the site table is read as a third repository; the package paragraphs are found by the same pattern. `--selftest` has
+33 checks (it had 24), among them every one of the 52 ids and the parse of the spec next to the script. The remaining item
+of E1's first commit is the resolution of the Hydralysis root documents.
+
+**Amendment A7 (revision 8.1): `characterization_tests.py --client {stock,install}`.** The W1 coordinator (commit
+`c37b0e73b4` on `feat/w1-hydra`, not a package) added the option to E0's `examples/characterization_tests.py`. At
+`--protocol 2` (the default for the seven v2 goldens) the harness now loads the vendored stock 1.0.0 client
+(`examples/stock/ghidra_session_1_0_0.py`, P1a's file), because the goldens record the client's own `clientVersion` 1.0.0 and
+the 1.1.0 client made six of the seven differ in that one field; at `--protocol 3` the default is the install's client
+(`install`), and `--client stock` with `--protocol 3` is refused. The seven goldens are unchanged (no re-record). This is
+recorded here because the file is E0's (W0 row) and the edit came in W1.
+
 **Y0a (Hydralysis, M): durable IO.** Goal: 4.1.
 Files: new `durable.py`; `backends.py` (`write_json`); `workcopy.py` (only `_save_store`, `load_store`);
 `targets.py` (`register`); `overlayjobs.py` (job record writes); new `tests/test_durable.py`;
@@ -3596,9 +3661,11 @@ non-empty `ghidra_run` or `job` `options` bag answers `not_available` until its 
 Goal: no unopenable newest version file after a hard kill during a save (D42, 3.12).
 Files (8.1): `/Ghidra/Framework/DB/src/main/java/db/buffers/LocalManagedBufferFile.java` (`saveCompleted`:
 `saveFile.flush()` before `saveFile.renameFile(newFile)`, `:696`), `/Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/db/VersionedDatabase.java`
-(the check of the newest version at open) and the new `/Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/db/VersionFileCheck.java`
+(the check of the newest version at open), `/Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/local/LocalDatabaseItem.java`
+(revision 8.1, A3: the private-database open path; the class wraps a `PrivateDatabase` when the file system is not
+versioned, so the check of `VersionedDatabase` alone would not reach the programs of a fork, and repair-on-open is added here) and the new `/Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/db/VersionFileCheck.java`
 (header-magic validation, the quarantine of a writable disposable fork, the `corrupt_newest` report for a
-read-only or sealed tree), `/NOTICE-HYDRA` (the two core files and the added class), `examples/dt_e8.py`.
+read-only or sealed tree), `/NOTICE-HYDRA` (the three core files and the added class), `examples/dt_e8.py`.
 Depends on: X0 (the oracle and the trigger-timed kill recipe). Parallel with: E1, E2a, Y0e, Y1, Z1.
 Surface: none protocol-visible; `repairs[]` in `health` once E5 exists.
 Tests: unit tests where the fork runs the DB module's tests; the trigger-timed kill loop of C (kill X ms after the
@@ -3607,7 +3674,7 @@ version folder listing first changes) on NTFS and ReFS; a zero-header fixture (t
 before and after); SP5: the second `flush()` in `setReadOnly()` is idempotent and the version chain and index are
 unaffected; save time before and after (median and p95); the golden decompile diff identical.
 Acceptance: 9.15 (at least 400 trigger-timed kills, 0 unopenable and 0 unrepaired); no save-time regression beyond
-the recorded noise; the fourth and fifth patched Ghidra files are named in `/NOTICE-HYDRA`, and Z15's guard lists them.
+the recorded noise; the fourth, fifth and sixth patched Ghidra files (the sixth is LocalDatabaseItem, A3) are named in `/NOTICE-HYDRA`, and Z15's guard lists them.
 
 **E2a (Hydra, M): atomic, retryable fork publish and the sweeper.**
 Goal: a fork path is absent or complete, and a retry never meets a bare `conflict` caused by the engine's own
@@ -3617,10 +3684,11 @@ sidecar with `state:"publishing"`, `.gpr` last, the sidecar rewritten `state:"co
 resumes or removes the engine's own half fork), new `S/ForkSweeper.java` (the lazy sweep at the first
 `fork_project` under a parent directory: dead-owner staging folders, `.rep` without `.gpr` whose intent names a
 dead process, `tmp*.tmp`, `tmp*.ps`, `.ghidra.test.lock~~` older than 10 minutes; everything else only reported),
-new `S/ForkIntent.java`, `examples/dt_e2a.py`, `examples/cc_e2a.py`.
-Depends on: X0 and P1a (`cc_e2a.py`). Parallel with: E1, E8, Y0e, Y1, Z1.
+new `S/ForkIntent.java`, `S/Advertised.java` (only the capability name `forkAtomic`, after E1: a `then` cell in 8.1, A4),
+`examples/dt_e2a.py`, `examples/cc_e2a.py`.
+Depends on: X0, P1a (`cc_e2a.py`) and E1 (`S/Advertised.java`, A4). Parallel with: E8, Y0e, Y1, Z1 (and E1 except for that file).
 Surface: sidecar field `state` (every fork ends `complete` here; E2 makes a `generation` fork end `candidate`, D41); capability
-`forkAtomic` (registered by E1's `Advertised`, enabled here); V11 (5.1: a racing publisher answers `conflict`); no other reply
+`forkAtomic` (E1 registers the names of 3.13 up front; E2a adds the name to `Advertised` when E1's list does not hold it, A4; enabled here); V11 (5.1: a racing publisher answers `conflict`); no other reply
 change.
 Tests: at least 300 kills (random and trigger-timed) during `fork_project` on NTFS and ReFS: the path is absent or
 complete, never `.rep` alone, never without a sidecar, and a retry to the same path succeeds; no staging folder
@@ -4572,6 +4640,22 @@ Found by reading the code; each is handled in the section named.
     is false by measurement (D37); the README, the CHANGELOG and the site disagreed on eleven claims (D52).
 
 ## Revision history
+
+**Revision 8.1 (amendments of the W1 coordinator: seven ownership and wording items, A2 to A8).** Docs only; no engine or client code is edited in this commit except `examples/check_ownership.py` (A2). One commit on `docs/spec-rev8-1` (worktree `D:/Projects/Hydra/wt/hspec`, from `57b7714be2`, the tip of `feat/w1-hydra`). Input: the coordinator's findings while integrating W0 and W1, the package branches `feat/w0-x0`, `docs/w0-r0`, `feat/w1-e8` and `feat/w1-e2a`, and the build files `gradle/support/ip.gradle` and `gradle/hydra/headless.gradle`.
+
+**Revision 8.1: where each item landed.**
+
+| Item | Verified against the revision 8 text and the tree | Disposition | Where it landed |
+|---|---|---|---|
+| A2 the id pattern of `check_ownership.py` | **Right.** On the revision 8 spec the script stopped with exit 2 (`wave plan W0: the package id(s) X0 are not parsed by PKG`); it read two of the three package columns of the wave plan, counted `E5 **then** E9` as two owners and had no site table | **Fixed in the script**, with 9 new self-test checks (24 to 33) | E0 (amendment A2), `examples/check_ownership.py`, section 8 rule 4 and bullet, 8.5 |
+| A3 E8 and `LocalDatabaseItem.java` | **Right.** `LocalDatabaseItem` wraps a `PrivateDatabase` when the file system is not versioned (its own class comment), so `VersionedDatabase` alone does not reach it | **Fixed.** New row, Files text, NOTICE row and Z15 guard wording (sixth patched core file) | 8.1, E8, 8.5 |
+| A4 E2a and `Advertised.java` | **Right.** E2a enables `forkAtomic`; E1 registers names up front; the two are in W1 | **Declared as a sequence** E1 then E2a on that file only; E2a depends on E1; 23 in-wave dependencies, three file sequences | 8.1, E2a, wave plan, section 8 in-wave bullet, 8.5 |
+| A5 `src/routes/embed/how-it-works.tsx` | **Right.** The file exists in the site repository; it renders the HowItWorks panel for the README recording and its notes say that analysis runs alongside questions "without slowing them" (claim C3 of 8.3) | S1 owns it in W0, S2 in W5 | 8.1 site table, S1, 8.5 |
+| A6 crash-C forks | Instruction of the coordinator, recorded as given (the `crash-C` directory was not recounted in this revision); the 12 of 363 kills of 3.12 are kills of a scenario, a different count | Text corrected to nine; 3.12 is unchanged | X0 Tests |
+| A7 `--client` | **Right.** Commit `c37b0e73b4` edits E0's file in W1 | Recorded as an E0 amendment | E0 (amendment A7) |
+| A8 R0 grep gate; X0 manifest | **Partly.** R0 had a test promise and no test file. The premise on the manifest is wrong in its words (the IP scan does read `examples/`) and right in its conclusion (headered sources need no line) | Gate assigned to Z13a and S1; the manifest paragraph states what the build does | R0, Z13a, X0, section 8 manifest bullet, 8.5 |
+
+**Proof output (revision 8.1)** (`D:/Projects/Hydra/_logs/spec-rev8/prove_disjoint_rev8.py`, unchanged, with the same default inventories as revision 8; output `D:/Projects/Hydra/_logs/spec-rev8-1/prove_disjoint_rev8_on_rev8_1_out.txt`; exit 0): *52 package ids identical in the wave plan table and the proof's plan; 123 matrix rows and 344 owner cells; 52 package blocks; files edited by the text but granted by no row or rule: none; three declared `then` sequences (`S/Advertised.java` E1 then E2a, `S/HeadlessSession.java` E5 then E9, `tests/test_durable.py` Y0e then Y1), each with the later package depending on the earlier one in the same wave; `LocalDatabaseItem.java` exists in the tree and is E8's; dependency cycles: none; RESULT: 0 violations.* Four plants on this text each exit 1: E2a without its dependency on E1 (`SEQUENCE-WITHOUT-DEPENDENCY`), E8's Files text without `LocalDatabaseItem.java` (`MATRIX-FILE-NOT-IN-TEXT`), S2's cell of `how-it-works.tsx` removed (`TEXT-FILE-NOT-IN-MATRIX`), and the `then` cell of `Advertised.java` reduced to E1 (`EDITED-BY-TEXT-NOT-GRANTED`). `table_check.py` (53 tables, 0 rows with a wrong cell count, 4 literal-pipe rows as before) and `consistency_rev8.py` (consistent) pass. `examples/check_ownership.py` on this text: 123 rows, 52 packages, 0 violations; `--selftest` 33 checks, 0 failures.
 
 **Revision 8 (answers the independent review of revision 7: five blocking items and nine others).** Docs only; no code in any repository this stream owns; one commit on `design/protocol-3-rev8` (worktree `D:/Projects/Hydra/wt/hydra-design8`, from `0fc3730d88`, the tip of `design/protocol-3-rev7`). Input: `D:/Projects/Hydra/_logs/review-rev7/` (Job Object experiments with stand-ins and with a JVM, 14 mutation plants of the proof, the proof run). Every item was verified against the text of revision 7 first. Added: D65, D66, section 2.3, K1u, X11, and the unbackticked-name check of the proof. No claim of "never corrupts" or "never blocks" was added.
 

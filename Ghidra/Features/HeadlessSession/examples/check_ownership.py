@@ -22,8 +22,10 @@
 It reads the matrix and the wave plan from the spec (``../PROTOCOL-3.md``, or ``--spec``) and fails
 (exit 1, every violation named) when
 
-* a wave cell of the matrix names two packages (the disjointness assertion), or names a package the
-  wave plan does not put in that wave, or the plan puts one package in two waves;
+* a wave cell of the matrix names two packages (the disjointness assertion) unless the cell is the
+  declared in-wave sequence ``A **then** B`` (revision 8.1, amendment A2: ``S/HeadlessSession.java``
+  E5 then E9, ``S/Advertised.java`` E1 then E2a), or names a package the wave plan does not put in
+  that wave, or the plan puts one package in two waves;
 * with ``--package``: a file changed on the branch (``git diff --name-only`` of ``<base>...HEAD``,
   plus the working tree and untracked files unless ``--committed-only``) is not in that package's
   rows of the matrix.
@@ -43,7 +45,10 @@ The spec itself is not a package file: nobody edits it.
 
 Hydra paths are relative to ``Ghidra/Features/HeadlessSession`` (``S/`` is the session source
 directory), Hydralysis paths to ``src/hydralysis`` (``tests/`` and ``tools/`` to the repository
-root). ``--repo`` is the worktree to check (default: this script's repository); it is Hydralysis
+root), site paths to the root of the website repository. The package ids are every id the wave plan
+of revision 8 uses: ``E<n>[a-c]``, ``X0``, ``P1a``/``P1b``, ``Y0a-e``, ``Y1``-``Y3``, ``Y4a/b/d/e``, ``Y5``, ``R0``/``R1``, ``S1``/``S2``
+and ``Z<n>[ab]`` (revision 8.1, amendment A2: the pattern did not see ``X0``, ``S1``, ``S2`` or any ``Z``).
+``--repo`` is the worktree to check (default: this script's repository); it is Hydralysis
 when it has ``src/hydralysis``. Exit codes: 0 holds, 1 violated, 2 usage or an unreadable spec.
 """
 import argparse
@@ -55,11 +60,17 @@ import sys
 HERE = pathlib.Path(__file__).resolve().parent
 MODULE = "Ghidra/Features/HeadlessSession"
 SESSION = MODULE + "/src/main/java/ghidra/app/util/headless/session/"
-PKG = re.compile(r"\b[EPYR]\d+[a-e]?\b")
+#: The package ids of the plan of revision 8 (52): E0-E12 with E2a/E3a-c, X0, P1a/P1b, Y0a-e, Y1-Y3,
+#: Y4a/b/d/e, Y5, R0/R1, S1/S2, Z1-Z15 with Z13a/b. Amendment A2 of revision 8.1: the pattern was
+#: ``[EPYR]\d+[a-e]?``, which cannot see X0, S1, S2 or any Z package.
+ID = r"(?:E\d+[a-c]?|X0|P1[ab]|Y(?:0[a-e]|[1235]|4[abde])|R[01]|S[12]|Z\d+[ab]?)"
+PKG = re.compile(r"\b" + ID + r"\b")
 #: Anything that looks like a package id in the wave plan (a letter, digits, an optional letter):
 #: ``parse_spec`` fails when ``PKG`` does not see every one of them, so that an id such as ``Y0e``
 #: or ``Y4e`` can never again be invisible to the checker (it was, with ``[a-d]``).
 ANY_ID = re.compile(r"\b[A-Z]\d+[a-z]?\b")
+THEN = "**then**"
+HEADER = re.compile(r"\*\*(" + ID + r") \(")
 ROOT_DOCS = {"README.md", "CHANGELOG.md"}
 
 
@@ -118,13 +129,13 @@ class Spec:
 def parse_spec(text):
     lines = text.splitlines()
     spec = Spec()
-    # the wave plan: | W0 ... | Hydra packages | Hydralysis packages | notes |
+    # the wave plan: | W0 ... | Hydra | Hydralysis | docs, site, policy | notes |
     for ln in section(lines, r"### Wave plan", r"#{2,3} "):
         if re.match(r"\|\s*W\d", ln):
             c = cells_of(ln)
             wave = re.match(r"W\d", c[0]).group(0)
-            spec.plan[wave] = set(packages_in(c[1]) + packages_in(c[2]))
-            seen = set(ANY_ID.findall(strip_parens(c[1] + " " + c[2])))
+            spec.plan[wave] = set(packages_in(" ".join(c[1:4])))
+            seen = set(ANY_ID.findall(strip_parens(" ".join(c[1:4]))))
             if seen - spec.plan[wave]:
                 raise SpecError(f"wave plan {wave}: the package id(s) "
                                 f"{', '.join(sorted(seen - spec.plan[wave]))} are not parsed by PKG")
@@ -135,6 +146,8 @@ def parse_spec(text):
     for ln in section(lines, r"### 8\.1 ", r"### "):
         if ln.startswith("**Hydralysis"):
             kind, waves = "hydralysis", None
+        elif ln.startswith("**Site"):
+            kind, waves = "site", None
         elif ln.startswith("**Hydra"):
             kind, waves = "hydra", None
         elif ln.startswith("|") and kind:
@@ -151,7 +164,7 @@ def parse_spec(text):
     # the package paragraphs of section 8
     cur = None
     for ln in section(lines, r"## 8\. ", r"## 9\. "):
-        m = re.match(r"\*\*([EPYR]\d+[a-e]?) \(", ln)
+        m = HEADER.match(ln)
         if m:
             cur = m.group(1)
             spec.text[cur] = []
@@ -166,6 +179,8 @@ def parse_spec(text):
 def resolve(kind, tok):
     """The repository-relative paths a matrix or package-text token may mean."""
     tok = re.sub(r":\d+(-\d+)?$", "", tok.strip())
+    if kind == "site":
+        return {tok}
     if kind == "hydralysis":
         if tok.startswith(("tests/", "tools/")):
             return {tok}
@@ -192,9 +207,13 @@ def check_matrix(spec):
     for kind, files, cells in spec.rows:
         name = ", ".join(files)
         for w, cell in cells.items():
-            pk = packages_in(cell)
-            if len(pk) > 1:
-                bad.append(f"matrix: {name} in {w} names {len(pk)} packages: {', '.join(pk)}")
+            # a cell may be a declared sequence ``A **then** B`` (each part names one package)
+            pk = []
+            for part in cell.split(THEN):
+                one = packages_in(part)
+                if len(one) > 1:
+                    bad.append(f"matrix: {name} in {w} names {len(one)} packages: {', '.join(one)}")
+                pk += one
             for p in pk:
                 if wave_of.get(p) != w:
                     bad.append(f"matrix: {name} in {w} names {p}, which the plan puts in "
@@ -230,7 +249,7 @@ def accepted_text_token(kind, t):
             return t
         if t.startswith("characterization/v3/"):
             return "examples/" + t
-    return t if t.startswith("tests/") else None
+    return t if kind != "site" and t.startswith("tests/") else None
 
 
 def package_text_files(spec, kind, pkg):
@@ -407,6 +426,45 @@ def selftest():
         expect("a plan id that PKG cannot see is an error, not a silent omission", False, True)
     except SpecError:
         expect("a plan id that PKG cannot see is an error, not a silent omission", True, True)
+    # amendment A2 (revision 8.1): every id of the plan of revision 8 is seen, and the real spec parses
+    rev8_ids = ("E0 E1 E2 E2a E3a E3b E3c E4 E5 E6 E7 E8 E9 E10 E11 E12 X0 P1a P1b Y0a Y0b Y0c Y0d Y0e "
+                "Y1 Y2 Y3 Y4a Y4b Y4d Y4e Y5 R0 R1 S1 S2 Z1 Z2 Z3 Z4 Z5 Z6 Z7 Z8 Z9 Z10 Z11 Z12 Z13a "
+                "Z13b Z14 Z15").split()
+    expect("PKG sees all 52 package ids of the plan of revision 8 (X0, S1, S2, Z.. included)",
+           [i for i in rev8_ids if not PKG.fullmatch(i)] + [len(rev8_ids)], [52])
+    expect("PKG does not see ids that are not packages",
+           [i for i in ("Y0f", "Y4c", "D60", "E13x", "Z", "W1", "X1", "S3", "R2", "P2a") if PKG.fullmatch(i)], [])
+    allids = SYNTHETIC.replace("| W0 first | E0 | Y0a | n |", "| W0 first | E0, X0 | Y0a, Z13a | R0, S1 | n |"
+                               ).replace("| Wave | Hydra (engine) | Hydralysis | Notes |\n|---|---|---|---|",
+                                         "| Wave | Hydra (engine) | Hydralysis | Docs | Notes |\n|---|---|---|---|---|"
+                                         ).replace("| W1 second | E1 | | n |", "| W1 second | E1 | | S2 | n |")
+    sp = parse_spec(allids)
+    expect("the plan parses X0, Z13a, R0, S1 and S2 (the docs column is read)",
+           sorted(sp.plan["W0"]) == ["E0", "R0", "S1", "X0", "Y0a", "Z13a"] and sorted(sp.plan["W1"]) == ["E1", "S2"], True)
+    hdr = parse_spec(SYNTHETIC.replace("**E0 (Hydra, M): tests.**", "**X0 (Hydra, L): oracle.**"
+                                       ).replace("**Y0a (Hydralysis, M): durable.**", "**Z13a (Hydralysis, S): claims.**"))
+    expect("a package paragraph of X0 and of Z13a is found by its header",
+           sorted(hdr.text) == ["X0", "Z13a"], True)
+    seq = parse_spec(SYNTHETIC.replace("| W1 second | E1 | | n |", "| W1 second | E1, E2a | | n |"
+                                                 ).replace("| `README.md` | | E1 |", "| `README.md` | | E1 (x) **then** E2a (y) |"))
+    expect("a declared sequence A **then** B in one cell is not a violation", check_matrix(seq), [])
+    expect("a cell with two packages and no then is still a violation",
+           len(check_matrix(parse_spec(SYNTHETIC.replace("| `README.md` | | E1 |", "| `README.md` | | E1, E2a |"
+                                                         ).replace("| W1 second | E1 | | n |", "| W1 second | E1, E2a | | n |")))), 1)
+    expect("a sequence part that names a package of another wave is a violation",
+           len(check_matrix(parse_spec(SYNTHETIC.replace("| `README.md` | | E1 |", "| `README.md` | | E1 **then** E0 |")))), 1)
+    site = parse_spec(SYNTHETIC.replace("## 8. Work packages", "**Site (`F:/site`)**\n\n| File | W0 | W1 |\n|---|---|---|\n"
+                                        "| `src/routes/embed/how-it-works.tsx` | E0 | E1 |\n\n## 8. Work packages"))
+    expect("a site row is read as a site path (its own repository root)",
+           check_changes(site, "site", "E0", ["src/routes/embed/how-it-works.tsx"]), [])
+    spec_path = HERE.parent / "PROTOCOL-3.md"
+    if spec_path.is_file():
+        try:
+            real = parse_spec(spec_path.read_text(encoding="utf-8"))
+            expect("the spec next to this script parses and its matrix names no wave twice",
+                   (len(real.rows) > 100, check_matrix(real)), (True, []))
+        except SpecError as e:
+            expect("the spec next to this script parses", str(e), "")
     two = parse_spec(SYNTHETIC.replace("| `S/Session.java` | | E1 (hello) |",
                                        "| `S/Session.java` | E0, Y0a | E1 (hello) |"))
     expect("a cell with two packages fails", len(check_matrix(two)), 1)
@@ -425,7 +483,7 @@ def main():
     ap.add_argument("--package", help="a package id (E0, Y0a, ...): also check its branch")
     ap.add_argument("--base", help="the branch point of the package branch (a revision)")
     ap.add_argument("--repo", help="the worktree to check (default: this script's repository)")
-    ap.add_argument("--kind", choices=("hydra", "hydralysis"), help="the repository's table")
+    ap.add_argument("--kind", choices=("hydra", "hydralysis", "site"), help="the repository's table")
     ap.add_argument("--committed-only", dest="committed_only", action="store_true",
                     help="ignore uncommitted and untracked files")
     ap.add_argument("--selftest", action="store_true")
