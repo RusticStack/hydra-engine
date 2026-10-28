@@ -160,8 +160,14 @@ final class ScriptCommands {
 		}
 	}
 
-	/** Protocol 3: refuses a script file that is not the one the client pinned. */
-	private static void checkSha(JsonObject req, ResourceFile src) {
+	/**
+	 * Protocol 3: refuses a script file that is not the one the client pinned
+	 * ({@code scriptSha256}), whatever program the script runs on. Also run for a script on an
+	 * overlay, where {@code isolation} is validated but has no other effect (an overlay is already
+	 * its own throwaway program: it is never shared or exclusive, and the reply says
+	 * {@code isolation:"overlay"}, a value outside the request enum).
+	 */
+	static void checkSha(JsonObject req, ResourceFile src) {
 		String want = shaOf(req);
 		if (want == null) {
 			return;
@@ -303,9 +309,17 @@ final class ScriptCommands {
 		}
 	}
 
-	/** {@code script} on one of the client's overlays: contained, on the overlay's own program. */
+	/**
+	 * {@code script} on one of the client's overlays: contained, on the overlay's own program. A
+	 * protocol 3 request has its {@code isolation} validated and its {@code scriptSha256} checked
+	 * (as for any script); the isolation value itself is ignored on purpose (see {@link #checkSha}).
+	 */
 	JsonObject runOverlayScript(Client c, ResourceFile src, JsonObject req, Project project,
 			Program overlayProgram, RequestMonitor m) {
+		if (c.v3()) {
+			isolationOf(req);
+			checkSha(req, src);
+		}
 		try (Runaway.Flight flight = c.v3() ? Runaway.enter(c) : null) {
 			return runScript(c, src, req, project, overlayProgram, null, "contained", "overlay", null,
 				m);
@@ -628,9 +642,15 @@ final class ScriptCommands {
 			if (w == null) {
 				return;
 			}
-			WATCHES.remove(w);
-			if (w.leaked) {
-				LEAKED.merge(w.owner, -1, (a, b) -> a + b > 0 ? a + b : null);
+			boolean wasLeaked;
+			synchronized (LEAK_LOCK) {
+				WATCHES.remove(w);
+				wasLeaked = w.leaked;
+				if (wasLeaked) {
+					LEAKED.merge(w.owner, -1, (a, b) -> a + b > 0 ? a + b : null);
+				}
+			}
+			if (wasLeaked) {
 				Msg.info(ScriptCommands.class, "quarantined script " + w.script + " of " + w.owner +
 					" ended after " + (System.nanoTime() - w.startNanos) / 1_000_000 + " ms");
 			}
@@ -702,9 +722,17 @@ final class ScriptCommands {
 			}
 		}
 
+		/** Makes quarantine and unwatch mutually exclusive: an ended script is never counted leaked. */
+		private static final Object LEAK_LOCK = new Object();
+
 		private static void quarantine(Watch w) {
-			w.leaked = true;
-			LEAKED.merge(w.owner, 1, Integer::sum);
+			synchronized (LEAK_LOCK) {
+				if (!WATCHES.contains(w)) {
+					return; // the script ended while the sampler was deciding
+				}
+				w.leaked = true;
+				LEAKED.merge(w.owner, 1, Integer::sum);
+			}
 			Msg.warn(ScriptCommands.class, "script " + w.script + " of " + w.owner +
 				" ignored cancel for more than " + TimeUnit.NANOSECONDS.toSeconds(w.graceNanos) +
 				" s: quarantined (its owner may run one script at a time until it ends)");

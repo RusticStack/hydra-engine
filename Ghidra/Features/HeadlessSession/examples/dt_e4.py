@@ -460,6 +460,34 @@ def t_script_changed(c):
         d.stop(force=True)
 
 
+def t_overlay_script_changed(c):
+    """Review round 1: a protocol 3 script on an overlay is pinned by scriptSha256 like any script."""
+    exe = prepare(c)
+    gpr = c.copy_fixture("e4OvSha")
+    d = c.daemon("e4-ovsha")
+    X = None
+    try:
+        X = session(c, d, gpr, exe, "runner", warm_up=("TestSleep.java",))
+        X.call("open_program", path=exe, overlay="o")
+        path = c.scripts / "BaselineQuick.java"
+        good = hashlib.sha256(path.read_bytes()).hexdigest()
+        bad = "0" * 64
+        e = _error(c, X, script=str(path), overlay="o", scriptSha256=bad)
+        dt.check(e.code == "script_changed" and e.details["expected"] == bad and
+                 e.details["actual"] == good, f"overlay, wrong digest: {e.code} {e.details}")
+        e = _error(c, X, script=str(path), overlay="o", scriptSha256="xyz")
+        dt.check(e.code == "bad_request", f"overlay, malformed digest: {e.code}")
+        e = _error(c, X, script=str(path), overlay="o", isolation="bogus")
+        dt.check(e.code == "bad_request", f"overlay, bad isolation: {e.code}")
+        r = X.call("script", script=str(path), overlay="o", scriptSha256=good)
+        dt.check(r["mode"] == "contained" and r.get("isolation") == "overlay",
+                 f"overlay, right digest: {r}")
+        return "a v3 overlay script: a wrong digest is script_changed, the right one runs"
+    finally:
+        close_all(X)
+        d.stop(force=True)
+
+
 # ---- unsaved_ignored ------------------------------------------------------------------------
 
 def t_unsaved_ignored(c):
@@ -787,6 +815,7 @@ TESTS = {
     "script_modes": t_script_modes,
     "script_reply": t_script_reply,
     "script_changed": t_script_changed,
+    "overlay_script_changed": t_overlay_script_changed,
     "unsaved_ignored": t_unsaved_ignored,
     "rusticquery_read": t_rusticquery_read,
     "private_beside_holder": t_private_beside_holder,
