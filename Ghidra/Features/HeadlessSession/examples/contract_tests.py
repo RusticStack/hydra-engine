@@ -397,7 +397,9 @@ def t_protocol(c: Ctx):
               and ai["buildDate"], f"analysisIdentity: {ai}")
         dbv = ai["dbVersions"]
         check(list(dbv) == ["program", "dataTypes"] and isinstance(dbv["program"], int) and
-              dbv["program"] > 0 and dbv["dataTypes"] is None, f"dbVersions: {dbv}")
+              dbv["program"] > 0 and (dbv["dataTypes"] is None or
+                                      isinstance(dbv["dataTypes"], int) and dbv["dataTypes"] > 0),
+              f"dbVersions: {dbv}")  # E2 fills dataTypes (null only when unreadable)
         # equal to the constant itself, when this test runs from the source tree
         src = pathlib.Path(__file__).resolve().parents[4] / "Ghidra" / "Framework" /             "SoftwareModeling" / "src" / "main" / "java" / "ghidra" / "program" / "database" /             "ProgramDB.java"
         if src.is_file():
@@ -434,7 +436,8 @@ def gs_capability_order():
     """The declaration order of 3.2 (Advertised.CAPABILITIES)."""
     return ["errorNext", "expectAll", "idempotency", "laneHint", "maintLane", "queueInfo",
             "cancelWait", "forkReport", "format", "backup", "upgradeGate", "scriptIsolation",
-            "scriptSha256", "attemptedChanges", "health", "identity", "forkAtomic"]
+            "scriptSha256", "attemptedChanges", "health", "identity", "seal",
+            "forkAtomic"]
 
 
 def self_test(c, *flags, engine=None):

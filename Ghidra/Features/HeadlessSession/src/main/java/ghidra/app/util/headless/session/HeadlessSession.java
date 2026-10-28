@@ -1053,8 +1053,9 @@ public class HeadlessSession implements GhidraLaunchable {
 		private static void dbVersions() {
 			check("DbVersions.program() reads ProgramDB.DB_VERSION (positive)",
 				DbVersions.program() > 0);
-			check("DbVersions.dataTypes() is null until it is read and tested (E2)",
-				DbVersions.dataTypes() == null);
+			check("DbVersions.dataTypes() reads DataTypeManagerDB.DB_VERSION (positive; E2 tested " +
+				"it against the 12.1.4 fixture)", DbVersions.dataTypes() != null &&
+					DbVersions.dataTypes() > 0);
 			JsonObject all = new JsonObject();
 			Settings.all().forEach((k, v) -> {
 				if (!k.startsWith("selfTest")) {

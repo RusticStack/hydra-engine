@@ -52,6 +52,10 @@ final class ProgramCommands {
 
 	ProgramCommands(Session s) {
 		this.s = s;
+		// E2: the upgrade gate (3.4) is declared v2-visible, and its switch is a policy value
+		Advertised.capability("upgradeGate", 1);
+		Advertised.policy("requireBackupForUpgrade",
+			() -> Settings.bool("requireBackupForUpgrade", true));
 	}
 
 	JsonElement openProgram(Client c, JsonObject req, RequestMonitor m) {
@@ -77,6 +81,10 @@ final class ProgramCommands {
 			throw new SessionException(SessionException.BAD_REQUEST,
 				"\"share\":true opens a program writable for several clients; it needs " +
 					"\"writable\":true");
+		}
+		if (writable) {
+			// D38/D66: a sealed project takes no writable path, whatever the sidecar says
+			Seals.requireNotSealed(c, p, "open_program writable");
 		}
 		if (writable && !p.writable()) {
 			JsonObject d = suggestFork(p.identity(), p, c);
@@ -141,7 +149,7 @@ final class ProgramCommands {
 					}
 					if (e.program == null) {
 						e.file = df;
-						e.program = writable ? openWritable(e, df, req, m) : openReadOnly(e, df, m);
+						e.program = writable ? openWritable(c, e, df, req, m) : openReadOnly(e, df, m);
 						e.mode = !writable ? ProgramEntry.Mode.READ_ONLY
 								: share ? ProgramEntry.Mode.SHARED : ProgramEntry.Mode.WRITABLE;
 						e.stampRevision();
@@ -177,7 +185,7 @@ final class ProgramCommands {
 						addWriter(e, c);
 					}
 					else if (writable && e.mode == ProgramEntry.Mode.READ_ONLY) {
-						Program np = openWritable(e, df, req, m);
+						Program np = openWritable(c, e, df, req, m);
 						e.disposeDecompilers();
 						releaseProgramObject(e);
 						e.program = np;
@@ -196,9 +204,16 @@ final class ProgramCommands {
 					if (e.program == null) {
 						p.programs.remove(path, e);
 					}
-					throw ex;
+					throw corruptNewest(c, p, e, ex);
 				}
 				JsonObject info = useProgram(c, e, e.openMs);
+				if (c.v3()) {
+					// D42: what the open repaired in this project (a quarantined newest version)
+					JsonArray repairs = Seals.repairsSince(p.resolved, p.openedAt - 1000);
+					if (!repairs.isEmpty()) {
+						info.add("repairs", repairs);
+					}
+				}
 				if (e.cacheBuildStarted) {
 					e.cacheBuildStarted = false;
 					Json.put(info, "cacheBuild", "started");
@@ -405,7 +420,13 @@ final class ProgramCommands {
 		}
 	}
 
-	private Program openWritable(ProgramEntry e, DomainFile df, JsonObject req,
+	/**
+	 * Opens a program for update. The upgrade gate (3.4, declared v2-visible, 5.1) runs first: an
+	 * {@code upgrade:true} open of an older-format program of a project that is not a disposable
+	 * fork is refused ({@code backup_required}; {@code conflict} with the reason on protocol 2)
+	 * unless {@code backup} names a valid manifest; {@code requireBackupForUpgrade} switches it off.
+	 */
+	private Program openWritable(Client c, ProgramEntry e, DomainFile df, JsonObject req,
 			RequestMonitor m) {
 		try {
 			if (df.isReadOnly()) {
@@ -423,7 +444,13 @@ final class ProgramCommands {
 						"checkout of " + df.getPathname() + " failed");
 				}
 			}
-			return (Program) df.getDomainObject(e, Json.bool(req, "upgrade", false), false, m);
+			boolean upgrade = Json.bool(req, "upgrade", false);
+			ProjectBackup.UpgradeStamp stamp = upgrade ? upgradeGate(c, e, df, req) : null;
+			Program program = (Program) df.getDomainObject(e, upgrade, false, m);
+			if (stamp != null) {
+				ProjectBackup.remember(e, stamp);
+			}
+			return program;
 		}
 		catch (VersionException ex) {
 			throw new SessionException(SessionException.CONFLICT,
@@ -436,6 +463,86 @@ final class ProgramCommands {
 		catch (IOException ex) {
 			throw new SessionException(SessionException.FAILED, ex.getMessage(), null, ex);
 		}
+	}
+
+	/**
+	 * The gate. Returns the stamp the next save puts in its comment when a valid backup opened the
+	 * way, null when the open needs no backup; throws when it does and none is valid. A fork
+	 * ({@code disposable}, D12) and a read-only open are exempt; so is the upgrade cache, which does
+	 * not come through here.
+	 */
+	private ProjectBackup.UpgradeStamp upgradeGate(Client c, ProgramEntry e, DomainFile df,
+			JsonObject req) {
+		ProjectEntry p = e.project;
+		if (!Settings.bool("requireBackupForUpgrade", true) ||
+			ProjectFork.disposable(p.resolved)) {
+			return null;
+		}
+		ProjectFormat.Need need = ProjectFormat.need(p.data(), df);
+		if (!need.required()) {
+			return null;
+		}
+		String backup = Json.str(req, "backup", null);
+		// the project as it was opened and as it is on disk now: Ghidra rewrites the index backups
+		// of a project when it opens it writable, which moves the revision before any program opens
+		Set<String> revisions = new LinkedHashSet<>();
+		if (p.openRevision != null) {
+			revisions.add(p.openRevision);
+		}
+		try {
+			revisions.add(Revision.of(p.resolved));
+		}
+		catch (IOException ex) {
+			// the opened revision stands alone
+		}
+		ProjectBackup.Check chk = backup == null ? null : ProjectBackup.check(backup, revisions);
+		if (chk != null && chk.ok()) {
+			return new ProjectBackup.UpgradeStamp(chk.id(),
+				need.unknown() ? -1 : need.stored().programDb());
+		}
+		JsonObject format = ProjectFormat.of(p);
+		JsonObject d = Json.of("project", p.id, "program", e.key, "format", format, "suggest",
+			"fork_project purpose backup");
+		String why = need.unknown() ? "its format cannot be read (" + need.stored().error() + ")"
+				: "saved by an older Ghidra (program database version " +
+					need.stored().programDb() + ", this engine " + DbVersions.program() + ")";
+		if (chk != null) {
+			Json.put(d, "backup", backup);
+			Json.put(d, "backupCheck", Json.of("reason", chk.reason(), "detail", chk.detail()));
+		}
+		String msg = df.getName() + " in " + p.resolved.dir() + " was " + why + "; upgrading it " +
+			"is one-way and the project is not a disposable fork. Make a verified backup first " +
+			"(fork_project with \"purpose\":\"backup\") and pass its backup.json as \"backup\"" +
+			(chk == null ? "" : " (the backup offered was refused: " + chk.reason() + ": " +
+				chk.detail() + ")");
+		if (!c.v3()) {
+			Json.put(d, "reason", "backup_required");
+			return fail(new SessionException(SessionException.CONFLICT, msg, d));
+		}
+		return fail(new SessionException(SessionException.BACKUP_REQUIRED, msg, d)
+				.withNext(Json.of("cmd", "fork_project", "project", p.id, "purpose", "backup",
+					"open", false, "path", "<a folder for the backup>", "verify", "hash")));
+	}
+
+	private static ProjectBackup.UpgradeStamp fail(SessionException ex) {
+		throw ex;
+	}
+
+	/**
+	 * A failed open as the daemon reports it: an unrepaired corrupt newest version file
+	 * ({@code corrupt_newest}, E8) is that code with {@code {project, program, file, repair}} on
+	 * protocol 3 and stays {@code failed} on protocol 2; anything else is unchanged.
+	 */
+	private static RuntimeException corruptNewest(Client c, ProjectEntry p, ProgramEntry e,
+			RuntimeException ex) {
+		if (ex instanceof SessionException se && SessionException.FAILED.equals(se.code()) &&
+			se.getCause() instanceof IOException io) {
+			SessionException mapped = Seals.corruptNewest(c.v3(), io, p.id, e.key);
+			if (mapped != null) {
+				return mapped;
+			}
+		}
+		return ex;
 	}
 
 	JsonElement programs(Client c) {

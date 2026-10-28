@@ -331,14 +331,34 @@ final class EditCommands {
 			throws IOException, CancelledException {
 		boolean changed = e.program.isChanged();
 		long upTo = e.journal.seq();
+		String stamped = null;
 		if (changed) {
-			e.program.save(Json.str(req, "comment", "headless session"), m);
+			String comment = Json.str(req, "comment", "headless session");
+			// the first save after an upgrade under a backup says so in the version history (3.4)
+			ProjectBackup.UpgradeStamp stamp = ProjectBackup.take(e);
+			if (stamp != null) {
+				comment = stamp.comment() + " | " + comment;
+			}
+			try {
+				e.program.save(comment, m);
+			}
+			catch (IOException | CancelledException | RuntimeException ex) {
+				if (stamp != null) {
+					ProjectBackup.remember(e, stamp); // not saved: the next save stamps
+				}
+				throw ex;
+			}
+			stamped = stamp == null ? null : comment;
 			e.stampRevision();
 			e.project.invalidateRevision();
 			e.savedSeq = upTo;
 		}
-		return Json.of("program", e.key, "saved", changed, "revision", e.revision,
+		JsonObject out = Json.of("program", e.key, "saved", changed, "revision", e.revision,
 			"projectRevision", e.project.revision(), "savedSeq", e.savedSeq);
+		if (stamped != null) {
+			Json.put(out, "upgradeStamp", stamped); // only the save that follows an upgrade open
+		}
+		return out;
 	}
 
 	/**

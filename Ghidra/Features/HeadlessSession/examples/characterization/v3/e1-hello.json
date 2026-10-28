@@ -146,7 +146,28 @@
       }
      ],
      "overlays": [],
-     "scheduler": "<masked>",
+     "scheduler": {
+      "quick": {
+       "slots": "<masked>",
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 0,
+       "everQueued": 0,
+       "backgroundQueued": 0
+      },
+      "long": {
+       "slots": "<masked>",
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 0,
+       "everQueued": 0,
+       "backgroundQueued": 0
+      }
+     },
      "imports": {
       "maxImports": 2,
       "holder": null,
@@ -427,7 +448,28 @@
       }
      ],
      "overlays": [],
-     "scheduler": "<masked>",
+     "scheduler": {
+      "quick": {
+       "slots": "<masked>",
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 0,
+       "everQueued": 0,
+       "backgroundQueued": 0
+      },
+      "long": {
+       "slots": "<masked>",
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 0,
+       "everQueued": 0,
+       "backgroundQueued": 0
+      }
+     },
      "imports": {
       "maxImports": 2,
       "holder": null,

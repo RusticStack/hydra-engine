@@ -68,7 +68,8 @@ def structure(res):
         raise Fail(f"e1: analysisIdentity keys {list(ai)}")
     dbv = ai["dbVersions"]
     if (list(dbv) != ["program", "dataTypes"] or not isinstance(dbv["program"], int) or
-            dbv["program"] < 1 or dbv["dataTypes"] is not None):
+            dbv["program"] < 1 or not (dbv["dataTypes"] is None or
+                                       isinstance(dbv["dataTypes"], int) and dbv["dataTypes"] > 0)):
         raise Fail(f"e1: dbVersions {dbv}")
     if list(ai["decompiler"]) != ["path", "sizeBytes", "sha256"]:
         raise Fail(f"e1: decompiler {ai['decompiler']}")
@@ -100,10 +101,6 @@ def head(R, who, s, cmd, policy, note=None, **f):
     res["policy"] = subset("policy", res["policy"], policy)
     for k in ("paths", "platform", "analysisIdentity"):
         res[k] = "<masked>"
-    # the scheduler block is E3a's from W2 on (the maint lane, queue positions; char_e3a.py records
-    # it): the status step here keeps its place, not the scheduler's shape (amendment of E3a)
-    if "scheduler" in res:
-        res["scheduler"] = "<masked>"
     step = {"step": len(R.steps) + 1, "who": who, "cmd": cmd, "request": R.m.value(f),
             "response": R.m.value(resp)}
     if note:

@@ -198,6 +198,9 @@ final class ProjectEntry {
 			Json.put(o, "refreshedMsAgo", System.currentTimeMillis() - refreshedAt);
 		}
 		o.add("fork", ProjectFork.summary(ProjectFork.readSidecar(resolved)));
+		if (client != null && client.v3()) { // conditional C6: the format block, nothing else
+			o.add("format", ProjectFormat.of(this));
+		}
 		return o;
 	}
 }

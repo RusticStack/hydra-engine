@@ -263,6 +263,8 @@ final class Session {
 				case "apply_overlay", "drop_overlay" -> throw new SessionException(
 					SessionException.BAD_REQUEST, "missing field: overlay");
 				case "fork_project" -> forkCmds.forkProject(c, req, m);
+				case "seal_project" -> Seals.sealProject(this, c, req);
+				case "prepare_upgrade" -> projectCmds.prepareUpgrade(c, req, m);
 				case "refresh", "reopen" -> projectCmds.refresh(c, req, m);
 				case "close_project" -> projectCmds.closeProject(c, req);
 				case "project" -> access.inProject(access.projectFor(c, req), req, cmd,

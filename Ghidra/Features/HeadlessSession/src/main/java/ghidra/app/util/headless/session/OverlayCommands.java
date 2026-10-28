@@ -444,6 +444,12 @@ final class OverlayCommands {
 					tsha + "); the overlay was made over " + sha,
 				Json.of("target", info.get("key"), "sha256", tsha, "overlaySha256", sha));
 		}
+		// 3.12 (E2): overlays are RAM-only, so a killed promote leaves a fork with or without the
+		// edits; the fork's sidecar says "promote: in-progress" until this reply is on its way
+		ProjectEntry targetProject = s.projectsById.get(target);
+		if (targetProject != null) {
+			ProjectFork.markPromote(targetProject.resolved);
+		}
 		JsonObject areq = Json.of("program", info.get("key").getAsString());
 		JsonElement results =
 			s.access.withProgram(c, areq, "promote_overlay", true, true,
@@ -452,6 +458,9 @@ final class OverlayCommands {
 		if (Json.bool(req, "save", true)) {
 			saved = s.access.withProgram(c, areq, "save", true, true,
 				t -> s.edits.save(t, Json.of("comment", "promote overlay " + name), m));
+		}
+		if (targetProject != null) {
+			ProjectFork.clearPromote(targetProject.resolved);
 		}
 		Msg.info(s, c.label() + " promoted overlay " + name + " of " + e.key + " (" +
 			log.size() + " operations) into " + info.get("key").getAsString());

@@ -1,0 +1,14 @@
+# Upstream Ghidra files that Hydra Engine patches (the "patched core files").
+# One repository path per line; '#' starts a comment. Read by .github/scripts/upstream-sync-report.sh and
+# by .github/workflows/upstream-sync.yml: if upstream changed any of these since the last sync, the sync
+# job fails and the merge has to be done by hand (CONTRIBUTING.md, "Upstream sync").
+# Keep this list equal to the Java files under "Files of upstream Ghidra that Hydra Engine
+# modified" in NOTICE-HYDRA; a new patch to an upstream file is added here in the same commit.
+#
+# hydra.2 and hydra.3
+Ghidra/Framework/DB/src/main/java/db/buffers/LocalBufferFile.java
+Ghidra/Framework/DB/src/main/java/db/buffers/LocalManagedBufferFile.java
+Ghidra/Framework/SoftwareModeling/src/main/java/ghidra/app/plugin/processors/sleigh/SleighLanguageFile.java
+# storage integrity (E8)
+Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/db/VersionedDatabase.java
+Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/local/LocalDatabaseItem.java
