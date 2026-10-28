@@ -34,6 +34,11 @@ first appearance, so equal and different revisions stay visible as such). ``--se
 masker offline. The fixture is two tiny x64 PE files this script writes itself, so the golden
 files carry nothing derived from any real program and do not depend on the Windows version.
 
+Client: at ``--protocol 2`` the run goes through the vendored stock 1.0.0 client
+(``examples/stock/ghidra_session_1_0_0.py``), because the protocol-2 goldens carry the client's own
+``clientVersion`` (1.0.0) and must stay byte-identical; at ``--protocol 3`` it uses the install's
+client (``--client {stock,install}`` overrides; the stock client cannot ask for 3).
+
 Golden files: ``examples/characterization/<scenario>.json`` (``--golden`` to use another
 directory). Scenarios: see ``SCENARIOS``; run some with ``--only session,edits``. With ``--out
 <dir>`` the masked replies of this run are also written there, whatever the mode.
@@ -81,6 +86,25 @@ import time
 
 HERE = pathlib.Path(__file__).resolve().parent
 REQUIRE_V3_ENV = "HYDRA_REQUIRE_V3"  # =1 is --require-v3 (see the docstring)
+#: The stock 1.0.0 client (client_compat_tests.py proves it is the 1.0.0 file byte for byte).
+STOCK_FILE = HERE / "stock" / "ghidra_session_1_0_0.py"
+
+
+def load_client(which, install):
+    """The launcher library every connection of this run uses. ``stock``: the vendored 1.0.0
+    client, loaded by path (it speaks protocol 2 only, as the goldens at ``--protocol 2`` were
+    recorded). ``install``: the install's own ``support/ghidra_session.py`` (the client under
+    test; the v3 scenarios need its protocol range)."""
+    if which == "stock":
+        spec = importlib.util.spec_from_file_location("ghidra_session_1_0_0", STOCK_FILE)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = mod
+        spec.loader.exec_module(mod)
+        return mod
+    sys.path.insert(0, str(pathlib.Path(install) / "Ghidra" / "Features" / "HeadlessSession" /
+                           "support"))
+    import ghidra_session as gs
+    return gs
 
 # ---- the fixture: two tiny x64 PE files ----------------------------------------------------
 
@@ -973,6 +997,10 @@ def main():
                     "examples/characterization/v3 with --protocol 3)")
     ap.add_argument("--protocol", type=int, choices=(2, 3), default=2,
                     help="the protocol every connection asks for in hello (default 2)")
+    ap.add_argument("--client", choices=("stock", "install"), default=None,
+                    help="the launcher library the run uses: stock (the vendored 1.0.0 client, "
+                    "the default at --protocol 2, so the v2 goldens stay byte-identical) or "
+                    "install (the install's own, the default at --protocol 3)")
     ap.add_argument("--require-v3", dest="require_v3", action="store_true",
                     default=os.environ.get(REQUIRE_V3_ENV, "").strip().lower()
                     in ("1", "true", "yes", "on"),
@@ -990,6 +1018,8 @@ def main():
         return selftest()
     if not a.ghidra or not a.work:
         ap.error("--ghidra and --work are required (except with --selftest)")
+    if a.client is None:
+        a.client = "stock" if a.protocol == 2 else "install"
     if a.golden is None:
         base = HERE / "characterization"
         a.golden = str(base if a.protocol == 2 else base / "v3")
@@ -1010,9 +1040,10 @@ def main():
             ap.error(f"scenario {n} does not run at protocol {a.protocol}")
     for f, why in load_errors:
         print(f"FAIL load {f}: {why}")
-    sys.path.insert(0, str(pathlib.Path(a.ghidra) / "Ghidra" / "Features" / "HeadlessSession" /
-                           "support"))
-    import ghidra_session as gs
+    if a.client == "stock" and a.protocol > 2:
+        ap.error("--client stock speaks protocol 2 only; use --client install with --protocol 3")
+    gs = load_client(a.client, a.ghidra)
+    print(f"client: {a.client} {gs.CLIENT_VERSION} (protocol {gs.PROTOCOL})")
     c = Ctx(a, gs)
     failed = [f for f, _ in load_errors]
     t_all = time.perf_counter()
