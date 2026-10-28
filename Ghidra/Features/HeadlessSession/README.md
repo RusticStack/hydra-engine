@@ -1,17 +1,19 @@
 # Headless Session
 
 `analyzeHeadless` is a command about one program file: it opens (and locks) one project, runs
-pre/post scripts against the programs that `-process`/`-import` select, and exits. The Ghidra
-window is a session: you open a project, see what is in it, pick a program, switch to another,
-keep working, save, and the process stays.
+pre/post scripts against the programs that `-process`/`-import` select, and exits. The headless
+session keeps the process up instead: you open a project, see what is in it, pick a program,
+switch to another, keep working, save, and the process stays.
 
-The headless session is that session without the window, as a shared per-user service. One
-long-lived JVM, driven by JSON lines over an authenticated loopback socket (or stdio), that:
+There is no GUI. Hydra Engine is headless only; projects it writes cannot be opened by Ghidra 12.2
+or 12.1.4. The session is a shared service per state directory and instance: one long-lived JVM,
+driven by JSON lines over an authenticated loopback socket (or stdio), that:
 
-- serves **any number of projects at once**, each opened in place by its `.gpr`, its folder, or a
+- serves **several projects at once**, each opened in place by its `.gpr`, its folder, or a
   parent folder: read-only without touching the project, or writable when asked;
-- serves **any number of clients at once** (several agent harnesses, tools, MCP servers), which
-  find it through a per-user endpoint file and start it if it is not running;
+- serves **several clients at once** (several agent harnesses, tools, MCP servers; tested with up
+  to 4 clients), which find it through an endpoint file in the state directory and start it if it
+  is not running;
 - lists folders and programs, with each program's SHA-256, without opening them;
 - opens and switches programs, also inside folders, **without importing**;
 - imports any format a Ghidra loader accepts (PE EXE and DLL, ELF, Mach-O, raw, ...), never twice
@@ -19,16 +21,16 @@ long-lived JVM, driven by JSON lines over an authenticated loopback socket (or s
 - runs auto-analysis on request, decompiles, renames, comments, saves;
 - runs any GhidraScript (Java, or Python through a script provider) with arguments;
 - lets several clients change things at once: several writers in one project, several writers
-  of one program (shared mode, with an author journal and an opt-in `expect` against lost
-  updates; without it the last writer wins per value), a
+  of one program (shared mode, with an author journal and `expect` to detect lost updates), a
   private **overlay** per client over a program others read, and **working copies**
   (`fork_project`, a block clone on ReFS) of a project others keep reading;
 - notices when another process saves a project it serves read-only, and reopens it for all its
   clients at once (`refresh`);
 - imports in parallel (`maxImports`), with a visible, cancellable queue;
-- shares work fairly: per-program read/write locks, a scheduler that keeps long work from
-  delaying quick queries, per-client (and per-label) cancellation, and clean release when a
-  client dies;
+- shares work: per-program read/write locks, two lanes (native commands stay in the quick lane
+  while imports and analyses run in the long lane), per-client (and per-label) cancellation of
+  requests waiting for a slot and of cooperative scripts, and, when a client disconnects, its
+  requests cancelled and its uncommitted changes rolled back when its running request ends;
 - stays up (or stops after an idle time you choose).
 
 It is one new module, plus three small fixes to Ghidra classes that the session's measurements
@@ -152,7 +154,8 @@ owner-only on POSIX; on Windows it inherits the per-user ACL of its parent.
 
 ## The shared daemon
 
-One daemon per user and **instance** (default `default`). Its files in the state dir:
+One daemon per state directory and **instance** (default `default`); Hydralysis uses its own
+instance and data root. Its files in the state dir:
 
 | File | Written by | Purpose |
 |---|---|---|
@@ -188,10 +191,10 @@ writable projects close (and release their lock) as soon as their last user leav
 
 ## Read-only view, writable project
 
-By default a project is opened the way the window's *File > View Project* opens one: as
+By default a project is opened as a read-only view: as
 `new DefaultProjectData(locator, false, false)`, which takes **no project lock** and opens every
 file system read-only. Nothing in the project is written: not a lock file, not an index, not a
-timestamp. Any number of sessions, and a Ghidra window, can read the same project at the same
+timestamp. Several sessions, and other processes, can read the same project at the same
 time, and there is no need to copy the project first.
 
 `analyzeHeadless` cannot do this. It always opens the project through `DefaultProject`, which
@@ -200,8 +203,8 @@ calls `new DefaultProjectData(locator, true, ...)` and locks the project, even w
 `processFileNoImport` opens the program with `getDomainObject` and does not save it;
 `DefaultProject.java:119`).
 
-With `"writable": true` the project is opened with its lock, as the window's *Open Project* does.
-Only one process can hold it: a writable open while another process (a Ghidra window,
+With `"writable": true` the project is opened with its lock.
+Only one process can hold it: a writable open while another process (another Ghidra process,
 `analyzeHeadless`, another daemon) holds it gets `conflict` naming the lock file and its holder.
 Inside this daemon the writable project is one instance that its clients share ("Several
 clients").
@@ -216,7 +219,7 @@ Every project and program has a **revision**, a 16-hex-digit fingerprint of what
 - **Project revision**: every file of the `.gpr` and `.rep` by relative path, size and
   modification time, plus the SHA-256 of every file up to 1 MiB (the `.gpr`, property and index
   files): the identity the upgrade cache keys by, without the project's location and this
-  Ghidra's version, and without `<name>.rep/projectState` (window and tool state Ghidra rewrites
+  Ghidra's version, and without `<name>.rep/projectState` (tool state Ghidra rewrites
   when a writable project closes) and Ghidra's transient pre-save files. Ghidra writes its large
   database files whole, as new versions, never in place, so their size and time identify them.
   Two daemons, and a copy with its files' times kept, agree on it.
@@ -279,7 +282,7 @@ Revisions compare saved state, not programs' meaning: any save changes them.
 
 ### Working copies: `fork_project`
 
-A read-only view lets any number of clients read a project, and clients of this daemon may
+A read-only view lets several clients read a project, and clients of this daemon may
 write it together (each program with its owner or its shared writers), but whatever they save
 is the project everyone reads. A client that wants to change things without changing the master
 others keep reading, or that wants a program to itself for long, heavy work, forks the project
@@ -400,7 +403,8 @@ behind in the shared program. A fork per hypothesis is heavier than that needs.
 **Why not a view of the shared program.** Ghidra has no per-client view of one `Program` object:
 a change in a program object is a change for everyone holding it, and the session shares one
 object per program among its readers. Contained scripts get isolation only by rolling everything
-back at the end, so they cannot keep a change for later requests.
+back at the end (other clients can see their changes while they run), so they cannot keep a
+change for later requests.
 
 **What was evaluated:**
 
@@ -551,7 +555,8 @@ Request:
 - `id`: any JSON value; the response echoes it. Unique among this client's unanswered requests.
 - `cmd`: the command.
 - `wait`: milliseconds the request may wait for a scheduler slot or a lock before it fails with
-  `busy` (default 10000). Nothing queues forever.
+  `busy` (default 10000). The one exception is an `import` waiting in the import queue, which
+  waits without limit unless it passes a numeric `wait` ("The import queue").
 - `parallel`: `true` runs the request at once on its own thread. Without it, one client's
   requests run in the order sent (other clients always run in parallel). Use it when one
   connection carries several independent callers, as an MCP server's does.
@@ -654,7 +659,8 @@ in `error.details`:
 ## Several clients
 
 - **Projects are shared.** Clients that open the same project (by any path to it) use one
-  instance. Different projects never wait on each other.
+  instance. Each program and project has its own lock. They share the daemon's lane slots and
+  import gate, so enough long work anywhere can delay a save or fork elsewhere.
 - **Programs are shared.** Two clients that open the same program use one instance and decompile
   it in parallel with separate pooled decompilers.
 - **Each program has a fair read/write lock.** Queries and contained scripts share it. Edits,
@@ -663,25 +669,26 @@ in `error.details`:
 - **One owner per program, or shared writers.** By default only the client that opened a
   program writable may `rename`, `comment`, `edit`, `analyze`, `save` or run a changing script;
   others get `not_owner` (with `alternatives`: an overlay, or a fork); they may still read it and
-  then see the owner's unsaved changes, as a second tool window would. Opened with
+  then see the owner's unsaved changes. Opened with
   `"share": true`, a program has several writers at once ("Shared writing").
-- **Fair scheduling.** Requests take a slot in one of two lanes before any lock: **quick**
+- **Two lanes.** Requests take a slot in one of two lanes before any lock: **quick**
   (decompile, functions, list, open, rename; one slot per CPU) and **long** (analyze, import,
-  script, save; a quarter of the CPUs). Long work can never take the slots the quick native
-  commands need, so one client's whole-program export or analysis does not delay another's
-  10 ms decompile. This protects the native commands only: a `script` takes a long slot, so a
-  query sent as a script waits behind long work (measured: 8.05 to 8.27 s behind two 8 s scripts
-  on a two-slot long lane; see the root README, "Platform and limits"). When a
-  lane is full, waiting requests are admitted round-robin by client, so a client that sends a
-  hundred requests cannot starve one that sends one. The daemon's own background work (upgrade
-  cache builds) takes a long slot only while no client waits for one. `status` shows each lane's
-  use and queue.
+  script, save; a quarter of the CPUs). Native commands stay in the quick lane while imports and
+  analyses run in the long lane. Scripts run in the long lane, so a client that asks its
+  questions through scripts shares it, and a full long lane delays those questions (measured up
+  to about 8 s). Readers of the program being analysed wait for its lock. When a lane is full,
+  waiting requests are admitted round-robin by connection; there was no cap on how many slots
+  one connection ran. The daemon's own background work (upgrade cache builds) takes a long slot
+  only while no client waits for one. `status` shows each lane's use and queue.
 - **Cancellation is per client**, and per label when the request carries one (below). `cancel`
-  reaches a client's own requests, running or queued.
-- **Leaving is safe.** When a client disconnects or its process dies (the OS resets its socket),
-  its requests are cancelled, its unsaved changes are discarded (and logged), and its programs go
-  back to read-only for the others. Another client that asks for the program meanwhile waits for
-  that release within its `wait`.
+  stops requests waiting for a slot and cooperative scripts; a request waiting for a program lock
+  stays until its `wait` runs out.
+- **Leaving.** When a client disconnects or its process dies (the OS resets its socket), its
+  requests are cancelled and its uncommitted changes are rolled back (and logged) when its
+  running request ends, and its programs go back to read-only for the others. A request blocked
+  on a lock, or a script that ignores cancel, keeps its place until the lock frees or the script
+  ends. Another client that asks for the program meanwhile waits for that release within its
+  `wait`.
 - **Opening a project writable while other clients use its read-only view reopens it writable
   in place**: same id and keys, their programs reopened from the writable project (read-only for
   them), their overlays rebuilt; they are told once with `refreshed`. A second writable open
@@ -694,17 +701,17 @@ view and a writable project are described in "Read-only view, writable project".
 
 | Situation | Result | Why |
 |---|---|---|
-| Any number of readers of one program | in parallel | No project lock; they share one warm program and each decompile takes its own pooled decompiler. Queries hold the program's shared lock. |
-| Any number of read-only views of one project (also a Ghidra window) | in parallel | A read-only view takes no project lock and writes nothing. |
-| Writers in **different projects** | in parallel | Different projects never wait on each other. |
+| Several readers of one program | in parallel | No project lock; they share one warm program and each decompile takes its own pooled decompiler. Queries hold the program's shared lock. |
+| Several read-only views of one project (also other processes) | in parallel | A read-only view takes no project lock and writes nothing. |
+| Writers in **different projects** | in parallel | Each project and program has its own lock. They share the daemon's lane slots and import gate, so enough long work anywhere can delay a save or fork elsewhere. |
 | Two writers of the **same program** | owner mode (default): one wins, the other gets `not_owner` with `alternatives: ["overlay", "fork_project"]`; shared mode (`"share": true`): **both write** | Owner mode: one owner, the client that opened it writable; others may read it and see its unsaved changes, or annotate their own overlay. Shared mode: every writer's change is committed in its own transaction, one at a time, under the program's exclusive lock, visible to all at once, journalled with its author; last writer wins per value, `expect` turns a lost update into `conflict` ("Shared writing"). Owner and shared mode do not mix on one program. |
 | Two writers on **different programs of one writable project** | in parallel | A second client that opens the project writable joins the daemon's one writable instance (one project lock). Each program has its own lock and owner (or shared writers), so renames, comments, analysis and saves of two programs run at the same time (tested: 2 writers x 600 edits, 14 saves and an analysis each, then the project reopens with all of them). They share the project's lifetime: it closes when its last user leaves, and a script with project access can reach every program in it. |
-| A second **process** (a Ghidra window, `analyzeHeadless`, another daemon) opens a project this daemon holds writable, or the reverse | `conflict` | The project lock is held by one process; the error names the lock file. |
+| A second **process** (another Ghidra process, `analyzeHeadless`, another daemon) opens a project this daemon holds writable, or the reverse | `conflict` | The project lock is held by one process; the error names the lock file. |
 | `open_project` writable while another client of this daemon uses its read-only view | reopened writable **in place** | The daemon takes the project lock, replaces the view under the project's exclusive lock (requests running on it finish first) and reopens its clients' programs from the writable project, same keys; their overlays are rebuilt; they see `refreshed` once. Refused (`conflict`, `suggest: "open_read_only"`) only when another process holds the project lock. Measured with a reader using a 243,855-function program: 130-152 ms, and the reader's next decompile 246-259 ms (a new decompiler on the reopened program). To keep the master unchanged, `fork_project` it instead. |
 | Read-only view of a project another process has open and saves | works, flagged `stale` | It shows the project as it was when the view opened; its clients are told with `stale` on their next answers, and `refresh` reopens the view for all of them at once, without anyone leaving ("Revisions and `refresh`"). |
 | Concurrent `import`s of **different files** | in parallel, up to `maxImports` | Into different projects or into one: each load is handed its own project, and nothing on the load path reads the process-wide "active project". Beyond `maxImports` they queue first-come, first-served, visible in `status.imports` (running, position, estimated wait), cancellable without touching the running ones: see "Parallel imports". |
 | Concurrent `import`s of the **same file into one project** | once | The second waits for the first and answers `imported: false` with `existing` (unless `duplicate`). |
-| An `import` while other clients read the project | in parallel | Readers are not slowed beyond noise (measured below). Ghidra holds the project's file-system lock while it writes a new program into the project, so a `list` or `open_program` of that project may wait for that write (a few seconds for a large program); `decompile` and other queries of open programs do not. |
+| An `import` while other clients read the project | in parallel | Readers were not slowed beyond noise in the measurement below. Ghidra holds the project's file-system lock while it writes a new program into the project, so a `list` or `open_program` of that project may wait for that write (a few seconds for a large program); `decompile` and other queries of open programs do not. |
 
 What the codes mean when two clients meet:
 
@@ -738,13 +745,13 @@ its own save. The open and the analysis of `analyze: true` follow outside the ga
 import's long slot, so analyses of imported programs run side by side as they always did,
 bounded by `maxLong`, and the next import can load meanwhile.
 
-**Why this is safe.** Imports used to run one at a time because Ghidra's loaders were thought to
+**Why parallel loads are possible.** Imports used to run one at a time because Ghidra's loaders were thought to
 read project state through the process-wide "active project" (`AppInfo`). Reading the load path
 (Ghidra master, 12.3 DEV) shows what actually reads global state:
 
 | Global | Read on the load path? | What it means for parallel imports |
 |---|---|---|
-| `AppInfo.getActiveProject()` | Only by `LibrarySearchPathManager` (once, when the class loads, and when someone changes the paths). The loader options' editors (`Option.getState()`, the browse buttons of `DomainFolderOption`/`DomainFileOption`) read it, but only in the window's import dialog. | Nothing. The session no longer sets the active project for an import. |
+| `AppInfo.getActiveProject()` | Only by `LibrarySearchPathManager` (once, when the class loads, and when someone changes the paths). The loader options' editors (`Option.getState()`, the browse buttons of `DomainFolderOption`/`DomainFileOption`) read it, but only in the import dialogs of Ghidra's interactive tool, which a headless process does not have. | Nothing. The session no longer sets the active project for an import. |
 | `LibrarySearchPathManager` path set | A static set, loaded once from whatever project was active first, read under `synchronized` by loaders that search for libraries. | Every import in the process reads the same set, whatever its project, exactly as it did when imports were serialized (`examples/ImportIsolationProbe.java`, `daemon_tests.py import_isolation`: a path added while project A is active is visible while B is active and is not in B's saved state). The session never changes it; a script that calls `LibrarySearchPathManager.setLibraryPaths` changes it for every later import. |
 | Language and compiler specs | `DefaultLanguageService`: loading a language is `synchronized` per language. | Two imports of one new language wait for its one load. |
 | Project data | Every `GhidraFolder` change takes the project's file-system lock (`synchronized (fileSystem)`); `createFile` writes the new program's database under it; the default (indexed) file system ignores a second `createFolder` of an existing name; `Loaded.save` retries with `name.0`, `name.1`, ... on `DuplicateFileException`. | Two imports into one project serialize only while each writes its program into the project; two files with the same name both land (`x`, `x.0`); two imports into the same new folder both land in it. |
@@ -769,7 +776,7 @@ import it once: the second waits for the first to save (its `progress` says "wai
 2 (agent-a, ...)'s import of the same file"), then finds the result and answers `imported:
 false`, `existing: [path]` and `sameFileImport` (`who`, `file`, `waitedMs`). If the first fails
 or is cancelled, the second imports the file itself. `duplicate: true` skips the check and the
-wait. Different projects never wait on each other's files.
+wait. The wait is per project: an import into another project does not wait for it.
 
 **Readers.** Clients that read or decompile in a project while imports run into it are not
 slowed beyond noise (`daemon_tests.py import_readers`, numbers in "Performance"). The one wait
@@ -822,10 +829,10 @@ When `maxImports` imports run, the next ones wait, and the wait is visible and u
 - **Cancelling a queued import** (`cancel` by id, `cancel all`, a disconnect) takes it out of the
   queue at once and answers `cancelled`; the running imports and the others queued are
   untouched. Cancelling a running import frees its place and the next one starts.
-- The queue wait is unlimited unless the request passes a numeric `wait`, in which case it fails
-  with `busy` (details: the same queue information) after that long; the same `wait` also limits
-  a wait for the same file. A queue position is not lost to the slot wait: an import that
-  reaches the front takes its long slot then.
+- An import waits in the import queue: without limit unless the request passes a numeric `wait`,
+  in which case it fails with `busy` (details: the same queue information) after that long; the
+  same `wait` also limits a wait for the same file. At the front it still needs a long slot and
+  fails `busy` after `wait` (10 s default) if none comes free.
 - Duplicates: the SHA-256 check runs when the import gets its turn, so two queued requests for
   the same file import it once and the second answers `imported: false`.
 
@@ -857,7 +864,7 @@ request, or `a = s.labelled(client="agent-a", harness="claude-code")`, a view wh
 
 ## Scripts
 
-`script` runs a GhidraScript the way the window's Script Manager does: `currentProgram`,
+`script` runs a GhidraScript as headless Ghidra does: `currentProgram`,
 `currentAddress`, `state.getProject()`, `getScriptArgs()`, `println`, `monitor`, and
 `isRunningHeadless()` true. `HeadlessScript` subclasses also get `storeHeadlessValue` and
 `getStoredHeadlessValue`. The session binds them to `HeadlessAnalyzer.getInstance()` through
@@ -867,8 +874,8 @@ Ghidra's package-private setter, reflectively, so no Ghidra class is changed.
   runs exclusively and its changes stay in the program, unsaved unless `"save": true`; the
   journal records that it ran (`op: "script"`), not each change it made.
 - Otherwise the script is **contained**: it runs inside an outer transaction that is always
-  rolled back, so it cannot change what other clients see or what is saved. Contained scripts
-  share the program lock and run in parallel, unless `"exclusive": true`. A script that must run
+  rolled back, so its changes are never saved; while it runs, other clients can see them.
+  Contained scripts share the program lock and run in parallel, unless `"exclusive": true`. A script that must run
   outside every transaction, such as version tracking, which ends the script's transaction to
   take its own locks, must run as owner.
 - With `"program": null`, or with no program open, it runs with only the active project (or
@@ -881,11 +888,12 @@ whichever way it is named: a `.java` file elsewhere fails with `script did not l
 to find source bundle containing script`. Put your scripts' folder on `scriptPath` (the daemon
 reads it at start: `stop`, then start it again).
 
-A script is Java with the session's rights, so this is not a sandbox. Containment protects other
-clients' view of the program, not the machine.
+A script is Java with the session's rights, so this is not a sandbox. Containment rolls the
+script's changes back; it does not hide them from other clients while the script runs, and it
+does not protect the machine.
 
-`examples/HeadlessApiProbe.java` is a script that exercises, without a window, everything people
-usually open the window for: C headers parsed into a `.gdt` and applied, enum, union, typedef and
+`examples/HeadlessApiProbe.java` is a script that exercises the headless Ghidra API for what
+interactive tools usually do: C headers parsed into a `.gdt` and applied, enum, union, typedef and
 function-definition types, typed data with a global label, a global rename, a bookmark, auto
 create structure from usage, and version tracking from another program in the project.
 
@@ -939,7 +947,7 @@ result = s.wait(rid)                                   # result["artifact"] == o
    `python ghidra_session.py ensure` once, then read `<state>/default.json` and connect to its
    port. Keep one connection per process and send `"parallel": true` for independent calls.
 2. **Adopt an analysed project, no import.** `open_project` with the `.gpr` or its folder (a
-   read-only view: no copy, no lock, the project stays byte-identical). `list` with `sha256` (or
+   read-only view: no copy, no lock, the project stays the same saved state, checked by file sizes and times, not byte for byte). `list` with `sha256` (or
    `programsOnly`) finds the program by hash; `open_program` it and check `info.sha256` before
    trusting answers.
 3. **Ask.** `decompile`, `functions`, or `script` for anything else, bounded by `maxChars`. The
@@ -1013,7 +1021,7 @@ the program database is version 33 on `main` and 32 in 12.1.4; the data type dat
   program in memory, which for a large one takes many times longer than the open itself, so the
   **upgrade cache** (above) builds an upgraded copy outside the project, in the background, and
   later opens read from it (`cachedUpgrade`, `cacheBuild` in `open_program`). The copy is
-  block-cloned where the file system can, and the project stays byte-identical.
+  block-cloned where the file system can, and the project stays the same saved state (checked by file sizes and times, not byte for byte).
 - **Writable:** `open_program` with `"writable": true` is refused with `conflict` ("needs a
   database upgrade") until the request passes `"upgrade": true`. The upgrade is **one-way**:
   once `main` has saved the program, Ghidra 12.1.4 (and 12.2) can no longer open it, because
@@ -1072,7 +1080,7 @@ module" and "Deferred start-up"; "this branch" is with them.
 | Daemon: start it and connect | 578 ms (532-1077) | 685 ms (623-720) | **533 ms** (472-572) |
 | Daemon: first client's `open_program` | 803 ms (782-979) | 4111 ms (3898-6478) | **832 ms** (754-869) |
 | Daemon: start until the first answer | 1684 ms (1624-2392) | 5049 ms (4892-7491) | **1637 ms** (1589-1765) |
-| Warm `decompile` | 7.0-7.3 ms | 7.1 ms | 6.7-7.1 ms |
+| Warm `decompile` (the benchmark function; about 1 to 45 ms by function size) | 7.0-7.3 ms | 7.1 ms | 6.7-7.1 ms |
 
 The warm `decompile` rows here and below time one function of this program, whose size was not
 recorded; a warm decompile depends on the function's size. Measured by the owner on a KotOR
@@ -1124,7 +1132,7 @@ about 26 s once per install and JDK.
 |---|---|
 | No daemon running: start it and connect | 573 ms (the JVM is ready after 413 ms) |
 | First client: `open_project`, `open_program`, first `decompile` | 44 ms, 981 ms, 250 ms |
-| Warm `decompile` | 6.3 ms |
+| Warm `decompile` (the benchmark function; about 1 to 45 ms by function size) | 6.3 ms |
 | Another harness process, while the first is connected: connect + `hello`, join the project, `open_program` (already open), `decompile` | 14 ms, 0.9 ms, 0.9 ms, 7.4 ms |
 | A harness that arrives after everyone left (within `keepWarm`): `open_program` | 1.7 ms (no reopen) |
 | 40 decompiles of different functions by one harness | 0.2-1.2 s |
@@ -1132,8 +1140,8 @@ about 26 s once per install and JDK.
 
 So a harness pays the cold start once per machine, not once per question or per process; later
 clients find projects, programs and decompilers already warm. For comparison, an
-`analyzeHeadless -process ... -readOnly -postScript` run doing one decompile on the same project
-took 7.0-7.8 s per question and needed a copy of the project.
+`analyzeHeadless -process ... -readOnly -postScript` run (stock Ghidra 12.1.4) doing one decompile
+on the same project took 7.0-7.8 s per question and needed a copy of the project.
 
 ## Tests
 
@@ -1178,11 +1186,11 @@ took 7.0-7.8 s per question and needed a copy of the project.
   the copy and is faster; a daemon killed mid-build leaves no entry and the next start builds
   cleanly; a stop mid-build is prompt; a queued build waits for a client's long job, fails when
   the source changes meanwhile, and the next open retries; `cancel` stops a build; an older key's
-  copy is removed; the source stays byte-identical); `holders` (who holds what, in `busy`, `conflict` and
+  copy is removed; the source's files keep their sizes and times); `holders` (who holds what, in `busy`, `conflict` and
   `not_owner`, and the suggested action); `fork` (a fork while the master's view stays open and
   in use; its sidecar; a fork of a fork; unsaved changes, an existing destination, a source
   another client or process writes, refused; `copy-on-write`, `auto` and `full` modes; the master
-  stays byte-identical); `revisions` (revisions in `open_project`, `open_program`, `info` and
+  keeps its files' sizes and times); `revisions` (revisions in `open_project`, `open_program`, `info` and
   `status`; another process saves: `stale` on the readers' next answers; one reader's `refresh`
   switches both, the other is told once with `refreshed`; a fork starts at its source's revision;
   a writable project needs no refresh); `overlays` (two clients' overlays of one program show
@@ -1247,7 +1255,7 @@ The distribution also leaves out `__pycache__` folders and `.pyc` files that run
 
 ## What is already scriptable (Ghidra master, 12.3 DEV)
 
-| Window feature | API, headless | Verdict |
+| Ghidra feature | API, headless | Verdict |
 |---|---|---|
 | Version tracking | `VTSessionDB.createVTSession` (`Features/VersionTracking/.../api/db/VTSessionDB.java:116`), `VTProgramCorrelatorFactory.createCorrelator` (`.../api/main/VTProgramCorrelatorFactory.java:68`), `AutoVersionTrackingTask(VTSession, ToolOptions)` (`.../gui/actions/AutoVersionTrackingTask.java:96`; runs with default options and needs no tool); `ghidra_scripts/AutoVersionTrackingScript.java` already branches on `isRunningHeadless()` | Script. What headless lacks is two programs open in one long-lived process; the session supplies that. |
 | Bulk types | `CParserUtils.parseHeaderFiles` (`Features/Base/.../cparser/C/CParserUtils.java:402`, returning a `FileDataTypeArchive`; the `FileDataTypeManager` variants are deprecated since 12.3), `DataTypeArchiveFactory.createFileArchive` / `openReadOnly` / `openForUpdate` (`Framework/SoftwareModeling/.../database/dtarchive/DataTypeArchiveFactory.java:49,121,160`), `DataTypeManager.addDataType` / `addDataTypes` (`.../data/DataTypeManager.java:133,147`); `EnumDataType`, `UnionDataType`, `TypedefDataType`, `FunctionDefinitionDataType` | Script. |
@@ -1262,10 +1270,11 @@ The distribution also leaves out `__pycache__` folders and `.pyc` files that run
   module have no Windows-specific path (POSIX file locks, `start_new_session`, owner-only state
   dir), and a one-off dry run built and passed the tests on Linux x64 and macOS arm64, but
   neither is tested routinely.
-- Projects saved by this build (upstream `master`, 12.3 DEV) cannot be opened by Ghidra 12.2 or
-  12.1.4: data type databases are written at version 3, which they cannot read. A read-only view
-  writes nothing; open an older project writable (or `fork_project` it and write the fork) only
-  when it may move to this version.
+- There is no GUI. Hydra Engine is headless only; projects it writes cannot be opened by Ghidra
+  12.2 or 12.1.4. Projects saved by this build (upstream `master`, 12.3 DEV) write data type
+  databases at version 3, which those versions cannot read. A read-only view writes nothing;
+  open an older project writable (or `fork_project` it and write the fork) only when it may move
+  to this version.
 - An overlay changes only through its five operations (`rename`, `label`, `comment`,
   `signature`, `data_type`), and it is over the program as it was stored when the overlay
   opened: it does not show an owner's or shared writers' unsaved changes, nor saves made after

@@ -14,12 +14,33 @@ it is based on.
 
 ### Documentation
 
-- The README and the module README no longer say that queries always flow in the quick lane or
-  that a crashed client's locks are always freed. A `script` takes a long slot, so a query sent
-  as a script queues behind long work (measured: 8.05 to 8.27 s behind two 8 s scripts on a
-  two-slot long lane), and a client killed while waiting for a lock stays registered until the lock
-  frees (measured: still registered 40 s later). Both are documented under "Platform and limits".
-  The fixes are designed in `PROTOCOL-3.md`, not shipped.
+Wording corrected to what is true today; no behaviour changed. The claim ids are those of the
+claims audit in `Ghidra/Features/HeadlessSession/PROTOCOL-3.md`, section 8.3.
+
+- Concurrency (C1, C3, C4, U1, U2, U3): writes are serialized and no corruption was seen in the
+  tests listed; collisions are only detected when you pass `expect`. Native commands stay in the
+  quick lane while imports and analyses run in the long lane; scripts share the long lane, and
+  the readers of a program being analysed wait for its lock. Each program and project has its
+  own lock, but they share the daemon's lane slots and import gate. Waiting requests are
+  admitted round-robin by connection, with no cap on how many slots one connection runs. The
+  documents say "several clients (tested with up to 4 clients)" where they gave no limit.
+- Scripts, cancel and dead clients (C2, C5, C7): a contained script's changes are rolled back and
+  never saved, but other clients can see them while it runs. `cancel` stops requests waiting for
+  a slot and cooperative scripts; a request waiting for a program lock stays until its `wait`
+  runs out. A disconnected client's requests are cancelled and its uncommitted changes rolled
+  back when its running request ends.
+- Imports (C6): an import waits in the import queue; at the front it still needs a long slot and
+  fails `busy` after `wait` (10 s default).
+- Facts (C8, C11, U10, U11): one daemon per state directory and instance; three small fixes to
+  Ghidra classes, not two; a native decompile takes about 1 to 45 ms by function size (7 ms in
+  the benchmark function); the 7.0-7.8 s of `analyzeHeadless` was measured on stock Ghidra 12.1.4.
+- Headless only (U8, U14): there is no GUI, and projects Hydra Engine writes cannot be opened by
+  Ghidra 12.2 or 12.1.4. Scripts that use the headless API run unchanged; GUI-only extensions do
+  not apply. "Other processes can read it" replaces the sentences that named an interactive
+  Ghidra tool as a reader of a read-only project.
+- Read-only checks (U12): the tests compare file sizes and modification times (and contents up to
+  1 MiB in the upgrade cache test), not a byte-for-byte copy of every file.
+- `how-it-works.gif` is labelled as an illustration (U5).
 
 ### Internal
 
@@ -52,7 +73,8 @@ tree.
 - GP-7418 Ghidra URL encode and decode fixes (`GhidraURL`); GP-7416 loader options built with
   constructors deprecated in 12.2 no longer lose headless `-loader-*` arguments (`Option`).
 - Bounds-checking fix in `StaticValueByteProvider`, symbol path parsing (`SymbolPathParser`),
-  Objective-C message analyzer, Windows RTTI script, GUI-only dialog and marker fixes.
+  Objective-C message analyzer, Windows RTTI script, and dialog and marker fixes in code the
+  headless install does not contain.
 
 ### Database format gate
 
@@ -144,7 +166,7 @@ Several agents can now change things at the same time, each in the way that fits
   never saved unless promoted into a working copy (`promote_overlay`).
 - **Several writers**: several clients write one project (different programs in parallel), or
   one program in shared mode (`"share": true`), with every change journalled with its author,
-  `expect` against lost updates, an atomic `edit` command and `discard_edits`.
+  `expect` to detect lost updates, an atomic `edit` command and `discard_edits`.
 - **Revisions and `refresh`**: answers say when another process saved a project a read-only
   view serves (`stale`); `refresh` reopens it for all its clients at once.
 - **Who holds it, and what to do**: `busy`, `conflict` and `not_owner` name the holder
@@ -194,7 +216,7 @@ You need a JDK 25 and Python 3.10 or later; the install has no JDK.
   which `auto` mode refuses above `forkCopyLimitMb` (default 2048).
 - The author journal lives in the daemon's memory while the program is open and keeps the last
   200,000 entries; `discard_edits` reverts renames, labels and comments only.
-- Headless only: no window, help, javadoc or Python type stubs.
+- There is no GUI: headless only, with no help, javadoc or Python type stubs.
 
 ### Added
 
@@ -253,7 +275,8 @@ You need a JDK 25 and Python 3.10 or later; the install has no JDK.
   sends `progress` events "waiting behind ..." and its answer reports `queue` (`waitedMs`,
   `positionAtEntry`, `behind`). Cancelling a queued import removes it without touching the
   running one; cancelling the running one starts the next. A numeric `wait` now limits the queue
-  wait; without one a queued import waits until it runs or is cancelled.
+  wait; without one a queued import waits in the queue without limit, and at the front it still
+  needs a long slot and fails `busy` after `wait` (10 s default).
 - **Per-request `client` and `harness` labels.** Any request may carry them; they replace the
   connection's name for that request in `busy`/`conflict` holders (`holder` and `holderInfo`), `status` (requests, scheduler
   lanes, owner of a writable program, `youAre`), the import queue and the log, and they scope
@@ -298,7 +321,7 @@ You need a JDK 25 and Python 3.10 or later; the install has no JDK.
   setting and daemon option `-maxImports`; default one per four CPUs, 1 to 4) run at once, into
   different projects or into one; more queue as before. Imports no longer set the process-wide
   active project: nothing on Ghidra's load path reads it (the README's "Parallel imports" lists
-  what the load path shares and why it is safe): four 12-25 MB PEs imported at once took 64 s
+  what the load path shares and why parallel loads work): four 12-25 MB PEs imported at once took 64 s
   against 165 s one after the other, with identical programs. The gate covers the load and the
   save; `analyze: true` analyses afterwards in the import's long slot, as before. The same file sent twice at
   once into one project is imported once: the second waits and answers `existing`, with
@@ -382,30 +405,31 @@ You need a JDK 25 and Python 3.10 or later; the install has no JDK.
   Windows-only path, and a one-off dry run of the release workflow on 2026-10-26 built Linux x64
   and macOS arm64 installs that passed both test suites, but neither is released or tested
   routinely; build from source there (`gradle buildHeadless`).
-- **Headless only.** No window, help, javadoc or Python type stubs; the full Ghidra build is
-  still `gradle buildGhidra`, from source.
+- **There is no GUI.** Headless only: no help, javadoc or Python type stubs; `gradle buildGhidra`
+  still builds the whole source tree, from source.
 
 ### Added
 
-- **HeadlessSession module** (`Ghidra/Features/HeadlessSession`): a shared, per-user headless
-  session daemon. One JVM serves many projects and many clients over JSON lines on an
+- **HeadlessSession module** (`Ghidra/Features/HeadlessSession`): a shared headless session
+  daemon, one per state directory and instance. One JVM serves several projects and clients over JSON lines on an
   authenticated loopback socket (or stdio), with protocol version 2.
   - Projects opened in place: read-only without a lock, or writable with one.
   - Programs opened and switched without importing; imports with any Ghidra loader,
     deduplicated by SHA-256.
   - Analysis, decompiling, renames, comments, saves, and GhidraScripts (Java or Python) with
     arguments; scripts on programs a client does not own run contained and are rolled back.
-  - Fair scheduling (quick and long lanes, round-robin by client), one writer and many readers
-    per program, per-client cancel, clean release when a client dies, idle shutdown, warm
-    programs kept open for the next client.
+  - Two scheduling lanes (quick and long, round-robin by connection), one writer and several
+    readers per program, per-client cancel, a disconnected client's requests cancelled and its
+    uncommitted changes rolled back when its running request ends, idle shutdown, warm programs
+    kept open for the next client.
 - **`ghidra_session.py`**: a standard-library-only Python launcher, daemon manager and client
   (`connect()`), with no `.bat` or `.sh` launcher. Fast start with a class search cache and,
   on JDK 25+, an AOT cache.
 - **Tests**: `examples/session_smoke.py` and `examples/daemon_tests.py`.
 - **Headless build** (`gradle buildHeadless`, `gradle/hydra/headless.gradle`): an install
-  without the window-only modules, the help, javadoc and Python stubs, and with a check that no
-  module of the install depends on one it leaves out. The full build is still `gradle
-  buildGhidra`.
+  without the modules only an interactive tool uses, the help, javadoc and Python stubs, and with
+  a check that no module of the install depends on one it leaves out. `gradle buildGhidra` still
+  builds the whole source tree.
 - **Repository**: this README (Ghidra's original is `README-GHIDRA.md`), `NOTICE-HYDRA`, a
   security policy and contributor guide in `.github/`, issue and pull request templates, and CI
   (`.github/workflows/ci.yml`) that builds the headless install and runs both test suites.
