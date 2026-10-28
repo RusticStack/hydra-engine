@@ -79,7 +79,9 @@ Tests
 * ``e12_failed_commit``     a commit whose rename fails leaves no version file and the next save works;
   ``e12_control_failed_commit_no_cleanup`` is the same scenario without the cleanup (red).
 * ``e12_post_commit_failure`` a failure after the commit took effect (``versionCreated`` throws) keeps the
-  version file of the previous version; ``e12_control_post_commit_unconditional`` is a cleanup that
+  version file of the previous version; ``e12_commit_data_failure`` a failure after the rename that
+  leaves no new version (change data step) removes it, and ``e12_control_commit_data_failure`` (narrow
+  condition, no cleanup) is red; ``e12_control_post_commit_unconditional`` is a cleanup that
   runs after every failure (red).
 * ``e12_save_private``      the matrix for the save of a private database (what a fork holds).
 * ``e12_save_versioned``    the matrix for the save of a versioned database.
@@ -518,6 +520,10 @@ import java.util.*;
  * Mode "rename": the rename of the new version fails (the commit does not take effect).
  * Mode "post": the rename succeeds and versionCreated throws FileNotFoundException afterwards
  * (the commit has taken effect; the signature of a database whose files cannot be scanned).
+ * Mode "cdfail": the rename succeeds and the change data step that follows it throws
+ * IOException "Failed to update change data" (a change data file exists and a non-empty folder
+ * has the name of its .bak file); saveFile.delete() then removes the renamed new version, so the
+ * commit left no new version behind although the save file had its final name.
  */
 public class E12FailProbe {
     static class Mgr implements BufferFileManager {
@@ -557,9 +563,17 @@ public class E12FailProbe {
         for (int i = 0; i < 3; i++) { Arrays.fill(d, (byte) (0x10 + i)); b.setId(10 + i); v.put(b, i); }
         v.close();
         boolean post = a.length > 1 && a[1].equals("post");
+        boolean cdfail = a.length > 1 && a[1].equals("cdfail");
         File blocker = m.getBufferFile(2);
         if (post) {
             m.boom = true;
+        } else if (cdfail) {
+            // the change data file of the version being replaced exists, and its .bak name is taken
+            // by a non-empty folder: comitSaveChangeDataFile cannot move the old file aside
+            new File(m.getChangeDataFile(1).getPath()).createNewFile();
+            blocker = new File(m.getChangeDataFile(1).getPath() + ".bak");
+            blocker.mkdirs();
+            new File(blocker, "x").createNewFile();
         } else {
             blocker.mkdirs();
             new File(blocker, "x").createNewFile();
@@ -584,6 +598,7 @@ public class E12FailProbe {
         try { save(u2, 0x66); retryOk = true; } catch (Throwable e) { retryErr = e.toString(); }
         try { u2.close(); } catch (Exception e) { }
         System.out.println("{\"failed\":" + failed + ",\"err\":\"" + esc(err) + "\",\"versionFileLeft\":" + left
+            + ",\"newVersionExists\":" + newExists
             + ",\"retryOk\":" + retryOk + ",\"retryErr\":\"" + esc(retryErr) + "\",\"cur\":" + m.cur + "}");
     }
 }
@@ -1466,23 +1481,32 @@ def failed_commit(c, variant, mode="rename"):
     the version file closed early changed:
 
     * ``no_cleanup``    the cleanup removed (the version file of a failed commit stays);
-    * ``unconditional`` the cleanup runs after every failure, also one after the commit took effect.
+    * ``unconditional`` the cleanup runs after every failure, also one after the commit took effect;
+    * ``narrow``        the cleanup runs only while the save file still has its temporary name (the
+      condition before the change data failure was found: it misses a failure after the rename that
+      still leaves no new version).
 
     ``mode`` ``rename``: the rename of the new version fails (a non-empty folder with its name), then
     a second save runs. ``post``: the rename succeeds and ``versionCreated`` throws
-    ``FileNotFoundException`` afterwards (the failure of a commit that has taken effect)."""
+    ``FileNotFoundException`` afterwards (the failure of a commit that has taken effect). ``cdfail``:
+    the rename succeeds and the change data step throws ``IOException``; the renamed new version is
+    deleted again, then a second save runs."""
     base = c.work / "e12" / ("failcommit-" + mode + "-" + variant)
     if base.exists():
         shutil.rmtree(base)
     jars = install_jars(c.a.ghidra)
     cp = jars
-    if variant in ("no_cleanup", "unconditional"):
+    if variant in ("no_cleanup", "unconditional", "narrow"):
         lmbf = src_text(DB_REL + "LocalManagedBufferFile.java")
         if variant == "no_cleanup":
-            lmbf = sub_n(lmbf, r"^[ \t]*if \(closedVersionFile != null[^\n]*\) \{\r?\n[^\n]*\r?\n[ \t]*\}\r?\n", "", 1,
+            lmbf = sub_n(lmbf, r"^[ \t]*if \(closedVersionFile != null[^{]*\{\r?\n[^\n]*\r?\n[ \t]*\}\r?\n", "", 1,
                          "LocalManagedBufferFile cleanup of the closed version file", flags=re.M)
+        elif variant == "narrow":
+            lmbf = sub_n(lmbf, r"if \(closedVersionFile != null[^{]*\{",
+                         "if (closedVersionFile != null && !newFile.equals(saveFile.getFile())) {", 1,
+                         "LocalManagedBufferFile condition of the cleanup of the closed version file")
         else:
-            lmbf = sub_n(lmbf, r"if \(closedVersionFile != null && [^\n]*\) \{", "if (closedVersionFile != null) {", 1,
+            lmbf = sub_n(lmbf, r"if \(closedVersionFile != null[^{]*\{", "if (closedVersionFile != null) {", 1,
                          "LocalManagedBufferFile condition of the cleanup of the closed version file")
         f = base / "src" / "db" / "buffers" / "LocalManagedBufferFile.java"
         f.parent.mkdir(parents=True, exist_ok=True)
@@ -1543,6 +1567,34 @@ def t_control_post_commit_unconditional(c):
     return "unconditional cleanup: new version kept, version file of the previous version deleted; red as it must be"
 
 
+def t_commit_data_failure(c):
+    """A failure after the rename that leaves no new version behind (the change data step of a
+    check-in throws ``IOException`` "Failed to update change data", then ``saveFile.delete()`` removes
+    the renamed new version because it is not read-only yet) must remove the version file closed
+    early: the previous version is still the newest and the next save of the database must work."""
+    r = failed_commit(c, "current", "cdfail")
+    dt.check(r["failed"] and "Failed to update change data" in r["err"],
+             f"the save with a failing change data step did not fail as planned: {r}")
+    dt.check(not r["newVersionExists"], f"the failed commit left a new version: {r}")
+    dt.check(not r["versionFileLeft"], f"a commit that left no new version kept its version file: {r}")
+    dt.check(r["retryOk"] and r["cur"] == 2, f"the save after the failed commit failed: {r}")
+    return f"change data failure ({r['err']}): no new version, version file removed, next save ok, current version {r['cur']}"
+
+
+def t_control_commit_data_failure(c):
+    """The same scenario with the cleanup limited to a save file that still has its temporary name
+    (``narrow``) and without any cleanup must be red: the version file stays and the next save dies
+    with ``DuplicateFileException``."""
+    out = []
+    for variant in ("narrow", "no_cleanup"):
+        r = failed_commit(c, variant, "cdfail")
+        dt.check(r["failed"] and not r["newVersionExists"] and r["versionFileLeft"] and not r["retryOk"]
+                 and "DuplicateFileException" in r["retryErr"],
+                 f"control {variant}: the scenario did not show the defect: {r}")
+        out.append(variant)
+    return f"{' and '.join(out)}: version file left behind, next save fails (DuplicateFileException); red as it must be"
+
+
 TESTS = {
     "e12_source_guards": t_source_guards,
     "e12_trace_complete": t_trace_complete,
@@ -1556,6 +1608,8 @@ TESTS = {
     "e12_control_failed_commit_no_cleanup": t_control_failed_commit_no_cleanup,
     "e12_post_commit_failure": t_post_commit_failure,
     "e12_control_post_commit_unconditional": t_control_post_commit_unconditional,
+    "e12_commit_data_failure": t_commit_data_failure,
+    "e12_control_commit_data_failure": t_control_commit_data_failure,
     "e12_save_private": t_save_private,
     "e12_save_versioned": t_save_versioned,
     "e12_fork_publish_finding": t_fork_publish_finding,
