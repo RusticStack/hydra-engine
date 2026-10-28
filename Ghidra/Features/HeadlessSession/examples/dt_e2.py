@@ -361,8 +361,31 @@ def t_folder_singletons(c):
         check(sha_file(mk) == before[1], "the first project's marker was replaced")
         s.call("seal_project", project=str(dest / "other.gpr"), unseal=True, force=True)
         check(sha_file(mk) == before[1], "unsealing the second project deleted the first's marker")
+        # the publish pre-check itself (review round 2): a writable SEALED.json of a plain fork,
+        # no backup.json. The read-only backup.json above also refuses a second backup, so only
+        # this folder proves that ProjectFork.publish never replaces an existing marker.
+        dest2 = c.work / "e2-single-dest2"
+        if dest2.exists():
+            rmtree(dest2)
+        dest2.mkdir(parents=True)
+        s.call("fork_project", project=pid, path=str(dest2), name="plain", purpose="fork",
+               open=False, wait=120000)
+        s.call("seal_project", project=str(dest2 / "plain.gpr"))
+        mk2 = dest2 / "SEALED.json"
+        check(mk2.is_file() and not (dest2 / "backup.json").exists(),
+              f"the setup: a marker and no manifest: {sorted(os.listdir(dest2))}")
+        os.chmod(mk2, 0o666)  # the pre-check must hold even when the marker is writable
+        before2 = (sha_file(mk2), tree_digest(dest2))
+        e = expect_error("failed", backup, c, s, pid, dest2, name="second")
+        check("SEALED.json" in str(e), f"the refusal names the marker: {e}")
+        left = sorted(os.listdir(dest2))
+        check(not [n for n in left if STAGING.match(n)] and
+              not [n for n in left if n.startswith("second.")],
+              f"a backup refused by a foreign marker left {left}")
+        check((sha_file(mk2), tree_digest(dest2)) == before2,
+              "the marker (or the folder) changed under a refused backup")
     d.stop()
-    return "second backup refused and the first untouched; foreign marker refused, kept on unseal"
+    return "second backup refused (manifest, and a writable marker alone) and the first untouched; foreign marker refused, kept on unseal"
 
 
 # ---- the upgrade gate --------------------------------------------------------------------------
