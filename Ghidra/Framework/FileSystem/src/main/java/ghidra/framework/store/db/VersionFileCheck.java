@@ -48,7 +48,12 @@ import org.apache.logging.log4j.Logger;
  * read-only-opened tree, and the master, are never in that set, so for them the check only
  * reads and reports {@code corrupt_newest}.</li>
  * <li>Only the header magic (the first eight bytes) is validated. This is a cheap open-time
- * check, not a full file verification.</li>
+ * check, not a full file verification. A file whose magic cannot be read because of an I/O
+ * error (a sharing violation, a permission error) is neither valid nor invalid: the error
+ * propagates and nothing is quarantined.</li>
+ * <li>A repair that cannot be done (the file is read-only, is open elsewhere, the quarantine
+ * folder cannot be created) is not an exception: the result is {@link Status#CORRUPT_NEWEST}
+ * and the open reports {@code corrupt_newest}.</li>
  * </ul>
  */
 public final class VersionFileCheck {
@@ -77,7 +82,10 @@ public final class VersionFileCheck {
 		OK,
 		/** the newest version was invalid and was moved to quarantine; the previous one is newest */
 		REPAIRED,
-		/** the newest version is invalid, a previous version is intact, nothing was written */
+		/**
+		 * the newest version is invalid, a previous version is intact, and it was not repaired
+		 * (nothing was written, or the repair failed: see {@link Result#repairError})
+		 */
 		CORRUPT_NEWEST,
 		/** the newest version is invalid and no previous version is available */
 		CORRUPT_NO_FALLBACK
@@ -94,8 +102,16 @@ public final class VersionFileCheck {
 		/** the quarantined file, null unless repaired */
 		public final File quarantined;
 		public final long timeMillis;
+		/** why a requested repair could not be done, null if none was requested or it worked */
+		public final String repairError;
 
 		Result(File dbDir, Status status, int newest, int fallback, File quarantined) {
+			this(dbDir, status, newest, fallback, quarantined, null);
+		}
+
+		Result(File dbDir, Status status, int newest, int fallback, File quarantined,
+				String repairError) {
+			this.repairError = repairError;
 			this.dbDir = dbDir;
 			this.status = status;
 			this.newest = newest;
@@ -111,7 +127,8 @@ public final class VersionFileCheck {
 		@Override
 		public String toString() {
 			return status + " " + dbDir + " newest=" + newest + " fallback=" + fallback +
-				(quarantined != null ? " quarantined=" + quarantined : "");
+				(quarantined != null ? " quarantined=" + quarantined : "") +
+				(repairError != null ? " repairError=" + repairError : "");
 		}
 	}
 
@@ -159,9 +176,11 @@ public final class VersionFileCheck {
 	/**
 	 * First half of an open: when {@code writable} and the repair policy allows it, a newest
 	 * version with an invalid header is quarantined so that the previous one is newest again.
-	 * Never throws for a corrupt newest version (a caller that constructs many items must not
-	 * turn one of them into an unreadable file); {@link #requireIntact(File)} reports it when the
-	 * database is actually opened.
+	 * Never throws for a corrupt newest version, and a repair that fails (the move into
+	 * quarantine) is reported in the result, not thrown (a caller that constructs many items must
+	 * not turn one of them into an unreadable file); {@link #requireIntact(File)} reports it when
+	 * the database is actually opened. It does throw for an I/O error that stops the header
+	 * from being read: that is not a corrupt file, and nothing is moved.
 	 * @param writable false for a read-only tree: nothing is written, whatever the policy says
 	 */
 	public static Result repairOnOpen(File dbDir, boolean writable) throws IOException {
@@ -213,7 +232,19 @@ public final class VersionFileCheck {
 			return new Result(dbDir, Status.CORRUPT_NEWEST, newest, fallback, null);
 		}
 		File bad = versions.get(newest);
-		File q = quarantine(bad);
+		File q;
+		try {
+			if (!Files.isWritable(bad.toPath())) {
+				throw new IOException("db." + newest + ".gbf is read-only");
+			}
+			q = quarantine(bad);
+		}
+		catch (IOException e) {
+			String why = e.getClass().getSimpleName() + ": " + e.getMessage();
+			log.error(dbDir + ": db." + newest + ".gbf has no valid header but could not be " +
+				"moved to quarantine (" + why + "); not repaired");
+			return new Result(dbDir, Status.CORRUPT_NEWEST, newest, fallback, null, why);
+		}
 		Result r = new Result(dbDir, Status.REPAIRED, newest, fallback, q);
 		log.warn(dbDir + ": db." + newest + ".gbf has no valid header (interrupted save); moved to " +
 			q + ", db." + fallback + ".gbf is the newest version again");
@@ -224,14 +255,19 @@ public final class VersionFileCheck {
 		return r;
 	}
 
-	/** True if the file starts with the buffer file magic. */
-	public static boolean hasValidMagic(File f) {
+	/**
+	 * True if the file starts with the buffer file magic; false if it is shorter or starts with
+	 * other bytes, or if it no longer exists (another opener quarantined it first).
+	 * @throws IOException for any other failure to read the file (a sharing violation, a
+	 * permission error): that says nothing about the content, so it is not "invalid"
+	 */
+	public static boolean hasValidMagic(File f) throws IOException {
 		byte[] head = new byte[MAGIC.length];
-		try (InputStream in = new FileInputStream(f)) {
+		try (InputStream in = Files.newInputStream(f.toPath())) {
 			int n = in.readNBytes(head, 0, head.length);
 			return n == head.length && Arrays.equals(head, MAGIC);
 		}
-		catch (IOException e) {
+		catch (NoSuchFileException e) {
 			return false;
 		}
 	}

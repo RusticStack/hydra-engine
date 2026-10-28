@@ -32,11 +32,20 @@ Tests (all external injection, no test code in the release jar, D48):
 * ``e8_sp5_flush_idempotent``  spike SP5, the daemon half: the second ``flush()`` (in
   ``setReadOnly``) leaves the version file byte-identical.
 * ``e8_kill_loop``  the installed, unmodified code: trigger-timed kills (the method of measurement
-  C: kill a few ms after the new version file first appears) of a daemon that saves in a loop; every
+  C: kill a few ms after the new version file first appears; ``E8_KILL_MODE=send`` starts the
+  timer when the save is sent, so kills before the rename are sampled too, ``mixed`` alternates,
+  and is the default) of a daemon that saves in a loop; every
   newest version file has its magic and the project reopens, writable, with the last acknowledged
   save or the one in flight. ``E8_KILLS`` sets the count (default 8; the counted batches of 9.15
   run it with 200 on NTFS and on ReFS by pointing ``--work`` at the volume).
-* ``e8_save_time``  save latency (median and p95) of the installed build, recorded in the timings.
+* ``e8_save_time``  save latency (median and p95) of the installed build. With ``E8_BASE_INSTALL``
+  it is run interleaved against an install without E8 and **fails** if the median is more than
+  ``E8_SAVE_TOLERANCE`` (25 %) above the base; ``E8_SAVE_MAX_MS`` is an absolute bound.
+* ``e8_installed_jar``  javap of the installed ``LocalManagedBufferFile``: ``flush`` before
+  ``renameFile`` in ``saveCompleted``. (``e8_flush_before_rename`` and ``e8_window_control`` build
+  a test-only copy from source, so they prove the source text; this one proves the jar.)
+* ``e8_check_errors``  a read-only open never repairs; a repair that cannot be done answers
+  ``corrupt_newest``; an unreadable version file is an I/O error and is not quarantined.
 * ``e8_version_chain``  SP5, the Java half: a versioned database saved several times keeps every
   older version readable and identical to what was written (the version chain and the buffer
   index), with the early flush in place.
@@ -129,6 +138,13 @@ public class E8Probe {
         try { return hash(r); } finally { r.close(); }
     }
 
+    static String sha(File f) throws Exception {
+        MessageDigest md = MessageDigest.getInstance("SHA-256");
+        StringBuilder sb = new StringBuilder();
+        for (byte b : md.digest(Files.readAllBytes(f.toPath()))) sb.append(String.format("%02x", b));
+        return sb.toString();
+    }
+
     static String esc(String s) { return s.replace("\\", "\\\\").replace("\"", "'").replace("\n", " "); }
 
     public static void main(String[] a) throws Exception {
@@ -147,6 +163,7 @@ public class E8Probe {
             bf.close();
             List<String> expected = new ArrayList<>();
             List<Long> ms = new ArrayList<>();
+            boolean flushIdem = true;
             VersionedDatabase db = new VersionedDatabase(dir, L);
             expected.add(hv(db, 1));
             for (int v = 2; v <= saves + 1; v++) {
@@ -163,6 +180,12 @@ public class E8Probe {
                     Files.copy(new File(dir, "db." + (v - 1) + ".gbf").toPath(),
                         new File(dir, "prev.keep").toPath(), StandardCopyOption.REPLACE_EXISTING);
                 }
+                // SP5, Java half: a second flush() of the save file (the one setReadOnly does
+                // after the rename) leaves the file byte-identical
+                sf.flush();
+                String f1 = sha(sf.getFile());
+                sf.flush();
+                flushIdem &= f1.equals(sha(sf.getFile()));
                 long t0 = System.nanoTime();
                 ub.saveCompleted(true);
                 ms.add((System.nanoTime() - t0) / 1000);
@@ -180,12 +203,23 @@ public class E8Probe {
             }
             chain &= got.equals(expected);
             System.out.println("{\"ok\":true,\"current\":" + db.getCurrentVersion() + ",\"min\":" +
-                db.getMinimumVersion() + ",\"chain\":" + chain + ",\"saveMicros\":" + ms +
+                db.getMinimumVersion() + ",\"chain\":" + chain + ",\"flushIdem\":" + flushIdem + ",\"saveMicros\":" + ms +
                 ",\"hashes\":" + quote(expected) + "}");
         }
         else if (mode.equals("open")) {
             try {
-                VersionedDatabase db = new VersionedDatabase(dir, L);
+                boolean ro = a.length > 2 && a[2].equals("ro");
+                VersionedDatabase db;
+                try {   // the read-only constructor does not exist in a build without E8
+                    db = VersionedDatabase.class.getConstructor(File.class,
+                        VersionedDBListener.class, boolean.class).newInstance(dir, L, ro);
+                }
+                catch (NoSuchMethodException e) {
+                    db = new VersionedDatabase(dir, L);
+                }
+                catch (java.lang.reflect.InvocationTargetException e) {
+                    throw e.getCause();
+                }
                 int v = db.getCurrentVersion();
                 String h;
                 h = hv(db, v);
@@ -455,7 +489,11 @@ def t_window_control(c):
 
 def t_sp5_idempotent(c):
     """SP5, daemon half: at the pause the early flush has run and the second one (setReadOnly) has
-    not; the finished version file must equal the one seen in the pause, byte for byte."""
+    not; the finished version file must equal the one seen in the pause, byte for byte.
+    Two separate checks: (1) the header is already valid in the pause (this is the window check:
+    it is what turns red on the unfixed source, where the first flush comes later); (2) the second
+    flush changes nothing. The idempotence of ``flush()`` itself is also checked, independent of any
+    window, by e8_version_chain (``flushIdem``)."""
     inst = mutant_install(c, "sp5", "keep", pause_ms=4000)
     gpr = c.copy_fixture("e8sp5")
     dbdir = program_db_dir(gpr)
@@ -470,6 +508,8 @@ def t_sp5_idempotent(c):
     p = dbdir / ("db.%d.gbf" % (n0 + 1))
     time.sleep(0.5)  # inside the 4 s pause
     h_mid, size_mid = sha(p), p.stat().st_size
+    dt.check(has_magic(p), f"window: db.{n0 + 1}.gbf has no header before the second flush "
+                           f"({open(p, 'rb').read(8).hex()}); the idempotence cannot be judged")
     s.wait(rid)
     h_end, size_end = sha(p), p.stat().st_size
     dt.check(h_mid == h_end and size_mid == size_end,
@@ -489,13 +529,18 @@ def t_sp5_idempotent(c):
 def t_kill_loop(c):
     kills = int(os.environ.get("E8_KILLS", "8"))
     rnd = random.Random(int(os.environ.get("E8_SEED", "8")))
+    # "trigger": kill a few ms after the new version file first appears (measurement C's method;
+    # every kill is after the rename). "send": the timer starts when the save is sent, over the whole
+    # save, so kills before the rename are sampled too. "mixed" (default): alternate.
+    mode = os.environ.get("E8_KILL_MODE", "mixed")
+    dt.check(mode in ("trigger", "send", "mixed"), f"E8_KILL_MODE {mode!r}")
     gpr = c.copy_fixture("e8loop")
     dbdir = program_db_dir(gpr)
     exe = pathlib.Path(c.a.exe).name
     ledger = None            # (function address, acked name, inflight name)
     stats = {"kills": 0, "no_trigger": 0, "zero_header": 0, "unopenable": 0, "wrong_state": 0,
-             "landed": 0, "not_landed": 0}
-    notes, gaps = [], []
+             "landed": 0, "not_landed": 0, "before_rename": 0, "after_rename": 0}
+    notes, gaps, pre_gaps = [], [], []
     calibrated = None
     base_count = None
     for it in range(kills + 1):
@@ -533,7 +578,6 @@ def t_kill_loop(c):
                 stats["wrong_state"] += 1
                 notes.append(f"it{it}: {addr} is {names.get(addr)}, wanted {acked} or {inflight}")
         if it == kills:
-            s.close() if hasattr(s, "close") else None
             d.stop(force=True)
             break
         addr = dt.code_functions(s, 1)[0]
@@ -541,28 +585,38 @@ def t_kill_loop(c):
         for _ in range(2 if calibrated is None else 1):
             n0, _p = newest(dbdir)
             s.call("rename", address=addr, name=acked)
+            ts = time.perf_counter()
             rid = s.send("save", wait=120000)
             t = wait_new_version(dbdir, n0)
             s.wait(rid)
             if t is not None and calibrated is None:
                 gaps.append((time.perf_counter() - t) * 1000)
+                pre_gaps.append((t - ts) * 1000)
         if calibrated is None and len(gaps) >= 2:
             calibrated = max(1.0, min(statistics.median(gaps) * 1.5, 80.0))
+            pre_cal = max(1.0, min(statistics.median(pre_gaps) * 1.5, 400.0))
         n0, _p = newest(dbdir)
         s.call("rename", address=addr, name=inflight)
         ledger = (addr, acked, inflight)
-        rid = s.send("save", wait=120000)
-        t = wait_new_version(dbdir, n0, timeout=20)
         pid = d.read_endpoint()["pid"]
-        if t is None:
-            stats["no_trigger"] += 1
-        else:
-            delay = rnd.uniform(0, calibrated or 5.0) / 1000.0
-            end = t + delay
+        by_send = mode == "send" or (mode == "mixed" and it % 2 == 1)
+        ts = time.perf_counter()
+        rid = s.send("save", wait=120000)
+        if by_send and calibrated is not None:
+            end = ts + rnd.uniform(0, pre_cal + calibrated) / 1000.0
             while time.perf_counter() < end:
                 pass
+        else:
+            t = wait_new_version(dbdir, n0, timeout=20)
+            if t is None:
+                stats["no_trigger"] += 1
+            else:
+                end = t + rnd.uniform(0, calibrated or 5.0) / 1000.0
+                while time.perf_counter() < end:
+                    pass
         kill_now(c, d, pid)
         stats["kills"] += 1
+        stats["after_rename" if (dbdir / ("db.%d.gbf" % (n0 + 1))).exists() else "before_rename"] += 1
         # the oracle (K2): every final-named version file has its magic
         for n, p in versions(dbdir).items():
             if not has_magic(p):
@@ -573,8 +627,9 @@ def t_kill_loop(c):
         round(calibrated or 0, 2)
     (c.work / "e8_kill_loop.json").write_text(json.dumps({"stats": stats, "notes": notes,
                                                          "calibration_ms": calibrated}, indent=1))
-    msg = (f"{stats['kills']} trigger-timed kills (delay 0..{calibrated and round(calibrated, 1)} ms "
-           f"after the new version file appeared; {stats['no_trigger']} without trigger): "
+    msg = (f"{stats['kills']} kills, mode {mode} ({stats['before_rename']} before and "
+           f"{stats['after_rename']} after the rename; delay 0..{calibrated and round(calibrated, 1)} ms "
+           f"after the new version file appeared, or over the save; {stats['no_trigger']} without trigger): "
            f"{stats['zero_header']} zero headers, {stats['unopenable']} unopenable, "
            f"{stats['wrong_state']} wrong states; the save in flight had landed in "
            f"{stats['landed']} and not in {stats['not_landed']}")
@@ -583,21 +638,51 @@ def t_kill_loop(c):
     return msg
 
 
-def t_save_time(c):
-    gpr = c.copy_fixture("e8time")
-    d, s, exe, fns = prepare_save(c, c.a.ghidra, "e8time", gpr)
+def save_times(c, install, tag, n=25):
+    gpr = c.copy_fixture("e8time" + tag)
+    d, s, exe, fns = prepare_save(c, install, "e8time" + tag, gpr)
     ms = []
-    for i in range(25):
-        s.call("rename", address=fns[i % 3], name="e8t_%d" % i)
+    for i in range(n):
+        s.call("rename", address=fns[i % 3], name="e8t_%s_%d" % (tag, i))
         t = time.perf_counter()
         s.call("save", wait=120000)
         ms.append((time.perf_counter() - t) * 1000)
     d.stop(force=True)
-    ms = ms[2:]
-    med, p95 = statistics.median(ms), sorted(ms)[int(len(ms) * 0.95) - 1]
+    return ms[2:]
+
+
+def stat(ms):
+    return statistics.median(ms), sorted(ms)[max(0, int(len(ms) * 0.95) - 1)]
+
+
+def t_save_time(c):
+    """Save latency (median and p95). With ``E8_BASE_INSTALL`` (an install built without E8) the
+    same loop runs on both, interleaved (fixed, base, fixed, base) so drift cancels, and the test
+    fails if the median of the installed build is more than ``E8_SAVE_TOLERANCE`` (default 0.25)
+    above the base. ``E8_SAVE_MAX_MS`` is an absolute bound on the median. Without either, the
+    numbers are recorded only, and the summary says so."""
+    base = os.environ.get("E8_BASE_INSTALL")
+    fixed, basev = [], []
+    for rnd_ in range(2 if base else 1):
+        fixed += save_times(c, c.a.ghidra, "f%d" % rnd_)
+        if base:
+            basev += save_times(c, base, "b%d" % rnd_)
+    med, p95 = stat(fixed)
     c.timings["e8 save: median (ms)"] = round(med, 1)
     c.timings["e8 save: p95 (ms)"] = round(p95, 1)
-    return f"save median {med:.1f} ms, p95 {p95:.1f} ms over {len(ms)} saves"
+    msg = f"save median {med:.1f} ms, p95 {p95:.1f} ms over {len(fixed)} saves"
+    limit = os.environ.get("E8_SAVE_MAX_MS")
+    if limit:
+        dt.check(med <= float(limit), msg + f"; above the absolute bound {limit} ms")
+    if base:
+        bmed, bp95 = stat(basev)
+        tol = float(os.environ.get("E8_SAVE_TOLERANCE", "0.25"))
+        c.timings["e8 save base: median (ms)"] = round(bmed, 1)
+        c.timings["e8 save base: p95 (ms)"] = round(bp95, 1)
+        msg += f"; base median {bmed:.1f} ms, p95 {bp95:.1f} ms over {len(basev)} saves"
+        dt.check(med <= bmed * (1 + tol), msg + f"; the median is more than {tol:.0%} above the base")
+        return msg + f"; within {tol:.0%} of the base"
+    return msg + "; no baseline given (E8_BASE_INSTALL): recorded, not compared"
 
 
 # ---- Java probe: the version chain, the repair and the read-only open ------------------------
@@ -618,7 +703,8 @@ def probe(c, install, *args, props=()):
         dt.check(r.returncode == 0, f"javac of the probe failed: {r.stdout}{r.stderr}")
     r = subprocess.run([jdk_tool("java"), *props, "-cp", str(classes) + os.pathsep +
                         install_jars(install), "db.buffers.E8Probe", *map(str, args)],
-                       capture_output=True, text=True, timeout=300)
+                       capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       timeout=300)
     line = [x for x in r.stdout.splitlines() if x.startswith("{")]
     if not line:
         raise dt.Fail(f"probe {args[0]} printed no result: {r.stdout[-400:]} {r.stderr[-600:]}")
@@ -632,10 +718,111 @@ def t_version_chain(c):
     o, _ = probe(c, c.a.ghidra, "make", d / "db", 5)
     dt.check(o["ok"] and o["chain"] and o["current"] == 6 and o["min"] == 1,
              f"the version chain of 6 versions is not intact: {o}")
+    dt.check(o["flushIdem"], "a second flush() of the save file changed the file (SP5)")
     mics = sorted(o["saveMicros"])
     c.timings["e8 versioned saveCompleted: median (us)"] = mics[len(mics) // 2]
-    return (f"6 versions saved, every one readable through the chain and equal to what was "
+    return (f"flush() idempotent on all 5 saves; 6 versions saved, every one readable through the chain and equal to what was "
             f"written; saveCompleted median {mics[len(mics) // 2]} us")
+
+
+def t_installed_jar(c):
+    """The installed jar, not the source: ``saveCompleted`` of the ``LocalManagedBufferFile`` in the
+    install under test calls ``flush`` before ``renameFile`` (javap bytecode order), the class comes
+    from a jar rather than a ``Ghidra/patch`` folder, and ``VersionFileCheck`` is in the install.
+    e8_flush_before_rename proves the same ordering for the source text only."""
+    inst = pathlib.Path(c.a.ghidra)
+    patch = inst / "Ghidra" / "patch"
+    dt.check(not patch.is_dir() or not any(patch.rglob("*.class")),
+             "the install has class files in Ghidra/patch: the jars are not what is loaded")
+    cp = install_jars(inst)
+
+    def javap(cls):
+        r = subprocess.run([jdk_tool("javap"), "-c", "-p", "-cp", cp, cls],
+                           capture_output=True, text=True)
+        dt.check(r.returncode == 0, f"javap {cls}: {r.stdout[-200:]}{r.stderr[-300:]}")
+        return r.stdout
+
+    text = javap("db.buffers.LocalManagedBufferFile")
+    m = re.search(r"\n[^\n]*void saveCompleted\(boolean\)[^\n]*\n(.*?)\n\n", text, re.S)
+    dt.check(m, "saveCompleted(boolean) not found in the installed LocalManagedBufferFile")
+    body = m.group(1)
+    flush = [int(x.group(1)) for x in re.finditer(r"(\d+): invoke\w+\s+#\d+\s+// Method [^\s:]*flush:\(\)Z", body)]
+    ren = [int(x.group(1)) for x in re.finditer(r"(\d+): invoke\w+\s+#\d+\s+// Method [^\s:]*renameFile:", body)]
+    dt.check(flush and ren, f"flush/renameFile calls not found in saveCompleted: flush={flush} rename={ren}")
+    dt.check(min(flush) < min(ren),
+             f"installed saveCompleted: flush at bytecode {min(flush)} is not before renameFile at {min(ren)}")
+    javap("ghidra.framework.store.db.VersionFileCheck")
+    return f"installed jar: flush at bytecode {min(flush)} before renameFile at {min(ren)}; VersionFileCheck present"
+
+
+def t_check_errors(c):
+    """Failure handling of the open-time check, each on the all-zero-header fixture with the tree
+    declared disposable: (1) a read-only open never repairs; (2) a newest version that cannot be
+    quarantined (read-only file, quarantine folder blocked) answers corrupt_newest, not a raw
+    IOException, and nothing moves; (3) a version file that cannot be read (Windows: held with no
+    sharing) is an I/O error, not a corrupt file: nothing is quarantined."""
+    notes = []
+
+    def case(name, setup=None, ro=False, cleanup=None):
+        root, db, n, _prev = zero_header_fixture(c, "e8err_" + name)
+        bad = db / ("db.%d.gbf" % n)
+        held = setup(db, bad, n) if setup else None
+        h0 = None if name == "locked" else tree_hash(db)
+        args = ["open", db] + (["ro"] if ro else [])
+        try:
+            o, _ = probe(c, c.a.ghidra, *args, props=[f"-Dhydra.storage.repairRoots={root}"])
+        finally:
+            if cleanup:
+                cleanup(held, bad)
+        dt.check(bad.exists() and not (db / (bad.name + ".quarantine") / bad.name).exists(),
+                 f"{name}: the bad file was moved: {o}")
+        if h0:
+            dt.check(tree_hash(db) == h0, f"{name}: the tree changed")
+        return o
+
+    o = case("readonly", ro=True)
+    dt.check(not o["opened"] and o["error"].startswith("corrupt_newest"), f"read-only open: {o}")
+    notes.append("read-only open of a disposable tree: corrupt_newest, nothing moved")
+
+    def make_file_readonly(db, bad, n):
+        os.chmod(bad, 0o444)
+
+    def restore(held, bad):
+        os.chmod(bad, 0o666)
+
+    o = case("rofile", setup=make_file_readonly, cleanup=restore)
+    dt.check(not o["opened"] and o["error"].startswith("corrupt_newest"), f"read-only file: {o}")
+    notes.append("read-only newest file: corrupt_newest, not moved")
+
+    def block_quarantine(db, bad, n):
+        (db / ("db.%d.gbf.quarantine" % n)).write_text("a file where the folder should be")
+
+    o = case("blocked", setup=block_quarantine)
+    dt.check(not o["opened"] and o["error"].startswith("corrupt_newest"), f"blocked quarantine: {o}")
+    notes.append("quarantine folder blocked: corrupt_newest, not a raw IOException")
+
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateFileW.restype = wintypes.HANDLE
+        k32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                                    wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+        def lock(db, bad, n):
+            h = k32.CreateFileW(str(bad), 0x80000000, 0, None, 3, 0x80, None)  # read, no sharing
+            dt.check(h not in (None, 0, -1, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF), "could not lock the file")
+            return h
+
+        def unlock(h, bad):
+            k32.CloseHandle(h)
+
+        o = case("locked", setup=lock, cleanup=unlock)
+        dt.check(not o["opened"] and "corrupt_newest" not in o["error"],
+                 f"a file that cannot be read must be an I/O error, not corrupt_newest: {o}")
+        notes.append("unreadable (locked) newest file: I/O error propagated, not quarantined")
+    return "; ".join(notes)
 
 
 def zero_header_fixture(c, name, saves=3):
@@ -758,6 +945,8 @@ TESTS = {
     "e8_save_time": t_save_time,
     "e8_version_chain": t_version_chain,
     "e8_repair_open": t_repair_open,
+    "e8_installed_jar": t_installed_jar,
+    "e8_check_errors": t_check_errors,
     "e8_private_open": t_private_open,
     "e8_private_readonly": t_private_readonly,
 }

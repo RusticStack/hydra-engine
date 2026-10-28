@@ -47,10 +47,12 @@ public class VersionedDatabase extends Database {
 	 * @param dbDir
 	 * @param verDBListener
 	 * @param create if true an empty database will be created.
+	 * @param readOnly true if the database is opened for reading only: the open-time check of the
+	 * newest version (Hydra E8) then never writes, whatever the repair policy says
 	 * @throws IOException
 	 */
-	private VersionedDatabase(File dbDir, VersionedDBListener verDBListener, boolean create)
-			throws IOException {
+	private VersionedDatabase(File dbDir, VersionedDBListener verDBListener, boolean create,
+			boolean readOnly) throws IOException {
 		super(dbDir, true, create);
 		this.verDBListener = verDBListener;
 		bfMgr = new VerDBBufferFileManager();
@@ -61,7 +63,7 @@ public class VersionedDatabase extends Database {
 			// version; anywhere else it is reported as corrupt_newest when the file is opened.
 			// The repairing scan deletes older versions, so it must not run over a corrupt
 			// newest version: the older one is then the only good copy.
-			intact = !VersionFileCheck.repairOnOpen(dbDir, true).isCorrupt();
+			intact = !VersionFileCheck.repairOnOpen(dbDir, !readOnly).isCorrupt();
 		}
 		scanFiles(intact);
 		if (create && currentVersion != 0) {
@@ -79,7 +81,20 @@ public class VersionedDatabase extends Database {
 	 * @throws IOException
 	 */
 	public VersionedDatabase(File dbDir, VersionedDBListener verDBListener) throws IOException {
-		this(dbDir, verDBListener, false);
+		this(dbDir, verDBListener, false, false);
+	}
+
+	/**
+	 * Constructor for an existing "Versioned" Database that states whether it is opened read-only
+	 * (Hydra E8). A read-only open never repairs the newest version file.
+	 * @param dbDir database directory
+	 * @param verDBListener
+	 * @param readOnly true if the database is opened for reading only
+	 * @throws IOException
+	 */
+	public VersionedDatabase(File dbDir, VersionedDBListener verDBListener, boolean readOnly)
+			throws IOException {
+		this(dbDir, verDBListener, false, readOnly);
 	}
 
 	/**
@@ -93,7 +108,7 @@ public class VersionedDatabase extends Database {
 	public VersionedDatabase(File dbDir, BufferFile srcFile, VersionedDBListener verDBListener,
 			long checkoutId, String comment, TaskMonitor monitor)
 			throws IOException, CancelledException {
-		this(dbDir, verDBListener, true);
+		this(dbDir, verDBListener, true, false);
 		boolean success = false;
 		LocalManagedBufferFile newFile = null;
 		try {
@@ -132,7 +147,7 @@ public class VersionedDatabase extends Database {
 	public VersionedDatabase(File dbDir, File packedFile, VersionedDBListener verDBListener,
 			long checkoutId, String comment, TaskMonitor monitor)
 			throws IOException, CancelledException {
-		this(dbDir, verDBListener, true);
+		this(dbDir, verDBListener, true, false);
 		boolean success = false;
 		try {
 			if (verDBListener.getCheckoutVersion(checkoutId) != 0) {
@@ -159,7 +174,7 @@ public class VersionedDatabase extends Database {
 	 */
 	public static LocalManagedBufferFile createVersionedDatabase(File dbDir, int bufferSize,
 			VersionedDBListener verDBListener, long checkoutId) throws IOException {
-		VersionedDatabase db = new VersionedDatabase(dbDir, verDBListener, true);
+		VersionedDatabase db = new VersionedDatabase(dbDir, verDBListener, true, false);
 		boolean success = false;
 		try {
 			LocalManagedBufferFile bfile =
