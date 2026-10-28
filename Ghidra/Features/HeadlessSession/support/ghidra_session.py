@@ -45,10 +45,16 @@ environment (``GHIDRA_SESSION_*``), command-line options. The state dir is
 ``GHIDRA_SESSION_HOME`` or a per-user default (``%LOCALAPPDATA%\\GhidraSession`` on Windows,
 ``$XDG_STATE_HOME/ghidra-session`` or ``~/.local/state/ghidra-session`` elsewhere).
 
-Compatibility: this file is a versioned client (``CLIENT_VERSION``) of protocol ``PROTOCOL``. The
-session's ``hello`` answers ``protocol`` and ``minClient``; ``connect`` raises
-``IncompatibleError`` when the protocol differs or ``CLIENT_VERSION`` is older than ``minClient``
-(README, "Pinning and upgrading").
+Compatibility: this file is a versioned client (``CLIENT_VERSION``) that speaks protocols
+``PROTOCOL_MIN`` to ``PROTOCOL`` (2 to 3). Its ``hello`` asks for ``PROTOCOL``; the session answers
+the protocol it will use on that connection (``session.protocol``, at least 2, at most the
+engine's own maximum) and ``minClient``. ``connect`` raises ``IncompatibleError`` when the answer
+lies outside that range, when the engine's advertised ``protocolMin``..``protocolMax`` does not
+overlap it, or when ``CLIENT_VERSION`` is older than ``minClient`` (README, "Pinning and
+upgrading"). Against a hydra.2 or hydra.3 engine, which knows only protocol 2, the connection is a
+protocol 2 connection. The ``engine`` object of ``config.json`` is passed to the JVM as repeatable
+``-set key=value`` flags (an engine that has no such flag, hydra.2 and hydra.3, refuses to start
+with one: leave ``engine`` empty there).
 """
 from __future__ import annotations
 
@@ -67,11 +73,14 @@ import threading
 import time
 from pathlib import Path
 
-PROTOCOL = 2
+#: The newest protocol this client speaks: the value its ``hello`` asks for.
+PROTOCOL = 3
+#: The oldest protocol this client still speaks (a hydra.2 or hydra.3 engine answers 2).
+PROTOCOL_MIN = 2
 #: This file's own version (major.minor.patch). The session refuses to be driven by a client older
 #: than its ``minClient``; bump the major when the protocol changes incompatibly, the minor when
 #: the client gains something, the patch for fixes. Shipped as hydra-client-<version>.zip.
-CLIENT_VERSION = "1.0.0"
+CLIENT_VERSION = "1.1.0"
 #: The Hydra Engine release this file was packaged with (hydra-client-<release>.zip stamps it);
 #: ``dev`` when run from a source tree.
 HYDRA_RELEASE = "dev"
@@ -102,18 +111,65 @@ def parse_version(text) -> tuple[int, ...]:
     return tuple(int(p) for p in parts)
 
 
+def _is_protocol(v) -> bool:
+    """True for a JSON integer (a bool, a string or a float is not a protocol number)."""
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def _span(lo, hi) -> str:
+    return str(lo) if lo == hi else f"{lo}..{hi}"
+
+
+def _client_range(protocol=None, protocol_min=None) -> tuple[int, int]:
+    """The protocols this client accepts, as ``(lowest, highest)``, read from the module
+    constants at call time. An explicit ``protocol`` without ``protocol_min`` is exactly that one
+    protocol (what ``check_compatible`` meant before the range existed)."""
+    hi = PROTOCOL if protocol is None else protocol
+    if protocol_min is not None:
+        lo = protocol_min
+    else:
+        lo = min(PROTOCOL_MIN, hi) if protocol is None else hi
+    return lo, hi
+
+
+def engine_protocols(info: dict) -> tuple[int, int] | None:
+    """The protocols an engine says it serves, from a ``hello`` answer, a ``ready`` event or an
+    endpoint file: ``protocolMin``..``protocolMax`` when it sends them, else the single
+    ``protocol`` (a hydra.2 or hydra.3 engine). ``None`` when there is no usable integer."""
+    p = info.get("protocol")
+    lo, hi = info.get("protocolMin", p), info.get("protocolMax", p)
+    if _is_protocol(lo) and _is_protocol(hi):
+        return lo, hi
+    return None
+
+
 def check_compatible(info: dict, client_version: str = CLIENT_VERSION,
-                     protocol: int = PROTOCOL) -> None:
+                     protocol: int | None = None, protocol_min: int | None = None) -> None:
     """Checks a ``hello`` answer (or the ``ready`` event) against this client; raises
-    ``IncompatibleError`` with the versions on both sides when they do not fit. A session that
-    reports no ``minClient`` (a build before the contract) is accepted when the protocol matches."""
+    ``IncompatibleError`` with the versions on both sides when they do not fit. The answer's
+    ``protocol`` must lie in ``PROTOCOL_MIN``..``PROTOCOL`` (``protocol`` alone, when given
+    without ``protocol_min``, means exactly that protocol) and, when the engine advertises
+    ``protocolMin`` and ``protocolMax``, that range must overlap the client's and contain the
+    answer. A session that reports no ``minClient`` (a build before the contract) is accepted when
+    the protocol fits."""
     theirs = info.get("protocol")
+    lo, hi = _client_range(protocol, protocol_min)
     who = (f"Hydra Engine {info.get('hydraVersion') or '?'} (Ghidra "
            f"{info.get('ghidraVersion') or info.get('ghidra') or '?'})")
-    if theirs != protocol:
+    mine = f"this client (ghidra_session.py {client_version}) speaks {_span(lo, hi)}"
+    advertised = engine_protocols(info)
+    said = f"protocol {theirs!r}" if not _is_protocol(theirs) else f"protocol {theirs}"
+    if advertised and advertised != (theirs, theirs):
+        said += f" (advertises {_span(*advertised)})"
+    if not _is_protocol(theirs) or not lo <= theirs <= hi:
         raise IncompatibleError(
-            f"{who} speaks protocol {theirs}, this client (ghidra_session.py {client_version}) "
-            f"speaks {protocol}: use the client of the same release as the engine")
+            f"{who} speaks {said}, {mine}: use the client of the same release as the engine")
+    if advertised is None:
+        raise IncompatibleError(f"{who} reports an unreadable protocolMin or protocolMax")
+    if advertised[1] < lo or advertised[0] > hi or not advertised[0] <= theirs <= advertised[1]:
+        raise IncompatibleError(
+            f"{who} speaks {said} but its range does not fit, {mine}: use the client of the "
+            f"same release as the engine")
     need = info.get("minClient")
     if need:
         try:
@@ -430,6 +486,7 @@ DEFAULTS = {
     "upgradeCache": True,    # serve read-only opens of older-format programs from an upgraded copy
     "upgradeCacheDir": None,  # where those copies live; None: <state>/upgrade-cache
     "forkCopyLimitMb": 2048,  # fork_project mode auto: refuse a full (not cloned) copy over this
+    "engine": {},            # engine settings: each key=value goes to the JVM as ``-set key=value``
 }
 
 ENV_MAP = {
@@ -448,8 +505,41 @@ ENV_MAP = {
 }
 
 
+_ENGINE_KEY = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,63}")
+
+
+def engine_flags(engine: dict | None) -> list[str]:
+    """The JVM arguments for an ``engine`` object: ``-set key=value`` once per entry, in the
+    object's order. A value is a string, a number or a boolean (written ``true``/``false``, as
+    the engine's ``Settings`` reads it); anything else, a key that is not an identifier, or a
+    value with a control character raises ``LaunchError``, so nothing reaches the JVM that the
+    engine would have to guess about."""
+    if engine is None:
+        return []
+    if not isinstance(engine, dict):
+        raise LaunchError(f"engine must be an object of key: value settings, not {engine!r}")
+    out: list[str] = []
+    for k, v in engine.items():
+        if not isinstance(k, str) or not _ENGINE_KEY.fullmatch(k):
+            raise LaunchError(f"engine: bad key {k!r} (letters, digits, . _ -, starting with a "
+                              f"letter)")
+        if isinstance(v, bool):
+            text = "true" if v else "false"
+        elif isinstance(v, int):
+            text = str(v)
+        elif isinstance(v, float) and v == v and v not in (float("inf"), float("-inf")):
+            text = repr(v)
+        elif isinstance(v, str) and not any(ord(c) < 32 or ord(c) == 127 for c in v):
+            text = v
+        else:
+            raise LaunchError(f"engine.{k}: {v!r} is not a string, number or boolean")
+        out += ["-set", f"{k}={text}"]
+    return out
+
+
 def load_config(state: Path, overrides: dict | None = None) -> dict:
     cfg = dict(DEFAULTS)
+    cfg["engine"] = {}
     f = state / "config.json"
     if f.is_file():
         try:
@@ -460,6 +550,10 @@ def load_config(state: Path, overrides: dict | None = None) -> dict:
         if unknown:
             raise LaunchError(f"{f}: unknown keys {sorted(unknown)}; known: {sorted(DEFAULTS)}")
         cfg.update(data)
+        try:
+            engine_flags(cfg["engine"])
+        except LaunchError as e:
+            raise LaunchError(f"{f}: {e}") from e
     for env, (key, typ) in ENV_MAP.items():
         if os.environ.get(env):
             cfg[key] = typ(os.environ[env])
@@ -467,6 +561,10 @@ def load_config(state: Path, overrides: dict | None = None) -> dict:
         cfg["vmargs"] = list(cfg["vmargs"]) + os.environ["GHIDRA_SESSION_VMARGS"].split()
     for k, v in (overrides or {}).items():
         if v is not None:
+            if k == "engine":
+                # settings merge key by key, the caller's winning, rather than replace the file's
+                engine_flags(v)
+                v = {**(cfg["engine"] or {}), **v}
             cfg[k] = v
     if cfg["mode"] not in ("fast", "standard"):
         raise LaunchError(f"mode must be fast or standard, not {cfg['mode']!r}")
@@ -596,6 +694,7 @@ class Launch:
                          str(self.cfg.get("upgradeCacheDir") or self.state / "upgrade-cache")]
         if self.cfg.get("forkCopyLimitMb") is not None:
             app_args += ["-forkCopyLimitMb", str(int(self.cfg["forkCopyLimitMb"]))]
+        app_args += engine_flags(self.cfg.get("engine"))
         argv = [str(self.java), *vm, *head, *main, *app_args]
         return argv, info
 
@@ -846,12 +945,18 @@ class SocketSession(_Base):
         self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self._r = self.sock.makefile("r", encoding="utf-8", newline="\n")
         self._w = self.sock.makefile("w", encoding="utf-8", newline="\n")
+        #: The protocol this connection runs at: the ``protocol`` of the engine's ``hello``
+        #: answer (2 against a hydra.2 or hydra.3 engine, up to ``PROTOCOL`` against a newer
+        #: one). ``None`` until the answer is in, and when an unchecked answer carries none.
+        self.protocol = None
         try:
             self.hello = self.call("hello", token=endpoint["token"], client=client,
                                    harness=harness, clientVersion=CLIENT_VERSION,
                                    protocol=PROTOCOL)
             if check:
                 check_compatible(self.hello)
+            if _is_protocol(self.hello.get("protocol")):
+                self.protocol = self.hello["protocol"]
         except BaseException:
             self.close()
             raise
@@ -916,6 +1021,9 @@ class StdioSession(_Base):
         except IncompatibleError:
             self.close()
             raise
+        #: A stdio session sends no ``hello``, so it runs at the protocol its ``ready`` event
+        #: names: the lowest the engine serves (2 for every engine so far).
+        self.protocol = first["protocol"]
 
     def _send(self, line):
         self.proc.stdin.write(line)
@@ -997,9 +1105,16 @@ class Daemon:
             raise LaunchError(
                 f"the {self.instance!r} daemon runs {ep['install']} (Ghidra {ep.get('ghidra')}), "
                 f"not {install.dir}; stop it, or use another --instance")
-        if ep.get("protocol") != PROTOCOL:
+        # Any overlap of this client's range with the daemon's counts: the connection then runs
+        # at the highest protocol both speak (``hello`` negotiates it). An endpoint that sends
+        # no protocolMin/protocolMax serves the single ``protocol`` it names.
+        lo, hi = _client_range()
+        served = engine_protocols(ep)
+        if served is None or served[1] < lo or served[0] > hi:
             raise LaunchError(f"the {self.instance!r} daemon speaks protocol "
-                              f"{ep.get('protocol')}, this client {PROTOCOL}; stop it first")
+                              f"{_span(*served) if served else repr(ep.get('protocol'))}, this "
+                              f"client (ghidra_session.py {CLIENT_VERSION}) speaks "
+                              f"{_span(lo, hi)}; stop it first")
 
     def connect(self, client: str = "", harness: str = "", start: bool = True,
                 timeout: float = ENDPOINT_WAIT_S) -> SocketSession:

@@ -1,0 +1,1513 @@
+{
+ "scenario": "import_script",
+ "steps": [
+  {
+   "step": 1,
+   "who": "a",
+   "cmd": "open_project",
+   "request": {
+    "path": "<WORK>/imp/Imp.gpr",
+    "writable": true
+   },
+   "response": {
+    "id": 3,
+    "ok": true,
+    "result": {
+     "id": "p1",
+     "name": "Imp",
+     "dir": "<WORK>/imp",
+     "gpr": "<WORK>/imp/Imp.gpr",
+     "writable": true,
+     "openMs": "<masked>",
+     "idleMs": "<masked>",
+     "files": 0,
+     "users": [
+      1
+     ],
+     "programs": 0,
+     "revision": "<rev1>",
+     "diskRevision": "<rev1>",
+     "stale": false,
+     "generation": 1,
+     "fork": null,
+     "opened": true
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 2,
+   "who": "a",
+   "cmd": "import",
+   "request": {
+    "file": "<WORK>/bin/alpha.exe",
+    "wait": 300000
+   },
+   "response": {
+    "id": 4,
+    "ok": true,
+    "result": {
+     "imported": true,
+     "project": "p1",
+     "path": "/alpha.exe",
+     "key": "p1:/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "importSeconds": "<masked>",
+     "program": {
+      "key": "p1:/alpha.exe",
+      "project": "p1",
+      "path": "/alpha.exe",
+      "name": "alpha.exe",
+      "mode": "writable",
+      "owner": 1,
+      "mine": true,
+      "active": true,
+      "language": "x86:LE:64:default",
+      "compiler": "windows",
+      "imageBase": "0x140000000",
+      "format": "Portable Executable (PE)",
+      "executable": "/<WORK>/bin/alpha.exe",
+      "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+      "md5": "b890095eec6aea60ef369f0140482870",
+      "functions": 0,
+      "analyzed": false,
+      "changed": false,
+      "revision": "<rev2>",
+      "projectRevision": "<rev3>",
+      "generation": 1,
+      "cachedUpgrade": false,
+      "upgradeCache": null,
+      "cacheBuild": "none",
+      "cacheBuildInfo": null,
+      "users": [
+       1
+      ],
+      "overlays": [],
+      "writers": [],
+      "writer": true,
+      "journalSeq": 0,
+      "unsavedEdits": 0,
+      "openMs": "<masked>"
+     },
+     "queue": {
+      "waitedMs": "<masked>",
+      "positionAtEntry": 1,
+      "behind": null,
+      "runningAtStart": 1
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 3,
+   "who": "a",
+   "cmd": "import",
+   "request": {
+    "file": "<WORK>/bin/alpha.exe"
+   },
+   "response": {
+    "id": 5,
+    "ok": true,
+    "result": {
+     "imported": false,
+     "project": "p1",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "existing": [
+      "/alpha.exe"
+     ],
+     "note": "already in the project; open_program it, or pass \"duplicate\":true to import again",
+     "queue": {
+      "waitedMs": "<masked>",
+      "positionAtEntry": 1,
+      "behind": null,
+      "runningAtStart": 1
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "deduplicated by SHA-256"
+  },
+  {
+   "step": 4,
+   "who": "a",
+   "cmd": "import",
+   "request": {
+    "file": "<WORK>/bin/alpha.exe",
+    "duplicate": true,
+    "name": "alpha2.exe",
+    "folder": "/copies"
+   },
+   "response": {
+    "id": 6,
+    "ok": true,
+    "result": {
+     "imported": true,
+     "project": "p1",
+     "path": "/copies/alpha2.exe",
+     "key": "p1:/copies/alpha2.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "importSeconds": "<masked>",
+     "program": {
+      "key": "p1:/copies/alpha2.exe",
+      "project": "p1",
+      "path": "/copies/alpha2.exe",
+      "name": "alpha.exe",
+      "mode": "writable",
+      "owner": 1,
+      "mine": true,
+      "active": true,
+      "language": "x86:LE:64:default",
+      "compiler": "windows",
+      "imageBase": "0x140000000",
+      "format": "Portable Executable (PE)",
+      "executable": "/<WORK>/bin/alpha.exe",
+      "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+      "md5": "b890095eec6aea60ef369f0140482870",
+      "functions": 0,
+      "analyzed": false,
+      "changed": false,
+      "revision": "<rev4>",
+      "projectRevision": "<rev5>",
+      "generation": 1,
+      "cachedUpgrade": false,
+      "upgradeCache": null,
+      "cacheBuild": "none",
+      "cacheBuildInfo": null,
+      "users": [
+       1
+      ],
+      "overlays": [],
+      "writers": [],
+      "writer": true,
+      "journalSeq": 0,
+      "unsavedEdits": 0,
+      "openMs": "<masked>"
+     },
+     "queue": {
+      "waitedMs": "<masked>",
+      "positionAtEntry": 1,
+      "behind": null,
+      "runningAtStart": 1
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "imported again on request"
+  },
+  {
+   "step": 5,
+   "who": "a",
+   "cmd": "import",
+   "request": {
+    "file": "<WORK>/bin/beta.exe",
+    "analyze": true,
+    "timeout": 600,
+    "wait": 300000,
+    "language": "x86:LE:64:default",
+    "compiler": "windows"
+   },
+   "response": {
+    "id": 7,
+    "ok": true,
+    "result": {
+     "imported": true,
+     "project": "p1",
+     "path": "/beta.exe",
+     "key": "p1:/beta.exe",
+     "sha256": "e298b217a30dc8f62b0ef4fbdf6424497e797b74fb71b9537447ebdc61b7e912",
+     "importSeconds": "<masked>",
+     "program": {
+      "key": "p1:/beta.exe",
+      "project": "p1",
+      "path": "/beta.exe",
+      "name": "beta.exe",
+      "mode": "writable",
+      "owner": 1,
+      "mine": true,
+      "active": true,
+      "language": "x86:LE:64:default",
+      "compiler": "windows",
+      "imageBase": "0x140000000",
+      "format": "Portable Executable (PE)",
+      "executable": "/<WORK>/bin/beta.exe",
+      "sha256": "e298b217a30dc8f62b0ef4fbdf6424497e797b74fb71b9537447ebdc61b7e912",
+      "md5": "41262ada725c96fcaf1e4df159d97e1f",
+      "functions": 0,
+      "analyzed": false,
+      "changed": false,
+      "revision": "<rev6>",
+      "projectRevision": "<rev7>",
+      "generation": 1,
+      "cachedUpgrade": false,
+      "upgradeCache": null,
+      "cacheBuild": "none",
+      "cacheBuildInfo": null,
+      "users": [
+       1
+      ],
+      "overlays": [],
+      "writers": [],
+      "writer": true,
+      "journalSeq": 0,
+      "unsavedEdits": 0,
+      "openMs": "<masked>"
+     },
+     "queue": {
+      "waitedMs": "<masked>",
+      "positionAtEntry": 1,
+      "behind": null,
+      "runningAtStart": 1
+     },
+     "analysis": {
+      "program": "p1:/beta.exe",
+      "analyzed": true,
+      "seconds": "<masked>",
+      "functions": 3,
+      "changed": true
+     },
+     "save": {
+      "program": "p1:/beta.exe",
+      "saved": true,
+      "revision": "<rev8>",
+      "projectRevision": "<rev9>",
+      "savedSeq": 0
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 6,
+   "who": "a",
+   "cmd": "import",
+   "request": {
+    "file": "<WORK>/bin/missing.exe"
+   },
+   "response": {
+    "id": 8,
+    "ok": false,
+    "error": {
+     "code": "not_found",
+     "message": "no such file: <WORK>/bin/missing.exe"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 7,
+   "who": "a",
+   "cmd": "import",
+   "request": {},
+   "response": {
+    "id": 9,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "missing field: file"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 8,
+   "who": "a",
+   "cmd": "list",
+   "request": {
+    "programsOnly": true
+   },
+   "response": {
+    "id": 10,
+    "ok": true,
+    "result": {
+     "project": "p1",
+     "folder": "/",
+     "entries": [
+      {
+       "path": "/copies/alpha2.exe",
+       "key": "p1:/copies/alpha2.exe",
+       "kind": "file",
+       "name": "alpha2.exe",
+       "contentType": "Program",
+       "program": true,
+       "versioned": false,
+       "readOnly": false,
+       "bytes": 1032192,
+       "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+       "language": "x86:LE:64:default (4.9)",
+       "format": "Portable Executable (PE)",
+       "executable": "/<WORK>/bin/alpha.exe",
+       "open": {
+        "project": "p1",
+        "path": "/copies/alpha2.exe",
+        "mode": "writable",
+        "owner": 1,
+        "idleMs": "<masked>",
+        "users": [
+         1
+        ],
+        "ownerLabel": "client 1 (char-a, harness-a)",
+        "busy": null,
+        "writers": [],
+        "journalSeq": 0,
+        "unsavedEdits": 0,
+        "orphanedMs": null,
+        "revision": "<rev4>",
+        "cachedUpgrade": false,
+        "cacheBuild": "none"
+       }
+      },
+      {
+       "path": "/beta.exe",
+       "key": "p1:/beta.exe",
+       "kind": "file",
+       "name": "beta.exe",
+       "contentType": "Program",
+       "program": true,
+       "versioned": false,
+       "readOnly": false,
+       "bytes": 1179648,
+       "sha256": "e298b217a30dc8f62b0ef4fbdf6424497e797b74fb71b9537447ebdc61b7e912",
+       "language": "x86:LE:64:default (4.9)",
+       "format": "Portable Executable (PE)",
+       "executable": "/<WORK>/bin/beta.exe",
+       "open": {
+        "project": "p1",
+        "path": "/beta.exe",
+        "mode": "writable",
+        "owner": 1,
+        "idleMs": "<masked>",
+        "users": [
+         1
+        ],
+        "ownerLabel": "client 1 (char-a, harness-a)",
+        "busy": null,
+        "writers": [],
+        "journalSeq": 0,
+        "unsavedEdits": 0,
+        "orphanedMs": null,
+        "revision": "<rev8>",
+        "cachedUpgrade": false,
+        "cacheBuild": "none"
+       }
+      },
+      {
+       "path": "/alpha.exe",
+       "key": "p1:/alpha.exe",
+       "kind": "file",
+       "name": "alpha.exe",
+       "contentType": "Program",
+       "program": true,
+       "versioned": false,
+       "readOnly": false,
+       "bytes": 1032192,
+       "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+       "language": "x86:LE:64:default (4.9)",
+       "format": "Portable Executable (PE)",
+       "executable": "/<WORK>/bin/alpha.exe",
+       "open": {
+        "project": "p1",
+        "path": "/alpha.exe",
+        "mode": "writable",
+        "owner": 1,
+        "idleMs": "<masked>",
+        "users": [
+         1
+        ],
+        "ownerLabel": "client 1 (char-a, harness-a)",
+        "busy": null,
+        "writers": [],
+        "journalSeq": 0,
+        "unsavedEdits": 0,
+        "orphanedMs": null,
+        "revision": "<rev2>",
+        "cachedUpgrade": false,
+        "cacheBuild": "none"
+       }
+      }
+     ],
+     "offset": 0,
+     "returned": 3,
+     "truncated": false
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 9,
+   "who": "a",
+   "cmd": "status",
+   "request": {},
+   "response": {
+    "id": 11,
+    "ok": true,
+    "result": {
+     "protocol": 2,
+     "minClient": "<masked>",
+     "hydraVersion": "<masked>",
+     "ghidraVersion": "<masked>",
+     "installId": "<masked>",
+     "startedAt": "<masked>",
+     "ghidra": "<masked>",
+     "install": "<masked>",
+     "java": "<masked>",
+     "pid": "<masked>",
+     "uptimeMs": "<masked>",
+     "listen": {
+      "host": "<masked>",
+      "port": "<masked>"
+     },
+     "launch": {
+      "mode": "fast",
+      "aot": null,
+      "classCache": "hit",
+      "readyMs": "<masked>",
+      "jvmToReadyMs": "<masked>"
+     },
+     "keepWarmS": 600,
+     "memory": {
+      "usedMb": "<masked>",
+      "committedMb": "<masked>",
+      "maxMb": "<masked>"
+     },
+     "projects": [
+      {
+       "id": "p1",
+       "name": "Imp",
+       "dir": "<WORK>/imp",
+       "gpr": "<WORK>/imp/Imp.gpr",
+       "writable": true,
+       "openMs": "<masked>",
+       "idleMs": "<masked>",
+       "files": 3,
+       "users": [
+        1
+       ],
+       "programs": 3,
+       "revision": "<rev9>",
+       "diskRevision": "<rev9>",
+       "stale": false,
+       "generation": 1,
+       "fork": null
+      }
+     ],
+     "you": 1,
+     "programs": [
+      {
+       "project": "p1",
+       "path": "/copies/alpha2.exe",
+       "mode": "writable",
+       "owner": 1,
+       "idleMs": "<masked>",
+       "users": [
+        1
+       ],
+       "ownerLabel": "client 1 (char-a, harness-a)",
+       "busy": null,
+       "writers": [],
+       "journalSeq": 0,
+       "unsavedEdits": 0,
+       "orphanedMs": null,
+       "revision": "<rev4>",
+       "cachedUpgrade": false,
+       "cacheBuild": "none"
+      },
+      {
+       "project": "p1",
+       "path": "/alpha.exe",
+       "mode": "writable",
+       "owner": 1,
+       "idleMs": "<masked>",
+       "users": [
+        1
+       ],
+       "ownerLabel": "client 1 (char-a, harness-a)",
+       "busy": null,
+       "writers": [],
+       "journalSeq": 0,
+       "unsavedEdits": 0,
+       "orphanedMs": null,
+       "revision": "<rev2>",
+       "cachedUpgrade": false,
+       "cacheBuild": "none"
+      },
+      {
+       "project": "p1",
+       "path": "/beta.exe",
+       "mode": "writable",
+       "owner": 1,
+       "idleMs": "<masked>",
+       "users": [
+        1
+       ],
+       "ownerLabel": "client 1 (char-a, harness-a)",
+       "busy": null,
+       "writers": [],
+       "journalSeq": 0,
+       "unsavedEdits": 0,
+       "orphanedMs": null,
+       "revision": "<rev8>",
+       "cachedUpgrade": false,
+       "cacheBuild": "none"
+      }
+     ],
+     "clients": [
+      {
+       "id": 1,
+       "name": "char-a",
+       "harness": "harness-a",
+       "transport": "socket",
+       "launcher": false,
+       "clientVersion": "1.0.0",
+       "activeProject": "p1",
+       "active": "p1:/beta.exe",
+       "connectedMs": "<masked>",
+       "projects": [
+        "p1"
+       ],
+       "programs": [
+        "p1:/alpha.exe",
+        "p1:/copies/alpha2.exe",
+        "p1:/beta.exe"
+       ],
+       "running": [],
+       "requests": []
+      }
+     ],
+     "overlays": [],
+     "scheduler": {
+      "quick": {
+       "slots": 24,
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 2,
+       "everQueued": 0,
+       "backgroundQueued": 0
+      },
+      "long": {
+       "slots": 6,
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 5,
+       "everQueued": 0,
+       "backgroundQueued": 0
+      }
+     },
+     "imports": {
+      "maxImports": 4,
+      "holder": null,
+      "running": [],
+      "queue": [],
+      "history": {
+       "count": 3,
+       "completed": 3,
+       "meanMs": "<masked>",
+       "msPerMb": "<masked>",
+       "peakRunning": 1
+      }
+     },
+     "youAre": {
+      "client": "char-a",
+      "harness": "harness-a",
+      "labelled": false
+     },
+     "upgradeCache": {
+      "enabled": true,
+      "dir": "<WORK>/state/upgrade-cache",
+      "buildsStarted": 0,
+      "builds": []
+     },
+     "deferredInitMs": "<masked>"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 10,
+   "who": "a",
+   "cmd": "programs",
+   "request": {},
+   "response": {
+    "id": 12,
+    "ok": true,
+    "result": {
+     "activeProject": "p1",
+     "active": "p1:/beta.exe",
+     "programs": [
+      {
+       "key": "p1:/alpha.exe",
+       "project": "p1",
+       "path": "/alpha.exe",
+       "name": "alpha.exe",
+       "mode": "writable",
+       "owner": 1,
+       "mine": true,
+       "active": false,
+       "language": "x86:LE:64:default",
+       "compiler": "windows",
+       "imageBase": "0x140000000",
+       "format": "Portable Executable (PE)",
+       "executable": "/<WORK>/bin/alpha.exe",
+       "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+       "md5": "b890095eec6aea60ef369f0140482870",
+       "functions": 0,
+       "analyzed": false,
+       "changed": false,
+       "revision": "<rev2>",
+       "projectRevision": "<rev9>",
+       "generation": 1,
+       "cachedUpgrade": false,
+       "upgradeCache": null,
+       "cacheBuild": "none",
+       "cacheBuildInfo": null,
+       "users": [
+        1
+       ],
+       "overlays": [],
+       "writers": [],
+       "writer": true,
+       "journalSeq": 0,
+       "unsavedEdits": 0
+      },
+      {
+       "key": "p1:/copies/alpha2.exe",
+       "project": "p1",
+       "path": "/copies/alpha2.exe",
+       "name": "alpha.exe",
+       "mode": "writable",
+       "owner": 1,
+       "mine": true,
+       "active": false,
+       "language": "x86:LE:64:default",
+       "compiler": "windows",
+       "imageBase": "0x140000000",
+       "format": "Portable Executable (PE)",
+       "executable": "/<WORK>/bin/alpha.exe",
+       "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+       "md5": "b890095eec6aea60ef369f0140482870",
+       "functions": 0,
+       "analyzed": false,
+       "changed": false,
+       "revision": "<rev4>",
+       "projectRevision": "<rev9>",
+       "generation": 1,
+       "cachedUpgrade": false,
+       "upgradeCache": null,
+       "cacheBuild": "none",
+       "cacheBuildInfo": null,
+       "users": [
+        1
+       ],
+       "overlays": [],
+       "writers": [],
+       "writer": true,
+       "journalSeq": 0,
+       "unsavedEdits": 0
+      },
+      {
+       "key": "p1:/beta.exe",
+       "project": "p1",
+       "path": "/beta.exe",
+       "name": "beta.exe",
+       "mode": "writable",
+       "owner": 1,
+       "mine": true,
+       "active": true,
+       "language": "x86:LE:64:default",
+       "compiler": "windows",
+       "imageBase": "0x140000000",
+       "format": "Portable Executable (PE)",
+       "executable": "/<WORK>/bin/beta.exe",
+       "sha256": "e298b217a30dc8f62b0ef4fbdf6424497e797b74fb71b9537447ebdc61b7e912",
+       "md5": "41262ada725c96fcaf1e4df159d97e1f",
+       "functions": 3,
+       "analyzed": true,
+       "changed": false,
+       "revision": "<rev8>",
+       "projectRevision": "<rev9>",
+       "generation": 1,
+       "cachedUpgrade": false,
+       "upgradeCache": null,
+       "cacheBuild": "none",
+       "cacheBuildInfo": null,
+       "users": [
+        1
+       ],
+       "overlays": [],
+       "writers": [],
+       "writer": true,
+       "journalSeq": 0,
+       "unsavedEdits": 0
+      }
+     ]
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 11,
+   "who": "a",
+   "cmd": "analyze",
+   "request": {
+    "timeout": 300
+   },
+   "response": {
+    "id": 13,
+    "ok": true,
+    "result": {
+     "functions": 3,
+     "seq": 1
+    },
+    "ms": "<masked>"
+   },
+   "note": "again, on the active program"
+  },
+  {
+   "step": 12,
+   "who": "a",
+   "cmd": "functions",
+   "request": {},
+   "response": {
+    "id": 14,
+    "ok": true,
+    "result": {
+     "functions": [
+      {
+       "name": "entry",
+       "address": "0x140001000",
+       "size": 19,
+       "thunk": false,
+       "external": false
+      },
+      {
+       "name": "FUN_140001020",
+       "address": "0x140001020",
+       "size": 6,
+       "thunk": false,
+       "external": false
+      },
+      {
+       "name": "FUN_140001040",
+       "address": "0x140001040",
+       "size": 17,
+       "thunk": false,
+       "external": false
+      }
+     ],
+     "offset": 0,
+     "returned": 3,
+     "truncated": false
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 13,
+   "who": "a",
+   "cmd": "script",
+   "request": {
+    "script": "CharPrint.java",
+    "args": [
+     "x"
+    ]
+   },
+   "response": {
+    "id": 15,
+    "ok": true,
+    "result": {
+     "script": "<WORK>/scripts/CharPrint.java",
+     "mode": "owner",
+     "program": "p1:/beta.exe",
+     "seconds": "<masked>",
+     "chars": 52,
+     "truncated": false,
+     "output": "program beta.exe\r\nfunctions 3\r\nentry entry\r\nargs x\r\n",
+     "changed": false,
+     "unsaved": true,
+     "artifact": null
+    },
+    "ms": "<masked>"
+   },
+   "note": "on the owned program"
+  },
+  {
+   "step": 14,
+   "who": "a",
+   "cmd": "script",
+   "request": {
+    "script": "CharPrint.java",
+    "program": null
+   },
+   "response": {
+    "id": 16,
+    "ok": true,
+    "result": {
+     "script": "<WORK>/scripts/CharPrint.java",
+     "mode": "none",
+     "program": null,
+     "seconds": "<masked>",
+     "chars": 21,
+     "truncated": false,
+     "output": "program none\r\nargs \r\n",
+     "changed": false,
+     "unsaved": false,
+     "artifact": null
+    },
+    "ms": "<masked>"
+   },
+   "note": "no program"
+  },
+  {
+   "step": 15,
+   "who": "a",
+   "cmd": "script",
+   "request": {
+    "script": "<WORK>/scripts/CharPrint.java",
+    "address": "0x140001040",
+    "maxChars": 20
+   },
+   "response": {
+    "id": 17,
+    "ok": true,
+    "result": {
+     "script": "<WORK>/scripts/CharPrint.java",
+     "mode": "owner",
+     "program": "p1:/beta.exe",
+     "seconds": "<masked>",
+     "chars": 59,
+     "truncated": true,
+     "output": "program beta.exe\r\nfu",
+     "changed": false,
+     "unsaved": true,
+     "artifact": null
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 16,
+   "who": "a",
+   "cmd": "script",
+   "request": {
+    "script": "CharPrint.java",
+    "exclusive": true,
+    "artifact": "char-artifact"
+   },
+   "response": {
+    "id": 18,
+    "ok": true,
+    "result": {
+     "script": "<WORK>/scripts/CharPrint.java",
+     "mode": "owner",
+     "program": "p1:/beta.exe",
+     "seconds": "<masked>",
+     "chars": 51,
+     "truncated": false,
+     "output": "program beta.exe\r\nfunctions 3\r\nentry entry\r\nargs \r\n",
+     "changed": false,
+     "unsaved": true,
+     "artifact": "char-artifact"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 17,
+   "who": "a",
+   "cmd": "script",
+   "request": {
+    "script": "CharFail.java"
+   },
+   "response": {
+    "id": 19,
+    "ok": false,
+    "error": {
+     "code": "failed",
+     "message": "script failed: IllegalStateException: characterization failure",
+     "details": {
+      "script": "<WORK>/scripts/CharFail.java",
+      "mode": "owner",
+      "program": "p1:/beta.exe",
+      "seconds": "<masked>",
+      "chars": 16,
+      "truncated": false,
+      "output": "before failure\r\n",
+      "changed": false,
+      "unsaved": true,
+      "artifact": null
+     },
+     "trace": "<masked>"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 18,
+   "who": "a",
+   "cmd": "script",
+   "request": {
+    "script": "CharPrint.java",
+    "maxChars": 0
+   },
+   "response": {
+    "id": 20,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "maxChars must be between 1 and 16000000"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 19,
+   "who": "a",
+   "cmd": "script",
+   "request": {
+    "script": "CharWrite.java"
+   },
+   "response": {
+    "id": 21,
+    "ok": true,
+    "result": {
+     "script": "<WORK>/scripts/CharWrite.java",
+     "mode": "owner",
+     "program": "p1:/beta.exe",
+     "seconds": "<masked>",
+     "chars": 10,
+     "truncated": false,
+     "output": "labelled\r\n",
+     "changed": true,
+     "unsaved": true,
+     "artifact": null
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 20,
+   "who": "a",
+   "cmd": "journal",
+   "request": {},
+   "response": {
+    "id": 22,
+    "ok": true,
+    "result": {
+     "program": "p1:/beta.exe",
+     "seq": 2,
+     "savedSeq": 0,
+     "dropped": 0,
+     "entries": [
+      {
+       "seq": 1,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "harness-a",
+       "cmd": "analyze",
+       "functions": 3,
+       "op": "analyze"
+      },
+      {
+       "seq": 2,
+       "at": "<masked>",
+       "client": 1,
+       "name": "char-a",
+       "harness": "harness-a",
+       "cmd": "script",
+       "script": "CharWrite.java",
+       "op": "script"
+      }
+     ],
+     "returned": 2
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 21,
+   "who": "a",
+   "cmd": "close_program",
+   "request": {
+    "discard": true
+   },
+   "response": {
+    "id": 23,
+    "ok": true,
+    "result": {
+     "closed": "p1:/beta.exe",
+     "discarded": true,
+     "active": "p1:/alpha.exe"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 22,
+   "who": "a",
+   "cmd": "open_program",
+   "request": {
+    "path": "/alpha.exe"
+   },
+   "response": {
+    "id": 24,
+    "ok": true,
+    "result": {
+     "key": "p1:/alpha.exe",
+     "project": "p1",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "writable",
+     "owner": 1,
+     "mine": true,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 0,
+     "analyzed": false,
+     "changed": false,
+     "revision": "<rev2>",
+     "projectRevision": "<rev9>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1
+     ],
+     "overlays": [],
+     "writers": [],
+     "writer": true,
+     "journalSeq": 0,
+     "unsavedEdits": 0,
+     "openMs": "<masked>"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 23,
+   "who": "a",
+   "cmd": "script",
+   "request": {
+    "script": "CharWrite.java"
+   },
+   "response": {
+    "id": 25,
+    "ok": true,
+    "result": {
+     "script": "<WORK>/scripts/CharWrite.java",
+     "mode": "owner",
+     "program": "p1:/alpha.exe",
+     "seconds": "<masked>",
+     "chars": 10,
+     "truncated": false,
+     "output": "labelled\r\n",
+     "changed": true,
+     "unsaved": true,
+     "artifact": null
+    },
+    "ms": "<masked>"
+   },
+   "note": "read-only: contained, rolled back"
+  },
+  {
+   "step": 24,
+   "who": "a",
+   "cmd": "functions",
+   "request": {},
+   "response": {
+    "id": 26,
+    "ok": true,
+    "result": {
+     "functions": [],
+     "offset": 0,
+     "returned": 0,
+     "truncated": false
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 25,
+   "who": "a",
+   "cmd": "status",
+   "request": {},
+   "response": {
+    "id": 28,
+    "ok": true,
+    "result": {
+     "protocol": 2,
+     "minClient": "<masked>",
+     "hydraVersion": "<masked>",
+     "ghidraVersion": "<masked>",
+     "installId": "<masked>",
+     "startedAt": "<masked>",
+     "ghidra": "<masked>",
+     "install": "<masked>",
+     "java": "<masked>",
+     "pid": "<masked>",
+     "uptimeMs": "<masked>",
+     "listen": {
+      "host": "<masked>",
+      "port": "<masked>"
+     },
+     "launch": {
+      "mode": "fast",
+      "aot": null,
+      "classCache": "hit",
+      "readyMs": "<masked>",
+      "jvmToReadyMs": "<masked>"
+     },
+     "keepWarmS": 600,
+     "memory": {
+      "usedMb": "<masked>",
+      "committedMb": "<masked>",
+      "maxMb": "<masked>"
+     },
+     "projects": [
+      {
+       "id": "p1",
+       "name": "Imp",
+       "dir": "<WORK>/imp",
+       "gpr": "<WORK>/imp/Imp.gpr",
+       "writable": true,
+       "openMs": "<masked>",
+       "idleMs": "<masked>",
+       "files": 3,
+       "users": [
+        1
+       ],
+       "programs": 2,
+       "revision": "<rev9>",
+       "diskRevision": "<rev9>",
+       "stale": false,
+       "generation": 1,
+       "fork": null
+      }
+     ],
+     "you": 1,
+     "programs": [
+      {
+       "project": "p1",
+       "path": "/copies/alpha2.exe",
+       "mode": "writable",
+       "owner": 1,
+       "idleMs": "<masked>",
+       "users": [
+        1
+       ],
+       "ownerLabel": "client 1 (char-a, harness-a)",
+       "busy": null,
+       "writers": [],
+       "journalSeq": 0,
+       "unsavedEdits": 0,
+       "orphanedMs": null,
+       "revision": "<rev4>",
+       "cachedUpgrade": false,
+       "cacheBuild": "none"
+      },
+      {
+       "project": "p1",
+       "path": "/alpha.exe",
+       "mode": "writable",
+       "owner": 1,
+       "idleMs": "<masked>",
+       "users": [
+        1
+       ],
+       "ownerLabel": "client 1 (char-a, harness-a)",
+       "busy": null,
+       "writers": [],
+       "journalSeq": 1,
+       "unsavedEdits": 1,
+       "orphanedMs": null,
+       "revision": "<rev2>",
+       "cachedUpgrade": false,
+       "cacheBuild": "none"
+      }
+     ],
+     "clients": [
+      {
+       "id": 1,
+       "name": "char-a",
+       "harness": "harness-a",
+       "transport": "socket",
+       "launcher": false,
+       "clientVersion": "1.0.0",
+       "activeProject": "p1",
+       "active": "p1:/alpha.exe",
+       "connectedMs": "<masked>",
+       "projects": [
+        "p1"
+       ],
+       "programs": [
+        "p1:/alpha.exe",
+        "p1:/copies/alpha2.exe"
+       ],
+       "running": [
+        "27"
+       ],
+       "requests": [
+        {
+         "id": 27,
+         "cmd": "script",
+         "artifact": null,
+         "ms": "<masked>",
+         "message": "",
+         "progress": 0,
+         "maximum": 0,
+         "cancelled": false,
+         "client": "char-a",
+         "harness": "harness-a",
+         "labelled": false,
+         "waiting": null,
+         "queue": null
+        }
+       ]
+      }
+     ],
+     "overlays": [],
+     "scheduler": {
+      "quick": {
+       "slots": 24,
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 5,
+       "everQueued": 0,
+       "backgroundQueued": 0
+      },
+      "long": {
+       "slots": 6,
+       "inUse": 1,
+       "queued": 0,
+       "running": [
+        {
+         "client": 1,
+         "who": "client 1 (char-a, harness-a)",
+         "cmd": "script",
+         "ms": "<masked>"
+        }
+       ],
+       "waiting": [],
+       "admitted": 15,
+       "everQueued": 0,
+       "backgroundQueued": 0
+      }
+     },
+     "imports": {
+      "maxImports": 4,
+      "holder": null,
+      "running": [],
+      "queue": [],
+      "history": {
+       "count": 3,
+       "completed": 3,
+       "meanMs": "<masked>",
+       "msPerMb": "<masked>",
+       "peakRunning": 1
+      }
+     },
+     "youAre": {
+      "client": "char-a",
+      "harness": "harness-a",
+      "labelled": false
+     },
+     "upgradeCache": {
+      "enabled": true,
+      "dir": "<WORK>/state/upgrade-cache",
+      "buildsStarted": 0,
+      "builds": []
+     },
+     "deferredInitMs": "<masked>"
+    },
+    "ms": "<masked>"
+   },
+   "note": "the running script is listed"
+  },
+  {
+   "step": 26,
+   "who": "a",
+   "cmd": "cancel",
+   "request": {
+    "target": 27
+   },
+   "response": {
+    "id": 29,
+    "ok": true,
+    "result": {
+     "cancelled": true
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 27,
+   "who": "a",
+   "cmd": "script",
+   "request": {
+    "script": "CharSleep.java",
+    "args": [
+     "20000"
+    ],
+    "program": null
+   },
+   "response": {
+    "id": 27,
+    "ok": false,
+    "error": {
+     "code": "cancelled",
+     "message": "script cancelled",
+     "details": {
+      "script": "<WORK>/scripts/CharSleep.java",
+      "mode": "none",
+      "program": null,
+      "seconds": "<masked>",
+      "chars": 0,
+      "truncated": false,
+      "output": "",
+      "changed": false,
+      "unsaved": false,
+      "artifact": null
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 28,
+   "who": "a",
+   "cmd": "cancel",
+   "request": {
+    "all": true
+   },
+   "response": {
+    "id": 31,
+    "ok": true,
+    "result": {
+     "cancelled": 1,
+     "scope": null
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 29,
+   "who": "a",
+   "cmd": "script",
+   "request": {
+    "script": "CharSleep.java",
+    "args": [
+     "20000"
+    ],
+    "program": null
+   },
+   "response": {
+    "id": 30,
+    "ok": false,
+    "error": {
+     "code": "cancelled",
+     "message": "script cancelled",
+     "details": {
+      "script": "<WORK>/scripts/CharSleep.java",
+      "mode": "none",
+      "program": null,
+      "seconds": "<masked>",
+      "chars": 0,
+      "truncated": false,
+      "output": "",
+      "changed": false,
+      "unsaved": false,
+      "artifact": null
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 30,
+   "who": "a",
+   "cmd": "script",
+   "request": {
+    "script": "CharSleep.java",
+    "args": [
+     "20000"
+    ],
+    "program": null,
+    "timeout": 1
+   },
+   "response": {
+    "id": 32,
+    "ok": false,
+    "error": {
+     "code": "cancelled",
+     "message": "script timed out",
+     "details": {
+      "script": "<WORK>/scripts/CharSleep.java",
+      "mode": "none",
+      "program": null,
+      "seconds": "<masked>",
+      "chars": 0,
+      "truncated": false,
+      "output": "",
+      "changed": false,
+      "unsaved": false,
+      "artifact": null
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "its own timeout"
+  },
+  {
+   "step": 31,
+   "who": "a",
+   "cmd": "close_project",
+   "request": {},
+   "response": {
+    "id": 33,
+    "ok": false,
+    "error": {
+     "code": "unsaved_changes",
+     "message": "/alpha.exe has unsaved changes; send save, or close with \"discard\":true",
+     "details": {
+      "program": "p1:/alpha.exe"
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "the opened imports have changes"
+  },
+  {
+   "step": 32,
+   "who": "a",
+   "cmd": "close_project",
+   "request": {
+    "discard": true
+   },
+   "response": {
+    "id": 34,
+    "ok": true,
+    "result": {
+     "project": "p1",
+     "left": true,
+     "closed": true,
+     "activeProject": null
+    },
+    "ms": "<masked>"
+   }
+  }
+ ]
+}

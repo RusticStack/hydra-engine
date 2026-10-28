@@ -21,6 +21,18 @@ it is based on.
   frees (measured: still registered 40 s later). Both are documented under "Platform and limits".
   The fixes are designed in `PROTOCOL-3.md`, not shipped.
 
+### Internal
+
+- `Session.java` (3,625 lines) is split into the state and dispatch (`Session`, 473 lines) and
+  command classes by area: `ProjectCommands`, `ForkCommands`, `ProgramCommands`, `QueryCommands`,
+  `EditCommands`, `Operations`, `OverlayCommands`, `ImportCommands`, `ScriptCommands`, with
+  `Access`, `Requests` and `Addresses` as shared helpers. No behaviour or protocol change: every
+  reply is identical, field order included. The layout and how to add a command are in
+  `Ghidra/Features/HeadlessSession/ARCHITECTURE.md`.
+- New `examples/characterization_tests.py` and `examples/characterization/`: the exact replies
+  of every session command, recorded before the split and compared after it. It needs no binary
+  and no game data; it is the safety net for the protocol changes planned next.
+
 ## 12.3-hydra.3
 
 Based on upstream Ghidra `master` (12.3 DEV) as of 2026-10-27,

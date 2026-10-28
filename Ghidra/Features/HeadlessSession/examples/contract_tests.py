@@ -27,6 +27,18 @@ Tests:
 - compat: the client refuses a session whose protocol differs or whose ``minClient`` is newer than
   the client (a daemon started with ``-Dghidra.session.minClient=99.0.0`` is the test hook), with
   a clear ``IncompatibleError``; ``status`` and ``stop`` still work on such a daemon.
+- protocol (package E1, PROTOCOL-3.md 3.1, 3.2): the protocol a ``hello`` asks for is answered as the
+  spec says (absent, 1, a string, a float, a boolean, ``null``: 2; 3: 3; 9: 3); a protocol-2 hello
+  has exactly today's key order and no v3 key, a protocol-3 hello has the identity block between
+  ``memory`` and ``projects``; the first ``hello`` fixes the protocol of the connection (a second
+  ``hello`` asking for the other protocol is answered with the connection's own, a ``status``
+  pipelined behind a protocol-3 ``hello`` is a protocol-3 ``status``); the endpoint file says
+  ``protocol:2`` with ``protocolMin:2`` and ``protocolMax:3``; ``-set`` reaches the policy block; the
+  decompiler hash arrives in the background and is right.
+- registries (package E1): ``-selfTest``, the engine's own seam checks, run in a real JVM: an
+  unknown capability, limit or policy name throws; ``laneOf(cmd, req, v3)`` and ``describe(false)``
+  are today's values for every command; ``-set key=value`` reaches ``Settings`` (and a bad key or a
+  bad ``requireExpect`` is a usage error, exit 2).
 - export: a ``script`` writes a large JSONL file (default 600,000 lines, about 55 MB) outside the
   project while sending throttled progress; ``maxChars`` does not cap the file; the running job
   and its declared ``artifact`` are visible in ``status``.
@@ -34,8 +46,11 @@ Tests:
 - export_shutdown: stopping the daemon while the export runs leaves a partial, valid file.
 """
 import argparse
+import contextlib
+import hashlib
 import json
 import pathlib
+import re
 import socket
 import subprocess
 import sys
@@ -132,8 +147,13 @@ def t_hello(c: Ctx):
         check(len(h["installId"]) == 16 and int(h["installId"], 16) >= 0, f"installId {h}")
         check(h["startedAt"] > 0 and h["pid"] > 0, "startedAt/pid")
         ep = {k: v for k, v in s.endpoint.items() if k != "token"}
-        for k in ("protocol", "minClient", "hydraVersion", "ghidraVersion", "installId"):
+        for k in ("minClient", "hydraVersion", "ghidraVersion", "installId"):
             check(ep.get(k) == h[k], f"endpoint file {k}: {ep.get(k)} != {h[k]}")
+        # the endpoint file says the lowest protocol served; the hello answers the one asked for
+        check(ep.get("protocol") == 2 and ep.get("protocolMin") == 2 and ep.get("protocolMax") == 3,
+              f"endpoint file protocol range: {ep}")
+        check(list(ep)[:3] == ["protocol", "protocolMin", "protocolMax"],
+              f"endpoint file key order: {list(ep)}")
         with d.connect("second", "other-harness") as s2:
             check(s2.hello["installId"] == h["installId"], "installId differs between clients")
             st = s.call("status")
@@ -154,6 +174,63 @@ def t_hello(c: Ctx):
     check(json.loads(out) == {"client": gs.CLIENT_VERSION, "protocol": gs.PROTOCOL,
                               "release": gs.HYDRA_RELEASE}, out)
     return f"{h['hydraVersion']} installId {install_id} minClient {h['minClient']}"
+
+
+V2_HELLO_KEYS = ["protocol", "minClient", "hydraVersion", "ghidraVersion", "installId", "startedAt",
+                 "ghidra", "install", "java", "pid", "uptimeMs", "listen", "launch", "keepWarmS",
+                 "memory", "projects", "client"]
+V3_NEW_KEYS = ["protocolMin", "protocolMax", "capabilities", "limits", "policy", "paths",
+               "platform", "analysisIdentity"]
+V3_HELLO_KEYS = (V2_HELLO_KEYS[:V2_HELLO_KEYS.index("projects")] + V3_NEW_KEYS +
+                 V2_HELLO_KEYS[V2_HELLO_KEYS.index("projects"):])
+#: what package E1 itself advertises (3.1): the other packages add theirs, so these are compared as
+#: required subsets (this file does not know the later packages)
+E1_CAPABILITIES = ["errorNext", "expectAll", "idempotency", "identity"]
+
+
+class Raw:
+    """A raw JSON-lines client on the daemon's socket: no library, so the request goes out exactly
+    as written (a protocol of any JSON type, two requests in one write)."""
+
+    def __init__(self, ep):
+        self.ep = ep
+        self.sock = socket.create_connection((ep["host"], ep["port"]), timeout=120)
+        self.f = self.sock.makefile("rwb")
+        self.n = 0
+
+    def line(self, cmd, **fields):
+        self.n += 1
+        fields = {"id": self.n, "cmd": cmd, **fields}
+        return (json.dumps(fields) + "\n").encode()
+
+    def send(self, cmd, **fields):
+        self.f.write(self.line(cmd, **fields))
+        self.f.flush()
+        return self.n
+
+    def read(self):
+        raw = self.f.readline()
+        if not raw:
+            raise Fail("the daemon closed the connection")
+        return json.loads(raw)
+
+    def call(self, cmd, **fields):
+        rid = self.send(cmd, **fields)
+        while True:
+            r = self.read()
+            if r.get("id") == rid:
+                return r
+
+    def hello(self, protocol="<absent>", **extra):
+        f = dict(extra)
+        if protocol != "<absent>":
+            f["protocol"] = protocol
+        return self.call("hello", token=self.ep["token"], client="raw", harness="contract", **f)
+
+    def close(self):
+        with contextlib.suppress(OSError):
+            self.f.close()
+            self.sock.close()
 
 
 def fake_server(answer):
@@ -220,6 +297,183 @@ def t_compat(c: Ctx):
     check(st and st["minClient"] == "99.0.0", f"status of the strict daemon: {st}")
     check(d.stop(), "the strict daemon could not be stopped")
     return msg
+
+
+def t_protocol(c: Ctx):
+    gs = c.gs
+    d = c.daemon("protocol")
+    with d.connect("contract", "tests") as keep:
+        ep = d.read_endpoint()
+        check(ep["protocol"] == 2 and ep["protocolMin"] == 2 and ep["protocolMax"] == 3,
+              f"endpoint: {ep}")
+        # the protocol a hello asks for, answered as 3.1 says (JSON integers only; anything else
+        # is "absent": the request is not refused)
+        want = [("<absent>", 2), (2, 2), (3, 3), (9, 3), (1, 2), (0, 2), (-5, 2), ("3", 2),
+                (3.0, 2), (True, 2), (None, 2), ([3], 2), (10 ** 20, 3), (-10 ** 20, 2),
+                # negative values whose low 32 bits are 3 or 4 (a wrapped intValue() would answer them)
+                (-4294967293, 2), (-4294967292, 2), (-9223372036854775805, 2)]
+        for ask, got in want:
+            r = Raw(ep)
+            try:
+                h = r.hello(ask)
+            finally:
+                r.close()
+            check(h["ok"], f"hello protocol={ask!r}: {h}")
+            check(h["result"]["protocol"] == got, f"hello protocol={ask!r} answered "
+                  f"{h['result']['protocol']}, want {got}")
+            keys = list(h["result"])
+            check(keys == (V3_HELLO_KEYS if got == 3 else V2_HELLO_KEYS),
+                  f"hello protocol={ask!r}: keys {keys}")
+        # a protocol-2 hello is the committed shape, and so is a protocol-2 status header
+        r = Raw(ep)
+        h2 = r.hello()["result"]
+        check(list(h2) == V2_HELLO_KEYS, f"protocol-2 hello keys: {list(h2)}")
+        st = r.call("status")["result"]
+        check(all(k not in st for k in V3_NEW_KEYS), f"a v2 status carries a v3 key: {list(st)}")
+        # the first hello fixes the protocol: a second hello asking 3 is answered 2, and adds no key
+        again = r.hello(3)["result"]
+        check(again["protocol"] == 2 and list(again) == V2_HELLO_KEYS,
+              f"a second hello asking 3 on a protocol-2 connection: {again['protocol']} "
+              f"{list(again)}")
+        again = r.hello("3")["result"]
+        check(again["protocol"] == 2 and list(again) == V2_HELLO_KEYS, "a string protocol")
+        st = r.call("status")["result"]
+        check(all(k not in st for k in V3_NEW_KEYS), "status after a second hello asking 3")
+        r.close()
+        # ... and the other way round
+        r = Raw(ep)
+        h3 = r.hello(3)["result"]
+        again = r.hello(2)["result"]
+        check(again["protocol"] == 3 and list(again) == V3_HELLO_KEYS,
+              f"a second hello asking 2 on a protocol-3 connection: {again['protocol']}")
+        st3 = r.call("status")["result"]
+        check(all(k in st3 for k in V3_NEW_KEYS) and st3["protocol"] == 3,
+              f"a v3 status lacks the identity block: {list(st3)}")
+        check(list(st3)[list(st3).index("memory") + 1:][:len(V3_NEW_KEYS)] == V3_NEW_KEYS,
+              f"v3 keys sit between memory and projects: {list(st3)}")
+        r.close()
+        # the connection's protocol is fixed before the next line is read: a status written in the
+        # same breath as the hello is a protocol-3 status
+        r = Raw(ep)
+        r.f.write(r.line("hello", token=ep["token"], client="raw", harness="contract", protocol=3) +
+                  r.line("status"))
+        r.f.flush()
+        got = {}
+        while len(got) < 2:
+            m = r.read()
+            got[m["id"]] = m
+        check(got[1]["result"]["protocol"] == 3 and "capabilities" in got[2]["result"],
+              f"a status pipelined behind a protocol-3 hello: {list(got[2]['result'])}")
+        r.close()
+        # the identity block of the v3 hello
+        r = Raw(ep)
+        h = r.hello(3)["result"]
+        caps = h["capabilities"]
+        check(all(caps.get(k) == 1 for k in E1_CAPABILITIES) and all(
+            isinstance(v, int) and v >= 1 for v in caps.values()), f"capabilities: {caps}")
+        check(list(caps) == [k for k in gs_capability_order() if k in caps],
+              f"capabilities are not in declaration order: {list(caps)}")
+        lim = h["limits"]
+        check(all(isinstance(lim.get(k), int) and lim[k] >= 1
+                  for k in ("maxQuick", "maxLong", "maxImports")), f"limits: {lim}")
+        check(h["policy"].get("requireExpect") is False, f"policy: {h['policy']}")
+        paths = h["paths"]
+        check(list(paths) == ["stateDir", "instance", "endpointFile", "logFile", "scriptPath",
+                              "tmpDir", "upgradeCacheDir", "install"], f"paths: {list(paths)}")
+        check(pathlib.Path(paths["stateDir"]).resolve() == c.state.resolve() and
+              paths["instance"] == "protocol" and
+              pathlib.Path(paths["endpointFile"]).resolve() == pathlib.Path(d.endpoint_file).resolve(),
+              f"paths: {paths}")
+        plat = h["platform"]
+        check(list(plat) == ["os", "osVersion", "arch", "cpus", "javaVendor", "javaVersion",
+                             "maxHeapMb", "fileSystems", "cow"], f"platform: {list(plat)}")
+        check(list(plat["fileSystems"]) == ["stateDir", "tmpDir", "upgradeCacheDir"] and
+              list(plat["cow"]) == ["stateDir", "tmpDir"] and
+              all(isinstance(v, str) for v in plat["fileSystems"].values()), f"platform: {plat}")
+        ai = h["analysisIdentity"]
+        check(list(ai) == ["hydraVersion", "ghidraVersion", "buildDate", "dbVersions",
+                           "decompiler"], f"analysisIdentity: {list(ai)}")
+        check(ai["hydraVersion"] == h["hydraVersion"] and ai["ghidraVersion"] == h["ghidraVersion"]
+              and ai["buildDate"], f"analysisIdentity: {ai}")
+        dbv = ai["dbVersions"]
+        check(list(dbv) == ["program", "dataTypes"] and isinstance(dbv["program"], int) and
+              dbv["program"] > 0 and dbv["dataTypes"] is None, f"dbVersions: {dbv}")
+        # equal to the constant itself, when this test runs from the source tree
+        src = pathlib.Path(__file__).resolve().parents[4] / "Ghidra" / "Framework" /             "SoftwareModeling" / "src" / "main" / "java" / "ghidra" / "program" / "database" /             "ProgramDB.java"
+        if src.is_file():
+            m = re.search(r"static final int DB_VERSION = (\d+);", src.read_text(encoding="utf-8"))
+            check(m and int(m.group(1)) == dbv["program"],
+                  f"dbVersions.program {dbv['program']} is not ProgramDB.DB_VERSION in {src}")
+        dec = ai["decompiler"]
+        check(list(dec) == ["path", "sizeBytes", "sha256"] and dec["sizeBytes"] > 0 and
+              pathlib.Path(dec["path"]).is_file(), f"decompiler: {dec}")
+        # the background hash: null or right, and right within a while
+        want_sha = hashlib.sha256(pathlib.Path(dec["path"]).read_bytes()).hexdigest()
+        t0 = time.monotonic()
+        while dec["sha256"] is None and time.monotonic() - t0 < 60:
+            time.sleep(0.2)
+            dec = r.hello(3)["result"]["analysisIdentity"]["decompiler"]
+        check(dec["sha256"] == want_sha, f"decompiler sha256 {dec['sha256']}, want {want_sha}")
+        r.close()
+        note = (f"db {dbv['program']}, {plat['os']} {plat['fileSystems']['stateDir']}, "
+                f"decompiler sha256 after {time.monotonic() - t0:.1f} s")
+        keep.call("ping")
+    d.stop()
+    # -set reaches the policy: a daemon started with engine.requireExpect
+    d2 = c.daemon("protocol-set", engine={"requireExpect": True})
+    with d2.connect("contract", "tests"):
+        r = Raw(d2.read_endpoint())
+        pol = r.hello(3)["result"]["policy"]
+        r.close()
+        check(pol.get("requireExpect") is True, f"policy after -set requireExpect=true: {pol}")
+    d2.stop()
+    return note
+
+
+def gs_capability_order():
+    """The declaration order of 3.2 (Advertised.CAPABILITIES)."""
+    return ["errorNext", "expectAll", "idempotency", "laneHint", "maintLane", "queueInfo",
+            "cancelWait", "forkReport", "format", "backup", "upgradeGate", "scriptIsolation",
+            "scriptSha256", "attemptedChanges", "health", "identity"]
+
+
+def self_test(c, *flags, engine=None):
+    """Runs the engine's ``-selfTest`` in a real JVM, with the launcher's own command line:
+    ``(exit code, stdout lines, stderr)``."""
+    gs = c.gs
+    st = c.state / "selftest"
+    st.mkdir(parents=True, exist_ok=True)
+    inst = gs.Install.locate(c.a.ghidra)
+    cfg = gs.load_config(st, {"engine": engine} if engine else None)
+    argv, _ = gs.Launch(inst, cfg, st).command(["-selfTest", *flags])
+    p = subprocess.run(argv, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
+    return p.returncode, p.stdout.splitlines(), p.stderr
+
+
+def t_registries(c: Ctx):
+    code, lines, err = self_test(c, engine={"maintSlots": 7, "requireExpect": True, "name": "a=b"})
+    bad = [ln for ln in lines if ln.startswith("FAIL")]
+    check(code == 0 and not bad, f"-selfTest exit {code}: {bad} {err[-1500:]}")
+    n_ok = sum(1 for ln in lines if ln.startswith("ok"))
+    check(n_ok >= 25, f"only {n_ok} self-test checks ran: {lines}")
+    check(any(ln.startswith("ok   registering an unknown capability throws") for ln in lines) and
+          any(ln.startswith("ok   registering an unknown limit throws") for ln in lines) and
+          any(ln.startswith("ok   registering an unknown policy throws") for ln in lines),
+          "the unknown-name checks did not run")
+    check(any(ln.startswith("ok   laneOf(cmd, req, v3)") for ln in lines) and
+          any(ln.startswith("ok   describe(false)") for ln in lines),
+          "the laneOf and describe(false) checks did not run")
+    sett = [json.loads(ln[len("SETTINGS "):]) for ln in lines if ln.startswith("SETTINGS ")]
+    check(sett == [{"set": {"maintSlots": "7", "requireExpect": "true", "name": "a=b"},
+                    "requireExpect": True, "maintSlots": 7}], f"the -set flag did not reach "
+          f"Settings: {sett}")
+    # a bad key, no =, and a bad requireExpect are usage errors (exit 2), not silent defaults
+    for flags, why in ((["-set", "1x=2"], "a key that is not an identifier"),
+                       (["-set", "novalue"], "no ="),
+                       (["-set", "requireExpect=maybe"], "requireExpect is not true or false")):
+        code2, _, err2 = self_test(c, *flags)
+        check(code2 == 2 and ("-set" in err2), f"{why}: exit {code2}, stderr {err2[-300:]}")
+    return f"{n_ok} checks ok; settings {sett[0]['set']}"
 
 
 def start_export(c, s, name, lines, throttle=0, **extra):
@@ -308,7 +562,7 @@ def t_export_shutdown(c: Ctx):
     return f"partial file kept after shutdown: {n} lines, {size >> 10} KiB, torn last line: {torn}"
 
 
-TESTS = ["hello", "compat", "export", "export_cancel", "export_shutdown"]
+TESTS = ["hello", "compat", "protocol", "registries", "export", "export_cancel", "export_shutdown"]
 
 
 def main():

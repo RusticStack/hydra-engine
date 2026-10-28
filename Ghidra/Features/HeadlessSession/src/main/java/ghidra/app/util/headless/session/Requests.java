@@ -1,0 +1,55 @@
+/* ###
+ * IP: GHIDRA
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package ghidra.app.util.headless.session;
+
+import com.google.gson.*;
+
+/**
+ * Reading a request's {@code wait}, the output cap and the cancelled error, the
+ * same way for every command.
+ */
+final class Requests {
+
+	private Requests() {
+		// static helpers
+	}
+
+	static final long DEFAULT_WAIT_MS = 10_000;
+	static final int DEFAULT_TEXT_CAP = 200_000;
+	static final int MAX_TEXT_CAP = 16_000_000;
+
+	/**
+	 * How long a request may wait for a slot or a lock. {@code "wait": true} (on
+	 * {@code open_program}: wait for the upgrade cache copy) or {@code false} keeps the default.
+	 */
+	static long waitMs(JsonObject req) {
+		if (Json.has(req, "wait") && req.get("wait").isJsonPrimitive() &&
+			req.getAsJsonPrimitive("wait").isBoolean()) {
+			return DEFAULT_WAIT_MS;
+		}
+		return Json.num(req, "wait", DEFAULT_WAIT_MS, 0, 86_400_000L);
+	}
+
+	static boolean waitsForCache(JsonObject req) {
+		return Json.has(req, "wait") && req.get("wait").isJsonPrimitive() &&
+			req.getAsJsonPrimitive("wait").isBoolean() && req.get("wait").getAsBoolean();
+	}
+
+	static SessionException cancelled(RequestMonitor m) {
+		return new SessionException(SessionException.CANCELLED,
+			m.timedOut() ? "timed out" : "cancelled");
+	}
+}

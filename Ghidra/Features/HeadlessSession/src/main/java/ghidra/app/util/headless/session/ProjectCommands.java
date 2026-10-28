@@ -1,0 +1,597 @@
+/* ###
+ * IP: GHIDRA
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package ghidra.app.util.headless.session;
+
+import static ghidra.app.util.headless.session.Access.firstOf;
+import static ghidra.app.util.headless.session.Access.lockProject;
+import static ghidra.app.util.headless.session.Access.unlockProject;
+import static ghidra.app.util.headless.session.Requests.waitMs;
+import static ghidra.app.util.headless.session.Session.CLEANUP_WAIT_MS;
+
+import java.io.*;
+import java.util.*;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Lock;
+
+import com.google.gson.*;
+
+import ghidra.framework.model.*;
+import ghidra.framework.store.LockException;
+import ghidra.program.model.listing.*;
+import ghidra.util.Msg;
+import ghidra.util.NotOwnerException;
+import ghidra.util.exception.*;
+
+/**
+ * Opening, refreshing, listing and closing projects: {@code open_project},
+ * {@code close_project}, {@code refresh}, {@code reopen} and {@code list}.
+ */
+final class ProjectCommands {
+
+	private final Session s;
+
+	ProjectCommands(Session s) {
+		this.s = s;
+	}
+
+	/**
+	 * Joins a project, opening it if no client has it open. A writable request on a read-only
+	 * view reopens it writable in place, also while other clients use it ({@link #makeWritable});
+	 * a writable request on a writable project, and a read-only request on one, join it.
+	 */
+	JsonElement openProject(Client c, JsonObject req) {
+		ProjectResolver.Resolved r;
+		String canonical;
+		try {
+			r = ProjectResolver.resolve(Json.str(req, "path"));
+			canonical = r.gpr().getCanonicalPath();
+		}
+		catch (IOException e) {
+			throw new SessionException(SessionException.NOT_FOUND, e.getMessage());
+		}
+		boolean writable = Json.bool(req, "writable", false);
+		boolean discard = Json.bool(req, "discard", false);
+		long wait = waitMs(req);
+		ProjectEntry p;
+		boolean opened = false;
+		synchronized (s.registry) {
+			if (s.shuttingDown) {
+				throw new SessionException(SessionException.CONFLICT, "the session is shutting down");
+			}
+			p = s.projects.get(canonical);
+			if (p != null && writable && !p.writable()) {
+				// readers keep using it: the view is reopened writable in place, same id
+				makeWritable(c, p, wait);
+			}
+			if (p == null) {
+				p = openProjectEntry(c, r, canonical, writable);
+				opened = true;
+			}
+			synchronized (p.users) {
+				p.users.add(c);
+			}
+			p.joinedAt.putIfAbsent(c, System.currentTimeMillis());
+			c.seenGeneration.putIfAbsent(p.id, p.generation);
+			c.projects.add(p.id);
+			c.activeProject = p.id;
+			p.lastUsed = System.currentTimeMillis();
+		}
+		JsonObject info = p.info(c);
+		Json.put(info, "opened", opened);
+		return info;
+	}
+
+	/**
+	 * Reopens a read-only view writable in place, while its clients keep using it: the project
+	 * is opened writable (taking its lock), then under the project's exclusive lock (requests
+	 * running on it finish first) it replaces the view, and every program clients use is reopened
+	 * from it under the same key, read-only, with its overlays rebuilt. The id, the keys and the
+	 * clients' joins stay. Held: {@link #registry}.
+	 */
+	private void makeWritable(Client c, ProjectEntry p, long wait) {
+		ProjectLocator locator = new ProjectLocator(p.resolved.dir().getPath(), p.resolved.name());
+		String rev;
+		try {
+			rev = Revision.of(p.resolved);
+		}
+		catch (IOException e) {
+			rev = null;
+		}
+		SessionProject nv;
+		try {
+			nv = SessionProject.open(locator, true);
+		}
+		catch (LockException e) {
+			JsonObject d = p.identity();
+			Json.put(d, "lockFile", locator.getProjectLockFile().getPath());
+			d.add("holderInfo", ProjectLocks.holder(locator));
+			Json.put(d, "suggest", "open_read_only");
+			throw new SessionException(SessionException.CONFLICT,
+				"the project is locked by another process (a Ghidra window, analyzeHeadless or a " +
+					"writable session): keep the read-only view, or close that process",
+				d, e);
+		}
+		catch (NotOwnerException e) {
+			throw new SessionException(SessionException.CONFLICT, e.getMessage());
+		}
+		catch (NotFoundException | IOException e) {
+			throw new SessionException(SessionException.NOT_FOUND, e.getMessage(), null, e);
+		}
+		Lock l;
+		try {
+			l = lockProject(p, true, wait, "open_project writable");
+			p.exclusiveClient = c;
+		}
+		catch (RuntimeException e) {
+			nv.close();
+			throw e;
+		}
+		SessionProject old = p.project;
+		JsonArray progs;
+		try {
+			progs = swapView(p, nv, rev, new RequestMonitor(null, null));
+		}
+		finally {
+			unlockProject(p, l);
+		}
+		try {
+			old.close();
+		}
+		catch (RuntimeException e) {
+			Msg.warn(s, "could not close the read-only view of " + p.id, e);
+		}
+		Msg.info(s, c.label() + " reopened project " + p.id + " writable in place for " +
+			p.userCount() + " client(s): " + progs);
+	}
+
+	/**
+	 * Replaces a project's view with {@code nv} (from revision {@code rev}) and reopens its
+	 * programs from it. Held: the project's exclusive lock.
+	 */
+	private JsonArray swapView(ProjectEntry p, SessionProject nv, String rev, RequestMonitor m) {
+		JsonArray progs = new JsonArray();
+		p.project = nv;
+		p.previousRevision = p.openRevision;
+		p.openRevision = rev;
+		p.invalidateRevision();
+		p.generation++;
+		p.refreshedAt = System.currentTimeMillis();
+		for (ProgramEntry e : new ArrayList<>(p.programs.values())) {
+			progs.add(reopenIn(p, nv, e, m));
+		}
+		return progs;
+	}
+
+	/** Held: {@link #registry}. */
+	private ProjectEntry openProjectEntry(Client c, ProjectResolver.Resolved r, String canonical,
+			boolean writable) {
+		ProjectLocator locator;
+		try {
+			locator = new ProjectLocator(r.dir().getPath(), r.name());
+		}
+		catch (IllegalArgumentException e) {
+			throw new SessionException(SessionException.BAD_REQUEST,
+				"Ghidra cannot open this path: " + e.getMessage());
+		}
+		long t0 = System.nanoTime();
+		String revision;
+		try {
+			revision = Revision.of(r);
+		}
+		catch (IOException e) {
+			revision = null;
+		}
+		SessionProject sp;
+		try {
+			sp = SessionProject.open(locator, writable);
+		}
+		catch (LockException e) {
+			JsonObject d = Json.of("gpr", r.gpr().getPath(), "name", r.name(), "lockFile",
+				locator.getProjectLockFile().getPath());
+			d.add("holderInfo", ProjectLocks.holder(locator));
+			Json.put(d, "suggest", "open_read_only");
+			throw new SessionException(SessionException.CONFLICT,
+				"the project is locked by another process (a Ghidra window, analyzeHeadless or a " +
+					"writable session): open it read-only, or close that process",
+				d, e);
+		}
+		catch (NotOwnerException e) {
+			throw new SessionException(SessionException.CONFLICT, e.getMessage());
+		}
+		catch (NotFoundException | IOException e) {
+			throw new SessionException(SessionException.NOT_FOUND, e.getMessage(), null, e);
+		}
+		String id = "p" + s.nextProject.getAndIncrement();
+		ProjectEntry p = new ProjectEntry(id, r, canonical, sp, (System.nanoTime() - t0) / 1_000_000);
+		p.openRevision = revision;
+		s.projects.put(canonical, p);
+		s.projectsById.put(id, p);
+		Msg.info(s, c.label() + " opened project " + id + " " + r.gpr() +
+			(writable ? " (writable)" : " (read-only view)") + " in " + p.openMs + " ms");
+		return p;
+	}
+
+	/**
+	 * Closes a project for everyone. Held: {@link #registry}. Refused while a program has unsaved
+	 * changes, unless {@code discard}.
+	 */
+	void closeProjectEntry(ProjectEntry p, long wait, boolean discard) {
+		if (!discard) {
+			for (ProgramEntry e : p.programs.values()) {
+				if (e.program != null && e.program.isChanged()) {
+					throw new SessionException(SessionException.UNSAVED_CHANGES,
+						"cannot close project " + p.id + ": " + e.path +
+							" has unsaved changes; save, or pass \"discard\":true",
+						Json.of("program", e.key));
+				}
+			}
+		}
+		Lock l = lockProject(p, true, wait, "close_project");
+		try {
+			for (ProgramEntry e : new ArrayList<>(p.programs.values())) {
+				if (e.program != null && e.program.isChanged()) {
+					Msg.warn(s, "closing project " + p.id + ": discarding unsaved changes in " +
+						e.path);
+				}
+				s.programCmds.closeEntry(e);
+			}
+			p.closed = true;
+			p.project.close();
+		}
+		finally {
+			unlockProject(p, l);
+			s.projects.remove(p.canonical, p);
+			s.projectsById.remove(p.id, p);
+			List<Client> users;
+			synchronized (p.users) {
+				users = new ArrayList<>(p.users);
+				p.users.clear();
+			}
+			p.joinedAt.clear();
+			for (Client u : users) {
+				u.projects.remove(p.id);
+				if (p.id.equals(u.activeProject)) {
+					u.activeProject = firstOf(u.projects);
+				}
+			}
+		}
+	}
+
+	JsonElement closeProject(Client c, JsonObject req) {
+		ProjectEntry p = s.access.projectFor(c, req);
+		boolean closed = leaveProject(c, p, Json.bool(req, "discard", false), waitMs(req));
+		return Json.of("project", p.id, "left", true, "closed", closed, "activeProject",
+			c.activeProject);
+	}
+
+	/**
+	 * This client stops using a project: it closes its programs there (see
+	 * {@link #releaseUse}), and the project closes when nobody uses it any more, at once when it
+	 * is writable (its lock is released for other processes), after {@link #keepWarmMs} when it
+	 * is a read-only view. Returns true when the project was closed.
+	 */
+	boolean leaveProject(Client c, ProjectEntry p, boolean discard, long wait) {
+		List<String> mine;
+		synchronized (c.programs) {
+			mine = c.programs.stream().filter(k -> k.startsWith(p.id + ":")).toList();
+		}
+		for (String key : mine) {
+			ProgramEntry e = p.programs.get(key.substring(p.id.length() + 1));
+			if (e == null) {
+				c.programs.remove(key);
+				continue;
+			}
+			Lock pl = lockProject(p, false, wait, "close_project");
+			try {
+				boolean discarded = s.programCmds.releaseUse(c, e, discard, wait);
+				if (discarded) {
+					Msg.warn(s, c.label() + " left " + p.id + ": discarded unsaved changes in " +
+						e.path);
+				}
+			}
+			finally {
+				pl.unlock();
+			}
+		}
+		synchronized (s.registry) {
+			synchronized (p.users) {
+				p.users.remove(c);
+			}
+			p.joinedAt.remove(c);
+			c.seenGeneration.remove(p.id);
+			c.projects.remove(p.id);
+			if (p.id.equals(c.activeProject)) {
+				c.activeProject = firstOf(c.projects);
+			}
+			p.lastUsed = System.currentTimeMillis();
+			if (!p.closed && p.userCount() == 0 && (p.writable() || s.keepWarmMs == 0) &&
+				p.programs.values().stream().noneMatch(ProgramEntry::holdsOrphanedWork)) {
+				closeProjectEntry(p, wait, true);
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * {@code refresh} (or {@code reopen}): reopens a read-only view on what is saved now, without
+	 * its clients leaving. The new view is opened first, outside every lock; then, under the
+	 * project's exclusive lock (so that no request sees half of the switch), every program that
+	 * clients use is reopened from it with the same key, programs nobody uses are closed, and the
+	 * old view is closed. Programs the new revision no longer has are closed for their users.
+	 * A writable project needs none (no other process can write it while this daemon holds its
+	 * lock).
+	 */
+	JsonElement refresh(Client c, JsonObject req, RequestMonitor m) {
+		ProjectEntry p = s.access.projectFor(c, req);
+		long t0 = System.nanoTime();
+		boolean force = Json.bool(req, "force", false);
+		p.invalidateRevision();
+		String disk = p.diskRevision();
+		if (p.writable()) {
+			return Json.of("project", p.id, "refreshed", false, "reason",
+				"writable: this daemon holds the project lock, so it always shows what is saved",
+				"revision", disk, "generation", p.generation);
+		}
+		String from = p.openRevision;
+		if (!force && disk != null && disk.equals(from)) {
+			c.seenGeneration.put(p.id, p.generation);
+			return Json.of("project", p.id, "refreshed", false, "reason", "unchanged",
+				"revision", from, "generation", p.generation);
+		}
+		String rev;
+		SessionProject nv;
+		try {
+			rev = Revision.of(p.resolved);
+			nv = SessionProject.open(new ProjectLocator(p.resolved.dir().getPath(),
+				p.resolved.name()), false);
+		}
+		catch (Exception e) {
+			throw new SessionException(SessionException.FAILED,
+				"could not reopen project " + p.id + ": " + e.getMessage(), null, e);
+		}
+		Lock l;
+		try {
+			l = lockProject(p, true, waitMs(req), "refresh");
+			p.exclusiveClient = c;
+		}
+		catch (RuntimeException e) {
+			nv.close();
+			throw e;
+		}
+		SessionProject old = p.project;
+		JsonArray progs;
+		try {
+			progs = swapView(p, nv, rev, m);
+		}
+		finally {
+			unlockProject(p, l);
+		}
+		try {
+			old.close();
+		}
+		catch (RuntimeException e) {
+			Msg.warn(s, "refresh: could not close the old view of " + p.id, e);
+		}
+		c.seenGeneration.put(p.id, p.generation);
+		Msg.info(s, c.label() + " refreshed project " + p.id + " from revision " + from +
+			" to " + rev + " (generation " + p.generation + ")");
+		JsonObject out = Json.of("project", p.id, "refreshed", true, "from", from, "revision",
+			rev, "generation", p.generation, "programs", progs, "ms",
+			(System.nanoTime() - t0) / 1_000_000);
+		out.add("info", p.info(c));
+		return out;
+	}
+
+	/**
+	 * One program of a refreshed view: reopened from the new view when clients use it, closed
+	 * otherwise. Held: the project's exclusive lock (no request runs on it).
+	 */
+	private JsonObject reopenIn(ProjectEntry p, SessionProject nv, ProgramEntry e,
+			RequestMonitor m) {
+		JsonObject r = Json.of("program", e.key, "revision", e.revision);
+		boolean got = false;
+		try {
+			got = e.lock.writeLock().tryLock(CLEANUP_WAIT_MS, TimeUnit.MILLISECONDS);
+		}
+		catch (InterruptedException ex) {
+			Thread.currentThread().interrupt();
+		}
+		if (!got) {
+			Json.put(r, "action", "kept (still in use: " + e.exclusiveHolder + ")");
+			return r;
+		}
+		boolean unlock = true;
+		try {
+			if (e.userCount() == 0) {
+				s.programCmds.disposeProgram(e);
+				Json.put(r, "action", "closed (nobody used it)");
+				return r;
+			}
+			DomainFile df = nv.getProjectData().getFile(e.path);
+			if (df == null || !Program.class.isAssignableFrom(df.getDomainObjectClass())) {
+				e.lock.writeLock().unlock();
+				unlock = false;
+				s.programCmds.closeEntry(e);
+				Json.put(r, "action", "removed (not in the new revision)");
+				return r;
+			}
+			e.disposeDecompilers();
+			s.programCmds.releaseProgramObject(e);
+			e.mode = null;
+			try {
+				e.file = df;
+				e.program = s.programCmds.openReadOnly(e, df, m);
+				e.mode = ProgramEntry.Mode.READ_ONLY;
+				e.stampRevision();
+				Json.put(r, "action", "reopened");
+				Json.put(r, "newRevision", e.revision);
+				s.overlayCmds.rebuildOverlays(e, m);
+			}
+			catch (RuntimeException ex) {
+				Msg.error(s, "refresh: could not reopen " + e.key + "; closing it", ex);
+				e.lock.writeLock().unlock();
+				unlock = false;
+				s.programCmds.closeEntry(e);
+				Json.put(r, "action", "closed (reopen failed: " + ex.getMessage() + ")");
+			}
+			return r;
+		}
+		finally {
+			if (unlock) {
+				e.lock.writeLock().unlock();
+			}
+		}
+	}
+
+	JsonElement list(ProjectEntry p, JsonObject req) {
+		String path = Json.str(req, "folder", "/");
+		boolean recursive = Json.bool(req, "recursive", true);
+		boolean programsOnly = Json.bool(req, "programsOnly", false);
+		boolean metadata = Json.bool(req, "metadata", true);
+		String sha = Json.str(req, "sha256", null);
+		Page page = new Page((int) Json.num(req, "offset", 0, 0, Integer.MAX_VALUE),
+			(int) Json.num(req, "limit", 1000, 1, 100_000));
+		ProjectData d = p.data();
+		DomainFolder folder = path.equals("/") ? d.getRootFolder() : d.getFolder(path);
+		if (folder == null) {
+			throw new SessionException(SessionException.NOT_FOUND, "no such folder: " + path);
+		}
+		walk(p, folder, recursive, programsOnly || sha != null, metadata || sha != null, sha,
+			page);
+		return Json.of("project", p.id, "folder", folder.getPathname(), "entries", page.out,
+			"offset", page.offset, "returned", page.out.size(), "truncated", page.more);
+	}
+
+	/** One page of a listing: skips {@code offset} items, keeps {@code limit}, notes the rest. */
+	private static final class Page {
+		final int offset;
+		final int limit;
+		final JsonArray out = new JsonArray();
+		int index;
+		boolean more;
+
+		Page(int offset, int limit) {
+			this.offset = offset;
+			this.limit = limit;
+		}
+
+		/** True when the walk can stop. */
+		boolean offer(java.util.function.Supplier<JsonObject> item) {
+			if (index++ < offset) {
+				return false;
+			}
+			if (out.size() >= limit) {
+				more = true;
+				return true;
+			}
+			out.add(item.get());
+			return false;
+		}
+	}
+
+	/** Returns true when the page is full and the walk should stop. */
+	private boolean walk(ProjectEntry p, DomainFolder folder, boolean recursive,
+			boolean programsOnly, boolean metadata, String sha, Page page) {
+		for (DomainFolder sub : folder.getFolders()) {
+			if (!programsOnly &&
+				page.offer(() -> Json.of("path", sub.getPathname(), "kind", "folder"))) {
+				return true;
+			}
+			if (recursive && walk(p, sub, true, programsOnly, metadata, sha, page)) {
+				return true;
+			}
+		}
+		for (DomainFile f : folder.getFiles()) {
+			boolean isProgram = Program.class.isAssignableFrom(f.getDomainObjectClass());
+			if (programsOnly && !isProgram) {
+				continue;
+			}
+			if (sha != null && !sha.equalsIgnoreCase(f.getMetadata().get("Executable SHA256"))) {
+				continue;
+			}
+			if (page.offer(() -> describeFile(p, f, isProgram, metadata))) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private JsonObject describeFile(ProjectEntry p, DomainFile f, boolean isProgram,
+			boolean metadata) {
+		JsonObject e = Json.of("path", f.getPathname(), "key", p.id + ":" + f.getPathname(),
+			"kind", "file", "name", f.getName(), "contentType", f.getContentType(), "program",
+			isProgram, "versioned", f.isVersioned(), "readOnly",
+			f.isReadOnly() || !f.isInWritableProject());
+		try {
+			Json.put(e, "bytes", f.length());
+		}
+		catch (IOException ex) {
+			Json.put(e, "bytes", null);
+		}
+		if (metadata && isProgram) {
+			Map<String, String> md = f.getMetadata();
+			Json.put(e, "sha256", md.get("Executable SHA256"));
+			Json.put(e, "language", md.get("Language ID"));
+			Json.put(e, "format", md.get("Executable Format"));
+			Json.put(e, "executable", md.get("Executable Location"));
+		}
+		ProgramEntry pe = p.programs.get(f.getPathname());
+		Json.put(e, "open", pe == null ? null : pe.describeUse(s.upgradeCache));
+		return e;
+	}
+
+	/**
+	 * Finds a file by project path, or by bare name when it is unique in the project (the way
+	 * {@code -process name} is used).
+	 */
+	static DomainFile findFile(ProjectEntry p, String path) {
+		ProjectData d = p.data();
+		if (path.startsWith("/")) {
+			DomainFile f = d.getFile(path);
+			if (f == null) {
+				throw new SessionException(SessionException.NOT_FOUND,
+					"no such file in project " + p.id + ": " + path);
+			}
+			return f;
+		}
+		List<DomainFile> found = new ArrayList<>();
+		collectByName(d.getRootFolder(), path, found);
+		if (found.size() == 1) {
+			return found.get(0);
+		}
+		if (found.isEmpty()) {
+			throw new SessionException(SessionException.NOT_FOUND,
+				"no file named " + path + " in project " + p.id);
+		}
+		List<String> paths = new ArrayList<>();
+		found.forEach(f -> paths.add(f.getPathname()));
+		JsonObject details = new JsonObject();
+		Json.put(details, "candidates", paths);
+		throw new SessionException(SessionException.CONFLICT,
+			"several files are named " + path + "; pass the project path", details);
+	}
+
+	private static void collectByName(DomainFolder folder, String name, List<DomainFile> out) {
+		DomainFile f = folder.getFile(name);
+		if (f != null) {
+			out.add(f);
+		}
+		for (DomainFolder sub : folder.getFolders()) {
+			collectByName(sub, name, out);
+		}
+	}
+}
