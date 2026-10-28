@@ -31,6 +31,27 @@
      "stale": false,
      "generation": 1,
      "fork": null,
+     "format": {
+      "programDb": {
+       "min": 33,
+       "max": 33,
+       "current": 33
+      },
+      "dataTypeDb": {
+       "min": 3,
+       "max": 3,
+       "current": 3
+      },
+      "upgradeRequired": false,
+      "oneWay": false,
+      "newerThanEngine": false,
+      "programsScanned": 2,
+      "truncated": false,
+      "engine": {
+       "hydraVersion": "<masked>",
+       "ghidraVersion": "<masked>"
+      }
+     },
      "opened": true
     },
     "ms": "<masked>"

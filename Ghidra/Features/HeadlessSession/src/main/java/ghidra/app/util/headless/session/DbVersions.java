@@ -27,6 +27,7 @@ import ghidra.program.database.ProgramDB;
 final class DbVersions {
 
 	private static final int PROGRAM = readProgram();
+	private static final int DATA_TYPES = readStatic("ghidra.program.database.data.DataTypeManagerDB");
 
 	private DbVersions() {
 	}
@@ -41,17 +42,29 @@ final class DbVersions {
 	}
 
 	/**
-	 * The data type database version, or {@code null}: it is not read yet, and a number is never
-	 * guessed. It is filled in when it can be read and tested against data of the previous release
-	 * (package E2).
+	 * The current data type database version ({@code DataTypeManagerDB.DB_VERSION}, read
+	 * reflectively like {@link #program()}), or {@code null} when it cannot be read: a number is
+	 * never guessed. The version a program <i>stores</i> is read from its database header by
+	 * {@link ProjectFormat} and tested against stock 12.1.4 data (E2).
 	 */
 	static Integer dataTypes() {
-		return null;
+		return DATA_TYPES < 0 ? null : DATA_TYPES;
 	}
 
 	private static int readProgram() {
 		try {
 			Field f = ProgramDB.class.getDeclaredField("DB_VERSION");
+			f.setAccessible(true);
+			return f.getInt(null);
+		}
+		catch (ReflectiveOperationException | RuntimeException e) {
+			return -1;
+		}
+	}
+
+	private static int readStatic(String className) {
+		try {
+			Field f = Class.forName(className).getDeclaredField("DB_VERSION");
 			f.setAccessible(true);
 			return f.getInt(null);
 		}

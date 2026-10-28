@@ -45,6 +45,7 @@ final class ProjectCommands {
 
 	ProjectCommands(Session s) {
 		this.s = s;
+		Advertised.capability("format", 1); // the format block of project and info (3.4)
 	}
 
 	/**
@@ -65,6 +66,17 @@ final class ProjectCommands {
 		boolean writable = Json.bool(req, "writable", false);
 		boolean discard = Json.bool(req, "discard", false);
 		long wait = waitMs(req);
+		if (writable) {
+			// D38/D66: a sealed project takes no writable path; opening it writable would already
+			// take its lock and let Ghidra rewrite its index backups (measurement C)
+			Seals.Status sealed = Seals.isSealed(r);
+			if (sealed.sealed()) {
+				ProjectEntry known = s.projects.get(canonical);
+				throw Seals.refusal(c.v3(), known == null ? null : known.id, r, sealed,
+					"open_project writable");
+			}
+		}
+		long openedFrom = System.currentTimeMillis();
 		ProjectEntry p;
 		boolean opened = false;
 		synchronized (s.registry) {
@@ -91,7 +103,30 @@ final class ProjectCommands {
 		}
 		JsonObject info = p.info(c);
 		Json.put(info, "opened", opened);
+		if (opened && c.v3()) {
+			// D42: a newest version file quarantined while the project loaded (a disposable fork)
+			JsonArray repairs = Seals.repairsSince(r, openedFrom - 1000);
+			if (!repairs.isEmpty()) {
+				info.add("repairs", repairs);
+			}
+		}
 		return info;
+	}
+
+	/**
+	 * {@code prepare_upgrade} (v3, BP21): finishes the upgrade-cache build of every older-format
+	 * program of a project, so that the first fork or view of it does not wait for the 15 to 16.5 s
+	 * of a first read-only open. Builds are single-flight per program ({@link UpgradeCache}): a
+	 * concurrent call joins the running build. Writes only the upgrade cache, never the project.
+	 */
+	JsonElement prepareUpgrade(Client c, JsonObject req, RequestMonitor m) {
+		if (!c.v3()) {
+			throw new SessionException(SessionException.UNKNOWN_COMMAND,
+				"unknown cmd 'prepare_upgrade'; it needs protocol 3 (send hello with " +
+					"\"protocol\":3)");
+		}
+		ProjectEntry p = s.access.projectFor(c, req);
+		return s.access.inProject(p, req, "prepare_upgrade", x -> s.upgradeCache.prepare(x, m));
 	}
 
 	/**
