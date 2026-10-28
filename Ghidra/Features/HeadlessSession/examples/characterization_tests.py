@@ -85,6 +85,9 @@ import sys
 import time
 
 HERE = pathlib.Path(__file__).resolve().parent
+# ``python -I`` leaves the script directory off sys.path, and daemon_tests.py lives next to this file.
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
 REQUIRE_V3_ENV = "HYDRA_REQUIRE_V3"  # =1 is --require-v3 (see the docstring)
 #: The stock 1.0.0 client (client_compat_tests.py proves it is the 1.0.0 file byte for byte).
 STOCK_FILE = HERE / "stock" / "ghidra_session_1_0_0.py"
@@ -226,6 +229,11 @@ VOLATILE_SUFFIX = re.compile(r"(Ms|MsAgo|Mb|PerMb|Seconds|Bytes)$")
 # The ``bytes`` of a listed program file has no ``mode`` next to it, is a multiple of the 4 KiB
 # database page and stays in the golden.
 PROJECT_TOTAL = ("bytes", "mode")
+# Amendment A1 (D62): the scheduler's capacity numbers follow the CPU count and the scheduler
+# settings later packages change (E3a, D40), so they are not a function of the request. In a lane
+# dict under ``scheduler`` the figure is masked (it must still be a positive int); the key, its
+# position and the lane shape stay. The number itself is asserted by ``cc_e3a`` ``v2_lane_defaults``.
+CAPACITY_KEYS = ("slots", "cap", "perKeyCap")
 REV = re.compile(r"^[0-9a-f]{16}$")
 ISO_TIME = re.compile(r"^\d{4}-\d\d-\d\dT[\d:.]+Z$")
 
@@ -255,7 +263,26 @@ class Masker:
                        f"int, got {v!r}")
         return "<masked>"
 
+    def capacity(self, k, v):
+        """A masked scheduler capacity figure; anything but a positive int is an error."""
+        if isinstance(v, bool) or not isinstance(v, int) or v <= 0:
+            raise Fail(f"the scheduler capacity number {k} must be a positive int, got {v!r}")
+        return "<masked>"
+
+    def lanes(self, v):
+        """The ``scheduler`` dict: capacity keys of each lane dict are masked, the rest recurses."""
+        out = {}
+        for lane, d in v.items():
+            if isinstance(d, dict):
+                out[lane] = {k: self.capacity(k, x) if k in CAPACITY_KEYS else self.value(x, k)
+                             for k, x in d.items()}
+            else:
+                out[lane] = self.value(d, lane)
+        return out
+
     def value(self, v, key=None):
+        if isinstance(v, dict) and key == "scheduler":
+            return self.lanes(v)
         if isinstance(v, dict):
             total = PROJECT_TOTAL[0] if PROJECT_TOTAL[1] in v else None
             return {k: self.total(x) if k == total else self.value(x, k) for k, x in v.items()}
@@ -889,8 +916,9 @@ SCENARIOS = {
     "overlays": sc_overlays,
     "import_script": sc_import_script,
 }
-#: scenario name -> the protocols it runs at (the seven above run at both)
-PROTOCOLS = {n: (2, 3) for n in SCENARIOS}
+#: scenario name -> the protocols it runs at. The seven above have v2 goldens only (no v3 goldens
+#: exist), so they run at protocol 2 only; a char_*.py file declares its own (default (3,)).
+PROTOCOLS = {n: (2,) for n in SCENARIOS}
 LOADED = {}  # char_*.py file name -> its scenario names
 
 
@@ -972,6 +1000,27 @@ def selftest():
     check("0, a negative, a bool, a float, a string and null are errors, not masks",
           all(raises(v) for v in (0, -5, True, False, 1.5, "4425400", None)))
     check("a positive int is accepted", not raises(1) and not raises(4425400))
+    sch = lambda **lane: {"scheduler": {"quick": {"slots": 24, "inUse": 0, **lane},  # noqa: E731
+                                        "long": {"slots": 6, "inUse": 0}}}
+    check("scheduler slots are masked whatever the CPU count",
+          m(sch()) == {"scheduler": {"quick": {"slots": "<masked>", "inUse": 0},
+                                     "long": {"slots": "<masked>", "inUse": 0}}}
+          and m(sch()) == m({"scheduler": {"quick": {"slots": 3, "inUse": 0},
+                                           "long": {"slots": 99, "inUse": 0}}}))
+    check("masked slots keep key place and the other lane keys",
+          list(m(sch())["scheduler"]["quick"]) == ["slots", "inUse"]
+          and m(sch(inUse=1)) != m(sch()) and m(sch(admitted=3)) != m(sch()))
+    check("slots outside a scheduler lane stay", m({"x": {"slots": 5}}) == {"x": {"slots": 5}})
+
+    def slots_raises(v):
+        try:
+            Masker([]).value({"scheduler": {"quick": {"slots": v}}})
+        except Fail:
+            return True
+        return False
+
+    check("scheduler slots of 0, negative, bool, float, string, null are errors",
+          all(slots_raises(v) for v in (0, -1, True, 2.5, "6", None)) and not slots_raises(6))
     print(f"{'FAILED: ' + str(len(bad)) + ' check(s)' if bad else 'all masker checks ok'}")
     return 1 if bad else 0
 
