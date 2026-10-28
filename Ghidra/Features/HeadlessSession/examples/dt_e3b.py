@@ -28,7 +28,9 @@ protocol 2 behaviour is ``cc_e3b.py``'s):
 * ``cancel_while_waiting`` (protocol 2 and 3): the cancel of a request queued behind an exclusive
   holder; the requests behind it keep their order and run when the holder ends, the holder is
   unaffected; 200 cancels sent around the instant the holder releases end only in ``cancelled`` or
-  success, leak no lock, leave no stray interrupt and no ``ClosedByInterruptException`` in the log.
+  success, leak no lock and leave no ``ClosedByInterruptException`` in the log. (The races show that no
+  lock leaks and no request is lost; they are not a proof of "no stray interrupt": that flag is
+  cleared by ``tryLock`` itself, and a mutation that stopped clearing it in ``leaveWait`` stays green.)
 * ``deadline_in_lock_wait``: a ``timeout`` shorter than the lock wait answers ``cancelled`` at the
   deadline.
 * ``writer_vs_steady_readers`` (protocol 2 and 3): an exclusive request among eight steady readers
@@ -335,8 +337,8 @@ def _cancel_while_waiting(c, protocol, races):
             if code == "cancelled" and protocol == 3:
                 phases[det.get("phase")] = phases.get(det.get("phase"), 0) + 1
             dt.check(attempt(c, H, hid)[0] == "ok", f"race {i}: the holder did not finish ok")
-        # nothing leaked: exclusive and shared acquirers get in, and a stray interrupt did not close
-        # a channel under the next request
+        # nothing leaked: exclusive and shared acquirers get in (a stray interrupt that closed a
+        # channel under the next request would show here only if it landed in that window)
         H.call("comment", address=fn, type="eol", text="e3b cw", wait=3000)
         R.call("decompile", address=fn, wait=3000)
         H.call("save", wait=3000)
@@ -347,7 +349,7 @@ def _cancel_while_waiting(c, protocol, races):
                  "the daemon log has ClosedByInterruptException")
         return (f"protocol {protocol}: cancelled in {ms_cancel:.0f} ms, order behind it kept; "
                 f"{races} races: {counts['cancelled']} cancelled {phases or ''}, "
-                f"{counts['ok']} completed, no leak, no stray interrupt")
+                f"{counts['ok']} completed, no leak")
     finally:
         close_all(H, R)
         d.stop(force=True)
@@ -977,6 +979,75 @@ def t_orphan_ttl(c):
         d.stop(force=True)
 
 
+# ---- shared_stress_v3 -----------------------------------------------------------------------
+
+def t_shared_stress_v3(c):
+    """The protocol 3 half of ``shared_stress`` (which runs on protocol 2 since E3b: eight writers
+    waiting for one program lock are more than the waiter cap max(2, slots/4) allows). Eight
+    writers on four protocol 3 connections write one shared program; a writer that is told
+    ``busy{lock_queue_full}`` waits and asks again, as a client does. Every edit is
+    applied once and the journal has each once, in commit order (refusals are counted in the note,
+    not asserted: how many there are depends on timing)."""
+    exe = prepare(c)
+    gpr = c.copy_fixture("e3bStress")
+    d = c.daemon("e3b-stress", keepWarm=0)
+    sessions = []
+    try:
+        sessions = [c.connect(d, f"agent-{i}", f"harness-{i}", 3) for i in range(4)]
+        for s in sessions:
+            s.call("open_project", path=str(gpr), writable=True)
+            s.call("open_program", path=exe, writable=True, share=True)
+        fns = dt.code_functions(sessions[0], 20)
+        done, errs, refused = [], [], []
+        lock = threading.Lock()
+        per = 60
+
+        def edit(s, cmd, **kw):
+            end = time.time() + 240
+            while True:
+                try:
+                    return s.call(cmd, parallel=True, wait=60000, **kw)
+                except c.gs.SessionError as e:
+                    d3 = e.details or {}
+                    if (e.code != "busy" or d3.get("reason") != "lock_queue_full" or
+                            time.time() > end):
+                        raise
+                    with lock:
+                        refused.append(d3.get("waitersMax"))
+                    time.sleep(0.25)  # retryAfterMs is 1000; a quarter keeps the test short
+
+        def worker(s, cid, t):
+            try:
+                for i in range(per):
+                    a = fns[(cid * 7 + t * 13 + i) % len(fns)]
+                    if i % 2 == 0:
+                        r = edit(s, "rename", address=a, name=f"v{cid}_{t}_{i}")
+                    else:
+                        r = edit(s, "comment", address=a, text=f"c{cid}_{t}_{i}")
+                    with lock:
+                        done.append(r["seq"])
+            except Exception as ex:  # noqa: BLE001
+                errs.append(f"{cid}/{t}: {ex!r}")
+
+        ths = [threading.Thread(target=worker, args=(s, cid, t))
+               for cid, s in enumerate(sessions) for t in range(2)]
+        for th in ths:
+            th.start()
+        for th in ths:
+            th.join(timeout=600)
+        dt.check(not any(th.is_alive() for th in ths), "a writer hung (deadlock?)")
+        dt.check(not errs, f"edits failed: {errs[:5]}")
+        dt.check(len(done) == 8 * per, f"{len(done)} edits done of {8 * per}")
+        j = sessions[0].call("journal", limit=100000)
+        seqs = [e["seq"] for e in j["entries"]]
+        dt.check(len(seqs) == 8 * per and len(set(seqs)) == 8 * per and seqs == sorted(seqs) and
+                 set(done) == set(seqs), f"journal: {len(seqs)} entries for {len(done)} edits")
+        return f"{8 * per} edits by 8 writers on protocol 3, journal exact, {len(refused)} refusals retried"
+    finally:
+        close_all(*sessions)
+        d.stop(force=True)
+
+
 TESTS = {
     "cancel_queued": t_cancel_queued,
     "cancel_while_waiting": t_cancel_while_waiting,
@@ -993,6 +1064,7 @@ TESTS = {
     "registry_unnested": t_registry_unnested,
     "orphan_ttl": t_orphan_ttl,
     "waiter_caps": t_waiter_caps,
+    "shared_stress_v3": t_shared_stress_v3,
 }
 
 BASELINE = {}
