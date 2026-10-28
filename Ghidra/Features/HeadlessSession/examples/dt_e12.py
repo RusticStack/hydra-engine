@@ -78,6 +78,9 @@ Tests
   and a save without the directory sync each produce violations (red), the current code none.
 * ``e12_failed_commit``     a commit whose rename fails leaves no version file and the next save works;
   ``e12_control_failed_commit_no_cleanup`` is the same scenario without the cleanup (red).
+* ``e12_post_commit_failure`` a failure after the commit took effect (``versionCreated`` throws) keeps the
+  version file of the previous version; ``e12_control_post_commit_unconditional`` is a cleanup that
+  runs after every failure (red).
 * ``e12_save_private``      the matrix for the save of a private database (what a fork holds).
 * ``e12_save_versioned``    the matrix for the save of a versioned database.
 * ``e12_fork_publish``      the matrix for the publish of a fork (modelled from ``ProjectFork``,
@@ -510,10 +513,15 @@ FAILPROBE = r'''package db.buffers;
 import java.io.*;
 import java.util.*;
 
-/** A commit that fails after the version file was closed, then a retry. Prints one JSON line. */
+/**
+ * A commit that fails after the version file was closed, then a retry. Prints one JSON line.
+ * Mode "rename": the rename of the new version fails (the commit does not take effect).
+ * Mode "post": the rename succeeds and versionCreated throws FileNotFoundException afterwards
+ * (the commit has taken effect; the signature of a database whose files cannot be scanned).
+ */
 public class E12FailProbe {
     static class Mgr implements BufferFileManager {
-        final File dir; int cur = 0;
+        final File dir; int cur = 0; boolean boom = false;
         Mgr(File dir) { this.dir = dir; }
         public File getBufferFile(int v) { return new File(dir, "v" + v + ".bf"); }
         public File getChangeDataFile(int v) { return new File(dir, "cd" + v + ".bf"); }
@@ -521,7 +529,10 @@ public class E12FailProbe {
         public int getCurrentVersion() { return cur; }
         public File getVersionFile(int v) { return new File(dir, "v" + v + ".vf"); }
         public void updateEnded(long id) { }
-        public void versionCreated(int v, String c, long id) { cur = v; }
+        public void versionCreated(int v, String c, long id) throws FileNotFoundException {
+            cur = v;
+            if (boom) { throw new FileNotFoundException("Database files not found"); }
+        }
     }
 
     static String esc(String s) { return s.replace("\\", "\\\\").replace("\"", "'").replace("\n", " ").replace("\r", " "); }
@@ -545,15 +556,26 @@ public class E12FailProbe {
         DataBuffer b = new DataBuffer(d);
         for (int i = 0; i < 3; i++) { Arrays.fill(d, (byte) (0x10 + i)); b.setId(10 + i); v.put(b, i); }
         v.close();
+        boolean post = a.length > 1 && a[1].equals("post");
         File blocker = m.getBufferFile(2);
-        blocker.mkdirs();
-        new File(blocker, "x").createNewFile();
+        if (post) {
+            m.boom = true;
+        } else {
+            blocker.mkdirs();
+            new File(blocker, "x").createNewFile();
+        }
         boolean failed = false;
         String err = "";
         LocalManagedBufferFile u = new LocalManagedBufferFile(m, true, 1, 1);
         try { save(u, 0x55); } catch (IOException e) { failed = true; err = e.toString(); }
         boolean left = m.getVersionFile(1).exists();
+        boolean newExists = m.getBufferFile(2).isFile();
         try { u.close(); } catch (Exception e) { }
+        if (post) {
+            System.out.println("{\"failed\":" + failed + ",\"err\":\"" + esc(err) + "\",\"versionFileLeft\":" + left
+                + ",\"newVersionExists\":" + newExists + ",\"cur\":" + m.cur + "}");
+            return;
+        }
         new File(blocker, "x").delete();
         blocker.delete();
         boolean retryOk = false;
@@ -1438,20 +1460,30 @@ def t_dir_sync(c):
 
 # ---- failure path of a commit ---------------------------------------------------------------
 
-def failed_commit(c, variant):
-    """Runs a versioned database through a commit whose rename fails (a non-empty folder with the
-    name of the new version), then through a second save, with the classes of the installed jars
-    (``current``) or with a ``LocalManagedBufferFile`` compiled from the source minus the cleanup of
-    the version file closed early (``no_cleanup``: the code of the first round of review)."""
-    base = c.work / "e12" / ("failcommit-" + variant)
+def failed_commit(c, variant, mode="rename"):
+    """Runs a versioned database through a commit that fails, with the classes of the installed jars
+    (``current``) or with a ``LocalManagedBufferFile`` compiled from the source with the cleanup of
+    the version file closed early changed:
+
+    * ``no_cleanup``    the cleanup removed (the version file of a failed commit stays);
+    * ``unconditional`` the cleanup runs after every failure, also one after the commit took effect.
+
+    ``mode`` ``rename``: the rename of the new version fails (a non-empty folder with its name), then
+    a second save runs. ``post``: the rename succeeds and ``versionCreated`` throws
+    ``FileNotFoundException`` afterwards (the failure of a commit that has taken effect)."""
+    base = c.work / "e12" / ("failcommit-" + mode + "-" + variant)
     if base.exists():
         shutil.rmtree(base)
     jars = install_jars(c.a.ghidra)
     cp = jars
-    if variant == "no_cleanup":
+    if variant in ("no_cleanup", "unconditional"):
         lmbf = src_text(DB_REL + "LocalManagedBufferFile.java")
-        lmbf = sub_n(lmbf, r"^[ \t]*if \(closedVersionFile != null\) \{\r?\n[^\n]*\r?\n[ \t]*\}\r?\n", "", 1,
-                     "LocalManagedBufferFile cleanup of the closed version file", flags=re.M)
+        if variant == "no_cleanup":
+            lmbf = sub_n(lmbf, r"^[ \t]*if \(closedVersionFile != null[^\n]*\) \{\r?\n[^\n]*\r?\n[ \t]*\}\r?\n", "", 1,
+                         "LocalManagedBufferFile cleanup of the closed version file", flags=re.M)
+        else:
+            lmbf = sub_n(lmbf, r"if \(closedVersionFile != null && [^\n]*\) \{", "if (closedVersionFile != null) {", 1,
+                         "LocalManagedBufferFile condition of the cleanup of the closed version file")
         f = base / "src" / "db" / "buffers" / "LocalManagedBufferFile.java"
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_text(lmbf, encoding="utf-8")
@@ -1462,7 +1494,7 @@ def failed_commit(c, variant):
     pf.write_text(FAILPROBE, encoding="utf-8")
     javac(cp, base / "probe", [pf])
     r = subprocess.run([jdk_tool("java"), "-cp", str(base / "probe") + os.pathsep + cp, "db.buffers.E12FailProbe",
-                        str(base / "data")], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                        str(base / "data"), mode], capture_output=True, text=True, encoding="utf-8", errors="replace",
                        timeout=300)
     lines = [x for x in r.stdout.splitlines() if x.startswith("{")]
     dt.check(r.returncode == 0 and lines, f"fail probe exit {r.returncode}: {r.stdout[-400:]} {r.stderr[-800:]}")
@@ -1471,9 +1503,9 @@ def failed_commit(c, variant):
 
 def t_failed_commit(c):
     """A commit that fails after the version file was closed (E12 closes it before the rename) must
-    not leave that file behind, and the next save of the database must work. Before this check the
-    early close made ``saveFile.delete()`` unable to abort the file: a complete ``.vf`` stayed and
-    every later save died with ``DuplicateFileException`` (review round 1)."""
+    not leave that file behind, and the next save of the database must work. With the early close
+    ``saveFile.delete()`` can no longer abort the file: without the cleanup a complete ``.vf`` stays and
+    every later save dies with ``DuplicateFileException``."""
     r = failed_commit(c, "current")
     dt.check(r["failed"], f"the save with a blocked rename did not fail: {r}")
     dt.check(not r["versionFileLeft"], f"a failed commit left its version file: {r}")
@@ -1490,6 +1522,27 @@ def t_control_failed_commit_no_cleanup(c):
     return f"no_cleanup: version file left behind, next save fails ({r['retryErr']}); red as it must be"
 
 
+def t_post_commit_failure(c):
+    """A failure after the commit took effect (the rename succeeded, ``versionCreated`` throws
+    ``FileNotFoundException``, which is what ``VersionedDatabase`` and ``Database`` throw when the scan
+    finds no version) must keep the reverse-delta file of the previous version: it is the only way to
+    rebuild that version, and it was kept before E12."""
+    r = failed_commit(c, "current", "post")
+    dt.check(r["failed"], f"the save with a failing versionCreated did not fail: {r}")
+    dt.check(r["newVersionExists"], f"the committed version is missing: {r}")
+    dt.check(r["versionFileLeft"], f"a failure after the commit deleted the version file of the previous version: {r}")
+    return f"failure after the commit ({r['err']}): new version kept, version file of the previous version kept"
+
+
+def t_control_post_commit_unconditional(c):
+    """The same scenario with a cleanup that runs after every failure must be red: the version file
+    of the previous version is deleted while the new version stays."""
+    r = failed_commit(c, "unconditional", "post")
+    dt.check(r["failed"] and r["newVersionExists"] and not r["versionFileLeft"],
+             f"control unconditional: the scenario did not show the defect: {r}")
+    return "unconditional cleanup: new version kept, version file of the previous version deleted; red as it must be"
+
+
 TESTS = {
     "e12_source_guards": t_source_guards,
     "e12_trace_complete": t_trace_complete,
@@ -1501,6 +1554,8 @@ TESTS = {
     "e12_control_late_version_close": t_control_late_version_close,
     "e12_failed_commit": t_failed_commit,
     "e12_control_failed_commit_no_cleanup": t_control_failed_commit_no_cleanup,
+    "e12_post_commit_failure": t_post_commit_failure,
+    "e12_control_post_commit_unconditional": t_control_post_commit_unconditional,
     "e12_save_private": t_save_private,
     "e12_save_versioned": t_save_versioned,
     "e12_fork_publish_finding": t_fork_publish_finding,

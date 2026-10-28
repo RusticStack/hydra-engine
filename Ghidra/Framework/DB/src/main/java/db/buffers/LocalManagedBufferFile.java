@@ -744,7 +744,10 @@ public class LocalManagedBufferFile extends LocalBufferFile implements ManagedBu
 				// Hydra E12: the version file was closed early, so saveFile.delete() can no
 				// longer abort it. A complete file left behind makes every later save of this
 				// database fail, because the VersionFile constructor refuses an existing file.
-				if (closedVersionFile != null) {
+				// Only when the commit did not take effect: once the new version has its final
+				// name (the rename succeeded, the failure is a later step) the version file is the
+				// only way to rebuild the previous version and must stay, as before E12.
+				if (closedVersionFile != null && !newFile.equals(saveFile.getFile())) {
 					closedVersionFile.delete();
 				}
 			}
