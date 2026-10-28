@@ -100,6 +100,10 @@ def head(R, who, s, cmd, policy, note=None, **f):
     res["policy"] = subset("policy", res["policy"], policy)
     for k in ("paths", "platform", "analysisIdentity"):
         res[k] = "<masked>"
+    # the scheduler block is E3a's from W2 on (the maint lane, queue positions; char_e3a.py records
+    # it): the status step here keeps its place, not the scheduler's shape (amendment of E3a)
+    if "scheduler" in res:
+        res["scheduler"] = "<masked>"
     step = {"step": len(R.steps) + 1, "who": who, "cmd": cmd, "request": R.m.value(f),
             "response": R.m.value(resp)}
     if note:
