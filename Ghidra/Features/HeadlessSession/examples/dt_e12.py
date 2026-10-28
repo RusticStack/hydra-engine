@@ -554,7 +554,8 @@ def instrumented(variant):
     ``current``      the source as it is;
     ``pre_e8``       the order before E8: no ``flush`` before the rename (and no directory sync);
     ``no_data_sync`` ``LocalBufferFile.flush`` without ``sync()``;
-    ``no_dir_sync``  without the directory sync call after the rename.
+    ``no_dir_sync``  without the directory sync call after the rename;
+    ``late_version_close`` the version file of a versioned save closed after the rename (before E12).
     """
     lbf = src_text(DB_REL + "LocalBufferFile.java")
     lmbf = src_text(DB_REL + "LocalManagedBufferFile.java")
@@ -578,6 +579,9 @@ def instrumented(variant):
     if variant == "pre_e8":
         lmbf = sub_n(lmbf, r"^[ \t]*saveFile\.flush\(\);[ \t]*\r?\n", "", 1,
                      "LocalManagedBufferFile early flush", flags=re.M)
+    if variant == "late_version_close":
+        lmbf = sub_n(lmbf, r"^[ \t]*if \(saveFile\.versionOutFile != null\) \{\r?\n[^\n]*\r?\n[^\n]*\r?\n[ \t]*\}\r?\n",
+                     "", 1, "LocalManagedBufferFile early version file close", flags=re.M)
     if re.search(r"^[ \t]*syncDirectory\(newFile", lmbf, re.M):
         if variant in ("pre_e8", "no_dir_sync"):
             lmbf = sub_n(lmbf, r"^[ \t]*syncDirectory\([^;]*\);[ \t]*\r?\n", "", 1,
@@ -1168,6 +1172,12 @@ def t_control_no_dir_sync(c):
     return control(c, "private", "no_dir_sync", "U", ("unopenable", "ack_lost"))
 
 
+def t_control_late_version_close(c):
+    """A versioned save that closes (syncs) its version file after the rename, as before E12: under
+    model J a cut leaves the new newest version with its predecessor unreadable."""
+    return control(c, "versioned", "late_version_close", "J", ("history_unreadable",))
+
+
 # ---- fork publish -------------------------------------------------------------------------
 
 def fork_model(c, forced_copies):
@@ -1370,6 +1380,7 @@ TESTS = {
     "e12_control_pre_e8": t_control_pre_e8,
     "e12_control_no_data_sync": t_control_no_data_sync,
     "e12_control_no_dir_sync": t_control_no_dir_sync,
+    "e12_control_late_version_close": t_control_late_version_close,
     "e12_save_private": t_save_private,
     "e12_save_versioned": t_save_versioned,
     "e12_fork_publish_finding": t_fork_publish_finding,
