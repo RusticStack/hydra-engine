@@ -1,0 +1,492 @@
+## ###
+# IP: GHIDRA
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+##
+"""Daemon tests of package E2a (PROTOCOL-3.md D41, 9.15 and GR10): the fork publish is atomic and
+retryable, and the sweeper removes only what the engine made and can prove dead. Standard library
+only; Windows for the process-start-time helper (the tests that need it skip elsewhere).
+
+Run through ``daemon_tests.py`` (``--only e2a_kill_fork,...``). Environment:
+
+* ``E2A_KILLS``    how many daemon kills ``e2a_kill_fork`` makes (default 24; the 9.15 batch is 300
+                   or more: ``E2A_KILLS=300``)
+* ``E2A_WORKERS``  daemons killed at once (default 4)
+* ``E2A_CLIENT_KILLS`` client kills of ``e2a_client_kill`` (default 18, the C measurement)
+* ``E2A_REPORT``   a file the kill batch writes its per-iteration table to (JSON)
+
+Tests:
+
+* ``e2a_kill_fork`` (GR10, 9.15): the daemon is killed at a random time, when the staging folder
+  first appears, or when the ``.rep`` first appears (the trigger-timed recipe of D48), during
+  ``fork_project``. The state of the destination is read before anything restarts: it must be
+  absent (no ``.gpr``) or complete, never a ``.gpr`` without its ``.rep`` or its sidecar, and a
+  ``.rep`` without ``.gpr`` only when the intent of the dead publisher names it. A retry to the same
+  path then succeeds (or, for a fork that was already complete, answers the ordinary ``conflict``
+  and the fork is finished and complete); and no staging folder is left after that fork.
+* ``e2a_client_kill``: a client killed during ``fork_project`` leaves nothing (0 of 18 measured).
+* ``e2a_sweeper``: the planted states of D41: the sweeper removes the staging folders and ``.rep`` of
+  dead owners, the temporary files older than 10 minutes, finishes a ``publishing`` sidecar, and
+  never touches a path whose intent names a live process; the rest is only reported.
+"""
+import contextlib
+import json
+import os
+import pathlib
+import random
+import re
+import shutil
+import subprocess
+import sys
+import threading
+import time
+
+import daemon_tests as dt
+from daemon_tests import Fail, check, expect_error
+
+STAGING = re.compile(r"^\..+\.fork-.+\.tmp$")
+BALLAST_FILES = 8
+BALLAST_MB = 4
+_SOURCES = {}
+
+
+def make_source(c, tag="main"):
+    """A small project with some ballast (so that the copy takes a few tens of milliseconds),
+    made once per working directory. The source is only ever read."""
+    key = (str(c.work), tag)
+    if key not in _SOURCES:
+        base = c.work / f"e2a-src-{tag}"
+        if base.exists():
+            shutil.rmtree(base)
+        d = c.daemon("e2a-mk")
+        with d.connect("e2a", "tests") as s:
+            gpr = c.make_project(s, base, "Src")
+        d.stop()
+        ballast = base / "Src.rep" / "ballast"
+        ballast.mkdir()
+        blob = os.urandom(1 << 20)
+        for i in range(BALLAST_FILES):
+            (ballast / f"b{i}.bin").write_bytes(blob * BALLAST_MB)
+        _SOURCES[key] = gpr
+    return _SOURCES[key]
+
+
+def tree(folder):
+    """{relative path: (size, mtime_ns)} of every file below ``folder`` (the K1 tree hash's input)."""
+    folder = pathlib.Path(folder)
+    return {str(f.relative_to(folder)): (f.stat().st_size, f.stat().st_mtime_ns)
+            for f in folder.rglob("*") if f.is_file()}
+
+
+def classify(pdir, name):
+    """What the destination looks like on disk: ``(state, staging folders, sidecar state)``."""
+    pdir = pathlib.Path(pdir)
+    ents = set(os.listdir(pdir)) if pdir.is_dir() else set()
+    gpr, rep, sc = f"{name}.gpr" in ents, f"{name}.rep" in ents, f"{name}.fork.json" in ents
+    staging = sorted(e for e in ents if STAGING.match(e))
+    sc_state = None
+    if sc:
+        try:
+            sc_state = json.loads((pdir / f"{name}.fork.json").read_text()).get("state", "none")
+        except (OSError, ValueError):
+            sc_state = "unreadable"
+    if gpr:
+        state = "complete" if rep and sc else ("gpr_no_rep" if not rep else "gpr_no_sidecar")
+    elif rep:
+        state = "rep_only"
+    elif sc:
+        state = "sidecar_only"
+    else:
+        state = "absent"
+    return state, staging, sc_state
+
+
+def proc_start_ms(pid):
+    """The creation time of a process in ms since the epoch (what Java's ProcessHandle reports)."""
+    if os.name != "nt":
+        return 0
+    import ctypes
+    from ctypes import wintypes
+    k = ctypes.windll.kernel32
+    k.OpenProcess.restype = wintypes.HANDLE
+    h = k.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        return 0
+    try:
+        t = [wintypes.FILETIME() for _ in range(4)]
+        if not k.GetProcessTimes(h, *[ctypes.byref(x) for x in t]):
+            return 0
+        v = (t[0].dwHighDateTime << 32) | t[0].dwLowDateTime
+        return (v - 116444736000000000) // 10000
+    finally:
+        k.CloseHandle(h)
+
+
+def check_fork_matches_source(src_gpr, fork_gpr):
+    """The fork has every file of the source (the K-oracle's 'complete')."""
+    sd, fd = src_gpr.parent, fork_gpr.parent
+    sname, fname = src_gpr.stem, fork_gpr.stem
+    want = {str(f.relative_to(sd / f"{sname}.rep")): f.stat().st_size
+            for f in (sd / f"{sname}.rep").rglob("*") if f.is_file() and not f.name.endswith(".lock")
+            and not re.match(r"tmp\d+\.(ps|tmp)", f.name)}
+    got = {str(f.relative_to(fd / f"{fname}.rep")): f.stat().st_size
+           for f in (fd / f"{fname}.rep").rglob("*") if f.is_file() and not f.name.endswith(".lock")
+           and not re.match(r"tmp\d+\.(ps|tmp)", f.name)}
+    missing = sorted(set(want) - set(got))
+    wrong = sorted(k for k in want if k in got and want[k] != got[k])
+    check(not missing and not wrong, f"{fork_gpr} is not a complete copy: missing {missing[:3]}, "
+          f"wrong size {wrong[:3]}")
+
+
+def leftovers(pdir):
+    """Entries of ``pdir`` that are neither a fork's three files nor a lock file."""
+    return sorted(e for e in os.listdir(pdir)
+                  if not re.fullmatch(r".+\.(gpr|rep|fork\.json|lock|lock~)|\.ghidra\.test\.lock~+", e)
+                  or STAGING.match(e) or e.endswith(".fork.json.tmp"))
+
+
+# ---- the kill batch -------------------------------------------------------------------------
+
+def _kill_pid(c, d):
+    ep = d.read_endpoint()
+    c.gs._kill_pid(int(ep["pid"]))
+
+
+def _one_kill(c, src, d, s, pdir, name, mode, rng):
+    """Sends fork_project and kills the daemon at the moment ``mode`` says. Returns the delay used
+    and whether the reply arrived before the kill."""
+    pdir = str(pdir)
+    ep_pid = int(d.read_endpoint()["pid"])
+    delay = {"random": rng.uniform(0, 0.35),
+             "staging": rng.choice([0, 0, 0.002, 0.005, 0.01, 0.02, 0.04, 0.08, 0.12]),
+             "rep": rng.choice([0, 0, 0, 0.0005, 0.001, 0.002, 0.004])}[mode]
+    fired = threading.Event()
+    stop = threading.Event()
+
+    def killer():
+        t0 = time.perf_counter()
+        if mode == "random":
+            time.sleep(delay)
+        else:
+            want_rep = f"{name}.rep"
+            while not stop.is_set() and time.perf_counter() - t0 < 30:
+                try:
+                    ents = os.listdir(pdir)
+                except OSError:
+                    ents = []
+                if (mode == "staging" and any(STAGING.match(e) for e in ents)) or \
+                        (mode == "rep" and want_rep in ents):
+                    break
+            if stop.is_set():
+                return
+            time.sleep(delay)
+        c.gs._kill_pid(ep_pid)
+        fired.set()
+
+    th = threading.Thread(target=killer, daemon=True)
+    th.start()
+    answered = False
+    try:
+        s.call("fork_project", project=str(src), path=pdir, name=name, mode="full", wait=60000)
+        answered = True
+    except Exception:  # noqa: BLE001  (the connection ends when the daemon is killed)
+        pass
+    stop.set()
+    if not fired.is_set():
+        c.gs._kill_pid(ep_pid)  # the fork ended first: still kill, so every iteration restarts
+    th.join(5)
+    d.kill()
+    return delay, answered
+
+
+def _kill_worker(c, src, wid, iters, seed, base, out):
+    rng = random.Random(seed)
+    d = c.daemon(f"e2a-kill-{wid}")
+    pending = None  # (pdir, name, before, report) of the previous iteration
+    modes = ["staging", "rep", "random"]
+    try:
+        for k in range(iters):
+            mode = modes[(k + wid) % 3]
+            pdir = base / f"w{wid}-{k}"
+            name = f"F{k}"
+            s = d.connect(f"e2a-kill-{wid}", "tests")
+            if pending:
+                p_pdir, p_name, p_before, p_rep = pending
+                _retry_on(c, src, s, p_pdir, p_name, p_before, p_rep)
+                out.append(p_rep)
+                pending = None
+            delay, answered = _one_kill(c, src, d, s, pdir, name, mode, rng)
+            before = classify(pdir, name)
+            rep = {"worker": wid, "iter": k, "mode": mode, "delay_ms": round(delay * 1000, 2),
+                   "answered": answered, "before": before[0], "before_staging": before[1],
+                   "before_sidecar": before[2],
+                   "before_intent": any((pdir / st / "intent.json").is_file()
+                                        for st in before[1])}
+            pending = (pdir, name, before, rep)
+            with contextlib.suppress(Exception):
+                s.close()
+        if pending:
+            p_pdir, p_name, p_before, p_rep = pending
+            s = d.connect(f"e2a-kill-{wid}", "tests")
+            _retry_on(c, src, s, p_pdir, p_name, p_before, p_rep)
+            s.close()
+            out.append(p_rep)
+    except Exception as e:  # noqa: BLE001
+        out.append({"worker": wid, "error": f"{type(e).__name__}: {e}"})
+    finally:
+        with contextlib.suppress(Exception):
+            d.stop(force=True)
+
+
+def _retry_on(c, src, s, pdir, name, before, rep):
+    try:
+        s.call("fork_project", project=str(src), path=str(pdir), name=name, mode="full",
+               wait=60000)
+        rep["retry"] = "ok"
+    except Exception as e:  # noqa: BLE001
+        rep["retry"] = getattr(e, "code", type(e).__name__)
+        rep["retry_error"] = str(e)[:200]
+    after = classify(pdir, name)
+    rep["after"], rep["after_staging"], rep["after_state"] = after
+    rep["leftovers_after"] = leftovers(pdir)
+    if after[0] == "complete":
+        with contextlib.suppress(Exception):
+            check_fork_matches_source(src, pdir / f"{name}.gpr")
+            rep["matches_source"] = True
+        rep.setdefault("matches_source", False)
+
+
+def t_e2a_kill_fork(c):
+    """See the module docstring: kills of the daemon during fork_project, state read before restart."""
+    kills = int(os.environ.get("E2A_KILLS", "24"))
+    workers = max(1, int(os.environ.get("E2A_WORKERS", "4")))
+    src = make_source(c, "kill")
+    before_tree = tree(src.parent)
+    base = c.work / "e2a-kill"
+    if base.exists():
+        shutil.rmtree(base)
+    base.mkdir(parents=True)
+    out, threads = [], []
+    per = [kills // workers + (1 if w < kills % workers else 0) for w in range(workers)]
+    seed = int(os.environ.get("E2A_SEED", "20261028"))
+    t0 = time.perf_counter()
+    for w, n in enumerate(per):
+        th = threading.Thread(target=_kill_worker, args=(c, src, w, n, seed + w, base, out))
+        th.start()
+        threads.append(th)
+    for th in threads:
+        th.join()
+    secs = time.perf_counter() - t0
+    errors = [r for r in out if "error" in r]
+    rows = [r for r in out if "error" not in r]
+    check(not errors, f"worker errors: {errors[:2]}")
+    check(len(rows) == kills, f"{len(rows)} iterations ran, {kills} wanted")
+    from collections import Counter
+    pre = Counter(r["before"] for r in rows)
+    orphans = sum(1 for r in rows if r["before_staging"])
+    pub_state = sum(1 for r in rows if r["before_sidecar"] == "publishing")
+    unrecognised_rep = sum(1 for r in rows
+                           if r["before"] == "rep_only" and not r["before_intent"])
+    blocked = sum(1 for r in rows if r["before"] != "complete" and r["retry"] != "ok")
+    staging_after = sum(1 for r in rows if r["after_staging"])
+    left_after = sum(1 for r in rows if r["leftovers_after"])
+    incomplete_after = sum(1 for r in rows if r["after"] != "complete")
+    unfinished = sum(1 for r in rows if r["after_state"] != "complete")
+    not_matching = sum(1 for r in rows if r["after"] == "complete" and not r.get("matches_source"))
+    bad_pre = pre.get("gpr_no_rep", 0) + pre.get("gpr_no_sidecar", 0)
+    summary = {"kills": kills, "seconds": round(secs), "before": dict(pre),
+               "orphan_staging_before_retry": orphans, "sidecar_publishing_before_retry": pub_state,
+               "rep_only_without_dead_intent": unrecognised_rep,
+               "gpr_without_rep_or_sidecar": bad_pre, "retry_blocked": blocked,
+               "staging_after_next_fork": staging_after, "leftovers_after": left_after,
+               "not_complete_after": incomplete_after, "sidecar_not_complete_after": unfinished,
+               "fork_differs_from_source": not_matching,
+               "modes": dict(Counter(r["mode"] for r in rows)),
+               "answered_before_kill": sum(1 for r in rows if r["answered"])}
+    rp = os.environ.get("E2A_REPORT")
+    if rp:
+        pathlib.Path(rp).write_text(json.dumps({"summary": summary, "rows": rows}, indent=1))
+    c.timings["e2a_kill_fork summary"] = summary
+    check(tree(src.parent) == before_tree, "the source project was written (K1)")
+    problems = []
+    if bad_pre:
+        problems.append(f"{bad_pre} forks with a .gpr but no .rep or no sidecar")
+    if unrecognised_rep:
+        problems.append(f"{unrecognised_rep} .rep without .gpr that no intent names")
+    if blocked:
+        problems.append(f"{blocked} retries blocked: " + "; ".join(
+            f"{r['before']}/{r['retry']}: {r.get('retry_error', '')}"[:120]
+            for r in rows if r["before"] != "complete" and r["retry"] != "ok")[:400])
+    if staging_after or left_after:
+        problems.append(f"{staging_after} staging folders and {left_after} leftovers after the "
+                        f"next fork: " + "; ".join(str(r["leftovers_after"]) for r in rows
+                                                   if r["leftovers_after"])[:300])
+    if incomplete_after or unfinished or not_matching:
+        problems.append(f"after the retry: {incomplete_after} not complete, {unfinished} sidecars "
+                        f"not 'complete', {not_matching} differing from the source")
+    check(not problems, json.dumps(summary) + " :: " + " | ".join(problems))
+    return json.dumps(summary)
+
+
+# ---- the client kill ------------------------------------------------------------------------
+
+def t_e2a_client_kill(c):
+    kills = int(os.environ.get("E2A_CLIENT_KILLS", "18"))
+    src = make_source(c, "ck")
+    base = c.work / "e2a-ckill"
+    if base.exists():
+        shutil.rmtree(base)
+    base.mkdir(parents=True)
+    d = c.daemon("e2a-ckill")
+    rng = random.Random(7)
+    bad = []
+    states = {}
+    with d.connect("e2a-watch", "tests") as w:
+        for k in range(kills):
+            pdir, name = base / f"c{k}", f"C{k}"
+            p = c.child("""
+s = gs.Daemon(A[0], A[1], A[2]).connect('doomed', 'tests')
+s.call('fork_project', project=A[3], path=A[4], name=A[5], mode='full', wait=60000)
+""", c.a.ghidra, c.state, "e2a-ckill", src, pdir, name)
+            time.sleep(rng.uniform(0.35, 1.2))
+            p.kill()
+            p.wait(10)
+            # the daemon either finishes or abandons the fork; wait until it is quiet
+            killed_at = time.time()
+            end = killed_at + 30
+            while time.time() < end:
+                if pdir.exists():
+                    st = classify(pdir, name)
+                    if st[0] in ("complete", "absent") and not st[1] and not leftovers(pdir):
+                        break
+                elif time.time() > killed_at + 3:
+                    break  # nothing was ever created
+                time.sleep(0.2)
+            st = classify(pdir, name) if pdir.exists() else ("absent", [], None)
+            states[st[0]] = states.get(st[0], 0) + 1
+            if st[0] not in ("complete", "absent") or st[1] or (pdir.exists() and leftovers(pdir)):
+                bad.append((k, st, leftovers(pdir) if pdir.exists() else []))
+            w.call("ping")
+    d.stop()
+    check(not bad, f"{len(bad)} of {kills} client kills left something: {bad[:3]}")
+    return f"{kills} client kills, nothing left: {states}"
+
+
+# ---- the sweeper ----------------------------------------------------------------------------
+
+def _plant_intent(folder, **kw):
+    folder.mkdir(parents=True, exist_ok=True)
+    rec = {"format": 1, "kind": "ghidra-session-fork-intent", "phase": "staging",
+           "repCreatedMs": 0, "createdMs": int(time.time() * 1000)}
+    rec.update(kw)
+    (folder / "intent.json").write_text(json.dumps(rec))
+    (folder / "payload.bin").write_bytes(b"x" * 1000)
+
+
+def t_e2a_sweeper(c):
+    if os.name != "nt":
+        return "skipped: the planted live process needs the Windows start-time helper"
+    src = make_source(c, "sw")
+    base = c.work / "e2a-sweep"
+    if base.exists():
+        shutil.rmtree(base)
+    base.mkdir(parents=True)
+    done = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead_start = proc_start_ms(done.pid)
+    done.wait()
+    live = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(900)"])
+    c.procs.append(live)
+    live_start = proc_start_ms(live.pid)
+    check(live_start > 0, "cannot read the start time of the live process")
+    dead = dict(pid=done.pid, procStartMs=dead_start)
+    alive = dict(pid=live.pid, procStartMs=live_start)
+    reused = dict(pid=live.pid, procStartMs=live_start - 3_600_000)  # same pid, another process
+    # 1. staging of a dead owner, copy under way
+    _plant_intent(base / ".A.fork-dead1.tmp", id="dead1", name="A", **dead)
+    # 2. staging of a live owner, with a .rep at the destination: untouched
+    _plant_intent(base / ".B.fork-live1.tmp", id="live1", name="B", phase="moving",
+                  repCreatedMs=1, **alive)
+    (base / "B.rep").mkdir()
+    (base / "B.rep" / "f").write_bytes(b"live publisher's")
+    # 3. dead owner that moved its .rep (the intent says which one): .rep and staging go
+    (base / "C.rep").mkdir()
+    (base / "C.rep" / "f").write_bytes(b"half fork")
+    born = int(os.stat(base / "C.rep").st_birthtime_ns // 1_000_000)
+    _plant_intent(base / ".C.fork-dead3.tmp", id="dead3", name="C", phase="moving",
+                  repCreatedMs=born, **dead)
+    # 4. a dead intent that never moved a .rep, and a .rep nobody can show is the engine's: reported
+    (base / "D.rep").mkdir()
+    (base / "D.rep" / "f").write_bytes(b"foreign")
+    _plant_intent(base / ".D.fork-dead4.tmp", id="dead4", name="D", **dead)
+    # 5. the pid of a live process with another start time (pid reuse): dead
+    _plant_intent(base / ".G.fork-reuse.tmp", id="reuse", name="G", **reused)
+    # 6. a fork committed (.gpr in place) whose sidecar still says publishing: finished
+    (base / "E.rep").mkdir()
+    (base / "E.gpr").write_text("<gpr/>")
+    (base / "E.fork.json").write_text(json.dumps({"format": 1, "state": "publishing",
+                                                  "forkId": "dead6"}))
+    _plant_intent(base / ".E.fork-dead6.tmp", id="dead6", name="E", phase="moving",
+                  repCreatedMs=1, **dead)
+    # 7. temporary files: old ones go, new ones and other files stay
+    old = time.time() - 20 * 60
+    for n in ("tmp123.tmp", "tmp456.ps", ".ghidra.test.lock~~", "keep-me.txt", "tmpx.dat"):
+        (base / n).write_text("x")
+        os.utime(base / n, (old, old))
+    (base / "tmp789.tmp").write_text("fresh")
+    # 8. a staging-named folder without an intent: only old ones go
+    (base / ".H.fork-noint.tmp").mkdir()
+    (base / ".H.fork-noint.tmp" / "f").write_bytes(b"x")
+    (base / ".I.fork-noint.tmp").mkdir()
+    os.utime(base / ".I.fork-noint.tmp", (old, old))
+    # ... or whose name carries the process id of a dead publisher (killed before its intent)
+    (base / f".J.fork-{done.pid:x}-1.tmp").mkdir()
+    (base / f".J.fork-{done.pid:x}-1.tmp" / "f").write_bytes(b"x")
+    before_live = tree(base / ".B.fork-live1.tmp"), tree(base / "B.rep")
+
+    d = c.daemon("e2a-sweep")
+    with d.connect("e2a-sweep", "tests") as s:
+        # the first fork under the directory sweeps it; B is a live publisher's: refused, untouched
+        e = expect_error("conflict", s.call, "fork_project", project=str(src), path=str(base),
+                         name="B", mode="full", wait=30000)
+        check(e.details and e.details.get("reason") == "fork_in_progress",
+              f"a live publisher's destination answered {e.details}")
+        left = sorted(os.listdir(base))
+        gone = [".A.fork-dead1.tmp", ".C.fork-dead3.tmp", "C.rep", ".D.fork-dead4.tmp",
+                ".G.fork-reuse.tmp", ".E.fork-dead6.tmp", "tmp123.tmp", "tmp456.ps",
+                ".ghidra.test.lock~~", ".I.fork-noint.tmp", f".J.fork-{done.pid:x}-1.tmp"]
+        stay = [".B.fork-live1.tmp", "B.rep", "D.rep", "E.rep", "E.gpr", "E.fork.json",
+                "keep-me.txt", "tmpx.dat", "tmp789.tmp", ".H.fork-noint.tmp"]
+        check(not [g for g in gone if g in left], f"not swept: {[g for g in gone if g in left]}")
+        check(not [x for x in stay if x not in left], f"swept: {[x for x in stay if x not in left]}")
+        check((tree(base / ".B.fork-live1.tmp"), tree(base / "B.rep")) == before_live,
+              "the live publisher's staging folder or .rep was touched")
+        sc = json.loads((base / "E.fork.json").read_text())
+        check(sc["state"] == "complete", f"the publishing sidecar was not finished: {sc}")
+        # the retries of the swept names succeed
+        for n in ("A", "C", "G"):
+            r = s.call("fork_project", project=str(src), path=str(base), name=n, mode="full",
+                       wait=60000)
+            check(r["name"] == n, f"fork {n}: {r}")
+            check_fork_matches_source(src, base / f"{n}.gpr")
+        # D has a foreign .rep: the ordinary conflict, and it was not removed
+        e = expect_error("conflict", s.call, "fork_project", project=str(src), path=str(base),
+                         name="D", mode="full", wait=30000)
+        check((base / "D.rep" / "f").read_bytes() == b"foreign", "a foreign .rep was removed")
+        check(not [x for x in os.listdir(base) if STAGING.match(x) and "live1" not in x
+                   and "noint" not in x], "a staging folder is left after the forks")
+    d.stop()
+    return "dead owners swept, live owner and foreign folders untouched, publishing sidecar finished"
+
+
+TESTS = {"e2a_kill_fork": t_e2a_kill_fork, "e2a_client_kill": t_e2a_client_kill,
+         "e2a_sweeper": t_e2a_sweeper}

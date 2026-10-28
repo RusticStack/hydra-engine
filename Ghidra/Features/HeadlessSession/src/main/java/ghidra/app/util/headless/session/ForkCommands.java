@@ -40,6 +40,11 @@ final class ForkCommands {
 
 	ForkCommands(Session s) {
 		this.s = s;
+		// E2a: the publish is atomic and retryable. The name is declared by Advertised (E1's file);
+		// until it is, there is nothing to enable.
+		if (Advertised.CAPABILITIES.contains("forkAtomic")) {
+			Advertised.capability("forkAtomic", 1);
+		}
 	}
 
 	/**
@@ -101,7 +106,6 @@ final class ForkCommands {
 			throw new SessionException(SessionException.BAD_REQUEST, "bad project name: " + name);
 		}
 		File destGpr = new File(destDir, name + ProjectLocator.getProjectExtension());
-		File destRep = new File(destDir, name + ProjectLocator.getProjectDirExtension());
 		try {
 			String srcDir = r.dir().getCanonicalPath();
 			String rep = new File(r.dir(), r.name() + ProjectLocator.getProjectDirExtension())
@@ -116,17 +120,148 @@ final class ForkCommands {
 		catch (IOException e) {
 			throw new SessionException(SessionException.BAD_REQUEST, e.getMessage());
 		}
-		if (destGpr.exists() || destRep.exists() || ProjectFork.sidecar(
-			new ProjectResolver.Resolved(destDir, name)).exists()) {
-			throw new SessionException(SessionException.CONFLICT,
-				"a project named " + name + " already exists in " + destDir +
-					"; pick another path (forks are never overwritten)",
-				Json.of("path", destGpr.getPath(), "suggest", "another path"));
+		String rk = c.v3() ? EditCommands.rkOf(req) : null;
+		// the lazy sweep: what a dead publisher of this engine left here is removed first, so that
+		// its half fork never answers a retry with a bare conflict (D41)
+		ForkSweeper.sweepFor(destDir, name);
+		String id = ProjectFork.newId();
+		ForkSweeper.Claim claim;
+		long giveUpAt = System.nanoTime() + waitMs(req) * 1_000_000L;
+		while (true) {
+			ForkSweeper.Admission a;
+			try {
+				a = ForkSweeper.admit(destDir, name, id, rk);
+			}
+			catch (IOException e) {
+				throw new SessionException(SessionException.BAD_REQUEST, e.getMessage());
+			}
+			if (a.kind() == ForkSweeper.Kind.CLAIMED) {
+				claim = a.claim();
+				break;
+			}
+			if (a.kind() == ForkSweeper.Kind.EXISTS) {
+				JsonObject done = ProjectFork.readSidecar(
+					new ProjectResolver.Resolved(destDir, name));
+				if (rk != null && done != null && rk.equals(Json.str(done, "rk", null)) &&
+					ProjectFork.STATE_COMPLETE.equals(Json.str(done, "state", null)) &&
+					destGpr.exists() && done.has("source") &&
+					canonical.equals(Json.str(done.getAsJsonObject("source"), "canonical", null))) {
+					return replayed(c, req, done, destDir, name, destGpr, writable, t0);
+				}
+				throw existsConflict(c.v3(), name, destDir, destGpr, null);
+			}
+			// another request is publishing this destination
+			if (rk != null && rk.equals(a.rk())) {
+				// the same request again: wait for the winner and return its result
+				long left = (giveUpAt - System.nanoTime()) / 1_000_000L;
+				try {
+					if (left > 0 && ForkSweeper.awaitIdle(destDir, name, left, m)) {
+						continue;
+					}
+				}
+				catch (CancelledException e) {
+					throw cancelled(m);
+				}
+				catch (IOException e) {
+					throw new SessionException(SessionException.FAILED, e.getMessage(), null, e);
+				}
+			}
+			throw inProgress(destGpr, a.owner());
 		}
+		try {
+			return forkClaimed(c, req, m, t0, r, src, canonical, mode, writable, limit, destDir,
+				name, destGpr, id, rk);
+		}
+		finally {
+			claim.release();
+		}
+	}
+
+	/** The conflict for a destination that is already there. {@code reason} is null for none. */
+	private static SessionException existsConflict(boolean v3, String name, File destDir,
+			File destGpr, String reason) {
+		JsonObject d = Json.of("path", destGpr.getPath(), "suggest", "another path");
+		if (reason != null || v3) {
+			// a protocol 2 reply to a request that did not race stays byte-identical
+			Json.put(d, "reason", reason != null ? reason : "exists");
+		}
+		return new SessionException(SessionException.CONFLICT,
+			"a project named " + name + " already exists in " + destDir +
+				"; pick another path (forks are never overwritten)",
+			d);
+	}
+
+	/** The conflict for a destination that another request is publishing right now (V11). */
+	private static SessionException inProgress(File destGpr, JsonObject owner) {
+		JsonObject d = Json.of("path", destGpr.getPath(), "reason", "fork_in_progress", "suggest",
+			"retry");
+		if (owner != null) {
+			d.add("publisher", owner);
+		}
+		return new SessionException(SessionException.CONFLICT,
+			"another request is publishing a fork to " + destGpr + " right now; it is not " +
+				"disturbed. Retry after it finishes, or pick another path (with the same \"rk\" " +
+				"a protocol 3 request waits for it and returns its result)",
+			d);
+	}
+
+	/**
+	 * The result for a request whose {@code rk} and destination are those of a fork that is
+	 * already complete (a retry, or the loser of a race with the same key): the project is opened
+	 * for this client and the answer is built from the fork's sidecar, with {@code replayed}.
+	 */
+	private JsonElement replayed(Client c, JsonObject req, JsonObject sc, File destDir,
+			String name, File destGpr, boolean writable, long t0) {
+		JsonObject open = Json.of("path", destGpr.getPath(), "writable", writable);
+		if (req.has("wait")) {
+			open.add("wait", req.get("wait"));
+		}
+		JsonObject info = (JsonObject) s.projectCmds.openProject(c, open);
+		JsonObject out = Json.of("project", info.get("id"), "path", destDir.getPath(), "gpr",
+			destGpr.getPath(), "name", name, "writable", writable);
+		for (String k : List.of("source", "baseRevision", "mode", "method", "cloned", "clonedBy",
+			"bytes", "files", "copyMs", "freeSpaceUsedBytes", "depth")) {
+			if (sc.has(k)) {
+				out.add(k, sc.get(k));
+			}
+		}
+		out.addProperty("sidecar",
+			ProjectFork.sidecar(new ProjectResolver.Resolved(destDir, name)).getPath());
+		out.addProperty("ms", (System.nanoTime() - t0) / 1_000_000);
+		out.addProperty("replayed", true);
+		out.add("info", info);
+		return out;
+	}
+
+	/**
+	 * Everything after the destination is claimed: copy into staging, then publish. The staging
+	 * folder is removed on every way out (it holds the intent record, and what is left of the
+	 * copy after a successful publish).
+	 */
+	private JsonElement forkClaimed(Client c, JsonObject req, RequestMonitor m, long t0,
+			ProjectResolver.Resolved r, ProjectEntry src, String canonical, String mode,
+			boolean writable, long limit, File destDir, String name, File destGpr, String id,
+			String rk) {
+		java.util.concurrent.atomic.AtomicReference<ProjectFork.Staged> staging =
+			new java.util.concurrent.atomic.AtomicReference<>();
+		try {
+			return forkStaged(c, req, m, t0, r, src, canonical, mode, writable, limit, destDir,
+				name, destGpr, id, rk, staging);
+		}
+		finally {
+			ProjectFork.discard(staging.get());
+			ForkSweeper.removeStagingFolder(destDir, name, id);
+		}
+	}
+
+	private JsonElement forkStaged(Client c, JsonObject req, RequestMonitor m, long t0,
+			ProjectResolver.Resolved r, ProjectEntry src, String canonical, String mode,
+			boolean writable, long limit, File destDir, String name, File destGpr, String id,
+			String rk, java.util.concurrent.atomic.AtomicReference<ProjectFork.Staged> staging) {
 		ProjectLocator locator = new ProjectLocator(r.dir().getPath(), r.name());
 		Lock held = null;
 		ProjectFork.Cost cost;
-		ProjectFork.Copied copied;
+		ProjectFork.Staged copied;
 		String baseRevision;
 		JsonObject parent = ProjectFork.readSidecar(r);
 		try {
@@ -200,12 +335,11 @@ final class ForkCommands {
 				Map<String, String> filesBefore = Revision.files(r);
 				baseRevision = Revision.of(r);
 				m.setMessage("forking " + r.name() + " (" + cost.files() + " files)");
-				copied = ProjectFork.copy(r, destDir, name, m);
+				copied = ProjectFork.stage(r, destDir, name, id, rk, m);
+				staging.set(copied);
 				String after = Revision.of(r);
 				if (!after.equals(baseRevision)) {
 					List<String> changed = Revision.changed(filesBefore, Revision.files(r));
-					FileUtilities.deleteDir(destRep);
-					destGpr.delete();
 					JsonObject d = Json.of("gpr", r.gpr().getPath(), "suggest", "retry");
 					Json.put(d, "changed", changed.subList(0, Math.min(20, changed.size())));
 					throw new SessionException(SessionException.CONFLICT,
@@ -248,12 +382,21 @@ final class ForkCommands {
 			System.currentTimeMillis(), "created", java.time.Instant.now().toString(), "by",
 			c.identity(), "mode", mode, "method", cost.cloneCapable() ? "clone" : "copy",
 			"cloned", cloned, "clonedBy", clonedBy, "bytes", cost.bytes(), "files",
-			cost.files(), "copyMs", copied.ms(), "depth", depth, "parent", parent);
+			cost.files(), "copyMs", copied.ms(), "freeSpaceUsedBytes", consumed, "depth", depth,
+			"parent", parent);
+		if (rk != null) {
+			sidecar.addProperty("rk", rk);
+		}
 		try {
-			ProjectFork.writeSidecar(ProjectFork.sidecar(fr), sidecar);
+			// the .rep, the sidecar "publishing", the .gpr (the commit point), the sidecar "complete"
+			ProjectFork.publish(copied, destDir, name, sidecar, ProjectFork.STATE_COMPLETE);
+		}
+		catch (ProjectFork.RaceLost e) {
+			throw existsConflict(c.v3(), name, destDir, destGpr, "exists");
 		}
 		catch (IOException e) {
-			Msg.warn(s, "fork_project: could not write the sidecar of " + destGpr + ": " + e);
+			throw new SessionException(SessionException.FAILED, "fork failed: " + e.getMessage(),
+				null, e);
 		}
 		Msg.info(s, c.label() + " forked " + r.gpr() + " (revision " + baseRevision + ") to " +
 			destGpr + ": " + cost.bytes() + " bytes, " + cost.files() + " files, " +
