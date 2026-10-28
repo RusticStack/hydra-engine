@@ -56,10 +56,14 @@ Tests (all external injection, no test code in the release jar, D48):
 * ``e8_private_open`` and ``e8_private_readonly``: the same fixture through the daemon on a fork. A
   fork is a non-versioned (private) database, which opens through ``LocalDatabaseItem`` and
   ``PrivateDatabase``/``Database``; ``LocalDatabaseItem`` is in E8's files (8.1) and calls
-  ``VersionFileCheck.repairOnOpen`` in its constructor and ``requireIntact`` in the three ``open``
-  methods and ``openForUpdate``. A writable fork in a declared disposable tree opens at ``N-1``
+  ``VersionFileCheck.repairOnOpen`` and ``requireIntact`` when an open of the newest version fails
+  (E8b: nothing extra is read on the healthy path). A writable fork in a declared disposable tree opens at ``N-1``
   with the bad file in quarantine and a logged repair; a read-only open answers ``corrupt_newest``,
   declared disposable or not, with the tree hash unchanged.
+
+* ``e8_item_readonly`` (E8b): a ``LocalDatabaseItem`` of a read-only file system, versioned or
+  private, with a declared-disposable tree and a zero-header newest version, answers
+  ``corrupt_newest`` and writes nothing; the writable one repairs and opens at the previous version.
 
 Environment: ``E8_LMBF_SOURCE`` (path of the ``LocalManagedBufferFile.java`` to build the test-only
 copy from; default this checkout's), ``E8_KILLS``, ``E8_PAUSE_MS`` (default 3000), ``E8_SEED``.
@@ -89,6 +93,8 @@ PAUSE_MS = int(os.environ.get("E8_PAUSE_MS", "3000"))
 PROBE = r'''package db.buffers;
 
 import ghidra.framework.store.db.*;
+import ghidra.framework.store.local.*;
+import ghidra.util.task.TaskMonitor;
 import java.io.*;
 import java.nio.file.*;
 import java.security.MessageDigest;
@@ -230,6 +236,47 @@ public class E8Probe {
                 catch (ClassNotFoundException e) { /* none */ }
                 System.out.println("{\"opened\":true,\"current\":" + v + ",\"hash\":\"" + h +
                     "\",\"repairs\":" + rp + "]}");
+            }
+            catch (Throwable t) {
+                System.out.println("{\"opened\":false,\"error\":\"" + esc(String.valueOf(t.getMessage())) + "\"}");
+            }
+        }
+        else if (mode.equals("itemmake")) {
+            // a versioned local file system with one database item "x" (version 1)
+            dir.mkdirs();
+            File tmp = new File(dir.getParentFile(), dir.getName() + ".src.gbf");
+            tmp.delete();
+            LocalBufferFile src = new LocalBufferFile(tmp, BS);
+            for (int i = 0; i < NBUF; i++) {
+                DataBuffer buf = new DataBuffer(fill(i, 1));
+                buf.setId(100 + i);
+                src.put(buf, i);
+            }
+            src.setParameter("E8", 1);
+            src.close();
+            LocalFileSystem fs = LocalFileSystem.getLocalFileSystem(dir.getPath(), true, !(a.length > 2 && a[2].equals("priv")), false, false);
+            src = new LocalBufferFile(tmp, true);
+            fs.createDatabase("/", "x", "xFILEIDx", src, "c", "PROGRAM", false, TaskMonitor.DUMMY, "u");
+            src.close();
+            fs.dispose();
+            tmp.delete();
+            System.out.println("{\"ok\":true}");
+        }
+        else if (mode.equals("itemopen")) {
+            // opens item "x" of the versioned file system, read-only or writable, and reads its data
+            try {
+                boolean ro = a[2].equals("ro");
+                LocalFileSystem fs = LocalFileSystem.getLocalFileSystem(dir.getPath(), false, !(a.length > 3 && a[3].equals("priv")), ro, false);
+                try {
+                    LocalFolderItem it = fs.getItem("/", "x");
+                    LocalManagedBufferFile bf = ((LocalDatabaseItem) it).open();
+                    int v = bf.getVersion();
+                    bf.close();
+                    System.out.println("{\"opened\":true,\"current\":" + v + "}");
+                }
+                finally {
+                    fs.dispose();
+                }
             }
             catch (Throwable t) {
                 System.out.println("{\"opened\":false,\"error\":\"" + esc(String.valueOf(t.getMessage())) + "\"}");
@@ -955,6 +1002,46 @@ def t_private_readonly(c):
     return "; ".join(out)
 
 
+def t_item_readonly(c):
+    """E8b: a LocalDatabaseItem of a read-only file system never repairs, whatever the repair
+    policy says. The tree is declared disposable (the policy would allow a repair), the newest
+    version has a zero header: the read-only item must answer corrupt_newest and write nothing;
+    the same tree opened writable repairs and opens at version 1. Both kinds of item: versioned
+    (the VersionedDatabase got the file system's read-only flag) and private."""
+    notes = []
+    for kind in ("versioned", "private"):
+        root = c.work / ("e8item_" + kind)
+        if root.exists():
+            shutil.rmtree(root)
+        root.mkdir(parents=True)
+        fs = root / "fs"
+        extra = ["priv"] if kind == "private" else []
+        o, _ = probe(c, c.a.ghidra, "itemmake", fs, *extra)
+        dt.check(o["ok"], f"{kind}: itemmake: {o}")
+        gbfs = sorted(fs.rglob("db.1.gbf"))
+        dt.check(len(gbfs) == 1, f"{kind}: expected one db.1.gbf: {gbfs}")
+        db1 = gbfs[0]
+        db2 = db1.with_name("db.2.gbf")
+        shutil.copy2(db1, db2)
+        zero_header(db2)
+        props = [f"-Dhydra.storage.repairRoots={root}"]
+        h0 = tree_hash(fs)
+        o, _ = probe(c, c.a.ghidra, "itemopen", fs, "ro", *(["priv"] if extra else []), props=props)
+        dt.check(not o["opened"] and o["error"].startswith("corrupt_newest"),
+                 f"{kind}: a read-only item with a bad newest version must answer corrupt_newest: {o}")
+        dt.check(tree_hash(fs) == h0, f"{kind}: the read-only item changed the tree")
+        dt.check(db2.exists() and not db2.with_name("db.2.gbf.quarantine").exists(),
+                 f"{kind}: the bad newest version was moved by a read-only item")
+        o, _ = probe(c, c.a.ghidra, "itemopen", fs, "rw", *(["priv"] if extra else []), props=props)
+        dt.check(o.get("opened") and o["current"] == 1,
+                 f"{kind}: the writable item did not repair and open at 1: {o}")
+        dt.check((db2.with_name("db.2.gbf.quarantine") / "db.2.gbf").is_file(),
+                 f"{kind}: the writable open did not quarantine")
+        notes.append(f"{kind}: read-only item answered corrupt_newest with {h0[1]} files unchanged, "
+                     f"the writable item repaired and opened at version 1")
+    return "; ".join(notes)
+
+
 TESTS = {
     "e8_flush_before_rename": t_flush_before_rename,
     "e8_window_control": t_window_control,
@@ -967,6 +1054,7 @@ TESTS = {
     "e8_check_errors": t_check_errors,
     "e8_private_open": t_private_open,
     "e8_private_readonly": t_private_readonly,
+    "e8_item_readonly": t_item_readonly,
 }
 
 BASELINE = {}   # e8_private_open and e8_private_readonly are enforced since LocalDatabaseItem is in E8's ownership (8.1)
