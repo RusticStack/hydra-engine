@@ -76,6 +76,8 @@ Tests
 * ``e12_trace_complete``    replay of the trace equals the real tree (private and versioned item).
 * ``e12_control_*``         the simulator can fail: the pre-E8 order, a save without the data sync
   and a save without the directory sync each produce violations (red), the current code none.
+* ``e12_failed_commit``     a commit whose rename fails leaves no version file and the next save works;
+  ``e12_control_failed_commit_no_cleanup`` is the same scenario without the cleanup (red).
 * ``e12_save_private``      the matrix for the save of a private database (what a fork holds).
 * ``e12_save_versioned``    the matrix for the save of a versioned database.
 * ``e12_fork_publish``      the matrix for the publish of a fork (modelled from ``ProjectFork``,
@@ -503,6 +505,68 @@ public class E12Probe {
 '''
 
 
+FAILPROBE = r'''package db.buffers;
+
+import java.io.*;
+import java.util.*;
+
+/** A commit that fails after the version file was closed, then a retry. Prints one JSON line. */
+public class E12FailProbe {
+    static class Mgr implements BufferFileManager {
+        final File dir; int cur = 0;
+        Mgr(File dir) { this.dir = dir; }
+        public File getBufferFile(int v) { return new File(dir, "v" + v + ".bf"); }
+        public File getChangeDataFile(int v) { return new File(dir, "cd" + v + ".bf"); }
+        public File getChangeMapFile() { return null; }
+        public int getCurrentVersion() { return cur; }
+        public File getVersionFile(int v) { return new File(dir, "v" + v + ".vf"); }
+        public void updateEnded(long id) { }
+        public void versionCreated(int v, String c, long id) { cur = v; }
+    }
+
+    static String esc(String s) { return s.replace("\\", "\\\\").replace("\"", "'").replace("\n", " ").replace("\r", " "); }
+
+    static void save(LocalManagedBufferFile u, int fill) throws Exception {
+        LocalManagedBufferFile s = (LocalManagedBufferFile) u.getSaveFile();
+        byte[] d = new byte[1024];
+        Arrays.fill(d, (byte) fill);
+        DataBuffer b = new DataBuffer(d);
+        b.setId(11);
+        s.put(b, 1);
+        u.saveCompleted(true);
+    }
+
+    public static void main(String[] a) throws Exception {
+        File dir = new File(a[0]);
+        dir.mkdirs();
+        Mgr m = new Mgr(dir);
+        LocalManagedBufferFile v = new LocalManagedBufferFile(1024, m, 1);
+        byte[] d = new byte[1024];
+        DataBuffer b = new DataBuffer(d);
+        for (int i = 0; i < 3; i++) { Arrays.fill(d, (byte) (0x10 + i)); b.setId(10 + i); v.put(b, i); }
+        v.close();
+        File blocker = m.getBufferFile(2);
+        blocker.mkdirs();
+        new File(blocker, "x").createNewFile();
+        boolean failed = false;
+        String err = "";
+        LocalManagedBufferFile u = new LocalManagedBufferFile(m, true, 1, 1);
+        try { save(u, 0x55); } catch (IOException e) { failed = true; err = e.toString(); }
+        boolean left = m.getVersionFile(1).exists();
+        try { u.close(); } catch (Exception e) { }
+        new File(blocker, "x").delete();
+        blocker.delete();
+        boolean retryOk = false;
+        String retryErr = "";
+        LocalManagedBufferFile u2 = new LocalManagedBufferFile(m, true, 1, 1);
+        try { save(u2, 0x66); retryOk = true; } catch (Throwable e) { retryErr = e.toString(); }
+        try { u2.close(); } catch (Exception e) { }
+        System.out.println("{\"failed\":" + failed + ",\"err\":\"" + esc(err) + "\",\"versionFileLeft\":" + left
+            + ",\"retryOk\":" + retryOk + ",\"retryErr\":\"" + esc(retryErr) + "\",\"cur\":" + m.cur + "}");
+    }
+}
+'''
+
 # ---- helpers ------------------------------------------------------------------------------
 
 def jdk_tool(name):
@@ -580,7 +644,7 @@ def instrumented(variant):
         lmbf = sub_n(lmbf, r"^[ \t]*saveFile\.flush\(\);[ \t]*\r?\n", "", 1,
                      "LocalManagedBufferFile early flush", flags=re.M)
     if variant == "late_version_close":
-        lmbf = sub_n(lmbf, r"^[ \t]*if \(saveFile\.versionOutFile != null\) \{\r?\n[^\n]*\r?\n[^\n]*\r?\n[ \t]*\}\r?\n",
+        lmbf = sub_n(lmbf, r"^[ \t]*if \(saveFile\.versionOutFile != null\) \{\r?\n[^\n]*\r?\n[^\n]*\r?\n[^\n]*\r?\n[ \t]*\}\r?\n",
                      "", 1, "LocalManagedBufferFile early version file close", flags=re.M)
     if re.search(r"^[ \t]*syncDirectory\(newFile", lmbf, re.M):
         if variant in ("pre_e8", "no_dir_sync"):
@@ -1372,6 +1436,60 @@ def t_dir_sync(c):
     return f"syncDirectory on a folder and on a missing path: no exception, tree unchanged; {where}"
 
 
+# ---- failure path of a commit ---------------------------------------------------------------
+
+def failed_commit(c, variant):
+    """Runs a versioned database through a commit whose rename fails (a non-empty folder with the
+    name of the new version), then through a second save, with the classes of the installed jars
+    (``current``) or with a ``LocalManagedBufferFile`` compiled from the source minus the cleanup of
+    the version file closed early (``no_cleanup``: the code of the first round of review)."""
+    base = c.work / "e12" / ("failcommit-" + variant)
+    if base.exists():
+        shutil.rmtree(base)
+    jars = install_jars(c.a.ghidra)
+    cp = jars
+    if variant == "no_cleanup":
+        lmbf = src_text(DB_REL + "LocalManagedBufferFile.java")
+        lmbf = sub_n(lmbf, r"^[ \t]*if \(closedVersionFile != null\) \{\r?\n[^\n]*\r?\n[ \t]*\}\r?\n", "", 1,
+                     "LocalManagedBufferFile cleanup of the closed version file", flags=re.M)
+        f = base / "src" / "db" / "buffers" / "LocalManagedBufferFile.java"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(lmbf, encoding="utf-8")
+        javac(jars, base / "ctl", [f])
+        cp = str(base / "ctl") + os.pathsep + jars
+    pf = base / "src" / "db" / "buffers" / "E12FailProbe.java"
+    pf.parent.mkdir(parents=True, exist_ok=True)
+    pf.write_text(FAILPROBE, encoding="utf-8")
+    javac(cp, base / "probe", [pf])
+    r = subprocess.run([jdk_tool("java"), "-cp", str(base / "probe") + os.pathsep + cp, "db.buffers.E12FailProbe",
+                        str(base / "data")], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       timeout=300)
+    lines = [x for x in r.stdout.splitlines() if x.startswith("{")]
+    dt.check(r.returncode == 0 and lines, f"fail probe exit {r.returncode}: {r.stdout[-400:]} {r.stderr[-800:]}")
+    return json.loads(lines[-1])
+
+
+def t_failed_commit(c):
+    """A commit that fails after the version file was closed (E12 closes it before the rename) must
+    not leave that file behind, and the next save of the database must work. Before this check the
+    early close made ``saveFile.delete()`` unable to abort the file: a complete ``.vf`` stayed and
+    every later save died with ``DuplicateFileException`` (review round 1)."""
+    r = failed_commit(c, "current")
+    dt.check(r["failed"], f"the save with a blocked rename did not fail: {r}")
+    dt.check(not r["versionFileLeft"], f"a failed commit left its version file: {r}")
+    dt.check(r["retryOk"] and r["cur"] == 2, f"the save after a failed commit failed: {r}")
+    return f"failed commit ({r['err']}): version file removed, next save ok, current version {r['cur']}"
+
+
+def t_control_failed_commit_no_cleanup(c):
+    """The same scenario without the cleanup of the closed version file must be red: the file stays
+    and the next save fails."""
+    r = failed_commit(c, "no_cleanup")
+    dt.check(r["failed"] and r["versionFileLeft"] and not r["retryOk"],
+             f"control no_cleanup: the scenario did not show the defect: {r}")
+    return f"no_cleanup: version file left behind, next save fails ({r['retryErr']}); red as it must be"
+
+
 TESTS = {
     "e12_source_guards": t_source_guards,
     "e12_trace_complete": t_trace_complete,
@@ -1381,6 +1499,8 @@ TESTS = {
     "e12_control_no_data_sync": t_control_no_data_sync,
     "e12_control_no_dir_sync": t_control_no_dir_sync,
     "e12_control_late_version_close": t_control_late_version_close,
+    "e12_failed_commit": t_failed_commit,
+    "e12_control_failed_commit_no_cleanup": t_control_failed_commit_no_cleanup,
     "e12_save_private": t_save_private,
     "e12_save_versioned": t_save_versioned,
     "e12_fork_publish_finding": t_fork_publish_finding,
