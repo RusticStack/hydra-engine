@@ -689,6 +689,7 @@ public class LocalManagedBufferFile extends LocalBufferFile implements ManagedBu
 		int newVersion = version + 1;
 		File newFile = bfMgr.getBufferFile(newVersion);
 		boolean success = false;
+		File closedVersionFile = null;
 		try {
 			if (saveChangeFile != null) {
 				saveChangeFile.close();
@@ -710,6 +711,7 @@ public class LocalManagedBufferFile extends LocalBufferFile implements ManagedBu
 			if (saveFile.versionOutFile != null) {
 				saveFile.versionOutFile.close();
 				saveFile.versionOutFile = null;
+				closedVersionFile = bfMgr.getVersionFile(version);
 			}
 
 			// Rename saveFile and enable transfer versioning settings
@@ -739,6 +741,12 @@ public class LocalManagedBufferFile extends LocalBufferFile implements ManagedBu
 		finally {
 			if (!success) {
 				saveFile.delete();
+				// Hydra E12: the version file was closed early, so saveFile.delete() can no
+				// longer abort it. A complete file left behind makes every later save of this
+				// database fail, because the VersionFile constructor refuses an existing file.
+				if (closedVersionFile != null) {
+					closedVersionFile.delete();
+				}
 			}
 
 			saveFile = null;

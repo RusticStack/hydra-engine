@@ -1277,4 +1277,68 @@ public class VersionedLocalBufferFileTest extends AbstractGenericTest {
 
 	}
 
+
+	/**
+	 * Hydra E12: a commit that fails after the reverse-delta (version) file was closed must not
+	 * leave that file behind. The version file is closed before the rename, so the abort of the
+	 * save file no longer removes it; a complete file left on disk makes every later save of the
+	 * database fail with a DuplicateFileException.
+	 * The rename is made to fail by a non-empty folder that has the name of the new version.
+	 * @throws Exception
+	 */
+	@Test
+	public void testFailedCommitLeavesNoVersionFile() throws Exception {
+
+		testVersionedFileCreateAndCopy();
+		assertEquals(1, versionedTestFileMgr.getCurrentVersion());
+
+		File blocker = versionedTestFileMgr.getBufferFile(2);
+		assertTrue(blocker.mkdir());
+		File blockerChild = new File(blocker, "x");
+		assertTrue(blockerChild.createNewFile());
+
+		LocalManagedBufferFile vbf = new LocalManagedBufferFile(versionedTestFileMgr, true, 1, VERSIONED);
+		try {
+			LocalManagedBufferFile saveFile = (LocalManagedBufferFile) vbf.getSaveFile();
+			byte[] data = new byte[BUFFER_SIZE];
+			Arrays.fill(data, (byte) 0x55);
+			DataBuffer buf = new DataBuffer(data);
+			buf.setId(11);
+			saveFile.put(buf, 1);
+			try {
+				vbf.saveCompleted(true);
+				fail("the rename onto a non-empty folder must fail the save");
+			}
+			catch (IOException e) {
+				// expected
+			}
+			assertEquals(1, versionedTestFileMgr.getCurrentVersion());
+			assertFalse("a failed commit left its version file",
+				versionedTestFileMgr.getVersionFile(1).exists());
+		}
+		finally {
+			vbf.close();
+		}
+
+		// The same database must accept the next save once the obstacle is gone.
+		assertTrue(blockerChild.delete());
+		assertTrue(blocker.delete());
+
+		vbf = new LocalManagedBufferFile(versionedTestFileMgr, true, 1, VERSIONED);
+		try {
+			LocalManagedBufferFile saveFile = (LocalManagedBufferFile) vbf.getSaveFile();
+			byte[] data = new byte[BUFFER_SIZE];
+			Arrays.fill(data, (byte) 0x66);
+			DataBuffer buf = new DataBuffer(data);
+			buf.setId(11);
+			saveFile.put(buf, 1);
+			vbf.saveCompleted(true);
+		}
+		finally {
+			vbf.close();
+		}
+		assertEquals(2, versionedTestFileMgr.getCurrentVersion());
+		assertTrue(versionedTestFileMgr.getBufferFile(2).exists());
+		assertTrue(versionedTestFileMgr.getVersionFile(1).exists());
+	}
 }
