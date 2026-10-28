@@ -2160,10 +2160,11 @@ def t_shared_stress(c: Ctx):
     gpr = c.copy_fixture("projStress")
     exe = pathlib.Path(c.a.exe).name
     d = c.daemon("stress", keepWarm=0)
-    # protocol 2 on purpose (E3b): eight writers wait at once for one program lock with a wait of
-    # 300 s, and a protocol 3 connection is refused beyond max(2, slots/4) waiters
-    # (busy lock_queue_full, PROTOCOL-3.md 3.5) and retries in the client; this test is about the
-    # shared mode's journal and order, which a retry loop would not change
+    # protocol 2 on purpose (E3b, amendment A-E3b-1): eight writers wait at once for one program
+    # lock with a wait of 300 s, and a protocol 3 connection is refused beyond max(2, slots/4)
+    # waiters (busy lock_queue_full, PROTOCOL-3.md 3.5, 3.10); this test does not retry, and it is
+    # about the shared mode's journal and order. The protocol 3 half, with the retry a client does,
+    # is dt_e3b.shared_stress_v3.
     sessions = [c.connect(d, f"agent-{i}", f"harness-{i}", 2) for i in range(4)]
     for s in sessions:
         s.call("open_project", path=str(gpr), writable=True)
