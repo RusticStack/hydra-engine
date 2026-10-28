@@ -38,6 +38,9 @@ Tests:
 * ``e2a_handle_holder`` (SP6): a handle without delete sharing on the staged ``.rep``, ``.gpr`` or
   staging folder during the publish moves: retried and complete when brief, an error with nothing
   published when long, a clean retry afterwards (``E2A_SP6_REPORT`` names the per-case table).
+* ``e2a_rollback_holder`` (F1): a failed publish (the staged ``.gpr`` held) rolls back while a second
+  holder has the sidecar: the rollback waits it out and leaves nothing at the destination, where a
+  single delete attempt left the sidecar alone (``sidecar_only``) and blocked the name.
 * ``e2a_sweeper``: the planted states of D41: the sweeper removes the staging folders and ``.rep`` of
   dead owners, the temporary files older than 10 minutes, finishes a ``publishing`` sidecar, and
   never touches a path whose intent names a live process; the rest is only reported.
@@ -91,16 +94,44 @@ def tree(folder):
             for f in folder.rglob("*") if f.is_file()}
 
 
-def classify(pdir, name):
-    """What the destination looks like on disk: ``(state, staging folders, sidecar state)``."""
+def read_text_shared(path):
+    """``path.read_text`` through a handle that shares delete (``FILE_SHARE_DELETE``), which an
+    ordinary Python ``open`` does not: while a Python reader has the sidecar open, the engine's
+    rename over it is refused, and a reader that a loaded machine stalls inside ``read`` holds the
+    engine up for longer than its retry budget. A tool that only watches the file (the observers of
+    these tests) must not be a handle holder: the holders are the explicit ``Holder`` objects."""
+    path = pathlib.Path(path)
+    if os.name != "nt":
+        return path.read_text(encoding="utf-8")
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.CreateFileW.restype = wintypes.HANDLE
+    k.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                              wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    # GENERIC_READ; share read, write and delete; OPEN_EXISTING
+    h = k.CreateFileW(str(path), 0x80000000, 0x7, None, 3, 0x80, None)
+    if h is None or h == wintypes.HANDLE(-1).value or h == 2 ** 64 - 1 or h == 0xFFFFFFFF:
+        err = ctypes.get_last_error()
+        raise OSError(err, f"cannot open {path} (Windows error {err})")
+    fd = msvcrt.open_osfhandle(h, os.O_RDONLY)
+    with os.fdopen(fd, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+def classify(pdir, name, read_sidecar=True):
+    """What the destination looks like on disk: ``(state, staging folders, sidecar state)``.
+    ``read_sidecar=False`` (the observers) leaves the sidecar state ``None`` and does not open the
+    file at all."""
     pdir = pathlib.Path(pdir)
     ents = set(os.listdir(pdir)) if pdir.is_dir() else set()
     gpr, rep, sc = f"{name}.gpr" in ents, f"{name}.rep" in ents, f"{name}.fork.json" in ents
     staging = sorted(e for e in ents if STAGING.match(e))
     sc_state = None
-    if sc:
+    if sc and read_sidecar:
         try:
-            sc_state = json.loads((pdir / f"{name}.fork.json").read_text()).get("state", "none")
+            sc_state = json.loads(read_text_shared(pdir / f"{name}.fork.json")).get("state", "none")
         except (OSError, ValueError):
             sc_state = "unreadable"
     if gpr:
@@ -616,11 +647,27 @@ def _sp6_holder(pdir, what, hold_s, rec, stop):
     rec["t_release"] = time.perf_counter()
 
 
+#: how often a case is run again when its holder arrived too late to hold anything up
+SP6_ATTEMPTS = 5
+
+
+def _sp6_engaged(pdir, name, what, rec, outcome, t1):
+    """Whether the holder held up the fork: it had its handle before the fork answered, and the
+    fork either failed or answered no earlier than the release. For the sidecar the fork is
+    committed while it is held and answers ok either way: the hold shows as a late answer (brief)
+    or as a sidecar still saying "publishing"."""
+    if "t_open" not in rec or "t_release" not in rec:
+        return False
+    if what == "sidecar":
+        return t1 >= rec["t_release"] - 0.05 or classify(pdir, name)[2] == "publishing"
+    return rec["t_open"] < t1 and (outcome == "error" or t1 >= rec["t_release"] - 0.05)
+
+
 def _sp6_observer(pdir, name, seen, stop):
     """Every state of the destination, sampled as fast as the file system answers."""
     while not stop.is_set():
         try:
-            st = classify(pdir, name)[0]
+            st = classify(pdir, name, read_sidecar=False)[0]
         except OSError:
             continue
         seen[st] = seen.get(st, 0) + 1
@@ -661,26 +708,37 @@ def t_e2a_handle_holder(c):
     rows, problems = [], []
     with d.connect("e2a-sp6", "tests") as s:
         for case, what, hold_s in SP6_CASES:
-            pdir = base / case
             name = "H"
-            rec, seen, stop = {}, {}, threading.Event()
-            th = threading.Thread(target=_sp6_holder, args=(pdir, what, hold_s, rec, stop))
-            ob = threading.Thread(target=_sp6_observer, args=(pdir, name, seen, stop))
-            pdir.mkdir()
-            th.start()
-            ob.start()
-            t0 = time.perf_counter()
-            outcome, err = "ok", ""
-            try:
-                s.call("fork_project", project=str(src), path=str(pdir), name=name, mode="full",
-                       wait=60000)
-            except Exception as e:  # noqa: BLE001
-                outcome, err = "error", f"{getattr(e, 'code', type(e).__name__)}: {e}"[:200]
-            t1 = time.perf_counter()
-            th.join(30)
-            stop.set()
-            ob.join(5)
-            row = {"case": case, "held": what, "hold_s": hold_s, "fs": fs,
+            # The holder is a polling thread of this process that has to catch a window of a few
+            # milliseconds (the sidecar between "publishing" and the final rewrite), so on a loaded
+            # machine it can arrive after the engine is done and hold a settled file: that attempt
+            # exercised nothing. It is run again in a fresh folder, as long as the observed state
+            # says the holder did not hold anything up (``_sp6_engaged``), at most SP6_ATTEMPTS
+            # times. The assertions below are the same for every attempt; the last one is judged.
+            for attempt in range(1, SP6_ATTEMPTS + 1):
+                pdir = base / (case if attempt == 1 else f"{case}-try{attempt}")
+                rec, seen, stop = {}, {}, threading.Event()
+                th = threading.Thread(target=_sp6_holder, args=(pdir, what, hold_s, rec, stop))
+                ob = threading.Thread(target=_sp6_observer, args=(pdir, name, seen, stop))
+                pdir.mkdir()
+                th.start()
+                ob.start()
+                t0 = time.perf_counter()
+                outcome, err = "ok", ""
+                try:
+                    s.call("fork_project", project=str(src), path=str(pdir), name=name,
+                           mode="full", wait=60000)
+                except Exception as e:  # noqa: BLE001
+                    outcome, err = "error", f"{getattr(e, 'code', type(e).__name__)}: {e}"[:200]
+                t1 = time.perf_counter()
+                th.join(30)
+                stop.set()
+                ob.join(5)
+                # (a hold on the staging folder itself only delays its delete: nothing to engage)
+                if ("error" in rec or what == "staging_dir" or
+                        _sp6_engaged(pdir, name, what, rec, outcome, t1)):
+                    break
+            row = {"case": case, "attempts": attempt, "held": what, "hold_s": hold_s, "fs": fs,
                    "outcome": outcome, "error": err, "fork_s": round(t1 - t0, 3),
                    "holder_open_after_s": round(rec["t_open"] - t0, 3) if "t_open" in rec else None,
                    "released_after_s": round(rec["t_release"] - t0, 3) if "t_release" in rec else None,
@@ -689,11 +747,7 @@ def t_e2a_handle_holder(c):
             if "error" in rec:
                 problems.append(f"{case}: holder: {rec['error']}")
                 continue
-            blocked = rec["t_open"] < t1 and (outcome == "error" or t1 >= rec["t_release"] - 0.05)
-            if what == "sidecar":
-                # the fork is committed when the sidecar is held: it answers ok either way; the
-                # hold shows as a late answer (brief) or as a sidecar still saying "publishing"
-                blocked = t1 >= rec["t_release"] - 0.05 or                     classify(pdir, name)[2] == "publishing"
+            blocked = _sp6_engaged(pdir, name, what, rec, outcome, t1)
             row["blocked_the_move"] = blocked
             row["fork_ended_before_release"] = t1 < rec["t_release"]
             # a sidecar alone (no .gpr) is the rollback in progress: the fork does not exist yet
@@ -785,6 +839,99 @@ def t_e2a_handle_holder(c):
         f"{r['case']}={r['outcome']} {r['fork_s']}s" for r in rows)
 
 
+def _sp6_late_holder(pdir, delay_s, hold_s, rec, stop):
+    """Takes a handle on the sidecar ``H.fork.json`` ``delay_s`` seconds after it first exists and
+    holds it ``hold_s`` seconds (perf_counter times in ``rec``)."""
+    target = pathlib.Path(pdir) / "H.fork.json"
+    t_end = time.perf_counter() + 60
+    while not stop.is_set() and time.perf_counter() < t_end and not target.exists():
+        time.sleep(0.0005)
+    if not target.exists():
+        rec["error"] = "the sidecar never appeared"
+        return
+    rec["t_seen"] = time.perf_counter()
+    time.sleep(delay_s)
+    h = Holder(target, False)
+    if not h.ok:
+        rec["error"] = f"could not take a handle on {target} (error {h.err})"
+        return
+    rec["t_open"] = time.perf_counter()
+    time.sleep(hold_s)
+    h.close()
+    rec["t_release"] = time.perf_counter()
+
+
+#: how often the rollback case is run again when its sidecar holder did not hold the rollback up
+ROLLBACK_ATTEMPTS = 3
+
+
+def t_e2a_rollback_holder(c):
+    """F1: the rollback of a failed publish against a handle holder on the sidecar. The staged
+    ``.gpr`` is held for 6 s, so the move of the ``.gpr`` gives up after its retries (about 1.6 s
+    after the sidecar was written) and the publish rolls back: the ``.rep`` and the sidecar it
+    already put at the destination are removed. A second holder takes the sidecar 1.0 s after it
+    appears and keeps it 1.2 s, which covers the first removal of the sidecar and ends inside the
+    removal's own retries. The rollback must wait it out and end with nothing at the destination
+    (a single attempt left ``H.fork.json`` alone, which then blocked the name: ``sidecar_only``); the
+    fork call answers the error after that, so no earlier than the sidecar holder's release. A
+    holder that arrived after the fork had answered is run again (the same rule as
+    ``e2a_handle_holder``)."""
+    if os.name != "nt":
+        return "skipped: the handle holder is a Windows handle without FILE_SHARE_DELETE"
+    src = make_source(c, "sp6rb")
+    before_tree = tree(src.parent)
+    base = c.work / "e2a-rollback"
+    if base.exists():
+        shutil.rmtree(base)
+    base.mkdir(parents=True)
+    d = c.daemon("e2a-rollback")
+    with d.connect("e2a-rollback", "tests") as s:
+        for attempt in range(1, ROLLBACK_ATTEMPTS + 1):
+            pdir = base / f"try{attempt}"
+            pdir.mkdir()
+            gpr_rec, sc_rec, stop = {}, {}, threading.Event()
+            th_gpr = threading.Thread(target=_sp6_holder, args=(pdir, "gpr_file", 6.0, gpr_rec, stop))
+            th_sc = threading.Thread(target=_sp6_late_holder, args=(pdir, 1.0, 1.2, sc_rec, stop))
+            th_gpr.start()
+            th_sc.start()
+            outcome, err = "ok", ""
+            try:
+                s.call("fork_project", project=str(src), path=str(pdir), name="H", mode="full",
+                       wait=60000)
+            except Exception as e:  # noqa: BLE001
+                outcome, err = "error", f"{getattr(e, 'code', type(e).__name__)}: {e}"[:200]
+            t1 = time.perf_counter()
+            th_sc.join(30)
+            th_gpr.join(30)
+            stop.set()
+            check("error" not in gpr_rec and "error" not in sc_rec,
+                  f"holders: {gpr_rec} {sc_rec}")
+            # engaged: the holder had the sidecar before the fork answered (an engine that gives
+            # up on the first refused delete answers while it is still held: that is the failure
+            # to find, not a reason to run again)
+            if sc_rec["t_open"] < t1:
+                break
+        after = classify(pdir, "H")
+        check(sc_rec["t_open"] < t1, f"the sidecar holder arrived after the fork answered in "
+                                     f"{attempt} attempts (opened {sc_rec['t_open'] - t1:+.2f} s)")
+        check(outcome == "error", f"the fork succeeded against a 6 s hold on its .gpr: {err}")
+        check(t1 >= sc_rec["t_release"] - 0.05,
+              f"the fork answered {sc_rec['t_release'] - t1:.2f} s before the sidecar holder "
+              f"released: the rollback gave up on a held sidecar ({err}); destination {after[0]}")
+        check(after[0] == "absent",
+              f"a rolled-back publish left {after[0]} at the destination ({err})")
+        time.sleep(max(0.0, gpr_rec["t_release"] - time.perf_counter()) + 0.05)
+        s.call("fork_project", project=str(src), path=str(pdir), name="H", mode="full", wait=60000)
+        fin = classify(pdir, "H")
+        check(fin[0] == "complete" and fin[2] == "complete" and not fin[1] and
+              not leftovers(pdir), f"the retry after the release: {fin} {leftovers(pdir)}")
+    d.stop()
+    check(tree(src.parent) == before_tree, "the source project was written (K1)")
+    return (f"rollback held up until the sidecar was released ({attempt} attempt(s)): nothing "
+            f"left, and the retry completes")
+
+
 TESTS = {"e2a_kill_fork": t_e2a_kill_fork, "e2a_client_kill": t_e2a_client_kill,
          "e2a_sweeper": t_e2a_sweeper, "e2a_self_leftover": t_e2a_self_leftover,
-         "e2a_handle_holder": t_e2a_handle_holder}
+         "e2a_handle_holder": t_e2a_handle_holder,
+         "e2a_rollback_holder": t_e2a_rollback_holder}

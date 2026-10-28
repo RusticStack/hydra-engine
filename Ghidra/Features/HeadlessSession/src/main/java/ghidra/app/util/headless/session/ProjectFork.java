@@ -195,7 +195,11 @@ final class ProjectFork {
 			sc.addProperty(PROMOTE, value);
 		}
 		try {
-			writeSidecar(sidecar(r), sc);
+			// a reader holding the sidecar open without delete sharing (a scanner, a status
+			// poll) stops the rename over it for a moment: the marker is the record that a
+			// killed promote leaves a fork of unknown content, so it is written with the
+			// same backoff as the publish (F1: a single attempt could lose the marker)
+			writeSidecarRetrying(sidecar(r), sc);
 		}
 		catch (IOException e) {
 			ghidra.util.Msg.warn(ProjectFork.class,
@@ -248,6 +252,74 @@ final class ProjectFork {
 			}
 			throw e;
 		}
+	}
+
+	/**
+	 * {@link #writeSidecar} against a handle holder: up to {@link #RETRIES} attempts, 25 ms doubling
+	 * between them, none after the last (1575 ms in all).
+	 *
+	 * @throws IOException the last failure when every attempt failed
+	 */
+	static void writeSidecarRetrying(File f, JsonObject o) throws IOException {
+		IOException last = null;
+		for (int i = 0; i < RETRIES; i++) {
+			try {
+				writeSidecar(f, o);
+				return;
+			}
+			catch (IOException e) {
+				last = e;
+				if (i == RETRIES - 1 || !backoff(i)) {
+					break;
+				}
+			}
+		}
+		throw last;
+	}
+
+	/** Sleeps the pause after attempt {@code i}; false when interrupted (the interrupt is kept). */
+	private static boolean backoff(int i) {
+		try {
+			Thread.sleep(25L << i);
+			return true;
+		}
+		catch (InterruptedException ie) {
+			Thread.currentThread().interrupt();
+			return false;
+		}
+	}
+
+	/**
+	 * Removes what a failed publish put at the destination (rollback), surviving a handle holder:
+	 * the file or folder is deleted again, with the backoff of the moves, until it is gone. It never
+	 * throws, so the failure that made the publish roll back is the one the caller sees; a thing that
+	 * is still there after the last attempt is logged (the next fork under the folder sweeps it).
+	 */
+	private static void removeRetrying(Path p) {
+		IOException last = null;
+		for (int i = 0; i < RETRIES; i++) {
+			try {
+				if (Files.isDirectory(p, LinkOption.NOFOLLOW_LINKS)) {
+					FileUtilities.deleteDir(p.toFile());
+				}
+				else {
+					Files.deleteIfExists(p);
+				}
+				last = null;
+			}
+			catch (IOException e) {
+				last = e;
+			}
+			if (!Files.exists(p, LinkOption.NOFOLLOW_LINKS)) {
+				return;
+			}
+			if (i == RETRIES - 1 || !backoff(i)) {
+				break;
+			}
+		}
+		ghidra.util.Msg.warn(ProjectFork.class,
+			"fork_project: could not remove " + p + " while rolling back a failed publish" +
+				(last == null ? "" : ": " + last));
 	}
 
 	/** What a fork of {@code r} into {@code destDir} costs, and how it would be made. */
@@ -438,11 +510,13 @@ final class ProjectFork {
 		}
 		finally {
 			if (!committed) {
-				FileUtilities.deleteDir(destRep.toFile());
-				Files.deleteIfExists(sc.toPath());
-				Files.deleteIfExists(Path.of(sc.getPath() + ".tmp"));
+				// the rollback must end with nothing of ours at the destination even when a
+				// reader holds the sidecar open (F1: one attempt could leave a sidecar alone)
+				removeRetrying(destRep);
+				removeRetrying(sc.toPath());
+				removeRetrying(Path.of(sc.getPath() + ".tmp"));
 				for (String extra : moved) {
-					Files.deleteIfExists(destDir.toPath().resolve(extra));
+					removeRetrying(destDir.toPath().resolve(extra));
 				}
 			}
 		}

@@ -1298,9 +1298,15 @@ def t_fork_purposes(c):
     return "closed field sets refused with {field, allowed}; a view records owner, lineage, base"
 
 
+#: how often ``promote_marker`` promotes again when the reader missed the marker's window
+PROMOTE_ATTEMPTS = 3
+
+
 def t_promote_marker(c):
     if not c.a.exe:
         return "skipped: needs --exe"
+    import importlib
+    read_shared = (sys.modules.get("dt_e2a") or importlib.import_module("dt_e2a")).read_text_shared
     gpr = c.copy_fixture("e2-promote")
     exe = pathlib.Path(c.a.exe).name
     d = c.daemon("e2-promote", keepWarm=0)
@@ -1313,32 +1319,46 @@ def t_promote_marker(c):
         ops = [{"op": "rename", "address": f["address"], "name": f"promoted_{i}"}
                for i, f in enumerate(fns[:30])]
         a.call("apply_overlay", overlay="ov", ops=ops)
-        seen = []
-        stop = threading.Event()
-        dest = c.work / "e2-promote-fork"
-        fork_sidecar = dest / "F.fork.json"
+        # The marker is up for the time the promote replays the ops and saves, and the reader is
+        # a polling thread, so on a loaded machine it can miss the window. The reader opens the
+        # sidecar with delete sharing (``read_text_shared``): an ordinary Python ``open`` refuses the
+        # engine's rename over the file for as long as the loaded process keeps it open (measured:
+        # seconds), which lost the marker or its removal (F1); the engine also retries the write. A
+        # promote whose marker was not seen is run again into a fresh fork, as long as it was not
+        # seen, at most PROMOTE_ATTEMPTS times; every attempt must still end with the marker gone
+        # and the right count, and the test fails when no attempt saw the marker.
+        for attempt in range(1, PROMOTE_ATTEMPTS + 1):
+            seen = []
+            stop = threading.Event()
+            dest = c.work / f"e2-promote-fork{'' if attempt == 1 else attempt}"
+            fork_sidecar = dest / "F.fork.json"
 
-        def watch():
-            while not stop.is_set():
-                try:
-                    sc = json.loads(fork_sidecar.read_text(encoding="utf-8"))
-                    seen.append(sc.get("promote"))
-                except (OSError, ValueError):
-                    pass
-                time.sleep(0.002)
+            def watch():
+                while not stop.is_set():
+                    try:
+                        sc = json.loads(read_shared(fork_sidecar))
+                        seen.append(sc.get("promote"))
+                    except (OSError, ValueError):
+                        pass
+                    time.sleep(0.001)
 
-        th = threading.Thread(target=watch, daemon=True)
-        th.start()
-        r = a.call("promote_overlay", overlay="ov", fork={"path": str(dest), "name": "F",
-                                                         "mode": "full"})
-        stop.set()
-        th.join(5)
-        check(r["promoted"] == len(ops), f"{r}")
-        final = json.loads(fork_sidecar.read_text(encoding="utf-8"))
-        check("promote" not in final, f"the marker must be gone once acknowledged: {final}")
-        check("in-progress" in seen, f"the marker was never seen during the promote ({len(seen)} reads)")
+            th = threading.Thread(target=watch, daemon=True)
+            th.start()
+            r = a.call("promote_overlay", overlay="ov", fork={"path": str(dest), "name": "F",
+                                                             "mode": "full"})
+            stop.set()
+            th.join(5)
+            check(r["promoted"] == len(ops), f"{r}")
+            final = json.loads(read_shared(fork_sidecar))
+            check("promote" not in final, f"the marker must be gone once acknowledged: {final}")
+            if "in-progress" in seen:
+                break
+        check("in-progress" in seen,
+              f"the marker was never seen during the promote ({len(seen)} reads, "
+              f"{attempt} attempts)")
     d.stop()
-    return f"promote:'in-progress' seen while promoting ({seen.count('in-progress')} reads), gone after"
+    return (f"promote:'in-progress' seen while promoting ({seen.count('in-progress')} reads, "
+            f"attempt {attempt}), gone after")
 
 
 def t_sidecar_unfinished(c):
