@@ -1,0 +1,442 @@
+{
+ "scenario": "e2-gate",
+ "protocol": 3,
+ "steps": [
+  {
+   "step": 1,
+   "who": "a",
+   "cmd": "open_project",
+   "request": {
+    "path": "<WORK>/e2gate/legacy.gpr",
+    "writable": true
+   },
+   "response": {
+    "id": 2,
+    "ok": true,
+    "result": {
+     "id": "p1",
+     "name": "legacy",
+     "dir": "<WORK>/e2gate",
+     "gpr": "<WORK>/e2gate/legacy.gpr",
+     "writable": true,
+     "openMs": "<masked>",
+     "idleMs": "<masked>",
+     "files": 1,
+     "users": [
+      1
+     ],
+     "programs": 0,
+     "revision": "<rev1>",
+     "diskRevision": "<rev1>",
+     "stale": false,
+     "generation": 1,
+     "fork": null,
+     "format": {
+      "programDb": {
+       "min": 32,
+       "max": 32,
+       "current": 33
+      },
+      "dataTypeDb": {
+       "min": 2,
+       "max": 2,
+       "current": 3
+      },
+      "upgradeRequired": true,
+      "oneWay": true,
+      "newerThanEngine": false,
+      "programsScanned": 1,
+      "truncated": false,
+      "engine": {
+       "hydraVersion": "<masked>",
+       "ghidraVersion": "<masked>"
+      }
+     },
+     "opened": true
+    },
+    "ms": "<masked>"
+   },
+   "note": "the 12.1.4 fixture: format says one-way"
+  },
+  {
+   "step": 2,
+   "who": "a",
+   "cmd": "open_program",
+   "request": {
+    "path": "/flow_fixture.exe",
+    "writable": true,
+    "upgrade": true
+   },
+   "response": {
+    "id": 3,
+    "ok": false,
+    "error": {
+     "code": "backup_required",
+     "message": "flow_fixture.exe in <WORK>/e2gate was saved by an older Ghidra (program database version 32, this engine 33); upgrading it is one-way and the project is not a disposable fork. Make a verified backup first (fork_project with \"purpose\":\"backup\") and pass its backup.json as \"backup\"",
+     "details": {
+      "project": "p1",
+      "program": "p1:/flow_fixture.exe",
+      "format": {
+       "programDb": {
+        "min": 32,
+        "max": 32,
+        "current": 33
+       },
+       "dataTypeDb": {
+        "min": 2,
+        "max": 2,
+        "current": 3
+       },
+       "upgradeRequired": true,
+       "oneWay": true,
+       "newerThanEngine": false,
+       "programsScanned": 1,
+       "truncated": false,
+       "engine": {
+        "hydraVersion": "<masked>",
+        "ghidraVersion": "<masked>"
+       }
+      },
+      "suggest": "fork_project purpose backup"
+     },
+     "next": {
+      "cmd": "fork_project",
+      "project": "p1",
+      "purpose": "backup",
+      "open": false,
+      "path": "<a folder for the backup>",
+      "verify": "hash"
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "a canonical project, no backup"
+  },
+  {
+   "step": 3,
+   "who": "a",
+   "cmd": "close_project",
+   "request": {
+    "discard": true
+   },
+   "response": {
+    "id": 4,
+    "ok": true,
+    "result": {
+     "project": "p1",
+     "left": true,
+     "closed": true,
+     "activeProject": null
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 4,
+   "who": "a",
+   "cmd": "open_project",
+   "request": {
+    "path": "<WORK>/e2gate/legacy.gpr"
+   },
+   "response": {
+    "id": 5,
+    "ok": true,
+    "result": {
+     "id": "p2",
+     "name": "legacy",
+     "dir": "<WORK>/e2gate",
+     "gpr": "<WORK>/e2gate/legacy.gpr",
+     "writable": false,
+     "openMs": "<masked>",
+     "idleMs": "<masked>",
+     "files": 1,
+     "users": [
+      1
+     ],
+     "programs": 0,
+     "revision": "<rev2>",
+     "diskRevision": "<rev2>",
+     "stale": false,
+     "generation": 1,
+     "fork": null,
+     "format": {
+      "programDb": {
+       "min": 32,
+       "max": 32,
+       "current": 33
+      },
+      "dataTypeDb": {
+       "min": 2,
+       "max": 2,
+       "current": 3
+      },
+      "upgradeRequired": true,
+      "oneWay": true,
+      "newerThanEngine": false,
+      "programsScanned": 1,
+      "truncated": false,
+      "engine": {
+       "hydraVersion": "<masked>",
+       "ghidraVersion": "<masked>"
+      }
+     },
+     "opened": true
+    },
+    "ms": "<masked>"
+   },
+   "note": "read-only, to take the backup"
+  },
+  {
+   "step": 5,
+   "who": "a",
+   "cmd": "fork_project",
+   "request": {
+    "project": "p2",
+    "path": "<WORK>/e2gate-backup",
+    "name": "legacy",
+    "mode": "full",
+    "purpose": "backup",
+    "open": false,
+    "verify": "hash"
+   },
+   "response": {
+    "id": 6,
+    "ok": true,
+    "result": {
+     "project": null,
+     "path": "<WORK>/e2gate-backup",
+     "gpr": "<WORK>/e2gate-backup/legacy.gpr",
+     "name": "legacy",
+     "writable": false,
+     "source": {
+      "project": "p2",
+      "gpr": "<WORK>/e2gate/legacy.gpr",
+      "canonical": "<WORK>/e2gate/legacy.gpr",
+      "name": "legacy",
+      "revision": "<rev2>",
+      "writable": false,
+      "fork": false
+     },
+     "baseRevision": "<rev2>",
+     "mode": "full",
+     "method": "<masked>",
+     "cloned": "<masked>",
+     "clonedBy": "<masked>",
+     "bytes": "<masked>",
+     "files": 9,
+     "copyMs": "<masked>",
+     "freeSpaceUsedBytes": "<masked>",
+     "depth": 1,
+     "sidecar": "<WORK>/e2gate-backup/legacy.fork.json",
+     "ms": "<masked>",
+     "purpose": "backup",
+     "cost": {
+      "bytes": "<masked>",
+      "mb": "<masked>",
+      "files": 9,
+      "sameVolume": "<masked>",
+      "sourceFileSystem": "<masked>",
+      "destinationFileSystem": "<masked>",
+      "cloneCapable": "<masked>",
+      "destFreeBytes": "<masked>"
+     },
+     "warnings": [
+      "<warning 1>",
+      "<warning 2>"
+     ],
+     "manifest": {
+      "path": "<WORK>/e2gate-backup/backup.json",
+      "sha256": "<masked>",
+      "verified": true,
+      "files": 9
+     },
+     "sidecarState": "complete"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 6,
+   "who": "a",
+   "cmd": "close_project",
+   "request": {},
+   "response": {
+    "id": 7,
+    "ok": true,
+    "result": {
+     "project": "p2",
+     "left": true,
+     "closed": false,
+     "activeProject": null
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 7,
+   "who": "a",
+   "cmd": "open_project",
+   "request": {
+    "path": "<WORK>/e2gate/legacy.gpr",
+    "writable": true
+   },
+   "response": {
+    "id": 8,
+    "ok": true,
+    "result": {
+     "id": "p2",
+     "name": "legacy",
+     "dir": "<WORK>/e2gate",
+     "gpr": "<WORK>/e2gate/legacy.gpr",
+     "writable": true,
+     "openMs": "<masked>",
+     "idleMs": "<masked>",
+     "files": 1,
+     "users": [
+      1
+     ],
+     "programs": 0,
+     "revision": "<rev2>",
+     "diskRevision": "<rev2>",
+     "stale": false,
+     "generation": 2,
+     "refreshedMsAgo": "<masked>",
+     "fork": null,
+     "format": {
+      "programDb": {
+       "min": 32,
+       "max": 32,
+       "current": 33
+      },
+      "dataTypeDb": {
+       "min": 2,
+       "max": 2,
+       "current": 3
+      },
+      "upgradeRequired": true,
+      "oneWay": true,
+      "newerThanEngine": false,
+      "programsScanned": 1,
+      "truncated": false,
+      "engine": {
+       "hydraVersion": "<masked>",
+       "ghidraVersion": "<masked>"
+      }
+     },
+     "opened": false
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 8,
+   "who": "a",
+   "cmd": "open_program",
+   "request": {
+    "path": "/flow_fixture.exe",
+    "writable": true,
+    "upgrade": true,
+    "backup": "<WORK>/e2gate-backup/backup.json"
+   },
+   "response": {
+    "id": 9,
+    "ok": true,
+    "result": {
+     "key": "p2:/flow_fixture.exe",
+     "project": "p2",
+     "path": "/flow_fixture.exe",
+     "name": "flow_fixture.exe",
+     "mode": "writable",
+     "owner": 1,
+     "mine": true,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/D:/Projects/Hydra/_golden/fixtures-build/x64/flow_fixture.exe",
+     "sha256": "d105b8ad8a5f549a8a2c205e95f71e1b84bcc7ec183f63ea9804442be855179b",
+     "md5": "a961654c7a69682ad7adcd1f6d5d5172",
+     "functions": 311,
+     "analyzed": false,
+     "changed": true,
+     "revision": "<rev3>",
+     "projectRevision": "<rev2>",
+     "generation": 2,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1
+     ],
+     "overlays": [],
+     "writers": [],
+     "writer": true,
+     "journalSeq": 0,
+     "unsavedEdits": 0,
+     "openMs": "<masked>"
+    },
+    "ms": "<masked>"
+   },
+   "note": "the backup of the gate"
+  },
+  {
+   "step": 9,
+   "who": "a",
+   "cmd": "save",
+   "request": {},
+   "response": {
+    "id": 10,
+    "ok": true,
+    "result": {
+     "program": "p2:/flow_fixture.exe",
+     "saved": true,
+     "revision": "<rev4>",
+     "projectRevision": "<rev5>",
+     "savedSeq": 0,
+     "upgradeStamp": "Hydra 12.3-hydra.dev upgrade from 32; backup 6 | headless session"
+    },
+    "ms": "<masked>"
+   },
+   "note": "the first save after the upgrade stamps its comment"
+  },
+  {
+   "step": 10,
+   "who": "a",
+   "cmd": "close_program",
+   "request": {
+    "discard": true
+   },
+   "response": {
+    "id": 11,
+    "ok": true,
+    "result": {
+     "closed": "p2:/flow_fixture.exe",
+     "discarded": false,
+     "active": null
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 11,
+   "who": "a",
+   "cmd": "close_project",
+   "request": {
+    "discard": true
+   },
+   "response": {
+    "id": 12,
+    "ok": true,
+    "result": {
+     "project": "p2",
+     "left": true,
+     "closed": true,
+     "activeProject": null
+    },
+    "ms": "<masked>"
+   }
+  }
+ ]
+}

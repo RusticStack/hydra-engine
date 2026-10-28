@@ -19,8 +19,15 @@ from xc import *
 d = fresh("mkbase")
 try:
     c = d.connect("mk","t")
-    gpr = copy_project(KOTOR_SRC, "base", tagged=False)   # the one prepared base of this work folder
-    o = c.call("open_project", path=str(gpr), writable=True)
+    # E2 (upgrade gate): a canonical project is upgraded only with a verified backup. The base is a
+    # disposable fork of a copy of --project (a fork may be upgraded in place), so every copy of the
+    # base is a fork too and the scripts open them writable with no backup.
+    srcgpr = copy_project(KOTOR_SRC, "base-src", tagged=False)
+    so = c.call("open_project", path=str(srcgpr))
+    fk = c.call("fork_project", project=so["id"], path=str(ROOT / "proj" / "base"), mode="full", open=False, wait=600000)
+    c.call("close_project", project=so["id"])
+    shutil.rmtree(srcgpr.parent, ignore_errors=True)
+    o = c.call("open_project", path=fk["gpr"], writable=True)
     t=time.perf_counter(); p = c.call("open_program", path=PROG, project=o["id"], writable=True, upgrade=True); print("open w", ms(t), p["mode"], p["functions"])
     t=time.perf_counter(); print(c.call("save")); print("save", ms(t))
     c.call("close_project", project=o["id"])

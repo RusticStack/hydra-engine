@@ -283,6 +283,9 @@ final class Access {
 				d);
 		}
 		if (e.mode != ProgramEntry.Mode.WRITABLE) {
+			// D38/D66 (E2): a sealed project answers every writable command with the seal, not
+			// with the read-only hint that it would have to repeat (a fork is the way out)
+			Seals.requireNotSealed(c, e.project, cmd);
 			throw new SessionException(SessionException.READ_ONLY,
 				e.key + " is open read-only; " + cmd + " needs open_program with " +
 					"\"writable\":true" + (e.project.writable() ? ""

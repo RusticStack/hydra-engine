@@ -1,0 +1,694 @@
+{
+ "scenario": "e2-format-fork",
+ "protocol": 3,
+ "steps": [
+  {
+   "step": 1,
+   "who": "a",
+   "cmd": "open_project",
+   "request": {
+    "path": "<WORK>/e2fmt/Fixture.gpr"
+   },
+   "response": {
+    "id": 2,
+    "ok": true,
+    "result": {
+     "id": "p1",
+     "name": "Fixture",
+     "dir": "<WORK>/e2fmt",
+     "gpr": "<WORK>/e2fmt/Fixture.gpr",
+     "writable": false,
+     "openMs": "<masked>",
+     "idleMs": "<masked>",
+     "files": 2,
+     "users": [
+      1
+     ],
+     "programs": 0,
+     "revision": "<rev1>",
+     "diskRevision": "<rev1>",
+     "stale": false,
+     "generation": 1,
+     "fork": null,
+     "format": {
+      "programDb": {
+       "min": 33,
+       "max": 33,
+       "current": 33
+      },
+      "dataTypeDb": {
+       "min": 3,
+       "max": 3,
+       "current": 3
+      },
+      "upgradeRequired": false,
+      "oneWay": false,
+      "newerThanEngine": false,
+      "programsScanned": 2,
+      "truncated": false,
+      "engine": {
+       "hydraVersion": "<masked>",
+       "ghidraVersion": "<masked>"
+      }
+     },
+     "opened": true
+    },
+    "ms": "<masked>"
+   },
+   "note": "format of a current-format project"
+  },
+  {
+   "step": 2,
+   "who": "a",
+   "cmd": "fork_project",
+   "request": {
+    "project": "p1",
+    "path": "<WORK>/e2-out/plain",
+    "name": "Fixture",
+    "mode": "full",
+    "writable": false
+   },
+   "response": {
+    "id": 3,
+    "ok": true,
+    "result": {
+     "project": "p2",
+     "path": "<WORK>/e2-out/plain",
+     "gpr": "<WORK>/e2-out/plain/Fixture.gpr",
+     "name": "Fixture",
+     "writable": false,
+     "source": {
+      "project": "p1",
+      "gpr": "<WORK>/e2fmt/Fixture.gpr",
+      "canonical": "<WORK>/e2fmt/Fixture.gpr",
+      "name": "Fixture",
+      "revision": "<rev1>",
+      "writable": false,
+      "fork": false
+     },
+     "baseRevision": "<rev1>",
+     "mode": "full",
+     "method": "<masked>",
+     "cloned": "<masked>",
+     "clonedBy": "<masked>",
+     "bytes": "<masked>",
+     "files": 14,
+     "copyMs": "<masked>",
+     "freeSpaceUsedBytes": "<masked>",
+     "depth": 1,
+     "sidecar": "<WORK>/e2-out/plain/Fixture.fork.json",
+     "ms": "<masked>",
+     "purpose": "fork",
+     "cost": {
+      "bytes": "<masked>",
+      "mb": "<masked>",
+      "files": 14,
+      "sameVolume": "<masked>",
+      "sourceFileSystem": "<masked>",
+      "destinationFileSystem": "<masked>",
+      "cloneCapable": "<masked>",
+      "destFreeBytes": "<masked>"
+     },
+     "warnings": [
+      "<warning 1>"
+     ],
+     "sidecarState": "complete",
+     "info": {
+      "id": "p2",
+      "name": "Fixture",
+      "dir": "<WORK>/e2-out/plain",
+      "gpr": "<WORK>/e2-out/plain/Fixture.gpr",
+      "writable": false,
+      "openMs": "<masked>",
+      "idleMs": "<masked>",
+      "files": 2,
+      "users": [
+       1
+      ],
+      "programs": 0,
+      "revision": "<rev1>",
+      "diskRevision": "<rev1>",
+      "stale": false,
+      "generation": 1,
+      "fork": {
+       "source": {
+        "project": "p1",
+        "gpr": "<WORK>/e2fmt/Fixture.gpr",
+        "canonical": "<WORK>/e2fmt/Fixture.gpr",
+        "name": "Fixture",
+        "revision": "<rev1>",
+        "writable": false,
+        "fork": false
+       },
+       "baseRevision": "<rev1>",
+       "created": "<time>",
+       "createdAt": "<masked>",
+       "by": {
+        "client": 1,
+        "name": "e2-a",
+        "harness": "e2-h",
+        "label": "client 1 (e2-a, e2-h)"
+       },
+       "mode": "full",
+       "method": "<masked>",
+       "cloned": "<masked>",
+       "bytes": "<masked>",
+       "depth": 1
+      },
+      "format": {
+       "programDb": {
+        "min": 33,
+        "max": 33,
+        "current": 33
+       },
+       "dataTypeDb": {
+        "min": 3,
+        "max": 3,
+        "current": 3
+       },
+       "upgradeRequired": false,
+       "oneWay": false,
+       "newerThanEngine": false,
+       "programsScanned": 2,
+       "truncated": false,
+       "engine": {
+        "hydraVersion": "<masked>",
+        "ghidraVersion": "<masked>"
+       }
+      },
+      "opened": true
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "a plain fork: the v3 report"
+  },
+  {
+   "step": 3,
+   "who": "file",
+   "cmd": "sidecar of the plain fork",
+   "request": null,
+   "response": {
+    "format": 1,
+    "kind": "ghidra-session-fork",
+    "purpose": "fork",
+    "disposable": true,
+    "source": {
+     "project": "p1",
+     "gpr": "<WORK>/e2fmt/Fixture.gpr",
+     "canonical": "<WORK>/e2fmt/Fixture.gpr",
+     "name": "Fixture",
+     "revision": "<rev1>",
+     "writable": false,
+     "fork": false
+    },
+    "baseRevision": "<rev1>",
+    "createdAt": "<masked>",
+    "created": "<time>",
+    "by": {
+     "client": 1,
+     "name": "e2-a",
+     "harness": "e2-h",
+     "label": "client 1 (e2-a, e2-h)"
+    },
+    "mode": "<masked>",
+    "method": "<masked>",
+    "cloned": "<masked>",
+    "clonedBy": "<masked>",
+    "bytes": "<masked>",
+    "files": "<masked>",
+    "copyMs": "<masked>",
+    "freeSpaceUsedBytes": "<masked>",
+    "depth": 1,
+    "forkId": "<masked>",
+    "state": "complete"
+   }
+  },
+  {
+   "step": 4,
+   "who": "a",
+   "cmd": "project",
+   "request": {
+    "project": "p2"
+   },
+   "response": {
+    "id": 4,
+    "ok": true,
+    "result": {
+     "id": "p2",
+     "name": "Fixture",
+     "dir": "<WORK>/e2-out/plain",
+     "gpr": "<WORK>/e2-out/plain/Fixture.gpr",
+     "writable": false,
+     "openMs": "<masked>",
+     "idleMs": "<masked>",
+     "files": 2,
+     "users": [
+      1
+     ],
+     "programs": 0,
+     "revision": "<rev1>",
+     "diskRevision": "<rev1>",
+     "stale": false,
+     "generation": 1,
+     "fork": {
+      "source": {
+       "project": "p1",
+       "gpr": "<WORK>/e2fmt/Fixture.gpr",
+       "canonical": "<WORK>/e2fmt/Fixture.gpr",
+       "name": "Fixture",
+       "revision": "<rev1>",
+       "writable": false,
+       "fork": false
+      },
+      "baseRevision": "<rev1>",
+      "created": "<time>",
+      "createdAt": "<masked>",
+      "by": {
+       "client": 1,
+       "name": "e2-a",
+       "harness": "e2-h",
+       "label": "client 1 (e2-a, e2-h)"
+      },
+      "mode": "full",
+      "method": "<masked>",
+      "cloned": "<masked>",
+      "bytes": "<masked>",
+      "depth": 1
+     },
+     "format": {
+      "programDb": {
+       "min": 33,
+       "max": 33,
+       "current": 33
+      },
+      "dataTypeDb": {
+       "min": 3,
+       "max": 3,
+       "current": 3
+      },
+      "upgradeRequired": false,
+      "oneWay": false,
+      "newerThanEngine": false,
+      "programsScanned": 2,
+      "truncated": false,
+      "engine": {
+       "hydraVersion": "<masked>",
+       "ghidraVersion": "<masked>"
+      }
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "the fork summary of a v3 project"
+  },
+  {
+   "step": 5,
+   "who": "a",
+   "cmd": "fork_project",
+   "request": {
+    "project": "p1",
+    "path": "<WORK>/e2-out/backup",
+    "name": "Fixture",
+    "mode": "full",
+    "purpose": "backup",
+    "open": false,
+    "verify": "hash",
+    "reason": "char"
+   },
+   "response": {
+    "id": 5,
+    "ok": true,
+    "result": {
+     "project": null,
+     "path": "<WORK>/e2-out/backup",
+     "gpr": "<WORK>/e2-out/backup/Fixture.gpr",
+     "name": "Fixture",
+     "writable": false,
+     "source": {
+      "project": "p1",
+      "gpr": "<WORK>/e2fmt/Fixture.gpr",
+      "canonical": "<WORK>/e2fmt/Fixture.gpr",
+      "name": "Fixture",
+      "revision": "<rev1>",
+      "writable": false,
+      "fork": false
+     },
+     "baseRevision": "<rev1>",
+     "mode": "full",
+     "method": "<masked>",
+     "cloned": "<masked>",
+     "clonedBy": "<masked>",
+     "bytes": "<masked>",
+     "files": 14,
+     "copyMs": "<masked>",
+     "freeSpaceUsedBytes": "<masked>",
+     "depth": 1,
+     "sidecar": "<WORK>/e2-out/backup/Fixture.fork.json",
+     "ms": "<masked>",
+     "purpose": "backup",
+     "cost": {
+      "bytes": "<masked>",
+      "mb": "<masked>",
+      "files": 14,
+      "sameVolume": "<masked>",
+      "sourceFileSystem": "<masked>",
+      "destinationFileSystem": "<masked>",
+      "cloneCapable": "<masked>",
+      "destFreeBytes": "<masked>"
+     },
+     "warnings": [
+      "<warning 1>",
+      "<warning 2>"
+     ],
+     "manifest": {
+      "path": "<WORK>/e2-out/backup/backup.json",
+      "sha256": "<masked>",
+      "verified": true,
+      "files": 14
+     },
+     "sidecarState": "complete"
+    },
+    "ms": "<masked>"
+   },
+   "note": "a backup: not registered, verified, sealed"
+  },
+  {
+   "step": 6,
+   "who": "file",
+   "cmd": "sidecar of the backup",
+   "request": null,
+   "response": {
+    "format": 1,
+    "kind": "ghidra-session-fork",
+    "purpose": "backup",
+    "disposable": false,
+    "source": {
+     "project": "p1",
+     "gpr": "<WORK>/e2fmt/Fixture.gpr",
+     "canonical": "<WORK>/e2fmt/Fixture.gpr",
+     "name": "Fixture",
+     "revision": "<rev1>",
+     "writable": false,
+     "fork": false
+    },
+    "baseRevision": "<rev1>",
+    "createdAt": "<masked>",
+    "created": "<time>",
+    "by": {
+     "client": 1,
+     "name": "e2-a",
+     "harness": "e2-h",
+     "label": "client 1 (e2-a, e2-h)"
+    },
+    "mode": "<masked>",
+    "method": "<masked>",
+    "cloned": "<masked>",
+    "clonedBy": "<masked>",
+    "bytes": "<masked>",
+    "files": "<masked>",
+    "copyMs": "<masked>",
+    "freeSpaceUsedBytes": "<masked>",
+    "depth": 1,
+    "manifest": {
+     "path": "<WORK>/e2-out/backup/backup.json",
+     "sha256": "<masked>",
+     "verified": true,
+     "files": "<masked>"
+    },
+    "forkId": "<masked>",
+    "state": "complete"
+   }
+  },
+  {
+   "step": 7,
+   "who": "file",
+   "cmd": "manifest of the backup",
+   "request": null,
+   "response": {
+    "copy": {
+     "destinationFileSystem": "<masked>",
+     "independent": "<masked>",
+     "method": "<masked>",
+     "ms": "<masked>",
+     "sameVolume": "<masked>",
+     "sourceFileSystem": "<masked>"
+    },
+    "createdAt": "<masked>",
+    "createdBy": {
+     "client": "e2-a",
+     "harness": "e2-h"
+    },
+    "engine": {
+     "dbVersions": {
+      "dataTypes": 3,
+      "program": 33
+     },
+     "ghidraVersion": "<masked>",
+     "hydraVersion": "<masked>"
+    },
+    "files": [
+     {
+      "path": "Fixture.gpr",
+      "sha256": "<masked>",
+      "size": "<masked>"
+     },
+     {
+      "path": "Fixture.rep/idata/00/00000000.prp",
+      "sha256": "<masked>",
+      "size": "<masked>"
+     },
+     {
+      "path": "Fixture.rep/idata/00/00000001.prp",
+      "sha256": "<masked>",
+      "size": "<masked>"
+     },
+     {
+      "path": "Fixture.rep/idata/00/~00000000.db/db.1.gbf",
+      "sha256": "<masked>",
+      "size": "<masked>"
+     },
+     {
+      "path": "Fixture.rep/idata/00/~00000000.db/db.2.gbf",
+      "sha256": "<masked>",
+      "size": "<masked>"
+     },
+     {
+      "path": "Fixture.rep/idata/00/~00000001.db/db.1.gbf",
+      "sha256": "<masked>",
+      "size": "<masked>"
+     },
+     {
+      "path": "Fixture.rep/idata/00/~00000001.db/db.2.gbf",
+      "sha256": "<masked>",
+      "size": "<masked>"
+     },
+     {
+      "path": "Fixture.rep/idata/~index.bak",
+      "sha256": "<masked>",
+      "size": "<masked>"
+     },
+     {
+      "path": "Fixture.rep/idata/~index.dat",
+      "sha256": "<masked>",
+      "size": "<masked>"
+     },
+     {
+      "path": "Fixture.rep/idata/~journal.bak",
+      "sha256": "<masked>",
+      "size": "<masked>"
+     },
+     {
+      "path": "Fixture.rep/project.prp",
+      "sha256": "<masked>",
+      "size": "<masked>"
+     },
+     {
+      "path": "Fixture.rep/user/~index.dat",
+      "sha256": "<masked>",
+      "size": "<masked>"
+     },
+     {
+      "path": "Fixture.rep/versioned/~index.bak",
+      "sha256": "<masked>",
+      "size": "<masked>"
+     },
+     {
+      "path": "Fixture.rep/versioned/~index.dat",
+      "sha256": "<masked>",
+      "size": "<masked>"
+     }
+    ],
+    "filesetSha256": "<masked>",
+    "format": 1,
+    "id": "<masked>",
+    "kind": "ghidra-session-backup",
+    "purpose": "char",
+    "selfSha256": "<masked>",
+    "source": {
+     "gpr": "<WORK>/e2fmt/Fixture.gpr",
+     "name": "Fixture",
+     "revision": "<rev1>"
+    },
+    "stored": {
+     "programDb": {
+      "max": 33,
+      "min": 33
+     },
+     "programs": 2,
+     "scanned": 2,
+     "truncated": false
+    },
+    "verify": {
+     "at": "<masked>",
+     "level": "hash",
+     "ok": true,
+     "sourceRevisionAfter": "<masked>"
+    },
+    "writer": "engine"
+   }
+  },
+  {
+   "step": 8,
+   "who": "file",
+   "cmd": "SEALED.json of the backup",
+   "request": null,
+   "response": {
+    "format": 1,
+    "kind": "ghidra-session-seal",
+    "name": "Fixture",
+    "revision": "<rev1>",
+    "layoutSha256": "<masked>",
+    "manifestSha256": "<masked>",
+    "sealedAt": "<time>",
+    "by": {
+     "client": "e2-a",
+     "harness": "e2-h"
+    }
+   }
+  },
+  {
+   "step": 9,
+   "who": "a",
+   "cmd": "fork_project",
+   "request": {
+    "project": "p1",
+    "path": "<WORK>/e2-out/x",
+    "name": "X",
+    "purpose": "bogus"
+   },
+   "response": {
+    "id": 6,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "purpose must be one of [fork, backup, generation, view]",
+     "details": {
+      "field": "purpose",
+      "allowed": [
+       "fork",
+       "backup",
+       "generation",
+       "view"
+      ]
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "a closed field"
+  },
+  {
+   "step": 10,
+   "who": "a",
+   "cmd": "fork_project",
+   "request": {
+    "project": "p1",
+    "path": "<WORK>/e2-out/x",
+    "name": "X",
+    "purpose": "backup"
+   },
+   "response": {
+    "id": 7,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "a backup is not registered as an open project: pass \"open\":false",
+     "details": {
+      "field": "open",
+      "allowed": [
+       "false"
+      ]
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "a backup is never registered"
+  },
+  {
+   "step": 11,
+   "who": "a",
+   "cmd": "fork_project",
+   "request": {
+    "project": "p1",
+    "path": "<WORK>/e2-out/x",
+    "name": "X",
+    "purpose": "backup",
+    "open": false,
+    "verify": "md5"
+   },
+   "response": {
+    "id": 8,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "verify must be none, size or hash",
+     "details": {
+      "field": "verify",
+      "allowed": [
+       "none",
+       "size",
+       "hash"
+      ]
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 12,
+   "who": "a",
+   "cmd": "close_project",
+   "request": {
+    "project": "p2"
+   },
+   "response": {
+    "id": 9,
+    "ok": true,
+    "result": {
+     "project": "p2",
+     "left": true,
+     "closed": false,
+     "activeProject": "p1"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 13,
+   "who": "a",
+   "cmd": "close_project",
+   "request": {},
+   "response": {
+    "id": 10,
+    "ok": true,
+    "result": {
+     "project": "p1",
+     "left": true,
+     "closed": false,
+     "activeProject": null
+    },
+    "ms": "<masked>"
+   }
+  }
+ ]
+}

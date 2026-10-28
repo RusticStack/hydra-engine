@@ -1,0 +1,706 @@
+{
+ "scenario": "e2-seal",
+ "protocol": 3,
+ "steps": [
+  {
+   "step": 1,
+   "who": "a",
+   "cmd": "open_project",
+   "request": {
+    "path": "<WORK>/e2seal/Fixture.gpr"
+   },
+   "response": {
+    "id": 2,
+    "ok": true,
+    "result": {
+     "id": "p1",
+     "name": "Fixture",
+     "dir": "<WORK>/e2seal",
+     "gpr": "<WORK>/e2seal/Fixture.gpr",
+     "writable": false,
+     "openMs": "<masked>",
+     "idleMs": "<masked>",
+     "files": 2,
+     "users": [
+      1
+     ],
+     "programs": 0,
+     "revision": "<rev1>",
+     "diskRevision": "<rev1>",
+     "stale": false,
+     "generation": 1,
+     "fork": null,
+     "format": {
+      "programDb": {
+       "min": 33,
+       "max": 33,
+       "current": 33
+      },
+      "dataTypeDb": {
+       "min": 3,
+       "max": 3,
+       "current": 3
+      },
+      "upgradeRequired": false,
+      "oneWay": false,
+      "newerThanEngine": false,
+      "programsScanned": 2,
+      "truncated": false,
+      "engine": {
+       "hydraVersion": "<masked>",
+       "ghidraVersion": "<masked>"
+      }
+     },
+     "opened": true
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 2,
+   "who": "a",
+   "cmd": "fork_project",
+   "request": {
+    "project": "p1",
+    "path": "<WORK>/e2seal-gen",
+    "name": "Fixture",
+    "mode": "full",
+    "purpose": "generation",
+    "lineage": "L-char",
+    "generation": 2
+   },
+   "response": {
+    "id": 3,
+    "ok": true,
+    "result": {
+     "project": "p2",
+     "path": "<WORK>/e2seal-gen",
+     "gpr": "<WORK>/e2seal-gen/Fixture.gpr",
+     "name": "Fixture",
+     "writable": true,
+     "source": {
+      "project": "p1",
+      "gpr": "<WORK>/e2seal/Fixture.gpr",
+      "canonical": "<WORK>/e2seal/Fixture.gpr",
+      "name": "Fixture",
+      "revision": "<rev1>",
+      "writable": false,
+      "fork": false
+     },
+     "baseRevision": "<rev1>",
+     "mode": "full",
+     "method": "<masked>",
+     "cloned": "<masked>",
+     "clonedBy": "<masked>",
+     "bytes": "<masked>",
+     "files": 14,
+     "copyMs": "<masked>",
+     "freeSpaceUsedBytes": "<masked>",
+     "depth": 1,
+     "sidecar": "<WORK>/e2seal-gen/Fixture.fork.json",
+     "ms": "<masked>",
+     "purpose": "generation",
+     "cost": {
+      "bytes": "<masked>",
+      "mb": "<masked>",
+      "files": 14,
+      "sameVolume": "<masked>",
+      "sourceFileSystem": "<masked>",
+      "destinationFileSystem": "<masked>",
+      "cloneCapable": "<masked>",
+      "destFreeBytes": "<masked>"
+     },
+     "warnings": [
+      "<warning 1>"
+     ],
+     "sidecarState": "candidate",
+     "info": {
+      "id": "p2",
+      "name": "Fixture",
+      "dir": "<WORK>/e2seal-gen",
+      "gpr": "<WORK>/e2seal-gen/Fixture.gpr",
+      "writable": true,
+      "openMs": "<masked>",
+      "idleMs": "<masked>",
+      "files": 2,
+      "users": [
+       1
+      ],
+      "programs": 0,
+      "revision": "<rev1>",
+      "diskRevision": "<rev1>",
+      "stale": false,
+      "generation": 1,
+      "fork": {
+       "source": {
+        "project": "p1",
+        "gpr": "<WORK>/e2seal/Fixture.gpr",
+        "canonical": "<WORK>/e2seal/Fixture.gpr",
+        "name": "Fixture",
+        "revision": "<rev1>",
+        "writable": false,
+        "fork": false
+       },
+       "baseRevision": "<rev1>",
+       "created": "<time>",
+       "createdAt": "<masked>",
+       "by": {
+        "client": 1,
+        "name": "e2-a",
+        "harness": "e2-h",
+        "label": "client 1 (e2-a, e2-h)"
+       },
+       "mode": "full",
+       "method": "<masked>",
+       "cloned": "<masked>",
+       "bytes": "<masked>",
+       "depth": 1
+      },
+      "format": {
+       "programDb": {
+        "min": 33,
+        "max": 33,
+        "current": 33
+       },
+       "dataTypeDb": {
+        "min": 3,
+        "max": 3,
+        "current": 3
+       },
+       "upgradeRequired": false,
+       "oneWay": false,
+       "newerThanEngine": false,
+       "programsScanned": 2,
+       "truncated": false,
+       "engine": {
+        "hydraVersion": "<masked>",
+        "ghidraVersion": "<masked>"
+       }
+      },
+      "opened": true
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "a generation candidate: non-disposable, writable by its publisher"
+  },
+  {
+   "step": 3,
+   "who": "file",
+   "cmd": "sidecar of the candidate",
+   "request": null,
+   "response": {
+    "format": 1,
+    "kind": "ghidra-session-fork",
+    "purpose": "generation",
+    "disposable": false,
+    "source": {
+     "project": "p1",
+     "gpr": "<WORK>/e2seal/Fixture.gpr",
+     "canonical": "<WORK>/e2seal/Fixture.gpr",
+     "name": "Fixture",
+     "revision": "<rev1>",
+     "writable": false,
+     "fork": false
+    },
+    "baseRevision": "<rev1>",
+    "createdAt": "<masked>",
+    "created": "<time>",
+    "by": {
+     "client": 1,
+     "name": "e2-a",
+     "harness": "e2-h",
+     "label": "client 1 (e2-a, e2-h)"
+    },
+    "mode": "<masked>",
+    "method": "<masked>",
+    "cloned": "<masked>",
+    "clonedBy": "<masked>",
+    "bytes": "<masked>",
+    "files": "<masked>",
+    "copyMs": "<masked>",
+    "freeSpaceUsedBytes": "<masked>",
+    "depth": 1,
+    "lineage": "L-char",
+    "forkId": "<masked>",
+    "state": "candidate"
+   }
+  },
+  {
+   "step": 4,
+   "who": "a",
+   "cmd": "seal_project",
+   "request": {
+    "project": "p2"
+   },
+   "response": {
+    "id": 4,
+    "ok": false,
+    "error": {
+     "code": "conflict",
+     "message": "project p2 is open writable; close it before sealing it (the seal is the commit point of its immutability)",
+     "details": {
+      "project": "p2",
+      "reason": "open_writable"
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "a project that is open writable is not sealed"
+  },
+  {
+   "step": 5,
+   "who": "a",
+   "cmd": "close_project",
+   "request": {
+    "project": "p2"
+   },
+   "response": {
+    "id": 5,
+    "ok": true,
+    "result": {
+     "project": "p2",
+     "left": true,
+     "closed": true,
+     "activeProject": "p1"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 6,
+   "who": "a",
+   "cmd": "seal_project",
+   "request": {
+    "project": "<WORK>/e2seal-gen/Fixture.gpr",
+    "lineage": "L-char"
+   },
+   "response": {
+    "id": 6,
+    "ok": true,
+    "result": {
+     "sealed": true,
+     "revision": "<rev2>",
+     "gpr": "<WORK>/e2seal-gen/Fixture.gpr",
+     "records": [
+      "marker",
+      "registry",
+      "sidecar"
+     ],
+     "witnesses": [
+      "registry",
+      "sidecar",
+      "marker"
+     ]
+    },
+    "ms": "<masked>"
+   },
+   "note": "the seal"
+  },
+  {
+   "step": 7,
+   "who": "file",
+   "cmd": "sidecar after the seal",
+   "request": null,
+   "response": {
+    "format": 1,
+    "kind": "ghidra-session-fork",
+    "purpose": "generation",
+    "disposable": false,
+    "source": {
+     "project": "p1",
+     "gpr": "<WORK>/e2seal/Fixture.gpr",
+     "canonical": "<WORK>/e2seal/Fixture.gpr",
+     "name": "Fixture",
+     "revision": "<rev1>",
+     "writable": false,
+     "fork": false
+    },
+    "baseRevision": "<rev1>",
+    "createdAt": "<masked>",
+    "created": "<time>",
+    "by": {
+     "client": 1,
+     "name": "e2-a",
+     "harness": "e2-h",
+     "label": "client 1 (e2-a, e2-h)"
+    },
+    "mode": "<masked>",
+    "method": "<masked>",
+    "cloned": "<masked>",
+    "clonedBy": "<masked>",
+    "bytes": "<masked>",
+    "files": "<masked>",
+    "copyMs": "<masked>",
+    "freeSpaceUsedBytes": "<masked>",
+    "depth": 1,
+    "lineage": "L-char",
+    "forkId": "<masked>",
+    "state": "complete"
+   }
+  },
+  {
+   "step": 8,
+   "who": "file",
+   "cmd": "SEALED.json",
+   "request": null,
+   "response": {
+    "format": 1,
+    "kind": "ghidra-session-seal",
+    "name": "Fixture",
+    "revision": "<rev2>",
+    "layoutSha256": "<masked>",
+    "sealedAt": "<time>",
+    "by": {
+     "client": "e2-a",
+     "harness": "e2-h"
+    },
+    "lineage": "L-char"
+   }
+  },
+  {
+   "step": 9,
+   "who": "a",
+   "cmd": "open_project",
+   "request": {
+    "path": "<WORK>/e2seal-gen/Fixture.gpr",
+    "writable": true
+   },
+   "response": {
+    "id": 7,
+    "ok": false,
+    "error": {
+     "code": "sealed",
+     "message": "Fixture is sealed (registry, sidecar, marker): it is a verified generation or backup, or was sealed with seal_project, and takes no writable path (open_project writable); fork_project makes a copy that can be written",
+     "details": {
+      "project": null,
+      "gpr": "<WORK>/e2seal-gen/Fixture.gpr",
+      "witnesses": [
+       "registry",
+       "sidecar",
+       "marker"
+      ],
+      "suggest": "fork_project"
+     },
+     "next": {
+      "cmd": "fork_project",
+      "project": "<WORK>/e2seal-gen/Fixture.gpr",
+      "writable": true,
+      "path": "<WORK>/e2seal-gen-fork"
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "every writable path is refused, with a fork_project next"
+  },
+  {
+   "step": 10,
+   "who": "a",
+   "cmd": "open_project",
+   "request": {
+    "path": "<WORK>/e2seal-gen/Fixture.gpr"
+   },
+   "response": {
+    "id": 8,
+    "ok": true,
+    "result": {
+     "id": "p3",
+     "name": "Fixture",
+     "dir": "<WORK>/e2seal-gen",
+     "gpr": "<WORK>/e2seal-gen/Fixture.gpr",
+     "writable": false,
+     "openMs": "<masked>",
+     "idleMs": "<masked>",
+     "files": 2,
+     "users": [
+      1
+     ],
+     "programs": 0,
+     "revision": "<rev2>",
+     "diskRevision": "<rev2>",
+     "stale": false,
+     "generation": 1,
+     "fork": {
+      "source": {
+       "project": "p1",
+       "gpr": "<WORK>/e2seal/Fixture.gpr",
+       "canonical": "<WORK>/e2seal/Fixture.gpr",
+       "name": "Fixture",
+       "revision": "<rev1>",
+       "writable": false,
+       "fork": false
+      },
+      "baseRevision": "<rev1>",
+      "created": "<time>",
+      "createdAt": "<masked>",
+      "by": {
+       "client": 1,
+       "name": "e2-a",
+       "harness": "e2-h",
+       "label": "client 1 (e2-a, e2-h)"
+      },
+      "mode": "full",
+      "method": "<masked>",
+      "cloned": "<masked>",
+      "bytes": "<masked>",
+      "depth": 1
+     },
+     "format": {
+      "programDb": {
+       "min": 33,
+       "max": 33,
+       "current": 33
+      },
+      "dataTypeDb": {
+       "min": 3,
+       "max": 3,
+       "current": 3
+      },
+      "upgradeRequired": false,
+      "oneWay": false,
+      "newerThanEngine": false,
+      "programsScanned": 2,
+      "truncated": false,
+      "engine": {
+       "hydraVersion": "<masked>",
+       "ghidraVersion": "<masked>"
+      }
+     },
+     "opened": true
+    },
+    "ms": "<masked>"
+   },
+   "note": "read-only works"
+  },
+  {
+   "step": 11,
+   "who": "a",
+   "cmd": "open_program",
+   "request": {
+    "path": "/alpha.exe",
+    "project": "p3"
+   },
+   "response": {
+    "id": 9,
+    "ok": true,
+    "result": {
+     "key": "p3:/alpha.exe",
+     "project": "p3",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "read_only",
+     "owner": null,
+     "mine": false,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": false,
+     "revision": "<rev3>",
+     "projectRevision": "<rev2>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1
+     ],
+     "overlays": [],
+     "writers": [],
+     "writer": false,
+     "journalSeq": 0,
+     "unsavedEdits": 0,
+     "openMs": "<masked>"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 12,
+   "who": "a",
+   "cmd": "open_program",
+   "request": {
+    "path": "/alpha.exe",
+    "project": "p3",
+    "writable": true
+   },
+   "response": {
+    "id": 10,
+    "ok": false,
+    "error": {
+     "code": "sealed",
+     "message": "Fixture is sealed (registry, sidecar, marker): it is a verified generation or backup, or was sealed with seal_project, and takes no writable path (open_program writable); fork_project makes a copy that can be written",
+     "details": {
+      "project": "p3",
+      "gpr": "<WORK>/e2seal-gen/Fixture.gpr",
+      "witnesses": [
+       "registry",
+       "sidecar",
+       "marker"
+      ],
+      "suggest": "fork_project"
+     },
+     "next": {
+      "cmd": "fork_project",
+      "project": "p3",
+      "writable": true,
+      "path": "<WORK>/e2seal-gen-fork"
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 13,
+   "who": "a",
+   "cmd": "save",
+   "request": {},
+   "response": {
+    "id": 11,
+    "ok": false,
+    "error": {
+     "code": "sealed",
+     "message": "Fixture is sealed (registry, sidecar, marker): it is a verified generation or backup, or was sealed with seal_project, and takes no writable path (save); fork_project makes a copy that can be written",
+     "details": {
+      "project": "p3",
+      "gpr": "<WORK>/e2seal-gen/Fixture.gpr",
+      "witnesses": [
+       "registry",
+       "sidecar",
+       "marker"
+      ],
+      "suggest": "fork_project"
+     },
+     "next": {
+      "cmd": "fork_project",
+      "project": "p3",
+      "writable": true,
+      "path": "<WORK>/e2seal-gen-fork"
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 14,
+   "who": "a",
+   "cmd": "analyze",
+   "request": {},
+   "response": {
+    "id": 12,
+    "ok": false,
+    "error": {
+     "code": "sealed",
+     "message": "Fixture is sealed (registry, sidecar, marker): it is a verified generation or backup, or was sealed with seal_project, and takes no writable path (analyze); fork_project makes a copy that can be written",
+     "details": {
+      "project": "p3",
+      "gpr": "<WORK>/e2seal-gen/Fixture.gpr",
+      "witnesses": [
+       "registry",
+       "sidecar",
+       "marker"
+      ],
+      "suggest": "fork_project"
+     },
+     "next": {
+      "cmd": "fork_project",
+      "project": "p3",
+      "writable": true,
+      "path": "<WORK>/e2seal-gen-fork"
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 15,
+   "who": "a",
+   "cmd": "close_project",
+   "request": {
+    "project": "p3"
+   },
+   "response": {
+    "id": 13,
+    "ok": true,
+    "result": {
+     "project": "p3",
+     "left": true,
+     "closed": false,
+     "activeProject": "p1"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 16,
+   "who": "a",
+   "cmd": "seal_project",
+   "request": {
+    "project": "<WORK>/e2seal-gen/Fixture.gpr",
+    "unseal": true
+   },
+   "response": {
+    "id": 14,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "unseal is an owner action; pass \"force\":true",
+     "details": {
+      "field": "force"
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "unseal is an owner action"
+  },
+  {
+   "step": 17,
+   "who": "a",
+   "cmd": "seal_project",
+   "request": {
+    "project": "<WORK>/e2seal-gen/Fixture.gpr",
+    "unseal": true,
+    "force": true
+   },
+   "response": {
+    "id": 15,
+    "ok": true,
+    "result": {
+     "sealed": false,
+     "gpr": "<WORK>/e2seal-gen/Fixture.gpr",
+     "removed": [
+      "registry",
+      "marker",
+      "sidecar"
+     ],
+     "witnesses": []
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 18,
+   "who": "a",
+   "cmd": "close_project",
+   "request": {},
+   "response": {
+    "id": 16,
+    "ok": true,
+    "result": {
+     "project": "p1",
+     "left": true,
+     "closed": false,
+     "activeProject": null
+    },
+    "ms": "<masked>"
+   }
+  }
+ ]
+}
