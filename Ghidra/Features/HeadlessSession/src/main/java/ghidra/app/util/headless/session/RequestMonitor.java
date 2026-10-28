@@ -15,6 +15,7 @@
  */
 package ghidra.app.util.headless.session;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.*;
 import java.util.function.Consumer;
@@ -57,7 +58,10 @@ final class RequestMonitor extends TaskMonitorAdapter {
 	/** Queue details added to this request's progress events while it waits, or null. */
 	private volatile JsonObject queue;
 	/** Run once when this request is cancelled (by {@code cancel}, its timeout or a dead client). */
-	private final List<Runnable> cancelHooks = new CopyOnWriteArrayList<>();
+	private final List<Runnable> cancelHooks = new ArrayList<>();
+	private final Object hookLock = new Object();
+	/** Set (under {@code hookLock}) by the one cancel that runs the hooks. */
+	private boolean cancelFired;
 	/** The lane the scheduler put this request in ({@code quick}, {@code long}, {@code maint}). */
 	private volatile String lane;
 	/** Why a lane hint was not honoured (E3a's decision, copied into the {@code script} reply). */
@@ -116,30 +120,46 @@ final class RequestMonitor extends TaskMonitorAdapter {
 
 	/**
 	 * Registers {@code hook} to run when this request is cancelled, whatever cancelled it. It runs
-	 * at once, on the calling thread, when the request is already cancelled. A hook must be short
-	 * and must not throw (an exception is logged by nobody and ignored); it runs on the thread
-	 * that cancels, never while a scheduler or lock monitor of the hook's owner is required.
+	 * at once, on the calling thread, when the cancel has already started. A hook must be short
+	 * and must not throw (an exception is ignored); it runs on the thread that cancels, never
+	 * while a scheduler or lock monitor of the hook's owner is required. Each hook runs exactly
+	 * once: either in the cancel that takes the hook list, or here, never in both.
 	 */
 	void addCancelHook(Runnable hook) {
-		cancelHooks.add(hook);
-		if (isCancelled()) {
-			runHook(hook);
+		synchronized (hookLock) {
+			if (!cancelFired) {
+				cancelHooks.add(hook);
+				return;
+			}
 		}
+		runHook(hook);
 	}
 
 	void removeCancelHook(Runnable hook) {
-		cancelHooks.remove(hook);
+		synchronized (hookLock) {
+			cancelHooks.remove(hook);
+		}
 	}
 
-	/** Cancels this request and runs its cancel hooks (each at most once per cancel). */
+	/**
+	 * Cancels this request and runs its cancel hooks once, however many threads cancel at the same
+	 * time (the timeout timer, a client's cancel, a dead client): the first one takes the hook list
+	 * under {@code hookLock} and runs it outside the lock.
+	 */
 	@Override
 	public void cancel() {
-		boolean first = !isCancelled();
 		super.cancel();
-		if (first && isCancelled()) {
-			for (Runnable h : cancelHooks) {
-				runHook(h);
+		List<Runnable> mine;
+		synchronized (hookLock) {
+			if (cancelFired) {
+				return;
 			}
+			cancelFired = true;
+			mine = new ArrayList<>(cancelHooks);
+			cancelHooks.clear();
+		}
+		for (Runnable h : mine) {
+			runHook(h);
 		}
 	}
 

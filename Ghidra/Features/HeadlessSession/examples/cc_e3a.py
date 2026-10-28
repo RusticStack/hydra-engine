@@ -41,6 +41,7 @@ the ones marked (V) are declared v2-visible changes (5.1) and are red there by d
 * ``v2_running_cap`` (V9) (V): one v2 connection with a dozen parallel scripts cannot starve a
   second connection's script, and on an idle daemon its first scripts all run at once.
 """
+import json
 import os
 import pathlib
 import shutil
@@ -232,13 +233,14 @@ def t_v2_progress_keys(c):
         rid = sleep_script(c, w, 10)
         wait_for(lambda: lane(s, "long")["queued"] >= 1, "the waiter queued", 10)
         w.call("ping")
-        waiting_events = [e for e in w.events if e.get("id") == rid]
         time.sleep(1.5)
         w.call("ping")
         waiting_events = [e for e in w.events if e.get("id") == rid]
-        for e in waiting_events:
-            check(list(e) == V2_EVENT_KEYS and "queue" not in e,
-                  f"a progress event of a slot wait has keys {list(e)}")
+        # hydra.3 sends no progress event at all for a slot wait (G5): a v2 regression that sent
+        # one, with or without the queue key, must fail here
+        check(len(waiting_events) == 0,
+              f"a v2 slot wait sends no progress event, got {len(waiting_events)}: " +
+              json.dumps(waiting_events[:3]))
         w.wait(rid)
         release(s, ids)
         slot_events = len(waiting_events)
@@ -275,7 +277,7 @@ def t_v2_progress_keys(c):
             except c.stock.SessionError:
                 pass
     d.stop(force=True)
-    return (f"slot wait: {slot_events} progress events carrying no queue key; import wait: events "
+    return (f"slot wait: {slot_events} progress events; import wait: events "
             f"with keys {V2_EVENT_KEYS + ['queue']}, queue keys {V2_IMPORT_QUEUE_KEYS}")
 
 

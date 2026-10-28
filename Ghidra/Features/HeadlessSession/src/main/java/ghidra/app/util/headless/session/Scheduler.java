@@ -377,6 +377,9 @@ final class Scheduler {
 		}
 	}
 
+	/** How often a v3 waiter recomputes its queue details (the pace of the progress event). */
+	private static final long INFO_INTERVAL_NANOS = 1_000_000_000L;
+
 	/**
 	 * Called with the lock held: waits until {@code t} is granted. Throws {@code cancelled} or
 	 * {@code busy} after taking {@code t} out of the queue.
@@ -389,9 +392,13 @@ final class Scheduler {
 		if (m != null && !v3) {
 			m.waiting(what);
 		}
+		// the queue details (a copy of every queue, under the scheduler lock) are recomputed at the
+		// pace of the progress event, not at every 100 ms wake-up: N waiters would otherwise copy
+		// N queues N times a second
+		long nextInfo = t0;
 		try {
 			while (!t.granted) {
-				if (m != null && v3) {
+				if (m != null && v3 && System.nanoTime() - nextInfo >= 0) {
 					JsonObject q = queueInfo(s, t);
 					String text = "waiting for a " + s.lane.json() + " slot (position " +
 						q.get("position") + ", " + q.get("ahead") + " ahead" + etaText(q) + ")";
@@ -406,6 +413,7 @@ final class Scheduler {
 					finally {
 						lock.lock();
 					}
+					nextInfo = System.nanoTime() + INFO_INTERVAL_NANOS;
 					if (t.granted) {
 						break;
 					}

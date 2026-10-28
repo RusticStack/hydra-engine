@@ -1002,6 +1002,52 @@ public class HeadlessSession implements GhidraLaunchable {
 			check("every cancel hook runs once on cancel, a throwing one does not stop the " +
 				"others, and a hook added after the cancel runs at once",
 				ran[0] == 11 && ran[1] == 1 && m.isCancelled());
+			// two threads cancelling together (the timeout timer and a client's cancel) and a hook
+			// added while the cancel runs: every hook runs exactly once
+			int rounds = 300;
+			java.util.concurrent.atomic.AtomicInteger twice = new java.util.concurrent.atomic.AtomicInteger();
+			for (int i = 0; i < rounds; i++) {
+				RequestMonitor r = new RequestMonitor(null, null);
+				java.util.concurrent.atomic.AtomicInteger n = new java.util.concurrent.atomic.AtomicInteger();
+				java.util.concurrent.atomic.AtomicInteger late = new java.util.concurrent.atomic.AtomicInteger();
+				for (int k = 0; k < 4; k++) {
+					r.addCancelHook(n::incrementAndGet);
+				}
+				java.util.concurrent.CountDownLatch go = new java.util.concurrent.CountDownLatch(1);
+				Thread[] ts = new Thread[3];
+				for (int k = 0; k < ts.length; k++) {
+					final boolean adder = k == 2;
+					ts[k] = new Thread(() -> {
+						try {
+							go.await();
+						}
+						catch (InterruptedException e) {
+							return;
+						}
+						if (adder) {
+							r.addCancelHook(late::incrementAndGet);
+						}
+						else {
+							r.cancel();
+						}
+					});
+					ts[k].start();
+				}
+				go.countDown();
+				for (Thread t : ts) {
+					try {
+						t.join();
+					}
+					catch (InterruptedException e) {
+						Thread.currentThread().interrupt();
+					}
+				}
+				if (n.get() != 4 || late.get() != 1) {
+					twice.incrementAndGet();
+				}
+			}
+			check("under concurrent cancels and a hook added meanwhile, every hook ran exactly " +
+				"once (" + rounds + " rounds)", twice.get() == 0);
 		}
 
 		private static void dbVersions() {
