@@ -149,6 +149,14 @@ final class RequestMonitor extends TaskMonitorAdapter {
 	@Override
 	public void cancel() {
 		super.cancel();
+		// a request that is parked in a lock wait (Waits.tryLock) is woken by an interrupt of its
+		// thread; in every other state the flag alone is the cancel (3.5, step 3)
+		synchronized (waitLock) {
+			if (waitThread != null) {
+				interruptSent = true;
+				waitThread.interrupt();
+			}
+		}
 		List<Runnable> mine;
 		synchronized (hookLock) {
 			if (cancelFired) {
@@ -161,6 +169,78 @@ final class RequestMonitor extends TaskMonitorAdapter {
 		for (Runnable h : mine) {
 			runHook(h);
 		}
+	}
+
+	// ---- the wait registration of PROTOCOL-3.md 3.5 (E3b): IDLE <-> WAITING under one mutex ----
+
+	/** Guards {@link #waitThread} and {@link #interruptSent}; nothing else is done under it. */
+	private final Object waitLock = new Object();
+	/** The request thread parked in {@code Waits.tryLock} (state WAITING), or null (IDLE). */
+	private Thread waitThread;
+	private boolean interruptSent;
+	/** Where a {@code cancelled} ended this request: {@code queued}, {@code lock_wait}, {@code running}. */
+	private volatile String cancelPhase;
+	/** Tells whether the request's change reached the program (a cancelled owner script), or null. */
+	private volatile java.util.function.BooleanSupplier appliedProbe;
+
+	/**
+	 * Step 1 (enter): under the mutex, refuses when this request is already cancelled and
+	 * otherwise registers the calling thread as the one to interrupt.
+	 *
+	 * @return false when the monitor is already cancelled (the lock must not be touched)
+	 */
+	boolean enterWait() {
+		synchronized (waitLock) {
+			if (isCancelled()) {
+				return false;
+			}
+			waitThread = Thread.currentThread();
+			interruptSent = false;
+			return true;
+		}
+	}
+
+	/**
+	 * Step 4 (leave), in a {@code finally}: under the same mutex, back to IDLE; if our interrupt was
+	 * sent, the thread's own interrupt flag is cleared before anything else runs on it (also an
+	 * interrupt that landed after {@code tryLock} returned). An interrupt that was not ours
+	 * ({@code shutdownNow}) is left alone.
+	 *
+	 * @return true when this request's own interrupt was sent during the wait
+	 */
+	boolean leaveWait() {
+		synchronized (waitLock) {
+			waitThread = null;
+			boolean mine = interruptSent;
+			interruptSent = false;
+			if (mine) {
+				Thread.interrupted();
+			}
+			return mine;
+		}
+	}
+
+	/** True while this request is registered in a lock wait (the test of a leaked registration). */
+	boolean inWait() {
+		synchronized (waitLock) {
+			return waitThread != null;
+		}
+	}
+
+	void cancelPhase(String phase) {
+		cancelPhase = phase;
+	}
+
+	String cancelPhase() {
+		return cancelPhase;
+	}
+
+	void appliedProbe(java.util.function.BooleanSupplier probe) {
+		appliedProbe = probe;
+	}
+
+	java.util.function.BooleanSupplier appliedProbe() {
+		return appliedProbe;
 	}
 
 	private static void runHook(Runnable h) {
