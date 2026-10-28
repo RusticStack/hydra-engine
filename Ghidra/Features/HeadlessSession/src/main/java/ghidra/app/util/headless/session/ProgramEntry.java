@@ -274,7 +274,9 @@ final class ProgramEntry implements Decompilers {
 	/** Lock acquisition, bounded and cancel-aware ({@link Waits}); records the holder. */
 	Lock acquire(boolean exclusive, long waitMs, Client c, String cmd) {
 		// a dead client's request still holds the lock and ignores cancel: tell at once (3.5)
-		Hold ab = firstAbandoned(!exclusive);
+		// (not for a thread that already holds this program: a re-entrant acquire by the abandoned
+		// holder's own script goes through its own hold)
+		Hold ab = holds.containsKey(Thread.currentThread()) ? null : firstAbandoned(!exclusive);
 		if (ab != null) {
 			throw abandonedBusy(ab, exclusive);
 		}
