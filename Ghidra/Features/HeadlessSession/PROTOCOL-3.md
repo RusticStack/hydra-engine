@@ -3447,6 +3447,8 @@ package it concerns. A1 is the amendment of revision 7 (E0, D62).
 | A6 | the kept corrupt forks of `crash-C` are nine, not twelve | X0 | X0 Tests | text only |
 | A7 | `characterization_tests.py --client {stock,install}` is an E0 amendment | E0 (W0 row), edit by the coordinator in W1 | E0 (amendment A7) | `characterization_tests.py --selftest`; the seven goldens `identical` at `--protocol 2` |
 | A8 | the grep gate of R0 is Z13a's `tests/test_claims.py` and the site claims gate of S1; X0 needs no manifest line for headered files | Z13a, S1 (W0); X0 | R0 Tests, Z13a Tests, X0 Manifest paragraph, section 8 (manifest bullet) | read of `gradle/support/ip.gradle` and of `gradle/hydra/headless.gradle`; the IP scan of the X0 tree finds no file without an IP |
+| A9 | E2a may add `forkAtomic` to `Advertised.java` and to the capability order list in `examples/contract_tests.py` (`gs_capability_order`): the sequence E1 then E2a for both files, one line each; E2 inserts `seal` before it | E1 then E2a (W1) | E2a Files, 8.1 rows of `Advertised.java` and `contract_tests.py` | `examples/check_ownership.py --package E2a` after this row |
+| A10 | E8 edits `LocalDatabaseItem.java` (A3) and also the daemon-side `dt_e8.py`; S1 owns `scripts/claims-gate.mjs` and `src/routes/embed/how-it-works.tsx` (A5); the repair policy stays off in production until E2/E5 pass `hydra.storage.repairRoots` | E8, S1 (W1, W0) | E8 Files, S1 Files | `daemon_tests.py e8_private_open`, the site claims gate |
 
 **What the IP check really does (A8).** The coordinator's premise was that `buildHeadless` does not list `examples/` files. It
 does scan them: `buildHeadless` depends on `assembleHeadless`, which depends on `assembleDistribution`, which depends on the
