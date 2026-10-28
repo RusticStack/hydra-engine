@@ -14,10 +14,11 @@ What Hydra Engine adds to Ghidra:
   - a headless-only build (gradle/hydra/headless.gradle, the buildHeadless task);
   - the repository's own documentation, assets and CI (README.md, NOTICE-HYDRA,
     CHANGELOG.md and the files in .github/);
-  - storage integrity after a process kill during a save, in Ghidra's own source: two changed
+  - storage integrity after a process kill during a save, in Ghidra's own source: three changed
     files, Ghidra/Framework/DB/src/main/java/db/buffers/LocalManagedBufferFile.java (the new
-    version file's header is written and synced before the file is renamed to its final name)
-    and Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/db/VersionedDatabase.java
+    version file's header is written and synced before the file is renamed to its final name),
+    Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/db/VersionedDatabase.java
+    and Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/local/LocalDatabaseItem.java
     (the newest version is checked when a database is opened), and one added class,
     Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/db/VersionFileCheck.java
     (header validation and the quarantine of an unreadable newest version).

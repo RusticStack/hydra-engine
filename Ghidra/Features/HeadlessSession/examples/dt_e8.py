@@ -53,16 +53,13 @@ Tests (all external injection, no test code in the release jar, D48):
   disposable tree opens at ``N-1``, logs a repair and quarantines (never deletes) the bad file; a
   tree that is not declared disposable answers ``corrupt_newest`` and **is not written** (tree hash
   before and after).
-* ``e8_private_open`` and ``e8_private_readonly`` (**baseline**, expected to fail until a hook is
-  added outside E8's files): the same fixture through the daemon on a fork. A fork is a
-  non-versioned (private) database, which opens through ``LocalDatabaseItem`` and
-  ``PrivateDatabase``/``Database``; PROTOCOL-3.md 8.1 gives E8 ``VersionedDatabase`` only, which a
-  fork never uses. Today they fail with the signature "Unrecognized file format". With the
-  three-line hook in ``LocalDatabaseItem`` (calling ``VersionFileCheck.repairOnOpen`` in the
-  constructor and ``requireIntact`` in the three ``open`` methods and ``openForUpdate``) the first
-  opens the fork at ``N-1`` and finds the bad file in quarantine, and the second answers
-  ``corrupt_newest`` for a read-only open, declared disposable or not, with the tree hash
-  unchanged. Both then leave BASELINE.
+* ``e8_private_open`` and ``e8_private_readonly``: the same fixture through the daemon on a fork. A
+  fork is a non-versioned (private) database, which opens through ``LocalDatabaseItem`` and
+  ``PrivateDatabase``/``Database``; ``LocalDatabaseItem`` is in E8's files (8.1) and calls
+  ``VersionFileCheck.repairOnOpen`` in its constructor and ``requireIntact`` in the three ``open``
+  methods and ``openForUpdate``. A writable fork in a declared disposable tree opens at ``N-1``
+  with the bad file in quarantine and a logged repair; a read-only open answers ``corrupt_newest``,
+  declared disposable or not, with the tree hash unchanged.
 
 Environment: ``E8_LMBF_SOURCE`` (path of the ``LocalManagedBufferFile.java`` to build the test-only
 copy from; default this checkout's), ``E8_KILLS``, ``E8_PAUSE_MS`` (default 3000), ``E8_SEED``.
@@ -482,7 +479,10 @@ def t_window_control(c):
     what = f"newest db.{o['newest']}.gbf first8={o['first8']}, reopen={o['reopen'].get('error', 'ok')}"
     dt.check(not o["header_valid"] and o["first8"] == "00" * 8,
              "the harness did not reproduce the zero header: " + what)
-    dt.check(not o["reopen"]["ok"] and "Unrecognized file format" in o["reopen"]["error"],
+    # without E8's open-time check the answer is "Unrecognized file format"; with it (the installed
+    # jar) the same state is reported as corrupt_newest. Either way the project does not open.
+    err = o["reopen"].get("error", "")
+    dt.check(not o["reopen"]["ok"] and ("Unrecognized file format" in err or "corrupt_newest" in err),
              "the zero header did not make the project unopenable: " + what)
     return "reproduced: " + what
 
@@ -541,6 +541,10 @@ def t_kill_loop(c):
     stats = {"kills": 0, "no_trigger": 0, "zero_header": 0, "unopenable": 0, "wrong_state": 0,
              "landed": 0, "not_landed": 0, "before_rename": 0, "after_rename": 0}
     notes, gaps, pre_gaps = [], [], []
+    # per timing phase: "send" starts the timer when the save request is sent (kills land before and
+    # after the rename), "trigger" when db.N+1.gbf first appears (every kill is after the rename)
+    phases = {p: {"kills": 0, "before_rename": 0, "after_rename": 0, "zero_header": 0}
+              for p in ("send", "trigger")}
     calibrated = None
     base_count = None
     for it in range(kills + 1):
@@ -600,6 +604,7 @@ def t_kill_loop(c):
         ledger = (addr, acked, inflight)
         pid = d.read_endpoint()["pid"]
         by_send = mode == "send" or (mode == "mixed" and it % 2 == 1)
+        phase = phases["send" if by_send and calibrated is not None else "trigger"]
         ts = time.perf_counter()
         rid = s.send("save", wait=120000)
         if by_send and calibrated is not None:
@@ -616,23 +621,31 @@ def t_kill_loop(c):
                     pass
         kill_now(c, d, pid)
         stats["kills"] += 1
-        stats["after_rename" if (dbdir / ("db.%d.gbf" % (n0 + 1))).exists() else "before_rename"] += 1
+        side = "after_rename" if (dbdir / ("db.%d.gbf" % (n0 + 1))).exists() else "before_rename"
+        stats[side] += 1
+        phase["kills"] += 1
+        phase[side] += 1
         # the oracle (K2): every final-named version file has its magic
         for n, p in versions(dbdir).items():
             if not has_magic(p):
                 stats["zero_header"] += 1
+                phase["zero_header"] += 1
                 notes.append(f"it{it}: db.{n}.gbf has no valid header "
                              f"({open(p, 'rb').read(8).hex()}, {p.stat().st_size} bytes)")
     c.timings["e8_kill_loop calibration (ms from the version file to the answer)"] = \
         round(calibrated or 0, 2)
-    (c.work / "e8_kill_loop.json").write_text(json.dumps({"stats": stats, "notes": notes,
+    (c.work / "e8_kill_loop.json").write_text(json.dumps({"stats": stats, "phases": phases,
+                                                         "notes": notes,
                                                          "calibration_ms": calibrated}, indent=1))
+    ph = "; ".join("%s-timed: %d kills (%d before, %d after the rename, %d zero headers)" % (
+        k, v["kills"], v["before_rename"], v["after_rename"], v["zero_header"])
+        for k, v in phases.items() if v["kills"])
     msg = (f"{stats['kills']} kills, mode {mode} ({stats['before_rename']} before and "
            f"{stats['after_rename']} after the rename; delay 0..{calibrated and round(calibrated, 1)} ms "
            f"after the new version file appeared, or over the save; {stats['no_trigger']} without trigger): "
            f"{stats['zero_header']} zero headers, {stats['unopenable']} unopenable, "
            f"{stats['wrong_state']} wrong states; the save in flight had landed in "
-           f"{stats['landed']} and not in {stats['not_landed']}")
+           f"{stats['landed']} and not in {stats['not_landed']} [{ph}]")
     dt.check(stats["zero_header"] == 0 and stats["unopenable"] == 0 and stats["wrong_state"] == 0,
              msg + "; " + "; ".join(notes[:4]))
     return msg
@@ -871,7 +884,7 @@ def t_repair_open(c):
 
 def t_private_open(c):
     """A fork through the daemon: db.N+1.gbf made zero-header next to an intact db.N.gbf. The fork
-    is a private database; its open path has no VersionFileCheck hook inside E8's files."""
+    is a private database; it opens through LocalDatabaseItem, which carries the VersionFileCheck hook."""
     gpr = c.copy_fixture("e8priv")
     dbdir = program_db_dir(gpr)
     n, p = newest(dbdir)
@@ -896,7 +909,12 @@ def t_private_open(c):
         if d.jvm_alive():
             d.stop(force=True)
     dt.check((dbdir / ("db.%d.gbf.quarantine" % (n + 1))).is_dir(), "no quarantine folder")
-    return f"the fork opened at db.{n}.gbf; db.{n + 1}.gbf is in quarantine"
+    log = pathlib.Path(c.state) / "e8priv.log"
+    text = log.read_text(errors="replace") if log.exists() else ""
+    dt.check(f"db.{n + 1}.gbf has no valid header (interrupted save); moved to" in text and
+             f"db.{n}.gbf is the newest version again" in text,
+             f"the repair is not in the daemon log {log}")
+    return f"the fork opened at db.{n}.gbf; db.{n + 1}.gbf is in quarantine; repair logged"
 
 
 def t_private_readonly(c):
@@ -951,9 +969,4 @@ TESTS = {
     "e8_private_readonly": t_private_readonly,
 }
 
-BASELINE = {
-    "e8_private_open": "a fork (a private database) opens through PrivateDatabase/Database, which "
-                       "have no VersionFileCheck hook (E8 owns VersionedDatabase only, 8.1)",
-    "e8_private_readonly": "the same open path: a read-only open of a zero-header fork reports "
-                           "Unrecognized file format, not corrupt_newest",
-}
+BASELINE = {}   # e8_private_open and e8_private_readonly are enforced since LocalDatabaseItem is in E8's ownership (8.1)
