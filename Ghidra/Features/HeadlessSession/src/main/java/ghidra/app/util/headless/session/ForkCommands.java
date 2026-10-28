@@ -21,6 +21,7 @@ import static ghidra.app.util.headless.session.Requests.cancelled;
 import static ghidra.app.util.headless.session.Requests.waitMs;
 
 import java.io.*;
+import java.nio.file.Files;
 import java.util.*;
 import java.util.concurrent.locks.Lock;
 
@@ -38,13 +39,88 @@ final class ForkCommands {
 
 	private final Session s;
 
+	private static boolean registered;
+
 	ForkCommands(Session s) {
 		this.s = s;
-		// E2a: the publish is atomic and retryable. The name is declared by Advertised (E1's file);
-		// until it is, there is nothing to enable.
-		if (Advertised.CAPABILITIES.contains("forkAtomic")) {
-			Advertised.capability("forkAtomic", 1);
+		// E2a: the publish is atomic and retryable (the name is declared by Advertised)
+		Advertised.capability("forkAtomic", 1);
+		// E2: the fork report (cost, warnings, purpose), the backup manifest, the sealing command
+		Advertised.capability("forkReport", 1);
+		Advertised.capability("backup", 1);
+		Advertised.capability("seal", 1);
+		synchronized (ForkCommands.class) {
+			if (!registered) {
+				registered = true;
+				// the request validation the command itself runs (3.5): one method, two callers
+				Preflight.register("fork_project", ForkCommands::validate);
+				// D42/A10: the daemon says which trees are writable disposable forks
+				ghidra.framework.store.db.VersionFileCheck.setRepairPolicy(ProjectFork::repairable);
+			}
 		}
+	}
+
+	/** The purposes, verify levels and fields of a protocol 3 {@code fork_project} (3.4). */
+	record Spec(String purpose, boolean open, String verify, String owner, String lineage,
+			Long generation, Long base) {
+		boolean backup() {
+			return purpose.equals("backup");
+		}
+
+		boolean disposable() {
+			return purpose.equals("fork") || purpose.equals("view");
+		}
+
+		/** The sidecar state a finished fork of this purpose ends in (D41). */
+		String completeState() {
+			return purpose.equals("generation") ? ProjectFork.STATE_CANDIDATE
+					: ProjectFork.STATE_COMPLETE;
+		}
+
+		static final Spec V2 = new Spec("fork", true, "hash", null, null, null, null);
+	}
+
+	/**
+	 * The validation of a protocol 3 {@code fork_project} request, run by the command and (through
+	 * {@link Preflight}) by the scheduler before the request waits. Throws {@code bad_request}
+	 * with {@code details:{field, allowed[]}} for a closed field.
+	 */
+	static void validate(String cmd, JsonObject req) {
+		spec(req);
+	}
+
+	/** The fields of a request: read only on a protocol 3 connection (3.1), else the defaults. */
+	static Spec specOf(Client c, JsonObject req) {
+		return c.v3() ? spec(req) : Spec.V2;
+	}
+
+	/** Parses and checks the v3 fields; the one place that knows them. */
+	static Spec spec(JsonObject req) {
+		String purpose = Json.str(req, "purpose", "fork");
+		if (!ProjectFork.PURPOSES.contains(purpose)) {
+			throw SessionException.badRequest(true,
+				"purpose must be one of " + ProjectFork.PURPOSES, "purpose", ProjectFork.PURPOSES);
+		}
+		String verify = Json.str(req, "verify", "hash");
+		if (!List.of("none", "size", "hash").contains(verify)) {
+			throw SessionException.badRequest(true, "verify must be none, size or hash", "verify",
+				List.of("none", "size", "hash"));
+		}
+		boolean open = Json.bool(req, "open", true);
+		if (purpose.equals("backup") && open) {
+			throw SessionException.badRequest(true,
+				"a backup is not registered as an open project: pass \"open\":false", "open",
+				List.of("false"));
+		}
+		String owner = Json.str(req, "owner", null);
+		if (purpose.equals("view") && (owner == null || owner.isBlank() || owner.length() > 128)) {
+			throw SessionException.badRequest(true,
+				"a view names the agent that owns it: \"owner\" (1 to 128 characters)", "owner",
+				null);
+		}
+		return new Spec(purpose, open, verify, owner, Json.str(req, "lineage", null),
+			Json.has(req, "generation") ? Json.num(req, "generation", 0, 0, 1L << 53) : null,
+			Json.has(req, "base") ? Json.num(req, "base", 0, 0, 1L << 53) : null);
 	}
 
 	/**
@@ -58,6 +134,7 @@ final class ForkCommands {
 	 */
 	JsonElement forkProject(Client c, JsonObject req, RequestMonitor m) {
 		long t0 = System.nanoTime();
+		Spec spec = specOf(c, req); // before any work: a v3 request with a bad field fails here
 		String srcKey = Json.str(req, "project", c.activeProject);
 		if (srcKey == null) {
 			throw new SessionException(SessionException.BAD_REQUEST,
@@ -216,9 +293,11 @@ final class ForkCommands {
 		if (req.has("wait")) {
 			open.add("wait", req.get("wait"));
 		}
-		JsonObject info = (JsonObject) s.projectCmds.openProject(c, open);
-		JsonObject out = Json.of("project", info.get("id"), "path", destDir.getPath(), "gpr",
-			destGpr.getPath(), "name", name, "writable", writable);
+		boolean register = specOf(c, req).open();
+		JsonObject info = register ? (JsonObject) s.projectCmds.openProject(c, open) : null;
+		JsonObject out = Json.of("project", info == null ? null : info.get("id"), "path",
+			destDir.getPath(), "gpr", destGpr.getPath(), "name", name, "writable",
+			register && writable);
 		for (String k : List.of("source", "baseRevision", "mode", "method", "cloned", "clonedBy",
 			"bytes", "files", "copyMs", "freeSpaceUsedBytes", "depth")) {
 			if (sc.has(k)) {
@@ -229,7 +308,16 @@ final class ForkCommands {
 			ProjectFork.sidecar(new ProjectResolver.Resolved(destDir, name)).getPath());
 		out.addProperty("ms", (System.nanoTime() - t0) / 1_000_000);
 		out.addProperty("replayed", true);
-		out.add("info", info);
+		if (c.v3()) {
+			for (String k : List.of("purpose", "state", "manifest")) {
+				if (sc.has(k)) {
+					out.add(k, sc.get(k));
+				}
+			}
+		}
+		if (info != null) {
+			out.add("info", info);
+		}
 		return out;
 	}
 
@@ -261,11 +349,13 @@ final class ForkCommands {
 			ProjectResolver.Resolved r, ProjectEntry src, String canonical, String mode,
 			boolean writable, long limit, File destDir, String name, File destGpr, String id,
 			String rk, java.util.concurrent.atomic.AtomicReference<ProjectFork.Staged> staging) {
+		Spec spec = specOf(c, req);
 		ProjectLocator locator = new ProjectLocator(r.dir().getPath(), r.name());
 		Lock held = null;
 		ProjectFork.Cost cost;
 		ProjectFork.Staged copied;
 		String baseRevision;
+		ProjectBackup.Verified verified = null;
 		JsonObject parent = ProjectFork.readSidecar(r);
 		try {
 			if (src != null && src.writable()) {
@@ -340,6 +430,23 @@ final class ForkCommands {
 				m.setMessage("forking " + r.name() + " (" + cost.files() + " files)");
 				copied = ProjectFork.stage(r, destDir, name, id, rk, m);
 				staging.set(copied);
+				if (spec.backup()) {
+					// a backup is compared with its source after the copy (hash: every file of both
+					// sides); a failed verify is a failed backup, and the staged copy is removed
+					m.setMessage("verifying the backup of " + r.name() + " (" + spec.verify() + ")");
+					verified = ProjectBackup.verifyCopy(r, copied.dir().toPath(), name,
+						spec.verify(), m);
+					if (!verified.ok()) {
+						JsonArray mm = new JsonArray();
+						verified.mismatches().forEach(mm::add);
+						throw new SessionException(SessionException.FAILED,
+							"the backup did not verify: " + mm.size() + " file(s) differ between " +
+								"the copy and the source; the copy was removed and no backup.json " +
+								"was written",
+							Json.of("verify", Json.of("ok", false, "level", spec.verify(),
+								"mismatches", mm)));
+					}
+				}
 				String after = Revision.of(r);
 				if (!after.equals(baseRevision)) {
 					List<String> changed = Revision.changed(filesBefore, Revision.files(r));
@@ -381,7 +488,8 @@ final class ForkCommands {
 		int depth = parent == null ? 1
 				: (parent.has("depth") ? parent.get("depth").getAsInt() : 1) + 1;
 		JsonObject sidecar = Json.of("format", ProjectFork.SIDECAR_FORMAT, "kind",
-			"ghidra-session-fork", "source", source, "baseRevision", baseRevision, "createdAt",
+			ProjectFork.SIDECAR_KIND, "purpose", spec.purpose(), "disposable", spec.disposable(),
+			"source", source, "baseRevision", baseRevision, "createdAt",
 			System.currentTimeMillis(), "created", java.time.Instant.now().toString(), "by",
 			c.identity(), "mode", mode, "method", cost.cloneCapable() ? "clone" : "copy",
 			"cloned", cloned, "clonedBy", clonedBy, "bytes", cost.bytes(), "files",
@@ -390,9 +498,39 @@ final class ForkCommands {
 		if (rk != null) {
 			sidecar.addProperty("rk", rk);
 		}
+		if (spec.purpose().equals("view")) {
+			sidecar.addProperty("owner", spec.owner());
+		}
+		if (spec.lineage() != null) {
+			sidecar.addProperty("lineage", spec.lineage());
+		}
+		if (spec.base() != null) {
+			sidecar.addProperty("base", spec.base());
+		}
+		List<String> extras = List.of();
+		JsonObject manifestReply = null;
+		JsonObject marker = null;
 		try {
-			// the .rep, the sidecar "publishing", the .gpr (the commit point), the sidecar "complete"
-			ProjectFork.publish(copied, destDir, name, sidecar, ProjectFork.STATE_COMPLETE);
+			if (spec.backup()) {
+				// the manifest and the seal marker are staged beside the project and move into
+				// place before the .gpr, so that a published backup always has both (3.4)
+				JsonObject manifest = backupManifest(c, req, r, src, name, spec, verified, cost,
+					copied, baseRevision);
+				String sha = ProjectBackup.write(copied.dir().toPath(), manifest);
+				marker = Json.of("format", 1, "kind", "ghidra-session-seal", "name", name,
+					"revision", baseRevision, "layoutSha256", Seals.layoutOf(verified.files()),
+					"manifestSha256", sha, "sealedAt", java.time.Instant.now().toString(), "by",
+					Json.of("client", c.name, "harness", c.harness));
+				Files.writeString(copied.dir().toPath().resolve(Seals.MARKER),
+					Json.GSON.toJson(marker), java.nio.charset.StandardCharsets.UTF_8);
+				extras = List.of(ProjectBackup.FILE, Seals.MARKER);
+				manifestReply = Json.of("path", new File(destDir, ProjectBackup.FILE).getPath(),
+					"sha256", sha, "verified", true, "files", verified.files().size());
+				sidecar.add("manifest", manifestReply);
+			}
+			// the .rep, the sidecar "publishing", the extras, the .gpr (the commit point), the
+			// sidecar in its final state
+			ProjectFork.publish(copied, destDir, name, sidecar, spec.completeState(), extras);
 		}
 		catch (ProjectFork.RaceLost e) {
 			throw existsConflict(c.v3(), name, destDir, destGpr, "exists");
@@ -401,24 +539,131 @@ final class ForkCommands {
 			throw new SessionException(SessionException.FAILED, "fork failed: " + e.getMessage(),
 				null, e);
 		}
+		catch (IllegalArgumentException e) {
+			throw new SessionException(SessionException.FAILED,
+				"the backup manifest cannot be written: " + e.getMessage(), null, e);
+		}
+		if (marker != null) {
+			ProjectBackup.freeze(new File(destDir, ProjectBackup.FILE).toPath());
+			Seals.recordRegistry(fr, marker); // the third record of D66; best effort
+		}
 		Msg.info(s, c.label() + " forked " + r.gpr() + " (revision " + baseRevision + ") to " +
 			destGpr + ": " + cost.bytes() + " bytes, " + cost.files() + " files, " +
 			(cost.cloneCapable() ? "clone" : "copy") + " in " + copied.ms() + " ms, " + consumed +
-			" bytes of free space used");
-		JsonObject open = Json.of("path", destGpr.getPath(), "writable", writable);
-		if (req.has("wait")) {
-			open.add("wait", req.get("wait"));
+			" bytes of free space used, purpose " + spec.purpose());
+		JsonObject info = null;
+		if (spec.open()) {
+			JsonObject open = Json.of("path", destGpr.getPath(), "writable", writable);
+			if (req.has("wait")) {
+				open.add("wait", req.get("wait"));
+			}
+			info = (JsonObject) s.projectCmds.openProject(c, open);
 		}
-		JsonObject info = (JsonObject) s.projectCmds.openProject(c, open);
-		JsonObject out = Json.of("project", info.get("id"), "path", destDir.getPath(), "gpr",
-			destGpr.getPath(), "name", name, "writable", writable, "source", source,
-			"baseRevision", baseRevision, "mode", mode, "method",
-			cost.cloneCapable() ? "clone" : "copy", "cloned", cloned, "clonedBy", clonedBy,
-			"bytes", cost.bytes(),
-			"files", cost.files(), "copyMs", copied.ms(), "freeSpaceUsedBytes", consumed,
-			"depth", depth, "sidecar", ProjectFork.sidecar(fr).getPath(), "ms",
-			(System.nanoTime() - t0) / 1_000_000);
-		out.add("info", info);
+		JsonObject out = Json.of("project", info == null ? null : info.get("id"), "path",
+			destDir.getPath(), "gpr", destGpr.getPath(), "name", name, "writable",
+			info != null && writable, "source", source, "baseRevision", baseRevision, "mode", mode,
+			"method", cost.cloneCapable() ? "clone" : "copy", "cloned", cloned, "clonedBy",
+			clonedBy, "bytes", cost.bytes(), "files", cost.files(), "copyMs", copied.ms(),
+			"freeSpaceUsedBytes", consumed, "depth", depth, "sidecar",
+			ProjectFork.sidecar(fr).getPath(), "ms", (System.nanoTime() - t0) / 1_000_000);
+		if (c.v3()) { // the fork report (conditional C7, 3.4): additive keys for a v3 client
+			out.addProperty("purpose", spec.purpose());
+			out.add("cost", cost.json());
+			out.add("warnings", warnings(spec, cost, copied));
+			if (manifestReply != null) {
+				out.add("manifest", manifestReply);
+			}
+			out.addProperty("sidecarState",
+				copied.keep() ? ProjectFork.STATE_PUBLISHING : spec.completeState());
+		}
+		if (info != null) {
+			out.add("info", info);
+		}
 		return out;
+	}
+
+	/**
+	 * What a client should know about the copy it got (3.4): a full copy is not a block clone, a
+	 * clone on the same volume shares blocks with its source, and a fork whose sidecar could not
+	 * be finished (a handle holder) is complete but still says {@code publishing} until the next
+	 * sweep of its folder.
+	 */
+	private static JsonArray warnings(Spec spec, ProjectFork.Cost cost, ProjectFork.Staged copied) {
+		JsonArray w = new JsonArray();
+		if (!cost.cloneCapable()) {
+			w.add("this is a full copy of " + cost.bytes() + " bytes in " + cost.files() +
+				" files, not a block clone (source file system " + cost.sourceFs() +
+				", destination " + cost.destFs() + (cost.sameVolume() ? ", one volume"
+						: ", another volume") +
+				"); forking onto a ReFS volume next to the source clones");
+		}
+		if (spec.backup()) {
+			if (cost.cloneCapable()) {
+				w.add("a block clone shares blocks with its source: it protects against a bad " +
+					"commit, not against loss of the volume");
+			}
+			else if (cost.sameVolume()) {
+				w.add("this backup is on the same volume as its source: it protects against a " +
+					"bad commit, not against loss of the volume");
+			}
+		}
+		if (copied.keep()) {
+			w.add("the fork is complete (its .gpr is in place) but its sidecar still says " +
+				"\"publishing\": something held the file; the next fork_project under this " +
+				"folder finishes it");
+		}
+		return w;
+	}
+
+	/** The manifest {@code backup.json} of a verified backup (3.4), with its {@code selfSha256}. */
+	private JsonObject backupManifest(Client c, JsonObject req, ProjectResolver.Resolved r,
+			ProjectEntry src, String name, Spec spec, ProjectBackup.Verified verified,
+			ProjectFork.Cost cost, ProjectFork.Staged copied, String baseRevision)
+			throws IOException {
+		JsonObject format = src != null ? ProjectFormat.of(src) : ProjectFormat.ofClosed(r);
+		String id = Json.str(req, "id", null);
+		if (id == null) {
+			id = ProjectBackup.newId(baseRevision, Json.str(req, "reason", "backup"));
+		}
+		else if (!id.matches("[A-Za-z0-9._-]{1,128}")) {
+			throw SessionException.badRequest(true, "id: letters, digits, . _ - (1 to 128)", "id",
+				null);
+		}
+		JsonObject sourceJ = Json.of("gpr", r.gpr().getPath(), "name", r.name(), "revision",
+			baseRevision);
+		if (spec.lineage() != null) {
+			sourceJ.addProperty("lineage", spec.lineage());
+		}
+		if (spec.generation() != null) {
+			sourceJ.addProperty("generation", spec.generation());
+		}
+		JsonObject dbv = new JsonObject();
+		if (DbVersions.program() >= 0) {
+			dbv.addProperty("program", DbVersions.program());
+		}
+		if (DbVersions.dataTypes() != null) {
+			dbv.addProperty("dataTypes", DbVersions.dataTypes());
+		}
+		JsonObject manifest = Json.of("format", ProjectBackup.FORMAT, "kind", ProjectBackup.KIND,
+			"writer", "engine", "id", id, "purpose", Json.str(req, "reason", "backup"),
+			"createdAt", java.time.Instant.now().truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
+					.toString(),
+			"createdBy", Json.of("client", c.name, "harness", c.harness), "source", sourceJ,
+			"engine", Json.of("hydraVersion", HydraInfo.hydraVersion(), "ghidraVersion",
+				ghidra.framework.Application.getApplicationVersion(), "dbVersions", dbv),
+			"stored", ProjectFormat.stored(format));
+		JsonArray files = new JsonArray();
+		verified.files().forEach(f -> files.add(f.json()));
+		manifest.add("files", files);
+		manifest.addProperty("filesetSha256", ProjectBackup.filesetSha(verified.files()));
+		manifest.add("copy",
+			Json.of("method", cost.cloneCapable() ? "clone" : "copy", "sameVolume",
+				cost.sameVolume(), "sourceFileSystem", cost.sourceFs(), "destinationFileSystem",
+				cost.destFs(), "independent", !cost.sameVolume(), "ms", copied.ms()));
+		manifest.add("verify", Json.of("level", spec.verify(), "ok", true, "at",
+			java.time.Instant.now().truncatedTo(java.time.temporal.ChronoUnit.SECONDS).toString(),
+			"sourceRevisionAfter", baseRevision));
+		ProjectBackup.seal(manifest);
+		return manifest;
 	}
 }

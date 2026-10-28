@@ -468,6 +468,71 @@ final class UpgradeCache {
 		}
 	}
 
+	/**
+	 * {@code prepare_upgrade}: finishes the build of the upgraded copy of every older-format
+	 * program of the project and answers per program ({@code current}: nothing to do;
+	 * {@code ready}: the copy was there; {@code built}: this call built or joined the build;
+	 * {@code failed}). One build per program runs at a time ({@link #startBuild}), so concurrent
+	 * calls join it. Held: the project's shared lock.
+	 */
+	JsonObject prepare(ProjectEntry p, RequestMonitor m) {
+		long t0 = System.nanoTime();
+		JsonArray out = new JsonArray();
+		if (!enabled()) {
+			return Json.of("project", p.id, "enabled", false, "programs", out, "ms", 0);
+		}
+		java.util.ArrayDeque<DomainFolder> todo = new java.util.ArrayDeque<>();
+		todo.add(p.data().getRootFolder());
+		while (!todo.isEmpty()) {
+			DomainFolder f = todo.poll();
+			for (DomainFile df : f.getFiles()) {
+				if (!Program.class.isAssignableFrom(df.getDomainObjectClass())) {
+					continue;
+				}
+				long t1 = System.nanoTime();
+				JsonObject o = Json.of("path", df.getPathname());
+				try {
+					Plan plan = plan(p, df);
+					if (plan == null) {
+						Json.put(o, "state", "current");
+					}
+					else if (isReady(plan)) {
+						Json.put(o, "state", "ready");
+					}
+					else {
+						Start st = startBuild(plan);
+						if (st == null) {
+							Json.put(o, "state", "failed");
+							Json.put(o, "error", "the session is shutting down");
+						}
+						else {
+							boolean ok = await(st.build(), m);
+							Json.put(o, "state", ok ? "built" : "failed");
+							Json.put(o, "startedHere", st.started());
+							if (!ok) {
+								Json.put(o, "error", st.build().error);
+							}
+						}
+					}
+				}
+				catch (CancelledException e) {
+					throw Requests.cancelled(m);
+				}
+				catch (IOException | RuntimeException e) {
+					Json.put(o, "state", "failed");
+					Json.put(o, "error", e.getClass().getSimpleName() + ": " + e.getMessage());
+				}
+				Json.put(o, "ms", (System.nanoTime() - t1) / 1_000_000);
+				out.add(o);
+			}
+			for (DomainFolder sub : f.getFolders()) {
+				todo.add(sub);
+			}
+		}
+		return Json.of("project", p.id, "enabled", true, "programs", out, "ms",
+			(System.nanoTime() - t0) / 1_000_000);
+	}
+
 	/** The build of the plan in this daemon, or null. */
 	synchronized Build build(Plan plan) {
 		return builds.get(plan.id());
@@ -976,67 +1041,102 @@ final class UpgradeCache {
 	// ---- older format? -------------------------------------------------------------------------
 
 	/**
-	 * Why the program needs an upgrade, or null when it is current, read from its database
-	 * without opening the program: its stored program database version and language version
-	 * (what {@code ProgramDB} checks first; a manager's own schema change comes with a new
-	 * program database version).
+	 * What a program's database header says about its format, read without opening the program
+	 * (PROTOCOL-3.md 3.4, {@code format}). {@code readable} is false when the header could not be
+	 * read at all (an I/O error, a file that is not a program database): the caller must treat
+	 * that as <b>unknown</b>, never as current. {@code programDb} and {@code dataTypeDb} are the
+	 * stored versions ({@code dataTypeDb} null when the data type manager table is absent);
+	 * {@code languageReason} is why the language is older than the installed one, or null.
 	 */
-	static String olderFormat(ProjectData pd, DomainFile df) {
+	record Stored(boolean readable, int programDb, Integer dataTypeDb, String languageReason,
+			String error) {
+	}
+
+	/**
+	 * Reads the stored versions of a program without opening it: its program database version and
+	 * language version ({@code ProgramDB} checks them first; a manager's own schema change comes
+	 * with a new program database version) and the data type manager's version. Never throws.
+	 */
+	static Stored readStored(ProjectData pd, DomainFile df) {
 		if (!(pd instanceof DefaultProjectData dpd) ||
 			!(dpd.getPrivateFileSystem() instanceof LocalFileSystem fs)) {
-			return null;
+			return new Stored(false, -1, null, null, "not a local project");
 		}
 		DBHandle dbh = null;
 		try {
 			FolderItem item = fs.getItem(df.getParent().getPathname(), df.getName());
 			if (!(item instanceof LocalDatabaseItem dbItem)) {
-				return null;
+				return new Stored(false, -1, null, null, "not a database item");
 			}
 			dbh = new DBHandle(dbItem.open());
 			if (dbh.getTable("Program") == null) {
-				return null;
+				return new Stored(false, -1, null, null, "no Program table");
 			}
 			DBStringMapAdapter map = new DBStringMapAdapter(dbh, "Program", false);
 			int stored = parseInt(map.get("DB Version"), 1);
-			if (stored < CURRENT_DB_VERSION) {
-				return "program database version " + stored + ", this Ghidra " + CURRENT_DB_VERSION;
+			Integer dtm = null;
+			if (dbh.getTable("DataTypeManager") != null) {
+				DBStringMapAdapter dm = new DBStringMapAdapter(dbh, "DataTypeManager", false);
+				dtm = parseInt(dm.get("DB Version"), 1);
 			}
-			String langId = map.get("Language ID");
-			if (langId == null) {
-				return "old language name format";
-			}
-			int major = 1;
-			int minor = 0;
-			String lv = map.get("Language Version");
-			if (lv != null) {
-				String[] parts = lv.split("\\.");
-				major = parseInt(parts[0], 1);
-				minor = parts.length > 1 ? parseInt(parts[1], 0) : 0;
-			}
-			Language lang;
-			try {
-				lang = DefaultLanguageService.getLanguageService()
-						.getLanguage(new LanguageID(langId));
-			}
-			catch (LanguageNotFoundException e) {
-				return null; // a language translation; the normal open reports what it can do
-			}
-			if (lang.getVersion() != major || lang.getMinorVersion() != minor) {
-				return "language " + langId + " version " + major + "." + minor + ", this Ghidra " +
-					lang.getVersion() + "." + lang.getMinorVersion();
-			}
-			return null;
+			String lang = stored < CURRENT_DB_VERSION ? null : languageReason(map);
+			return new Stored(true, stored, dtm, lang, null);
 		}
 		catch (IOException | RuntimeException e) {
 			Msg.debug(UpgradeCache.class, "upgrade cache: cannot read the version of " +
 				df.getPathname() + ": " + e);
-			return null;
+			return new Stored(false, -1, null, null, e.getClass().getSimpleName() + ": " +
+				e.getMessage());
 		}
 		finally {
 			if (dbh != null) {
 				dbh.close();
 			}
 		}
+	}
+
+	private static String languageReason(DBStringMapAdapter map) throws IOException {
+		String langId = map.get("Language ID");
+		if (langId == null) {
+			return "old language name format";
+		}
+		int major = 1;
+		int minor = 0;
+		String lv = map.get("Language Version");
+		if (lv != null) {
+			String[] parts = lv.split("\\.");
+			major = parseInt(parts[0], 1);
+			minor = parts.length > 1 ? parseInt(parts[1], 0) : 0;
+		}
+		Language lang;
+		try {
+			lang = DefaultLanguageService.getLanguageService().getLanguage(new LanguageID(langId));
+		}
+		catch (LanguageNotFoundException e) {
+			return null; // a language translation; the normal open reports what it can do
+		}
+		if (lang.getVersion() != major || lang.getMinorVersion() != minor) {
+			return "language " + langId + " version " + major + "." + minor + ", this Ghidra " +
+				lang.getVersion() + "." + lang.getMinorVersion();
+		}
+		return null;
+	}
+
+	/**
+	 * Why the program needs an upgrade, or null when it is current <b>or cannot be told</b> (the
+	 * upgrade cache's own rule: an unreadable header is not a reason to build a copy). The upgrade
+	 * gate does not use this: it asks {@link #readStored} and treats unreadable as unknown.
+	 */
+	static String olderFormat(ProjectData pd, DomainFile df) {
+		Stored st = readStored(pd, df);
+		if (!st.readable()) {
+			return null;
+		}
+		if (st.programDb() < CURRENT_DB_VERSION) {
+			return "program database version " + st.programDb() + ", this Ghidra " +
+				CURRENT_DB_VERSION;
+		}
+		return st.languageReason();
 	}
 
 	private static int parseInt(String s, int dflt) {
