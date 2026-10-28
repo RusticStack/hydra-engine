@@ -1,0 +1,201 @@
+name: Upstream sync
+
+# Brings upstream Ghidra's master into Hydra Engine: a MERGE, never a rebase (.github/CONTRIBUTING.md,
+# "Upstream sync"). Weekly it checks whether upstream moved; if it did it merges upstream/master into a
+# new branch sync/upstream-YYYY-MM-DD cut from main, builds the headless install, runs the three session
+# suites and the golden diff, and opens a pull request with the upstream shortlog and a file-overlap
+# report. It never pushes to main and never merges the pull request: a person does that after reading it.
+#
+# The job FAILS when upstream changed a patched core file listed in .github/hydra-touched-files.txt,
+# or when the merge conflicts: those are merged by hand.
+#
+#   gh workflow run upstream-sync.yml -f dry_run=true     # does everything except push and open the PR
+#
+# A dry run needs no write access; the report is in the job summary.
+
+on:
+  schedule:
+    - cron: '23 5 * * 3'   # Wednesdays; a default, the cadence is in CONTRIBUTING.md ("Cadence and support")
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run: merge, build, test and report, but push nothing and open no pull request'
+        type: boolean
+        default: true
+      upstream_ref:
+        description: 'Upstream ref to merge'
+        type: string
+        default: 'master'
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    name: merge, build, test, report (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    env:
+      GHIDRA_INSTALL: ${{ github.workspace }}/build/dist/headless
+      UPSTREAM_REF: ${{ inputs.upstream_ref || 'master' }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Guard script test
+        run: bash .github/scripts/test-upstream-sync-report.sh
+
+      - name: Fetch upstream and decide whether there is anything to merge
+        id: up
+        run: |
+          git remote add upstream https://github.com/NationalSecurityAgency/ghidra.git
+          git fetch --no-tags upstream "$UPSTREAM_REF:refs/remotes/upstream/sync-target"
+          n=$(git rev-list --count HEAD..upstream/sync-target)
+          echo "new upstream commits: $n"
+          echo "count=$n" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Report, then merge (never rebase)
+        id: merge
+        if: steps.up.outputs.count != '0'
+        run: |
+          git config user.name  'KelpHect'
+          git config user.email 'kellhect@gmail.com'
+          base=$(git merge-base HEAD upstream/sync-target)
+          git switch -c "sync/upstream-${{ steps.up.outputs.date }}"
+          # The report is made before the merge, while HEAD is still our side.
+          set +e
+          bash .github/scripts/upstream-sync-report.sh "$base" upstream/sync-target > "$RUNNER_TEMP/report.md"
+          echo "guard=$?" >> "$GITHUB_OUTPUT"
+          set -e
+          cat "$RUNNER_TEMP/report.md" >> "$GITHUB_STEP_SUMMARY"
+          if ! git merge --no-ff -m "Merge upstream Ghidra master $(git rev-parse --short upstream/sync-target)" upstream/sync-target; then
+            echo "::error::the merge conflicts; resolve it by hand (CONTRIBUTING.md, What conflicts)"
+            git diff --name-only --diff-filter=U | sed 's/^/- conflict: /' | tee -a "$GITHUB_STEP_SUMMARY"
+            git merge --abort
+            exit 1
+          fi
+
+      - name: Read the JDK version
+        if: steps.up.outputs.count != '0'
+        run: echo "JDK_VER=$(awk -F'=' '$1=="application.java.min" {print $2}' Ghidra/application.properties | tr -d '\r')" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-java@v5
+        if: steps.up.outputs.count != '0'
+        with:
+          distribution: temurin
+          java-version: ${{ env.JDK_VER }}
+
+      - uses: actions/setup-python@v6
+        if: steps.up.outputs.count != '0'
+        with:
+          python-version: '3.12'
+
+      - name: Cache fetched dependencies
+        if: steps.up.outputs.count != '0'
+        uses: actions/cache@v5
+        with:
+          path: dependencies
+          key: deps-${{ runner.os }}-${{ hashFiles('gradle/support/fetchDependencies.gradle') }}
+
+      - name: Fetch dependencies
+        if: steps.up.outputs.count != '0'
+        shell: pwsh
+        run: ./gradlew -I gradle/support/fetchDependencies.gradle -DhideDownloadProgress -DnoEclipse
+
+      - name: buildHeadless
+        if: steps.up.outputs.count != '0'
+        shell: pwsh
+        run: ./gradlew buildHeadless --parallel "-PheadlessInstallDir=$env:GHIDRA_INSTALL"
+
+      - name: Test binaries
+        if: steps.up.outputs.count != '0'
+        run: |
+          echo "BIN_A=C:/Windows/System32/choice.exe" >> "$GITHUB_ENV"
+          echo "BIN_B=C:/Windows/System32/whoami.exe" >> "$GITHUB_ENV"
+          echo "BIN_DLL=C:/Windows/System32/version.dll" >> "$GITHUB_ENV"
+
+      - name: session_smoke.py
+        if: steps.up.outputs.count != '0'
+        run: >
+          python Ghidra/Features/HeadlessSession/examples/session_smoke.py
+          --ghidra "$GHIDRA_INSTALL" --work "$RUNNER_TEMP/smoke"
+          --binary "$BIN_A" --binary "$BIN_B"
+
+      - name: daemon_tests.py
+        if: steps.up.outputs.count != '0'
+        run: >
+          python Ghidra/Features/HeadlessSession/examples/daemon_tests.py
+          --ghidra "$GHIDRA_INSTALL" --work "$RUNNER_TEMP/daemon"
+          --exe "$BIN_A" --dll "$BIN_DLL"
+
+      - name: contract_tests.py
+        if: steps.up.outputs.count != '0'
+        run: >
+          python Ghidra/Features/HeadlessSession/examples/contract_tests.py
+          --ghidra "$GHIDRA_INSTALL" --work "$RUNNER_TEMP/contract"
+
+      # The golden diff: the recorded protocol replies must be byte-identical after the merge. This is the
+      # repository's own golden set (two tiny generated PE files, nothing derived from a real program). The
+      # decompile golden set of CONTRIBUTING.md stays outside the repository and is compared by a person
+      # before the pull request is merged.
+      - name: golden diff (characterization, protocol 2)
+        if: steps.up.outputs.count != '0'
+        run: >
+          python Ghidra/Features/HeadlessSession/examples/characterization_tests.py
+          --ghidra "$GHIDRA_INSTALL" --work "$RUNNER_TEMP/golden2"
+
+      - name: golden diff (characterization, protocol 3)
+        if: steps.up.outputs.count != '0'
+        run: >
+          python Ghidra/Features/HeadlessSession/examples/characterization_tests.py
+          --ghidra "$GHIDRA_INSTALL" --work "$RUNNER_TEMP/golden3" --protocol 3
+
+      # The pull request is opened even when the guard hit, so the report reaches a person; the
+      # job then fails below.
+      - name: Push the branch and open the pull request
+        if: steps.up.outputs.count != '0' && env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch="sync/upstream-${{ steps.up.outputs.date }}"
+          git push origin "$branch"
+          {
+            echo "Merge of upstream Ghidra \`$UPSTREAM_REF\` ($(git rev-parse --short upstream/sync-target))."
+            echo
+            echo "buildHeadless, the three session suites and the golden diff passed on this branch."
+            echo "Not checked here: the decompile golden set (CONTRIBUTING.md, \"Upstream sync\"). Compare it before merging."
+            echo "Merge this pull request with a merge commit, never rebase or squash."
+            echo
+            cat "$RUNNER_TEMP/report.md"
+          } > "$RUNNER_TEMP/pr-body.md"
+          gh pr create --base main --head "$branch" --title "Upstream sync $(date -u +%Y-%m-%d)" --body-file "$RUNNER_TEMP/pr-body.md"
+
+      - name: Fail if a patched core file changed upstream
+        if: steps.up.outputs.count != '0' && steps.merge.outputs.guard != '0'
+        run: |
+          echo "::error::upstream changed a patched core file (see the report in the job summary)"
+          exit 1
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: upstream-sync-logs
+          path: |
+            ${{ runner.temp }}/report.md
+            ${{ runner.temp }}/smoke/**/*.log
+            ${{ runner.temp }}/daemon/**/*.log
+            ${{ runner.temp }}/contract/**/*.log
+          if-no-files-found: ignore
