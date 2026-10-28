@@ -395,7 +395,8 @@ upstream project, not Hydra Engine.
 upstream moves. Few upstream files are changed: `README.md`, one line of `build.gradle`, two
 lines of `gradle/distributableGhidraModule.gradle`, `.gitattributes`, the issue templates (replaced
 by issue forms), and
-three small Java fixes (`LocalBufferFile`, `LocalDatabaseItem`, `SleighLanguageFile`; see the
+small changes to five Java classes (`LocalBufferFile`, `LocalDatabaseItem`, `SleighLanguageFile`,
+`LocalManagedBufferFile`, `VersionedDatabase`) and one added class (`VersionFileCheck`; see the
 module README's "Changes outside this module"), so a sync conflicts in those at most. All of
 them are listed in [NOTICE-HYDRA](NOTICE-HYDRA), which every release ships. The steps
 and the resolutions are in [CONTRIBUTING](.github/CONTRIBUTING.md#upstream-sync).

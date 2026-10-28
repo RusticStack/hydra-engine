@@ -31,8 +31,8 @@ claims audit in `Ghidra/Features/HeadlessSession/PROTOCOL-3.md`, section 8.3.
   back when its running request ends.
 - Imports (C6): an import waits in the import queue; at the front it still needs a long slot and
   fails `busy` after `wait` (10 s default).
-- Facts (C8, C11, U10, U11): one daemon per state directory and instance; three small fixes to
-  Ghidra classes, not two; a native decompile takes about 1 to 45 ms by function size (7 ms in
+- Facts (C8, C11, U10, U11): one daemon per state directory and instance; small fixes to
+  Ghidra classes (three at the time of 12.3-hydra.3; see Unreleased below for the storage change); a native decompile takes about 1 to 45 ms by function size (7 ms in
   the benchmark function); the 7.0-7.8 s of `analyzeHeadless` was measured on stock Ghidra 12.1.4.
 - Headless only (U8, U14): there is no GUI, and projects Hydra Engine writes cannot be opened by
   Ghidra 12.2 or 12.1.4. Scripts that use the headless API run unchanged; GUI-only extensions do
@@ -41,6 +41,25 @@ claims audit in `Ghidra/Features/HeadlessSession/PROTOCOL-3.md`, section 8.3.
 - Read-only checks (U12): the tests compare file sizes and modification times (and contents up to
   1 MiB in the upgrade cache test), not a byte-for-byte copy of every file.
 - `how-it-works.gif` is labelled as an illustration (U5).
+
+### Storage integrity (not released)
+
+- Ghidra core: the header of a new version file is written and synced before the file is renamed
+  to its final name (`LocalManagedBufferFile`), and the newest version is checked when a database
+  is opened (`VersionedDatabase`, `LocalDatabaseItem`, the added class `VersionFileCheck`). A kill
+  during a save used to leave an unopenable newest version in about 3% of kills in the crash tests
+  (12 of 363); kill batches with the change found 0 unopenable versions in 200 kills on NTFS and 0 in
+  200 on ReFS. The repair of a bad newest version applies only to writable forks inside declared
+  disposable roots and is not wired into the daemon yet. A bounded result, not a guarantee.
+- Fork publish is atomic and retryable (capability `forkAtomic`): the fork is built in a staging
+  folder and published with `.gpr` last, a sidecar records its state, and a sweeper removes the
+  leftovers of a publisher that died. 330 kills on NTFS and 300 on ReFS left no state that a retry
+  could not finish (a killed publish can leave a `.rep` without its `.gpr`, which the next call
+  sweeps). A concurrent publisher of the same name now gets `conflict`.
+- Protocol 3 groundwork (client 1.1.0, version negotiation, the identity block; protocol 2 replies
+  are unchanged and checked against the vendored 1.0.0 client), the corruption oracle and the
+  regression suites (`examples/oracle.py`, `examples/conc/`), and the design in `PROTOCOL-3.md`
+  revision 8.1. None of it changes the replies of protocol 2.
 
 ### Internal
 

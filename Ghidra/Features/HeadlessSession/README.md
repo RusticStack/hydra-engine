@@ -33,8 +33,8 @@ driven by JSON lines over an authenticated loopback socket (or stdio), that:
   requests cancelled and its uncommitted changes rolled back when its running request ends;
 - stays up (or stops after an idle time you choose).
 
-It is one new module, plus three small fixes to Ghidra classes that the session's measurements
-found (see "Changes outside this module"). No launcher is changed, and there are no `.bat`, `.sh`
+It is one new module, plus five small changes to Ghidra classes and one added class, found by the
+session's measurements and tests (see "Changes outside this module"). No launcher is changed, and there are no `.bat`, `.sh`
 or PowerShell launchers: `support/ghidra_session.py` (Python 3.10+, standard library only, any
 OS) starts the JVM itself.
 
@@ -1241,13 +1241,15 @@ The module needs nothing private from Ghidra beyond three reflective touches
 
 ## Changes outside this module
 
-Three fixes in Ghidra itself, each found by this module's measurements or tests, each a few
-lines and each useful to any Ghidra process:
+Five changes in Ghidra itself and one added class, each found by this module's measurements or
+tests, each small and each useful to any Ghidra process:
 
 | Where | Before | After |
 |---|---|---|
 | `Framework/DB`, `LocalBufferFile.close`/`delete` | A temporary buffer file (a program's database cache) is closed, then deleted. On ReFS (a Windows Dev Drive) the last close of a file writes all its dirty cached pages back to disk first, even when the file is deleted right after: closing a large program, or shutting a session down with one open, took 22-41 s with `java.io.tmpdir` there (up to 150 s seen), against 0.05 s on NTFS. | A temporary file is truncated to 0 bytes before it is closed, which drops its unwritten pages: 0.25-0.76 s on the same drive. Nothing reads it again, so nothing else changes. |
 | `Framework/FileSystem`, `LocalDatabaseItem.create` | A new program written into a project (an import's save, *Save As*) gets its item's property file, with its file type, first; then its database is streamed in. A process killed during that stream (measured: a 512 MB raw import killed 30% into a 10 s write) leaves an item that every later open lists as a program and fails to open ("Unrecognized file format"). | The property file is written without its file type until version 1 of the database is complete (the existing `versionCreated` callback adds it). An item killed mid-write has no file type, which Ghidra's existing repair removes the next time the folder is listed ("Removing folder item with unspecified file type"); a completed one is unchanged. Only new private (non-versioned) databases; shared-project (server) files are untouched. `daemon_tests.py import_write_kill`. |
+| `Framework/DB`, `LocalManagedBufferFile.saveCompleted` | A save writes the new version file under its final name (`db.N.gbf`) and only then writes and syncs its header. A process killed in that window leaves a final-named version file with an empty header, which Ghidra cannot open ('Unrecognized file format'), and a read-only open fails on it too. Measured on the crash tests: 12 of 363 killed saves. | The header is written and synced before the rename, so a killed save leaves either the old version or a complete new one. Kill batches since then: 0 unopenable versions in 200 kills on NTFS and 0 in 200 on ReFS (`daemon_tests.py e8_kill_loop`), a bounded result, not a guarantee. |
+| `Framework/FileSystem`, `VersionedDatabase`, `LocalDatabaseItem` (open) and the added class `VersionFileCheck` | An unreadable newest version file (left by an older build, or by a kill outside the window above) makes the whole database unopenable. | The newest version is checked when a database is opened. A writable item inside a root declared disposable (`hydra.storage.repairRoots`) moves the bad file aside (`.quarantine`) and uses the previous version; any other open, and every read-only open, writes nothing and answers `corrupt_newest`. The daemon does not declare roots yet, so today a real fork is not repaired; that comes with the fork and health work in `PROTOCOL-3.md`. |
 | `Framework/SoftwareModeling`, `SleighLanguageFile` | On master, the language service opens a `<language>.sla.lock` file read-write for every language definition (about 300) when it starts, only to learn whether it could lock it. Each open and close of a file on the install's volume costs milliseconds, more on a volume with an antivirus filter: the first `open_program` of a session took 1.4-6.9 s instead of about 0.8 s. | The lock file is created the first time a language actually needs it (`canLock`, `withLock`): one or two per session. Same results, same rules for a directory the user cannot write. |
 
 The distribution also leaves out `__pycache__` folders and `.pyc` files that running a module's
