@@ -969,7 +969,7 @@
      ],
      "scheduler": {
       "quick": {
-       "slots": 24,
+       "slots": "<masked>",
        "inUse": 0,
        "queued": 0,
        "running": [],
@@ -979,7 +979,7 @@
        "backgroundQueued": 0
       },
       "long": {
-       "slots": 6,
+       "slots": "<masked>",
        "inUse": 0,
        "queued": 0,
        "running": [],

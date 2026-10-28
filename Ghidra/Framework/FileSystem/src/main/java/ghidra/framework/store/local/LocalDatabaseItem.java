@@ -72,16 +72,20 @@ public class LocalDatabaseItem extends LocalFolderItem implements DatabaseItem {
 			throws IOException {
 		super(fileSystem, propertyFile, true, false);
 
-		// Hydra E8: in a writable disposable tree a newest version with an invalid header
-		// (an interrupted save) is quarantined here, so the scan below sees the previous one
-		VersionFileCheck.repairOnOpen(getDataDir(), !fileSystem.isReadOnly());
-
 		if (isVersioned) {
+			// Hydra E8: the VersionedDatabase checks its newest version itself (see below)
 			versionedDbListener = new LocalVersionedDbListener();
-			versionedDb = new VersionedDatabase(getDataDir(), versionedDbListener);
+			// Hydra E8b: state the file system's read-only flag, so that the open-time check of
+			// the database never repairs in a read-only file system (the two-argument
+			// constructor assumes a writable one)
+			versionedDb = new VersionedDatabase(getDataDir(), versionedDbListener,
+				fileSystem.isReadOnly());
 			versionedDb.setSynchronizationObject(fileSystem);
 		}
 		else {
+			// Hydra E8/E8b: a newest version with an invalid header (an interrupted save) is
+			// handled when the item is opened (openPrivate), not here: reading the header of
+			// every item a listing constructs cost more than 5% of the listing time (measured).
 			privateDb = new PrivateDatabase(getDataDir());
 			privateDb.setIsCheckoutCopy(isCheckedOut());
 			privateDb.setSynchronizationObject(fileSystem);
@@ -541,8 +545,7 @@ public class LocalDatabaseItem extends LocalFolderItem implements DatabaseItem {
 				return versionedDb.openBufferFile(version, minChangeDataVer);
 			}
 			if (version == LATEST_VERSION) {
-				VersionFileCheck.requireIntact(getDataDir());
-				return privateDb.openBufferFile();
+				return openPrivate(false);
 			}
 			throw new IllegalArgumentException("only LATEST_VERSION may be opened");
 		}
@@ -558,8 +561,7 @@ public class LocalDatabaseItem extends LocalFolderItem implements DatabaseItem {
 				return versionedDb.openBufferFile(version, -1);
 			}
 			if (version == LATEST_VERSION) {
-				VersionFileCheck.requireIntact(getDataDir());
-				return privateDb.openBufferFile();
+				return openPrivate(false);
 			}
 			throw new IllegalArgumentException("only LATEST_VERSION may be opened");
 		}
@@ -574,8 +576,7 @@ public class LocalDatabaseItem extends LocalFolderItem implements DatabaseItem {
 			if (isVersioned) {
 				return versionedDb.openBufferFile(LATEST_VERSION, -1);
 			}
-			VersionFileCheck.requireIntact(getDataDir());
-			return privateDb.openBufferFile();
+			return openPrivate(false);
 		}
 	}
 
@@ -606,9 +607,36 @@ public class LocalDatabaseItem extends LocalFolderItem implements DatabaseItem {
 					}
 				}
 			}
-			VersionFileCheck.requireIntact(getDataDir());
-			return privateDb.openBufferFileForUpdate();
+			return openPrivate(true);
 		}
+	}
+
+	/**
+	 * Open the buffer file of the private database. Hydra E8/E8b: the header of the newest
+	 * version (the file that is about to be opened, so no directory listing) is read first. In a
+	 * writable disposable tree a newest version with an invalid header (an interrupted save) is
+	 * quarantined and the database is scanned again, the previous version being the newest; anywhere
+	 * else the answer is {@code corrupt_newest} instead of the buffer file's "Unrecognized file
+	 * format". Nothing is read when the item is constructed (that cost more than 5% of the time of
+	 * a project listing, measured). The check is made before the file is opened: a failed open
+	 * keeps the file handle until it is collected, and an open file cannot be moved on Windows.
+	 * Caller holds the file system lock.
+	 */
+	private LocalManagedBufferFile openPrivate(boolean forUpdate) throws IOException {
+		File newest = new File(getDataDir(), "db." + privateDb.getCurrentVersion() + ".gbf");
+		if (!VersionFileCheck.hasValidMagic(newest)) {
+			VersionFileCheck.Result r =
+				VersionFileCheck.repairOnOpen(getDataDir(), !fileSystem.isReadOnly());
+			if (r.status == VersionFileCheck.Status.REPAIRED) {
+				privateDb = new PrivateDatabase(getDataDir());
+				privateDb.setIsCheckoutCopy(isCheckedOut());
+				privateDb.setSynchronizationObject(fileSystem);
+			}
+			else {
+				VersionFileCheck.requireIntact(getDataDir());
+			}
+		}
+		return forUpdate ? privateDb.openBufferFileForUpdate() : privateDb.openBufferFile();
 	}
 
 	/**
