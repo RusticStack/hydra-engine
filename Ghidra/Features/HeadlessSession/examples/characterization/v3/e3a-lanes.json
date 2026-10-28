@@ -1,0 +1,95 @@
+{
+ "scenario": "e3a-lanes",
+ "protocol": 3,
+ "steps": [
+  {
+   "step": 1,
+   "who": "a",
+   "cmd": "status",
+   "request": {},
+   "response": {
+    "ok": true,
+    "result": {
+     "protocol": 3,
+     "capabilities": {
+      "laneHint": 1,
+      "maintLane": 1,
+      "queueInfo": 1
+     },
+     "limits": {
+      "maxQuick": 4,
+      "maxLong": 2,
+      "maxMaint": 3,
+      "quickScriptMaxS": 60,
+      "maxRunningPerKey": {
+       "quick": 2,
+       "long": 1,
+       "maint": 1
+      }
+     },
+     "scheduler": {
+      "quick": {
+       "slots": "<masked>",
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 0,
+       "everQueued": 0,
+       "backgroundQueued": 0,
+       "oldestWaitMs": "<masked>",
+       "longestRunningMs": "<masked>",
+       "starving": false,
+       "perKeyCap": "<masked>",
+       "perKey": []
+      },
+      "long": {
+       "slots": "<masked>",
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 0,
+       "everQueued": 0,
+       "backgroundQueued": 0,
+       "oldestWaitMs": "<masked>",
+       "longestRunningMs": "<masked>",
+       "starving": false,
+       "perKeyCap": "<masked>",
+       "perKey": []
+      },
+      "maint": {
+       "slots": "<masked>",
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 0,
+       "everQueued": 0,
+       "backgroundQueued": 0,
+       "oldestWaitMs": "<masked>",
+       "longestRunningMs": "<masked>",
+       "starving": false,
+       "perKeyCap": "<masked>",
+       "perKey": []
+      }
+     }
+    }
+   }
+  },
+  {
+   "step": 2,
+   "who": "a",
+   "cmd": "ping",
+   "request": {},
+   "response": {
+    "id": 3,
+    "ok": true,
+    "result": {
+     "pong": true
+    },
+    "ms": "<masked>"
+   }
+  }
+ ]
+}

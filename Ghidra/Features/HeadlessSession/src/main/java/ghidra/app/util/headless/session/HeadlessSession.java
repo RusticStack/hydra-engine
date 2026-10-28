@@ -77,7 +77,9 @@ public class HeadlessSession implements GhidraLaunchable {
 		  -idleTimeout  without stdio: exit after this many seconds without clients (0: never)
 		  -keepWarm     keep an unused read-only program or project open this long (default 3600)
 		  -maxQuick     concurrent quick requests (default: CPU count)
-		  -maxLong      concurrent long requests: analyze, import, script, save (default: CPU/4)
+		  -maxLong      concurrent long requests: analyze, import, script (and save, fork_project,
+		                refresh, reopen, promote_overlay on a protocol 2 connection)
+		                (default: max(8, CPUs); -set maxLong=<n> does the same)
 		  -maxImports   concurrent imports, each also in a long slot (default: CPU/4, 1 to 4)
 		  -scriptPath   an extra GhidraScript directory; repeat it, or give a list separated by
 		                the platform's path separator
@@ -87,7 +89,10 @@ public class HeadlessSession implements GhidraLaunchable {
 		  -forkCopyLimitMb  fork_project mode auto refuses a full (not block-cloned) copy larger
 		                than this (default 2048)
 		  -set          an engine setting (PROTOCOL-3.md 3.7); repeat it. The launcher passes every
-		                entry of the "engine" object of config.json this way
+		                entry of the "engine" object of config.json this way. Lane settings:
+		                maintSlots (default 4: the slots of the maint lane, protocol 3),
+		                maxRunningPerKey[.quick|.long|.maint] (the per-key running cap),
+		                quickScriptMaxS (default 60, at most 120)
 		  -selfTest     check the engine's registries and seams, print one line each and exit
 		                (0 when every check held); starts no session
 		""";
@@ -106,6 +111,7 @@ public class HeadlessSession implements GhidraLaunchable {
 		try {
 			o = Options.parse(args);
 			requireExpect = Settings.bool("requireExpect", false); // a bad value is a usage error
+			Scheduler.validateSettings(); // so is a bad lane setting
 		}
 		catch (IllegalArgumentException e) {
 			System.err.println(e.getMessage());
@@ -143,13 +149,20 @@ public class HeadlessSession implements GhidraLaunchable {
 
 		int cpus = Runtime.getRuntime().availableProcessors();
 		int maxQuick = o.maxQuick > 0 ? o.maxQuick : cpus;
-		int maxLong = o.maxLong > 0 ? o.maxLong : Math.max(2, cpus / 4);
-		Scheduler scheduler = new Scheduler(maxQuick, maxLong);
+		// the long default is max(8, CPUs) (D40; it was a quarter of the CPUs, at least 2, and a
+		// 7th client's tiny script, save and fork waited 10 s behind six long ones)
+		int maxLong = o.maxLong > 0 ? o.maxLong
+				: Settings.integer("maxLong", Scheduler.defaultLongSlots(cpus));
+		int maintSlots = Math.max(1, Settings.integer("maintSlots", Scheduler.DEFAULT_MAINT_SLOTS));
+		Scheduler scheduler = new Scheduler(maxQuick, maxLong, maintSlots);
 		int maxImports = o.maxImports > 0 ? o.maxImports : ImportGate.defaultPermits(cpus);
 		ImportGate.GLOBAL.setPermits(maxImports);
 		// what hello reports to a protocol 3 client (3.2); the other packages set their own
 		Advertised.limit("maxQuick", () -> maxQuick);
 		Advertised.limit("maxLong", () -> maxLong);
+		Advertised.limit("maxMaint", () -> maintSlots);
+		Advertised.limit("quickScriptMaxS", Scheduler::quickScriptMaxS);
+		Advertised.limit("maxRunningPerKey", scheduler::caps);
 		Advertised.limit("maxImports", () -> maxImports);
 		Advertised.policy("requireExpect", () -> requireExpectSetting);
 		Identity.setPaths(o.stateDir == null ? null : Path.of(o.stateDir).toAbsolutePath().toString(),
@@ -580,6 +593,7 @@ public class HeadlessSession implements GhidraLaunchable {
 			negotiation();
 			errors();
 			preflight();
+			cancelHooks();
 			dbVersions();
 			System.out.println(
 				bad == 0 ? "all self-test checks held" : bad + " self-test check(s) FAILED");
@@ -628,8 +642,11 @@ public class HeadlessSession implements GhidraLaunchable {
 			check("a repeated key keeps its last value", Settings.integer("selfTestInt", 0) == 8);
 		}
 
-		private static final List<String> LONG = List.of("analyze", "import", "script", "save",
-			"fork_project", "refresh", "reopen", "promote_overlay");
+		/** Commands that are long on every protocol. */
+		private static final List<String> LONG = List.of("analyze", "import", "script");
+		/** Commands that are long on protocol 2 and maint on protocol 3 (D16, gate 2). */
+		private static final List<String> MAINT = List.of("save", "fork_project", "refresh",
+			"reopen", "promote_overlay");
 		private static final List<String> QUICK = List.of("list", "functions", "decompile",
 			"rename", "comment", "open_program", "switch", "open_project");
 		private static final List<String> NONE = List.of("ping", "hello", "status", "cancel",
@@ -637,45 +654,256 @@ public class HeadlessSession implements GhidraLaunchable {
 			"journal", "discard_edits", "project", "overlays", "apply_overlay", "drop_overlay",
 			"health", "nosuchcommand", "");
 
+		private static Scheduler.Lane laneOf(String cmd, JsonObject req, boolean v3) {
+			return Scheduler.laneOf(cmd, req, v3);
+		}
+
+		private static Client v3Client(int id) {
+			Client x = new Client(id, "selftest", false, null);
+			x.negotiate(obj("{\"protocol\":3}"));
+			return x;
+		}
+
 		private static void lanes() {
-			boolean same = true;
+			boolean v2same = true;
+			boolean v3same = true;
 			JsonObject quickHint = Json.of("lane", "quick", "timeout", 30);
 			for (boolean v3 : new boolean[] { false, true }) {
 				for (JsonObject req : new JsonObject[] { new JsonObject(), quickHint }) {
+					boolean ok = true;
 					for (String cmd : LONG) {
-						same &= Scheduler.laneOf(cmd, req, v3) == Scheduler.Lane.LONG;
+						// a script with lane:"quick" is quick on protocol 3 only
+						boolean hint = cmd.equals("script") && req == quickHint && v3;
+						ok &= laneOf(cmd, req, v3) ==
+							(hint ? Scheduler.Lane.QUICK : Scheduler.Lane.LONG);
+					}
+					for (String cmd : MAINT) {
+						ok &= laneOf(cmd, req, v3) ==
+							(v3 ? Scheduler.Lane.MAINT : Scheduler.Lane.LONG);
 					}
 					for (String cmd : QUICK) {
-						same &= Scheduler.laneOf(cmd, req, v3) == Scheduler.Lane.QUICK;
+						ok &= laneOf(cmd, req, v3) == Scheduler.Lane.QUICK;
 					}
 					for (String cmd : NONE) {
-						same &= Scheduler.laneOf(cmd, req, v3) == null;
+						ok &= laneOf(cmd, req, v3) == null;
+					}
+					if (v3) {
+						v3same &= ok;
+					}
+					else {
+						v2same &= ok;
 					}
 				}
 			}
-			check("laneOf(cmd, req, v3) is today's lane for every command, v2 and v3, with and " +
-				"without a lane hint", same);
-			Scheduler s = new Scheduler(3, 2);
+			check("laneOf(cmd, req, v3) on protocol 2 is hydra.3's lane for every command, with " +
+				"and without a lane hint", v2same);
+			check("laneOf on protocol 3: save, fork_project, refresh, reopen and promote_overlay " +
+				"are maint; a script is quick only with lane:\"quick\"", v3same);
+			String[] refused = { "{\"lane\":\"quick\"}", "{\"lane\":\"quick\",\"timeout\":0}",
+				"{\"lane\":\"quick\",\"timeout\":121}", "{\"lane\":\"quick\",\"timeout\":\"9\"}",
+				"{\"lane\":\"fast\",\"timeout\":9}", "{\"lane\":5,\"timeout\":9}" };
+			boolean notes = true;
+			for (String r : refused) {
+				Scheduler.Decision d = Scheduler.decide("script", obj(r), true);
+				notes &= d.lane() == Scheduler.Lane.LONG && d.note() != null;
+			}
+			Scheduler.Decision longHint =
+				Scheduler.decide("script", Json.of("lane", "long", "timeout", 9), true);
+			Scheduler.Decision absent = Scheduler.decide("script", new JsonObject(), true);
+			Scheduler.Decision v2hint = Scheduler.decide("script", quickHint, false);
+			check("a refused lane hint stays long and says why; long and absent say nothing; " +
+				"protocol 2 never sees a note", notes && longHint.note() == null &&
+					absent.note() == null && v2hint.note() == null &&
+					v2hint.lane() == Scheduler.Lane.LONG);
+			check("the long default is max(8, CPUs) and the caps are quick max(1, n/2), long " +
+				"max(1, n-1), maint 1",
+				Scheduler.defaultLongSlots(2) == 8 && Scheduler.defaultLongSlots(24) == 24 &&
+					Scheduler.defaultCap(Scheduler.Lane.QUICK, 24) == 12 &&
+					Scheduler.defaultCap(Scheduler.Lane.LONG, 8) == 7 &&
+					Scheduler.defaultCap(Scheduler.Lane.LONG, 1) == 1 &&
+					Scheduler.defaultCap(Scheduler.Lane.MAINT, 4) == 1);
+			Scheduler s = new Scheduler(3, 2, 4);
 			String empty =
 				"{\"quick\":{\"slots\":3,\"inUse\":0,\"queued\":0,\"running\":[],\"waiting\":[]," +
 					"\"admitted\":0,\"everQueued\":0,\"backgroundQueued\":0},\"long\":{\"slots\":2," +
 					"\"inUse\":0,\"queued\":0,\"running\":[],\"waiting\":[],\"admitted\":0," +
 					"\"everQueued\":0,\"backgroundQueued\":0}}";
-			check("describe(false) of an idle scheduler is today's object",
+			check("describe(false) of an idle scheduler is hydra.3's object (no maint lane)",
 				Json.GSON.toJson(s.describe(false)).equals(empty));
-			check("describe(true) is the same object until the v3 fields exist",
-				Json.GSON.toJson(s.describe(true)).equals(empty));
+			JsonObject idle3 = s.describe(true);
+			check("describe(true) adds the maint lane and the v3 figures",
+				List.of("quick", "long", "maint").equals(new ArrayList<>(idle3.keySet())) &&
+					idle3.getAsJsonObject("maint").get("slots").getAsInt() == 4 &&
+					idle3.getAsJsonObject("long").has("perKeyCap") &&
+					!idle3.getAsJsonObject("long").get("starving").getAsBoolean());
 			Client c = new Client(1, "selftest", false, null);
 			try (Scheduler.Ticket t = s.admit(c, "save", new JsonObject(), null, 100)) {
 				JsonObject d = s.describe(false);
-				check("a save holds a long slot, as today",
+				check("a protocol 2 save holds a long slot, as on hydra.3",
 					d.getAsJsonObject("long").get("inUse").getAsInt() == 1 &&
-						d.getAsJsonObject("quick").get("inUse").getAsInt() == 0);
-				JsonObject d3 = s.describe(true);
-				check("describe(true) shows the same single running save, in the long lane",
-					d3.getAsJsonObject("long").getAsJsonArray("running").size() == 1 &&
-						!d3.has("maint"));
+						d.getAsJsonObject("quick").get("inUse").getAsInt() == 0 && !d.has("maint"));
 			}
+			try (Scheduler.Ticket t = s.admit(v3Client(2), "save", new JsonObject(), null, 100)) {
+				JsonObject d3 = s.describe(true);
+				check("a protocol 3 save holds a maint slot and no long slot",
+					d3.getAsJsonObject("maint").getAsJsonArray("running").size() == 1 &&
+						d3.getAsJsonObject("long").get("inUse").getAsInt() == 0);
+			}
+			capsAndQueue();
+			yieldAndReacquire();
+		}
+
+		private static void sleepMs(long ms) {
+			try {
+				Thread.sleep(ms);
+			}
+			catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+			}
+		}
+
+		/** Waits (at most 5 s) until a lane shows at least {@code n} queued requests. */
+		private static void waitQueued(Scheduler s, String lane, int n) {
+			long end = System.nanoTime() + 5_000_000_000L;
+			while (System.nanoTime() < end &&
+				s.describe(true).getAsJsonObject(lane).get("queued").getAsInt() < n) {
+				sleepMs(5);
+			}
+		}
+
+		private static void asyncAdmit(Scheduler s, Client c, String cmd, JsonObject req,
+				List<Scheduler.Ticket> got, List<String> errors) {
+			Thread th = new Thread(() -> {
+				try {
+					Scheduler.Ticket t = s.admit(c, cmd, req, null, 10_000);
+					synchronized (got) {
+						got.add(t);
+					}
+				}
+				catch (SessionException e) {
+					synchronized (errors) {
+						errors.add(e.code() + ":" + e.getMessage());
+					}
+				}
+			}, "selftest-admit");
+			th.setDaemon(true);
+			th.start();
+		}
+
+		private static void waitGot(List<Scheduler.Ticket> got, int n) {
+			long end = System.nanoTime() + 5_000_000_000L;
+			while (System.nanoTime() < end) {
+				synchronized (got) {
+					if (got.size() >= n) {
+						return;
+					}
+				}
+				sleepMs(5);
+			}
+		}
+
+		/**
+		 * The work-conserving per-key cap (3.5): maint with 4 slots and cap 1, two keys that each
+		 * run one request and queue another, while two other keys fill the rest: when the others
+		 * finish both queued requests run and no slot idles. A key at its cap waits while another
+		 * key under its cap waits.
+		 */
+		private static void capsAndQueue() {
+			Scheduler s = new Scheduler(8, 8, 4);
+			JsonObject none = new JsonObject();
+			List<Scheduler.Ticket> held = new ArrayList<>();
+			for (int i = 0; i < 4; i++) {
+				held.add(s.admit(v3Client(10 + i), "save", none, null, 1000));
+			}
+			List<Scheduler.Ticket> got = new ArrayList<>();
+			List<String> errors = new ArrayList<>();
+			asyncAdmit(s, held.get(0).client, "save", none, got, errors);
+			waitQueued(s, "maint", 1);
+			asyncAdmit(s, held.get(1).client, "save", none, got, errors);
+			waitQueued(s, "maint", 2);
+			held.get(2).close();
+			held.get(3).close();
+			waitGot(got, 2);
+			JsonObject m = s.describe(true).getAsJsonObject("maint");
+			check("per_key_cap_conserving: 4 maint slots, cap 1, two keys that each run one and " +
+				"queue another: when the others finish both queued requests run, no slot idles",
+				m.get("inUse").getAsInt() == 4 && m.get("queued").getAsInt() == 0 &&
+					m.get("perKeyCap").getAsInt() == 1 && errors.isEmpty());
+			held.get(0).close();
+			held.get(1).close();
+			synchronized (got) {
+				got.forEach(Scheduler.Ticket::close);
+			}
+
+			// the cap holds while another key under its cap waits
+			Scheduler q = new Scheduler(2, 2, 2);
+			Client a = v3Client(20);
+			Client b = v3Client(21);
+			Scheduler.Ticket a1 = q.admit(a, "save", none, null, 1000);
+			Scheduler.Ticket a2 = q.admit(a, "save", none, null, 1000);
+			List<Scheduler.Ticket> gotQ = new ArrayList<>();
+			List<String> errQ = new ArrayList<>();
+			asyncAdmit(q, a, "save", none, gotQ, errQ);
+			waitQueued(q, "maint", 1);
+			asyncAdmit(q, b, "save", none, gotQ, errQ);
+			waitQueued(q, "maint", 2);
+			a1.close();
+			waitGot(gotQ, 1);
+			String who;
+			synchronized (gotQ) {
+				who = gotQ.isEmpty() ? "nobody" : Integer.toString(gotQ.get(0).client.id);
+			}
+			check("a key at its cap waits while another key under its cap waits: the freed " +
+				"slot goes to the other key", who.equals("21"));
+			a2.close();
+			waitGot(gotQ, 2);
+			synchronized (gotQ) {
+				gotQ.forEach(Scheduler.Ticket::close);
+			}
+
+			// the fair key: a label makes a protocol 3 request its own key; protocol 2 keeps the id
+			Scheduler k = new Scheduler(4, 4, 4);
+			Client p3 = v3Client(30);
+			Client p2 = new Client(31, "selftest", false, null);
+			Scheduler.Ticket plain = k.admit(p3, "save", none, null, 1000);
+			Caller.enter(p3, new Caller.Identity("agent-a", "h", true));
+			Scheduler.Ticket labelled = k.admit(p3, "save", none, null, 1000);
+			Caller.leave();
+			Caller.enter(p2, new Caller.Identity("agent-a", "h", true));
+			Scheduler.Ticket v2labelled = k.admit(p2, "decompile", none, null, 1000);
+			Caller.leave();
+			check("the fair key of a protocol 3 request is the connection plus its label (an " +
+				"unlabelled request shares the connection's); a protocol 2 request keeps the " +
+				"connection id even when it is labelled",
+				plain.key.equals("30") && labelled.key.equals("30/agent-a\0h") &&
+					v2labelled.key.equals("31"));
+			plain.close();
+			labelled.close();
+			v2labelled.close();
+		}
+
+		private static void yieldAndReacquire() {
+			Scheduler s = new Scheduler(1, 1, 1);
+			Client c = new Client(40, "selftest", false, null);
+			Client other = new Client(41, "selftest", false, null);
+			Scheduler.Ticket t = s.admit(c, "decompile", new JsonObject(), null, 100);
+			t.yieldSlot();
+			Scheduler.Ticket o = s.admit(other, "decompile", new JsonObject(), null, 100);
+			boolean busy = false;
+			try {
+				t.reacquire(null, 50);
+			}
+			catch (SessionException e) {
+				busy = e.code().equals(SessionException.BUSY);
+			}
+			o.close();
+			t.reacquire(null, 1000);
+			boolean held = s.describe(false).getAsJsonObject("quick").get("inUse").getAsInt() == 1;
+			t.close();
+			check("yieldSlot gives the slot to another key, reacquire waits for one again " +
+				"(busy while it is taken) and close releases it once",
+				busy && held &&
+					s.describe(false).getAsJsonObject("quick").get("inUse").getAsInt() == 0);
 		}
 
 		private static void negotiation() {
@@ -736,13 +964,16 @@ public class HeadlessSession implements GhidraLaunchable {
 
 		private static void preflight() {
 			List<String> order = new ArrayList<>();
+			// the generic checks of Requests.registerPreflight (the Scheduler registers them once)
+			int generic = Preflight.count("selftestNoChecks");
+			check("the scheduler registered the generic checks under *", generic >= 1);
 			Preflight.register(Preflight.ALL, (cmd, req) -> order.add("*" + cmd));
 			Preflight.register("selftest", (cmd, req) -> order.add("own"));
 			Preflight.run("selftest", new JsonObject());
 			Preflight.run("other", new JsonObject());
 			check("Preflight runs the * checks, then the command's, in order; a command without " +
 				"its own runs only the *", order.equals(List.of("*selftest", "own", "*other")) &&
-					Preflight.count("selftest") == 2 && Preflight.count("other") == 1);
+					Preflight.count("selftest") == generic + 2 && Preflight.count("other") == generic + 1);
 			Preflight.register("selftestRefuse", (cmd, req) -> {
 				throw new SessionException(SessionException.BAD_REQUEST, "refused");
 			});
@@ -754,6 +985,69 @@ public class HeadlessSession implements GhidraLaunchable {
 				refused = ex.code().equals(SessionException.BAD_REQUEST);
 			}
 			check("a refusal propagates", refused);
+		}
+
+		private static void cancelHooks() {
+			RequestMonitor m = new RequestMonitor(null, null);
+			int[] ran = new int[2];
+			m.addCancelHook(() -> ran[0]++);
+			m.addCancelHook(() -> {
+				throw new IllegalStateException("a hook that throws must not stop the others");
+			});
+			m.addCancelHook(() -> ran[1]++);
+			check("a cancel hook has not run before the cancel", ran[0] == 0 && ran[1] == 0);
+			m.cancel();
+			m.cancel();
+			m.addCancelHook(() -> ran[0] += 10);
+			check("every cancel hook runs once on cancel, a throwing one does not stop the " +
+				"others, and a hook added after the cancel runs at once",
+				ran[0] == 11 && ran[1] == 1 && m.isCancelled());
+			// two threads cancelling together (the timeout timer and a client's cancel) and a hook
+			// added while the cancel runs: every hook runs exactly once
+			int rounds = 300;
+			java.util.concurrent.atomic.AtomicInteger twice = new java.util.concurrent.atomic.AtomicInteger();
+			for (int i = 0; i < rounds; i++) {
+				RequestMonitor r = new RequestMonitor(null, null);
+				java.util.concurrent.atomic.AtomicInteger n = new java.util.concurrent.atomic.AtomicInteger();
+				java.util.concurrent.atomic.AtomicInteger late = new java.util.concurrent.atomic.AtomicInteger();
+				for (int k = 0; k < 4; k++) {
+					r.addCancelHook(n::incrementAndGet);
+				}
+				java.util.concurrent.CountDownLatch go = new java.util.concurrent.CountDownLatch(1);
+				Thread[] ts = new Thread[3];
+				for (int k = 0; k < ts.length; k++) {
+					final boolean adder = k == 2;
+					ts[k] = new Thread(() -> {
+						try {
+							go.await();
+						}
+						catch (InterruptedException e) {
+							return;
+						}
+						if (adder) {
+							r.addCancelHook(late::incrementAndGet);
+						}
+						else {
+							r.cancel();
+						}
+					});
+					ts[k].start();
+				}
+				go.countDown();
+				for (Thread t : ts) {
+					try {
+						t.join();
+					}
+					catch (InterruptedException e) {
+						Thread.currentThread().interrupt();
+					}
+				}
+				if (n.get() != 4 || late.get() != 1) {
+					twice.incrementAndGet();
+				}
+			}
+			check("under concurrent cancels and a hook added meanwhile, every hook ran exactly " +
+				"once (" + rounds + " rounds)", twice.get() == 0);
 		}
 
 		private static void dbVersions() {
