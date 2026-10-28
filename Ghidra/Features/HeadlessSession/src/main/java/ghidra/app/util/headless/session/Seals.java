@@ -111,6 +111,13 @@ final class Seals {
 		return isSealed(p.resolved);
 	}
 
+	/** The name in a readable {@code SEALED.json} of the folder that is another project's, or null. */
+	private static String foreignMarkerName(ProjectResolver.Resolved r) {
+		JsonObject m = readJson(new File(r.dir(), MARKER));
+		String name = m == null ? null : Json.str(m, "name", null);
+		return name != null && !name.equals(r.name()) ? name : null;
+	}
+
 	private static boolean markerValid(ProjectResolver.Resolved r) {
 		File mf = new File(r.dir(), MARKER);
 		if (!mf.isFile()) {
@@ -288,6 +295,14 @@ final class Seals {
 		if (Json.has(req, "lineage")) {
 			Json.put(marker, "lineage", Json.str(req, "lineage"));
 		}
+		String foreign = foreignMarkerName(r);
+		if (foreign != null) {
+			throw new SessionException(SessionException.CONFLICT,
+				"the folder " + r.dir() + " already holds the " + MARKER + " of project '" +
+					foreign + "'; one folder carries one marker, so seal " + r.name() +
+					" in a folder of its own",
+				Json.of("gpr", r.gpr().getPath(), "reason", "marker_foreign", "marker", foreign));
+		}
 		writeMarker(r, marker);
 		List<String> done = new ArrayList<>(List.of("marker"));
 		if (registryDir() != null) {
@@ -315,7 +330,7 @@ final class Seals {
 		if (dir != null && Files.deleteIfExists(registryFile(dir, r).toPath())) {
 			removed.add("registry");
 		}
-		if (Files.deleteIfExists(new File(r.dir(), MARKER).toPath())) {
+		if (foreignMarkerName(r) == null && Files.deleteIfExists(new File(r.dir(), MARKER).toPath())) {
 			removed.add("marker");
 		}
 		JsonObject sc = ProjectFork.readSidecar(r);

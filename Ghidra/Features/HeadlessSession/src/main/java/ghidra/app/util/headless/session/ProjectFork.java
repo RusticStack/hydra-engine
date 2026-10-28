@@ -406,6 +406,15 @@ final class ProjectFork {
 		Path destRep = destDir.toPath().resolve(name + repExt);
 		Path destGpr = destDir.toPath().resolve(name + ext);
 		File sc = sidecar(new ProjectResolver.Resolved(destDir, name));
+		// a folder carries one backup manifest and one seal marker: refuse before anything of
+		// ours is moved, and never touch a file we did not move
+		for (String extra : extras) {
+			if (Files.exists(destDir.toPath().resolve(extra), LinkOption.NOFOLLOW_LINKS)) {
+				throw new IOException("the destination folder already holds " + extra +
+					" (one backup or sealed project per folder)");
+			}
+		}
+		List<String> moved = new ArrayList<>();
 		// the intent says the .rep may be ours from here on, and which one it is
 		st.intent().withPhase(ForkIntent.MOVING, ForkSweeper.creationMs(stagedRep))
 				.write(st.dir().toPath());
@@ -421,8 +430,8 @@ final class ProjectFork {
 			sidecar.addProperty("state", STATE_PUBLISHING);
 			writeSidecar(sc, sidecar);
 			for (String extra : extras) {
-				Files.move(st.dir().toPath().resolve(extra), destDir.toPath().resolve(extra),
-					StandardCopyOption.REPLACE_EXISTING);
+				Files.move(st.dir().toPath().resolve(extra), destDir.toPath().resolve(extra));
+				moved.add(extra);
 			}
 			moveRetrying(stagedGpr, destGpr);
 			committed = true;
@@ -432,7 +441,7 @@ final class ProjectFork {
 				FileUtilities.deleteDir(destRep.toFile());
 				Files.deleteIfExists(sc.toPath());
 				Files.deleteIfExists(Path.of(sc.getPath() + ".tmp"));
-				for (String extra : extras) {
+				for (String extra : moved) {
 					Files.deleteIfExists(destDir.toPath().resolve(extra));
 				}
 			}

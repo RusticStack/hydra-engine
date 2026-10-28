@@ -159,8 +159,9 @@ final class ProjectFormat {
 				required = true;
 			}
 		}
-		// unknown is not current: only a project with every header read and none older is false
-		Boolean upgrade = required ? Boolean.TRUE : unknown ? null : Boolean.FALSE;
+		// unknown is not current: only a project with every header read and none older is false.
+		// A truncated scan did not read every header, so it cannot say false either.
+		Boolean upgrade = required ? Boolean.TRUE : (unknown || truncated[0]) ? null : Boolean.FALSE;
 		JsonObject o = new JsonObject();
 		o.add("programDb",
 			Json.of("min", min, "max", max, "current", cur < 0 ? null : cur));

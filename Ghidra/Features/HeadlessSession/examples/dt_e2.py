@@ -29,6 +29,8 @@ Tests:
 * ``format_readonly``: the ``format`` block on the 12.1.4 fixture (stored 32 against 33, the data
   type manager's stored version, upgrade required, one way) and on a current-format project (not
   required); a protocol 2 reply has no ``format``; the project tree is byte-identical afterwards.
+* ``folder_singletons``: one ``backup.json`` / ``SEALED.json`` per folder, never replaced.
+* ``format_truncated``: a scan cut at 64 programs says null, not false.
 * ``upgrade_gate``: canonical ``upgrade:true`` without ``backup`` is ``backup_required`` (v3) or
   ``conflict`` with ``reason:"backup_required"`` (v2); a stale, unverified, foreign-revision,
   wrong-self-hash, wrong-size or incomplete backup is refused; a good one opens and the next save
@@ -296,6 +298,71 @@ def t_format_readonly(c):
               f2["dataTypeDb"]["min"] == 3, f"a current-format project: {f2}")
         note += "; current-format project: upgradeRequired false"
     return note
+
+
+def t_format_truncated(c):
+    """3.4: a scan stops at 64 programs. Then ``upgradeRequired`` and ``oneWay`` are null (unknown,
+    never false), because program 65 may be older: only a scan that read every header may say
+    false. A project with fewer programs still says false."""
+    cap = 64
+    d = c.daemon("e2-trunc", keepWarm=0)
+    base = c.work / "e2-trunc"
+    with v3(c, d, "trunc") as s:
+        need_v3(s)
+        gpr = c.make_project(s, base, "Many")
+        s.call("open_project", path=str(gpr), writable=True)
+        blob = base / "tiny.bin"
+        blob.write_bytes(os.urandom(256))
+        for i in range(cap + 1):
+            s.call("import", file=str(blob), name=f"p{i:03d}", duplicate=True, wait=120000,
+                   **dt.RAW_LANG)
+            if i == cap - 1:
+                s.call("save")
+                f = s.call("project")["format"]
+                check(f["programsScanned"] == cap and f["truncated"] is False and
+                      f["upgradeRequired"] is False, f"exactly {cap} programs: {f}")
+        s.call("save")
+        f = s.call("project")["format"]
+        check(f["programsScanned"] == cap and f["truncated"] is True, f"{f}")
+        check(f["upgradeRequired"] is None and f["oneWay"] is None,
+              f"a truncated scan must not say false: {f}")
+        s.call("close_project")
+    d.stop()
+    return f"{cap + 1} programs: scanned {cap}, truncated, upgradeRequired null (and false at {cap})"
+
+
+def t_folder_singletons(c):
+    """A folder carries one ``backup.json`` and one ``SEALED.json``. A second backup into a folder
+    that holds one fails and leaves the first (manifest, marker, project) as it was; sealing a
+    second project of that folder is refused and does not replace the first marker; unsealing the
+    second does not delete the first's marker."""
+    gpr = legacy_copy(c, "e2-single")
+    dest = c.work / "e2-single-dest"
+    d = c.daemon("e2-single", keepWarm=0)
+    with v3(c, d, "single") as s:
+        need_v3(s)
+        pid = s.call("open_project", path=str(gpr))["id"]
+        backup(c, s, pid, dest, name="first")
+        mf, mk = dest / "backup.json", dest / "SEALED.json"
+        before = (sha_file(mf), sha_file(mk), tree_digest(dest))
+        check(not manifest_problems(dest), f"the first backup: {manifest_problems(dest)}")
+        e = expect_error("failed", backup, c, s, pid, dest, name="second")
+        check("backup.json" in str(e), f"the refusal names the file: {e}")
+        left = sorted(os.listdir(dest))
+        check(not [n for n in left if STAGING.match(n)] and "second.gpr" not in left and
+              "second.rep" not in left, f"a refused second backup left {left}")
+        check((sha_file(mf), sha_file(mk), tree_digest(dest)) == before,
+              "the first backup changed")
+        # a plain fork of another name may share the folder; sealing it must not take the marker
+        s.call("fork_project", project=pid, path=str(dest), name="other", purpose="fork",
+               open=False, wait=120000)
+        e = expect_error("conflict", s.call, "seal_project", project=str(dest / "other.gpr"))
+        check((e.details or {}).get("reason") == "marker_foreign", f"details {e.details}")
+        check(sha_file(mk) == before[1], "the first project's marker was replaced")
+        s.call("seal_project", project=str(dest / "other.gpr"), unseal=True, force=True)
+        check(sha_file(mk) == before[1], "unsealing the second project deleted the first's marker")
+    d.stop()
+    return "second backup refused and the first untouched; foreign marker refused, kept on unseal"
 
 
 # ---- the upgrade gate --------------------------------------------------------------------------
@@ -615,10 +682,10 @@ def t_backup_fault(c):
         th.join(5)
         check(fired.is_set(), "the staged copy was not corrupted in time (the test is void)")
         v = (e.details or {}).get("verify") or {}
-        check(v.get("ok") is False and 1 <= len(v.get("mismatches", [])) <= 20 and
-              v["mismatches"][0]["path"].replace("\\", "/") == str(rel_last).replace("\\", "/")
-              .replace("Src", "B", 1)
-              if False else v.get("ok") is False and v.get("mismatches"),
+        mism = v.get("mismatches") or []
+        want = str(rel_last).replace("\\", "/").replace("Src", "B", 1)
+        got = [str(m.get("path", "")).replace("\\", "/") for m in mism]
+        check(v.get("ok") is False and 1 <= len(mism) <= 20 and any(g.endswith(want) for g in got),
               f"details.verify {e.details}")
         left = sorted(os.listdir(fv)) if fv.exists() else []
         check(not any(n in left for n in ("B.gpr", "B.rep", "backup.json", "B.fork.json")) and
@@ -1296,6 +1363,8 @@ def t_sidecar_unfinished(c):
 TESTS = {
     "sidecar_unfinished": t_sidecar_unfinished,
     "format_readonly": t_format_readonly,
+    "format_truncated": t_format_truncated,
+    "folder_singletons": t_folder_singletons,
     "upgrade_gate": t_upgrade_gate,
     "backup_fault": t_backup_fault,
     "manifest_canonical": t_manifest_canonical,
