@@ -627,7 +627,12 @@ public class LocalDatabaseItem extends LocalFolderItem implements DatabaseItem {
 		if (!VersionFileCheck.hasValidMagic(newest)) {
 			VersionFileCheck.Result r =
 				VersionFileCheck.repairOnOpen(getDataDir(), !fileSystem.isReadOnly());
-			if (r.status == VersionFileCheck.Status.REPAIRED) {
+			// REPAIRED: this opener quarantined the newest version. OK: the file this item
+				// expected is gone and the newest on disk is valid, so another opener (another
+				// item of the same file, e.g. the project's format scan) quarantined it first
+				// and this item's cached version is stale. Either way, scan the database again.
+				if (r.status == VersionFileCheck.Status.REPAIRED ||
+					r.status == VersionFileCheck.Status.OK) {
 				privateDb = new PrivateDatabase(getDataDir());
 				privateDb.setIsCheckoutCopy(isCheckedOut());
 				privateDb.setSynchronizationObject(fileSystem);
