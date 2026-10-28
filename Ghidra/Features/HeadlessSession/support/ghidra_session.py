@@ -48,12 +48,18 @@ environment (``GHIDRA_SESSION_*``), command-line options. The state dir is
 
 Starting and failing. ``Daemon.connect`` starts the daemon outside the caller's Windows Job Object
 when the caller runs in one (breakaway, then WMI, then a one-shot scheduled task; PROTOCOL-3.md
-D65), so that the daemon outlives the harness that started it. The session carries ``launch`` (how
+D65), so that, when a route other than ``stayed`` works (``survival: "independent"``), the daemon
+is not ended with the harness that started it. The session carries ``launch`` (how
 it was started), ``started`` and ``warnings``; ``daemon_dies_with_harness`` means that every route
 failed and the daemon ends with its harness. A start that fails raises ``LaunchError`` with a
 ``code`` (``LAUNCH_CODES``) and ``details``. ``Daemon.health()`` and ``Daemon.attach()`` are for the
 doctor. ``singleton: "per-install"`` (config) refuses a second daemon of the same install under
-another state dir with ``DuplicateDaemonError``; the default only warns. ``call(cmd, deadline=s)``
+another state dir with ``DuplicateDaemonError`` (best effort: the registry entry is written once the
+daemon answers, so two launchers that start at the same moment can both pass); the default only
+warns. ``GHIDRA_SESSION_SINGLETON`` overrides the policy; ``GHIDRA_SESSION_HEAP_CHECK=0`` (or
+``heapCheck: false``) turns off the explicit-``maxHeap`` check, which compares ``-Xmx`` (a
+reservation) with the free physical memory at that moment and can refuse a legitimate value on a
+loaded machine. ``call(cmd, deadline=s)``
 cancels a request that does not answer in time and raises ``SessionError("deadline_exceeded")``.
 
 Compatibility: this file is a versioned client (``CLIENT_VERSION``) that speaks protocols
@@ -1447,10 +1453,8 @@ def env_to_carry(launch_env: dict, props_envvars: dict | None) -> dict:
     return out
 
 
-# PowerShell with -ExecutionPolicy Bypass for this one process only: no machine or user policy
-# is changed.
-_PS = ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-       "-Command"]
+# PowerShell under the machine's own execution policy (the cmdlets used here need no bypass).
+_PS = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command"]
 
 
 def _run_ps(script: str, env: dict, timeout: float, what: str):
@@ -1651,6 +1655,17 @@ def registry_write(install: "Install", state: Path, instance: str, pid,
         d = user_state_root() / "registry"
         d.mkdir(parents=True, exist_ok=True)
         f = d / f"{registry_key(install.dir, state, instance)}.json"
+        for old in d.glob("*.json"):  # prune entries of daemons that are gone (lock free or missing)
+            if old == f:
+                continue
+            try:
+                e = json.loads(old.read_text(encoding="utf-8"))
+                gone = not _lock_is_held(Path(e["stateDir"]) / f"{e['instance']}.lock")
+            except (OSError, ValueError, KeyError, TypeError):
+                gone = True
+            if gone:
+                with contextlib.suppress(OSError):
+                    old.unlink()
         entry = {"pid": pid, "stateDir": str(state), "instance": instance,
                  "install": str(install.dir), "hydraVersion": version or install.version,
                  "startedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
@@ -1811,7 +1826,7 @@ class Daemon:
                 return self._annotate(s)
             if self.jvm_alive():
                 # starting up, or wedged: wait for its endpoint
-                s = self._wait_ready(None, client, harness, timeout, self._log_size())
+                s = self._wait_ready(None, client, harness, timeout, 0)  # since=0: logTail has the last lines
                 self._check_install(s.endpoint, install)
                 return self._annotate(s)
             with contextlib.suppress(OSError):

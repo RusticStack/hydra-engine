@@ -282,6 +282,22 @@ def t_launch_errors(c):
         stop_quietly(d)
     check(not d.jvm_alive(), "the daemon of the no_answer case is still running")
     seen["no_answer"] = "ok"
+
+    # no_answer on a daemon that is alive but wedged: its lock is held, a log exists; the logTail
+    # must hold the log's lines (it was empty when the tail started at the end of the file)
+    d2 = gs.Daemon(c.a.ghidra, str(fresh_state(c, base, "wedged")), "p1b-wedged")
+    d2.log_file.parent.mkdir(parents=True, exist_ok=True)
+    d2.log_file.write_text("line one\nline two\nline three\n", encoding="utf-8")
+    d2.lock_file.parent.mkdir(parents=True, exist_ok=True)
+    lk = gs.FileLock(d2.lock_file)
+    check(lk.try_acquire(), "could not take the wedged daemon's instance lock")
+    try:
+        e = raises_launch("no_answer", lambda: d2.connect("t", "p1b", timeout=1.0), "wedged daemon")
+        check(e.details.get("logTail") == ["line one", "line two", "line three"],
+              f"wedged no_answer logTail: {e.details.get('logTail')}")
+    finally:
+        lk.close()
+    seen["no_answer_wedged"] = "ok"
     return "; ".join(f"{k}: {v}" for k, v in seen.items())
 
 
@@ -500,9 +516,9 @@ def t_call_deadline(c):
         with d.connect("t", "p1b") as s:
             t0 = time.monotonic()
             try:
-                s.call("script", script=c.script("TestSleep.java"), program=None, args=["8000"],
+                s.call("script", script=c.script("TestSleep.java"), program=None, args=["30000"],
                        wait=60000, deadline=1.0)
-                raise Fail("the 8 s script finished inside a 1 s deadline")
+                raise Fail("the 30 s script finished inside a 1 s deadline")
             except gs.SessionError as e:
                 took = time.monotonic() - t0
                 check(e.code == "deadline_exceeded", f"real engine: {e.code}: {e}")
@@ -513,7 +529,7 @@ def t_call_deadline(c):
             dt.wait_for(lambda: s.call("ping", deadline=10) and not s._abandoned,
                         "the late answers", 30)
             ended = time.monotonic() - t0
-            check(ended < 6.0, f"the script ran {ended:.1f} s: the cancel did not reach it")
+            check(ended < 15.0, f"the script ran {ended:.1f} s: the cancel did not reach it")
             check(not s._pending, f"pending: {s._pending}")
             r = s.call("script", script=c.script("TestSleep.java"), program=None, args=["100"],
                        wait=60000, deadline=60)
@@ -533,8 +549,7 @@ def _java_count(token):
     ps = ("(Get-CimInstance Win32_Process -Filter \"Name='java.exe'\" | "
           f"Where-Object {{ $_.CommandLine -like '*{token}*' }} | Measure-Object).Count")
     try:
-        r = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
-                            "Bypass", "-Command", ps], capture_output=True, text=True, timeout=120)
+        r = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=120)
         return int(r.stdout.strip())
     except (OSError, ValueError, subprocess.TimeoutExpired):
         return None
@@ -872,7 +887,7 @@ def run_survival_case(c, key):
                 d.kill()
         if cs["spawn"] == "task":
             left = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive",
-                                   "-ExecutionPolicy", "Bypass", "-Command",
+                                   "-Command",
                                    "(Get-ScheduledTask -TaskName 'HydraDaemon-*' "
                                    "-ErrorAction SilentlyContinue | Measure-Object).Count"],
                                   capture_output=True, text=True, timeout=120)
@@ -894,13 +909,23 @@ def t_daemon_survives_launcher_exit(c):
                      for r in rows)
 
 
+def isolated(fn):
+    """Runs a test with its own user state root (GHIDRA_SESSION_HOME, inherited by every child
+    process): the registry of the real user, and the daemons of other agents, never take part."""
+    def run(c):
+        with user_root(fresh_dir(c, fn.__name__ + "-home")):
+            return fn(c)
+    run.__name__ = fn.__name__
+    return run
+
+
 TESTS = {
-    "p1b_launch_errors": t_launch_errors,
-    "p1b_duplicate_daemon": t_duplicate_daemon,
-    "p1b_call_deadline": t_call_deadline,
-    "p1b_concurrent_launchers": t_concurrent_launchers,
-    "p1b_native_access_flag": t_native_access_flag,
-    "p1b_daemon_survives_launcher_exit": t_daemon_survives_launcher_exit,
+    "p1b_launch_errors": isolated(t_launch_errors),
+    "p1b_duplicate_daemon": isolated(t_duplicate_daemon),
+    "p1b_call_deadline": isolated(t_call_deadline),
+    "p1b_concurrent_launchers": isolated(t_concurrent_launchers),
+    "p1b_native_access_flag": isolated(t_native_access_flag),
+    "p1b_daemon_survives_launcher_exit": isolated(t_daemon_survives_launcher_exit),
 }
 
 if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "--harness":
