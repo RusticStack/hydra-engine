@@ -184,11 +184,10 @@ fetches the pinned Hydra Engine release and a JDK, so setting up Hydralysis sets
 Hydra Engine stays a generic Ghidra front end that any client can use directly; Hydralysis is the
 quickest way to put it to work.
 
-> **Status.** Hydralysis is the new name of RusticRE (v0.4.0, twenty tools), and the rename is
-> in progress: the `RusticStack/Hydralysis` repository, the `hydralysis` command and
-> `HYDRALYSIS_ROOT` are not published yet, so the links and commands below do not work until
-> they are. Until then Hydra Engine works on its own, as described above and in the module
-> README.
+> **Status.** Hydralysis is the new name of RusticRE (0.5.0.dev0, twenty tools). The
+> `RusticStack/Hydralysis` repository is renamed but still private and has no release yet, so the
+> links and commands below work only with access to it. Until it is public Hydra Engine works on
+> its own, as described above and in the module README.
 
 ## Quick start
 
@@ -277,7 +276,7 @@ with gs.connect(client="my-tool", harness="claude-code") as s:   # joins the dae
   they expose, and a per-request `client`/`harness` label for each agent they serve. The session
   is a generic Ghidra front end; the tools belong to the client.
 
-**Through Hydralysis** (not published yet; renamed from RusticRE). By hand, from a checkout of
+**Through Hydralysis** (private, no release yet; renamed from RusticRE). By hand, from a checkout of
 [Hydralysis](https://github.com/RusticStack/Hydralysis) (Python 3.11 or later), with
 `HYDRALYSIS_ROOT` set to a directory for its engine, prepared projects, evidence and logs:
 
