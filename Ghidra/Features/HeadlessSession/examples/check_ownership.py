@@ -187,6 +187,8 @@ def resolve(kind, tok):
         return {"src/hydralysis/" + tok}
     if tok == "release workflow":
         return {".github/workflows/release.yml"}
+    if tok.startswith("/"):
+        return {tok[1:]}      # a repository-root path (the Ghidra core, /NOTICE-HYDRA, /README.md, .github)
     if tok.startswith("S/"):
         return {SESSION + tok[2:]}
     out = {MODULE + "/" + tok}
@@ -277,6 +279,10 @@ def check_changes(spec, kind, pkg, changed):
     # rule 2 of section 8: the goldens a package's char_<id>.py records carry the package id
     own_golden = re.compile(
         rf"{re.escape(MODULE)}/examples/characterization/v3/{pkg.lower()}-[A-Za-z0-9_.-]+\.json")
+    # a row that names a directory (``examples/conc/``) owns every file under it, except the directory
+    # of the v3 goldens, which rule 2 gives to the package whose id the file name carries
+    v3 = MODULE + "/examples/characterization/v3/"
+    dir_rows = {d: o for d, o in owners.items() if d.endswith("/") and not d.startswith(v3)}
     bad = []
     for path in changed:
         if path.endswith("certification.manifest"):
@@ -284,6 +290,13 @@ def check_changes(spec, kind, pkg, changed):
         if path in owners:
             if pkg not in owners[path]:
                 bad.append(f"{path}: a row of 8.1 owned by {', '.join(sorted(owners[path])) or 'nobody'}, "
+                           f"not {pkg}")
+            continue
+        under = [d for d in dir_rows if path.startswith(d)]
+        if under:
+            who = set().union(*(dir_rows[d] for d in under))
+            if pkg not in who:
+                bad.append(f"{path}: under a directory row of 8.1 owned by {', '.join(sorted(who))}, "
                            f"not {pkg}")
             continue
         if kind == "hydra" and (own_test.fullmatch(path) or own_golden.fullmatch(path)):
@@ -331,6 +344,9 @@ SYNTHETIC = """
 | `examples/runner.py`, **`examples/check.py`** | E0 | |
 | `S/Both.java` | E0 | E1 |
 | `README.md` | | E1 |
+| **`examples/conc/`** | E0 | |
+| `/NOTICE-HYDRA` | | E1 |
+| `examples/characterization/v3/` | E0 | |
 
 **Hydralysis (`src/hydralysis`, `tests/`)**
 
@@ -416,6 +432,13 @@ def selftest():
            [len(check_changes(spec, "hydra", "E1", [E + "examples/characterization/v3/" + n]))
             for n in ("e1-hello.json", "e1-expect_conflicts.json", "e0-hello.json", "session.json",
                       "e10-x.json", "e1x.json", "sub/e1-a.json")], [0, 0, 1, 1, 1, 1, 1])
+    expect("a directory row owns the files under it (examples/conc/), for its package only",
+           [len(check_changes(spec, "hydra", p, [E + "examples/conc/a/b.py"])) for p in ("E0", "E1")], [0, 1])
+    expect("a root path of the Hydra table (/NOTICE-HYDRA) resolves to the repository root",
+           [len(check_changes(spec, "hydra", p, ["NOTICE-HYDRA"])) for p in ("E1", "E0")], [0, 1])
+    expect("the v3 directory row (E0's) grants E1 nothing: a golden follows rule 2 (its id prefix)",
+           [len(check_changes(spec, "hydra", "E1", [E + "examples/characterization/v3/" + n]))
+            for n in ("e1-x.json", "e0-x.json")], [0, 1])
     plan = SYNTHETIC.replace("| W1 second | E1 | | n |", "| W1 second | E1 | Y0e | n |").replace(
         "| W0 first | E0 | Y0a | n |", "| W0 first | E0 | Y0a, Y4e | n |")
     expect("the ids Y0e and Y4e are seen (they were not with [a-d])",
