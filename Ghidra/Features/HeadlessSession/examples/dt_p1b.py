@@ -40,8 +40,13 @@ Tests:
 * ``p1b_concurrent_launchers``  N processes call ``connect`` at once on one root: exactly one
   starts the daemon, all get the same pid, one JVM per root (two roots in parallel).
 * ``p1b_wedged_connect``  a real daemon is suspended (NtSuspendProcess): ``connect(timeout=3)``
-  and ``attach`` raise ``no_answer`` in well under 15 s and ``status()`` returns ``None``, instead
-  of waiting for a ``hello`` that never comes; resumed, the daemon answers again.
+  and ``attach`` raise ``no_answer`` in well under 15 s, ``connect(timeout=12)`` ends as
+  ``no_answer`` in about 12 s (covers ``_wait_ready``), ``status()`` returns ``None`` and
+  ``stop(timeout=3)`` returns ``False`` in about 5 s, instead of waiting for a ``hello`` that
+  never comes; resumed, ``stop(force=True)`` ends the daemon.
+* ``p1b_stop_shutdown_deadline``  a fake engine answers ``hello`` and never ``shutdown``:
+  ``stop()`` does not block on the call (it ends in ``LaunchError`` after the deadline and the
+  wait for the exit).
 * ``p1b_native_access_flag``  the JVM command line carries ``--enable-native-access=ALL-UNNAMED``
   once, also when launch.properties or ``vmargs`` already carry it, and not for
   ``--enable-native-access=java.base``.
@@ -432,6 +437,12 @@ class FakeEngine:
                 f.flush()
 
         answered = set()
+        try:
+            self._loop(f, send, answered)
+        except (OSError, ValueError):
+            pass  # the client closed the connection (stop() abandons a silent shutdown)
+
+    def _loop(self, f, send, answered):
         for raw in f:
             m = json.loads(raw)
             self.requests.append(m)
@@ -952,15 +963,73 @@ def t_wedged_connect(c):
         st_ = d.status()
         check(st_ is None and time.monotonic() - t0 < 15, "status() of a suspended daemon hung")
         res["status"] = f"{time.monotonic() - t0:.1f} s"
+        # _wait_ready: with a timeout of 12 s the two first dials (5 s each) leave about 2 s for
+        # _wait_ready, whose own dial needs the hello deadline. Without it the call hangs.
+        t0 = time.monotonic()
+        e = raises_launch("no_answer", lambda: d.connect("t", "p1b", timeout=12),
+                          "connect(timeout=12) on a suspended daemon")
+        took = time.monotonic() - t0
+        check(11 <= took < 20, f"connect(timeout=12) took {took:.1f} s on a suspended daemon")
+        check("within 12 s" in str(e) and e.details.get("timeoutS") == 12,
+              f"the error names the caller's timeout: {e} / {e.details}")
+        res["connect12"] = f"{took:.1f} s"
+        # stop on a wedged daemon: hello is not answered, stop gives up (False), the JVM lives
+        t0 = time.monotonic()
+        r = d.stop(timeout=3)
+        took = time.monotonic() - t0
+        check(r is False and took < 15 and d.jvm_alive(),
+              f"stop() on a suspended daemon returned {r!r} after {took:.1f} s")
+        res["stop"] = f"{took:.1f} s"
         nt.NtResumeProcess(h)
-        s = d.connect("t", "p1b", timeout=30)  # resumed: it answers again
-        s.close()
-        return "no_answer on a suspended daemon: " + ", ".join(f"{a} {b}" for a, b in res.items())
+        check(d.stop(force=True, timeout=60) is True and not d.jvm_alive(),
+              "force-stop after the resume did not end the daemon")
+        h2, h = h, None
+        k.CloseHandle(h2)
+        return ("no_answer on a suspended daemon: "
+                + ", ".join(f"{a} {b}" for a, b in res.items()) + "; force-stop after resume ok")
     finally:
         if h:
             nt.NtResumeProcess(h)  # a suspended JVM cannot be stopped politely
             k.CloseHandle(h)
         stop_quietly(d)
+
+
+def t_stop_shutdown_deadline(c):
+    """A daemon that answers ``hello`` and then wedges: ``stop()`` must not block on the
+    ``shutdown`` call. The daemon is a fake engine that never answers ``shutdown``; the instance
+    lock is held by the test, so the Daemon sees a live JVM."""
+    gs = c.gs
+    _GS["gs"] = gs
+    base = fresh_dir(c, "stopdl")
+    st = fresh_state(c, base)
+    d = gs.Daemon(c.a.ghidra, str(st), "p1b-stopdl")
+    fe = FakeEngine()
+    lk = gs.FileLock(d.lock_file)
+    try:
+        check(lk.acquire(5), "could not take the instance lock")
+        d.endpoint_file.write_text(json.dumps(fe.endpoint), encoding="utf-8")
+        check(d.jvm_alive(), "the fake daemon does not look alive")
+        out = {}
+
+        def run():
+            t0 = time.monotonic()
+            try:
+                out["r"] = d.stop(timeout=3)
+            except Exception as e:  # noqa: BLE001
+                out["e"] = e
+            out["t"] = time.monotonic() - t0
+        th = threading.Thread(target=run, daemon=True)
+        th.start()
+        th.join(40)
+        check(not th.is_alive(), "stop() is blocked on a shutdown that is never answered")
+        check(isinstance(out.get("e"), c_launch_error()) and "did not exit" in str(out["e"]),
+              f"stop() on a daemon that wedged after hello: {out}")
+        check(5 <= out["t"] < 15, f"stop() took {out['t']:.1f} s (deadline 5 s + timeout 3 s)")
+        check(any(r["cmd"] == "shutdown" for r in fe.requests), "no shutdown request was sent")
+        return f"stop() after a hello and a silent shutdown ended in {out['t']:.1f} s"
+    finally:
+        lk.close()
+        fe.close()
 
 
 def isolated(fn):
@@ -980,6 +1049,7 @@ TESTS = {
     "p1b_concurrent_launchers": isolated(t_concurrent_launchers),
     "p1b_native_access_flag": isolated(t_native_access_flag),
     "p1b_wedged_connect": isolated(t_wedged_connect),
+    "p1b_stop_shutdown_deadline": isolated(t_stop_shutdown_deadline),
     "p1b_daemon_survives_launcher_exit": isolated(t_daemon_survives_launcher_exit),
 }
 

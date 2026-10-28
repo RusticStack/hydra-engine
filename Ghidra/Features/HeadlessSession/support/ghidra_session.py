@@ -119,7 +119,8 @@ IS_MAC = sys.platform == "darwin"
 #: ``IncompatibleError`` keeps its own code, ``incompatible``.
 LAUNCH_CODES = ("no_jdk", "jdk_too_old", "bad_install", "lock_held", "heap_too_large",
                 "exited_early", "no_answer", "duplicate_daemon",
-                "not_running")  # not_running: attach()/start=False and no daemon runs
+                "not_running")  # not_running: attach()/start=False and no daemon runs; a JVM that is
+                # alive but does not answer (wedged, or not listening yet) is no_answer
 
 
 class LaunchError(RuntimeError):
@@ -1144,7 +1145,9 @@ HELLO_DEADLINE_S = 5.0
 
 def _hello_left(end: float) -> float:
     """The deadline for one ``hello``: at most HELLO_DEADLINE_S, at least 0.5 s, and no more
-    than what is left until the monotonic time ``end``."""
+    than what is left until the monotonic time ``end``. The 0.5 s floor is deliberate (a hello
+    needs a moment even when the budget is spent), so a call that dials last can overrun its
+    ``timeout`` by up to 0.5 s."""
     return max(0.5, min(HELLO_DEADLINE_S, end - time.monotonic()))
 
 
@@ -1816,7 +1819,11 @@ class Daemon:
         The session carries ``launch`` (how that daemon was started, see ``spawn_daemon``),
         ``started`` (this call started it) and ``warnings`` (``daemon_dies_with_harness``: the
         daemon runs in the job of the harness that started it and ends with it;
-        ``duplicate_daemon``: a live daemon of the same install runs under another state dir)."""
+        ``duplicate_daemon``: a live daemon of the same install runs under another state dir).
+
+        ``timeout`` bounds the whole call, up to 0.5 s of overrun (the floor of the last hello
+        deadline, see ``_hello_left``). A daemon that is alive but does not answer ``hello`` ends
+        as ``no_answer``, not as a hang."""
         install = Install.locate(self.ghidra)
         t_end = time.monotonic() + timeout
         # A daemon that is alive but wedged accepts the TCP connection and never answers hello:
@@ -1855,7 +1862,8 @@ class Daemon:
                 return self._annotate(s)
             if self.jvm_alive():
                 # starting up, or wedged: wait for its endpoint
-                s = self._wait_ready(None, client, harness, max(0.0, t_end - time.monotonic()), 0)  # since=0: logTail has the last lines
+                s = self._wait_ready(None, client, harness, max(0.0, t_end - time.monotonic()), 0,  # since=0: logTail has the last lines
+                                     asked=timeout)
                 self._check_install(s.endpoint, install)
                 return self._annotate(s)
             with contextlib.suppress(OSError):
@@ -1864,7 +1872,8 @@ class Daemon:
             proc = self._spawn(install)
             outcome = self.last_launch
             try:
-                s = self._wait_ready(proc, client, harness, timeout, self._log_offset)
+                s = self._wait_ready(proc, client, harness, timeout, self._log_offset,
+                                     asked=timeout)
             except BaseException:
                 if outcome.get("task_name"):
                     _unregister_task(outcome["task_name"], stop=True)
@@ -1879,7 +1888,9 @@ class Daemon:
 
     def attach(self, client: str = "", harness: str = "") -> SocketSession:
         """Joins the running daemon and never starts one (``connect(start=False)``): for the
-        doctor. Raises ``LaunchError`` with code ``not_running`` when there is none."""
+        doctor. Raises ``LaunchError`` with code ``not_running`` when there is no daemon, and
+        ``no_answer`` when a JVM holds the instance lock but does not answer ``hello`` within the
+        deadline (wedged, or still starting and not yet listening: the caller decides which)."""
         return self.connect(client, harness, start=False)
 
     def _singleton_check(self, install: Install) -> list[dict]:
@@ -2034,7 +2045,11 @@ class Daemon:
         self.last_launch = outcome
         return proc
 
-    def _wait_ready(self, proc, client, harness, timeout, since: int = 0) -> SocketSession:
+    def _wait_ready(self, proc, client, harness, timeout, since: int = 0,
+                    asked: float | None = None) -> SocketSession:
+        """``timeout`` is the time left for this wait; ``asked`` is the caller's whole timeout,
+        which the error reports (default: ``timeout``)."""
+        asked = timeout if asked is None else asked
         end = time.monotonic() + timeout
         while time.monotonic() < end:
             if proc is not None and proc.poll() is not None:
@@ -2054,14 +2069,17 @@ class Daemon:
                     return s
             time.sleep(0.05)
         ep = self.read_endpoint()
-        raise LaunchError(f"the daemon did not answer within {timeout:.0f} s; see {self.log_file}",
-                          "no_answer", {"timeoutS": timeout, "log": str(self.log_file),
+        raise LaunchError(f"the daemon did not answer within {asked:.0f} s; see {self.log_file}",
+                          "no_answer", {"timeoutS": asked, "log": str(self.log_file),
                                         "logTail": self._log_tail(since),
                                         "holder": {"pid": ep.get("pid")} if ep else None,
                                         "suggest": "the daemon may be wedged: health() tells "
                                                    "whether it answers; stop(force) or kill() it"})
 
     def status(self) -> dict | None:
+        """The daemon's ``status``; ``None`` when there is no daemon or it does not answer
+        ``hello`` within HELLO_DEADLINE_S. A daemon that answers ``hello`` and then not ``status``
+        within the same deadline raises ``SessionError("deadline_exceeded")``."""
         s = self._try_connect("ghidra_session", "cli", check=False,  # also of an older release
                               hello_deadline=HELLO_DEADLINE_S)
         if not s:
@@ -2070,7 +2088,11 @@ class Daemon:
             return s.call("status", deadline=HELLO_DEADLINE_S)
 
     def stop(self, force: bool = False, timeout: float = 60.0) -> bool:
-        """Asks the daemon to shut down; returns True when its JVM is gone."""
+        """Asks the daemon to shut down; returns True when its JVM is gone. A daemon that does
+        not answer ``hello`` within HELLO_DEADLINE_S is wedged: ``False`` is returned (kill() it,
+        or resume it and stop(force=True)). A daemon that answers ``hello`` but not ``shutdown``
+        within the same deadline is treated like a closed connection: the wait for the JVM to
+        exit then runs for ``timeout`` and ends in ``LaunchError`` when it does not."""
         s = self._try_connect("ghidra_session", "cli", check=False,  # stop what we cannot drive
                               hello_deadline=HELLO_DEADLINE_S)
         if not s:
@@ -2078,9 +2100,9 @@ class Daemon:
         pid = s.endpoint.get("pid")
         try:
             with s:
-                s.call("shutdown", force=force)
+                s.call("shutdown", force=force, deadline=HELLO_DEADLINE_S)
         except SessionError as e:
-            if e.code != "closed":
+            if e.code not in ("closed", "deadline_exceeded"):
                 raise
         end = time.monotonic() + timeout
         while time.monotonic() < end:
