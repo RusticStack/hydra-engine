@@ -103,6 +103,8 @@ final class ImportGate {
 		/** Who asked, as {@code busy} answers name them ("client 2 (agent-a, claude-code)"). */
 		final String who;
 		final int clientId;
+		/** True when the client that queued this entry speaks protocol 3 (E3a, C5). */
+		final boolean v3;
 		final String project;
 		/** What is imported (the file), for display. */
 		final String what;
@@ -126,11 +128,12 @@ final class ImportGate {
 				behind, "runningAtStart", runningAtStart);
 		}
 
-		private Entry(Kind kind, String who, int clientId, String project, String what,
+		private Entry(Kind kind, String who, int clientId, boolean v3, String project, String what,
 				long bytes, boolean nested) {
 			this.kind = kind;
 			this.who = who;
 			this.clientId = clientId;
+			this.v3 = v3;
 			this.project = project;
 			this.what = what;
 			this.bytes = bytes;
@@ -162,16 +165,18 @@ final class ImportGate {
 	 * @throws SessionException {@code cancelled} on cancel, {@code busy} when {@code waitMs}
 	 *             passed
 	 */
-	Entry enter(Kind kind, String who, int clientId, String project, String what, long bytes,
+	Entry enter(Kind kind, String who, Client client, String project, String what, long bytes,
 			RequestMonitor m, long waitMs) {
+		int clientId = client.id;
+		boolean v3 = client.v3();
 		lock.lock();
 		try {
 			for (Entry r : running) {
 				if (r.thread == Thread.currentThread() && !r.nested) {
-					return new Entry(kind, who, clientId, project, what, bytes, true);
+					return new Entry(kind, who, clientId, v3, project, what, bytes, true);
 				}
 			}
-			Entry e = new Entry(kind, who, clientId, project, what, bytes, false);
+			Entry e = new Entry(kind, who, clientId, v3, project, what, bytes, false);
 			queue.add(e);
 			boolean free = running.size() < permits && queue.size() == 1;
 			e.positionAtEntry = queue.size();
@@ -186,6 +191,7 @@ final class ImportGate {
 								"cancelled while queued behind " + holderText());
 						}
 						JsonObject q = queueInfo(e);
+						m.queueSeen(q);
 						m.waiting("import queue", q);
 						m.setMessage("waiting behind " + holderText() + " (position " +
 							q.get("position") + " in the import queue" + estimateText(q) + ")");
@@ -212,6 +218,7 @@ final class ImportGate {
 				changed.signalAll();
 				if (m != null) {
 					m.waiting(null, null);
+					m.waited("queue", System.currentTimeMillis() - e.queuedAt);
 				}
 				throw ex;
 			}
@@ -223,6 +230,7 @@ final class ImportGate {
 			changed.signalAll(); // the next in line may fit as well
 			if (m != null) {
 				m.waiting(null, null);
+				m.waited("queue", e.startedAt - e.queuedAt);
 			}
 			return e;
 		}
@@ -313,6 +321,10 @@ final class ImportGate {
 			running.isEmpty() ? null : describe(running.get(0), now), "running", running.size(),
 			"maxImports", permits);
 		o.add("estimatedWaitMs", estimateWait(e, pos));
+		if (e.v3) {
+			// the estimate covers loading the file, not the analysis that may follow (C5)
+			o.addProperty("estimateScope", "load");
+		}
 		return o;
 	}
 
