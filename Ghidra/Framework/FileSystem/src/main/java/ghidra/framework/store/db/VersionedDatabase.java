@@ -54,7 +54,16 @@ public class VersionedDatabase extends Database {
 		super(dbDir, true, create);
 		this.verDBListener = verDBListener;
 		bfMgr = new VerDBBufferFileManager();
-		scanFiles(true);
+		boolean intact = true;
+		if (!create) {
+			// Hydra E8: a newest version with an invalid header (an interrupted save) is
+			// quarantined in a writable disposable tree before the scan below picks the newest
+			// version; anywhere else it is reported as corrupt_newest when the file is opened.
+			// The repairing scan deletes older versions, so it must not run over a corrupt
+			// newest version: the older one is then the only good copy.
+			intact = !VersionFileCheck.repairOnOpen(dbDir, true).isCorrupt();
+		}
+		scanFiles(intact);
 		if (create && currentVersion != 0) {
 			throw new IOException("Database already exists");
 		}
@@ -302,6 +311,7 @@ public class VersionedDatabase extends Database {
 					"Version " + version + " not available for " + dbDir);
 			}
 			if (version == currentVersion || version == LATEST_VERSION) {
+				VersionFileCheck.requireIntact(dbDir);
 				return new LocalManagedBufferFile(bfMgr, false, minChangeDataVer,
 					DEFAULT_CHECKOUT_ID);
 			}
@@ -348,6 +358,7 @@ public class VersionedDatabase extends Database {
 			if (minChangeDataVer < 0) {
 				throw new IOException("Checkout not found");
 			}
+			VersionFileCheck.requireIntact(dbDir);
 			return new LocalManagedBufferFile(bfMgr, true, minChangeDataVer, checkoutId);
 		}
 	}

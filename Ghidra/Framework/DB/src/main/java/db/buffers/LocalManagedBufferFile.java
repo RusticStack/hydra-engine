@@ -692,6 +692,14 @@ public class LocalManagedBufferFile extends LocalBufferFile implements ManagedBu
 				saveChangeFile.close();
 			}
 
+			// Hydra E8: write the header and sync BEFORE the rename. The pre-save file is
+			// still under its temporary name here, so a process kill before the rename leaves
+			// the previous version as the newest db.N.gbf, and a kill after it leaves a final
+			// named file whose header is already valid. Renaming first and flushing later (in
+			// setReadOnly below) left a window in which the newest db.N.gbf was full size with
+			// an all-zero header. The flush in setReadOnly stays; it is idempotent.
+			saveFile.flush();
+
 			// Rename saveFile and enable transfer versioning settings
 			if (saveFile.renameFile(newFile)) {
 				saveFile.version = newVersion;
