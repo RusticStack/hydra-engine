@@ -19,12 +19,13 @@ import static ghidra.app.util.headless.session.Access.firstOf;
 import static ghidra.app.util.headless.session.Access.lockProject;
 import static ghidra.app.util.headless.session.Access.unlockProject;
 import static ghidra.app.util.headless.session.Requests.waitMs;
-import static ghidra.app.util.headless.session.Session.CLEANUP_WAIT_MS;
 
 import java.io.*;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 import com.google.gson.*;
 
@@ -79,27 +80,33 @@ final class ProjectCommands {
 		long openedFrom = System.currentTimeMillis();
 		ProjectEntry p;
 		boolean opened = false;
-		synchronized (s.registry) {
-			if (s.shuttingDown) {
-				throw new SessionException(SessionException.CONFLICT, "the session is shutting down");
+		while (true) {
+			synchronized (s.registry) {
+				if (s.shuttingDown) {
+					throw new SessionException(SessionException.CONFLICT,
+						"the session is shutting down");
+				}
+				p = s.projects.get(canonical);
+				if (!(p != null && writable && !p.writable())) {
+					if (p == null) {
+						p = openProjectEntry(c, r, canonical, writable);
+						opened = true;
+					}
+					synchronized (p.users) {
+						p.users.add(c);
+					}
+					p.joinedAt.putIfAbsent(c, System.currentTimeMillis());
+					c.seenGeneration.putIfAbsent(p.id, p.generation);
+					c.projects.add(p.id);
+					c.activeProject = p.id;
+					p.lastUsed = System.currentTimeMillis();
+					break;
+				}
 			}
-			p = s.projects.get(canonical);
-			if (p != null && writable && !p.writable()) {
-				// readers keep using it: the view is reopened writable in place, same id
-				makeWritable(c, p, wait);
-			}
-			if (p == null) {
-				p = openProjectEntry(c, r, canonical, writable);
-				opened = true;
-			}
-			synchronized (p.users) {
-				p.users.add(c);
-			}
-			p.joinedAt.putIfAbsent(c, System.currentTimeMillis());
-			c.seenGeneration.putIfAbsent(p.id, p.generation);
-			c.projects.add(p.id);
-			c.activeProject = p.id;
-			p.lastUsed = System.currentTimeMillis();
+			// Readers keep using the view; it is reopened writable in place, same id. This waits for
+			// the project's lock, so it runs outside the registry monitor: an unrelated project's
+			// open_project must not wait for it (BP8, 3.10). The loop joins afterwards.
+			makeWritable(c, p, wait);
 		}
 		JsonObject info = p.info(c);
 		Json.put(info, "opened", opened);
@@ -134,9 +141,31 @@ final class ProjectCommands {
 	 * is opened writable (taking its lock), then under the project's exclusive lock (requests
 	 * running on it finish first) it replaces the view, and every program clients use is reopened
 	 * from it under the same key, read-only, with its overlays rebuilt. The id, the keys and the
-	 * clients' joins stay. Held: {@link #registry}.
+	 * clients' joins stay. Held: {@link #upgrading} (not the registry, BP8).
 	 */
 	private void makeWritable(Client c, ProjectEntry p, long wait) {
+		// one reopen per project at a time; a second opener that waited here finds it done
+		ReentrantLock one = upgrading.computeIfAbsent(p.canonical, k -> new ReentrantLock());
+		if (Waits.lock(one, wait) != Waits.Outcome.GOT) {
+			throw new SessionException(SessionException.BUSY,
+				"project " + p.id + " is being reopened writable by another request; retry",
+				p.identity());
+		}
+		try {
+			if (p.writable() || p.closed) {
+				return;
+			}
+			reopenWritable(c, p, wait);
+		}
+		finally {
+			one.unlock();
+		}
+	}
+
+	/** Per project (canonical path): the lock that serialises {@link #makeWritable}. */
+	private final Map<String, ReentrantLock> upgrading = new ConcurrentHashMap<>();
+
+	private void reopenWritable(Client c, ProjectEntry p, long wait) {
 		ProjectLocator locator = new ProjectLocator(p.resolved.dir().getPath(), p.resolved.name());
 		String rev;
 		try {
@@ -323,15 +352,41 @@ final class ProjectCommands {
 		synchronized (c.programs) {
 			mine = c.programs.stream().filter(k -> k.startsWith(p.id + ":")).toList();
 		}
+		// A client that is gone is released within one budget of `wait` for all its programs
+		// (Session.disconnect passes abandonWaitS): what cannot be had in time is flagged abandoned
+		// and finished later without waiting (ProgramEntry.pendingLeaves), never waited for 600 s.
+		boolean dying = c.leaving;
+		long end = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(wait);
 		for (String key : mine) {
 			ProgramEntry e = p.programs.get(key.substring(p.id.length() + 1));
 			if (e == null) {
 				c.programs.remove(key);
 				continue;
 			}
-			Lock pl = lockProject(p, false, wait, "close_project");
+			long w = dying ? Math.max(0, (end - System.nanoTime()) / 1_000_000L) : wait;
+			Lock pl;
 			try {
-				boolean discarded = s.programCmds.releaseUse(c, e, discard, wait);
+				pl = lockProject(p, false, w, "close_project");
+			}
+			catch (SessionException ex) {
+				if (dying && SessionException.BUSY.equals(ex.code())) {
+					deferLeave(c, e, ex);
+					continue;
+				}
+				throw ex;
+			}
+			try {
+				boolean discarded = false;
+				try {
+					discarded = s.programCmds.releaseUse(c, e, discard, w);
+				}
+				catch (SessionException ex) {
+					if (dying && SessionException.BUSY.equals(ex.code())) {
+						deferLeave(c, e, ex);
+						continue;
+					}
+					throw ex;
+				}
 				if (discarded) {
 					Msg.warn(s, c.label() + " left " + p.id + ": discarded unsaved changes in " +
 						e.path);
@@ -353,12 +408,27 @@ final class ProjectCommands {
 			}
 			p.lastUsed = System.currentTimeMillis();
 			if (!p.closed && p.userCount() == 0 && (p.writable() || s.keepWarmMs == 0) &&
-				p.programs.values().stream().noneMatch(ProgramEntry::holdsOrphanedWork)) {
-				closeProjectEntry(p, wait, true);
+				p.programs.values().stream().noneMatch(ProgramEntry::holdsOrphanedWork) &&
+				p.programs.values().stream().noneMatch(x -> !x.pendingLeaves.isEmpty())) {
+				long w = dying ? Math.max(0, (end - System.nanoTime()) / 1_000_000L) : wait;
+				closeProjectEntry(p, w, true);
 				return true;
 			}
 		}
 		return false;
+	}
+
+	/**
+	 * The exclusive leave of a dead client could not be had in time: its requests that still hold
+	 * the program are flagged abandoned, the leave stays pending and its ownership bits stay until it
+	 * is finished (they are guarded by the program lock, which this thread does not hold; 3.5).
+	 */
+	private void deferLeave(Client c, ProgramEntry e, SessionException why) {
+		e.markAbandoned(c);
+		e.pendingLeaves.add(c);
+		Msg.warn(s, c.label() + " is gone and could not leave " + e.key + " in time (" +
+			why.getMessage() + "); the leave is finished when the lock is free" +
+			(e.holdsBy(c) ? ", its request " + "still running there is flagged abandoned" : ""));
 	}
 
 	/**
@@ -440,7 +510,7 @@ final class ProjectCommands {
 		JsonObject r = Json.of("program", e.key, "revision", e.revision);
 		boolean got = false;
 		try {
-			got = e.lock.writeLock().tryLock(CLEANUP_WAIT_MS, TimeUnit.MILLISECONDS);
+			got = e.lock.writeLock().tryLock(Session.abandonWaitMs(), TimeUnit.MILLISECONDS);
 		}
 		catch (InterruptedException ex) {
 			Thread.currentThread().interrupt();

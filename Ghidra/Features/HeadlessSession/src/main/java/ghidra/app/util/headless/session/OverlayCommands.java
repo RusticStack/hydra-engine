@@ -25,7 +25,6 @@ import static ghidra.app.util.headless.session.ScriptCommands.findScript;
 import java.io.*;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
 import java.util.regex.Pattern;
 
@@ -137,20 +136,24 @@ final class OverlayCommands {
 			boolean write = cmd.equals("apply_overlay") || cmd.equals("rename") ||
 				cmd.equals("comment") || cmd.equals("drop_overlay");
 			Lock ol = write ? o.lock.writeLock() : o.lock.readLock();
-			boolean got = false;
-			try {
-				got = ol.tryLock(waitMs(req), TimeUnit.MILLISECONDS);
-			}
-			catch (InterruptedException ex) {
-				Thread.currentThread().interrupt();
-			}
-			if (!got) {
+			Waits.Outcome got = Waits.lock(o.lock, write, waitMs(req), Waits.counter(o));
+			if (got != Waits.Outcome.GOT) {
+				boolean full = got == Waits.Outcome.QUEUE_FULL;
+				boolean v3 = c.v3();
 				JsonObject d = e.identity();
 				Json.put(d, "overlay", name);
 				d.add("holderInfo", c.holder("overlay " + name, 0));
 				Json.put(d, "suggest", "retry");
-				throw new SessionException(SessionException.BUSY,
-					"overlay '" + name + "' is busy with another of this client's requests", d);
+				d = SessionException.busyDetails(v3, d, full ? "lock_queue_full" : "lock_wait", null,
+					null);
+				SessionException ex = new SessionException(SessionException.BUSY,
+					full ? "overlay '" + name + "' already has too many requests waiting for it"
+							: "overlay '" + name + "' is busy with another of this client's requests",
+					d);
+				if (v3) {
+					ex.withRetryAfterMs(1000);
+				}
+				throw ex;
 			}
 			try {
 				if (cmd.equals("drop_overlay")) {

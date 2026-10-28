@@ -21,7 +21,6 @@ import static ghidra.app.util.headless.session.Requests.waitMs;
 
 import java.io.*;
 import java.util.*;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
 import java.util.regex.Pattern;
 
@@ -104,17 +103,13 @@ final class Access {
 
 	static Lock lockProject(ProjectEntry p, boolean exclusive, long wait, String cmd) {
 		Lock l = exclusive ? p.lock.writeLock() : p.lock.readLock();
-		boolean got = false;
-		try {
-			got = l.tryLock(wait, TimeUnit.MILLISECONDS);
-		}
-		catch (InterruptedException e) {
-			Thread.currentThread().interrupt();
-		}
-		if (!got) {
+		Waits.Outcome got = Waits.lock(p.lock, exclusive, wait, Waits.counter(p));
+		if (got != Waits.Outcome.GOT) {
+			boolean full = got == Waits.Outcome.QUEUE_FULL;
+			boolean v3 = Waits.v3();
 			JsonObject d = p.identity();
 			Json.put(d, "wanted", exclusive ? "exclusive" : "shared");
-			Json.put(d, "waitedMs", wait);
+			Json.put(d, "waitedMs", full ? 0 : wait);
 			String holderCmd = p.exclusiveCmd;
 			if (holderCmd != null) {
 				Client hc = p.exclusiveClient;
@@ -127,11 +122,23 @@ final class Access {
 				Json.put(d, "readers", p.lock.getReadLockCount());
 			}
 			Json.put(d, "suggest", "retry");
-			throw new SessionException(SessionException.BUSY,
-				exclusive ? cmd + " needs project " + p.id + " to itself and requests are running"
-						: "project " + p.id + " is being " +
-							(holderCmd == null ? "opened or closed" : "changed (" + holderCmd + ")"),
+			if (full) {
+				Json.put(d, "waiters", Waits.counter(p).get());
+				Json.put(d, "waitersMax", Waits.cap(Caller.monitor()));
+			}
+			d = SessionException.busyDetails(v3, d, full ? "lock_queue_full" : "lock_wait", null,
+				null);
+			SessionException ex = new SessionException(SessionException.BUSY,
+				full ? "too many requests already wait for project " + p.id + "; retry"
+						: exclusive ? cmd + " needs project " + p.id +
+							" to itself and requests are running"
+								: "project " + p.id + " is being " +
+									(holderCmd == null ? "opened or closed" : "changed (" + holderCmd + ")"),
 				d);
+			if (v3) {
+				ex.withRetryAfterMs(1000);
+			}
+			throw ex;
 		}
 		if (p.closed) {
 			l.unlock();
