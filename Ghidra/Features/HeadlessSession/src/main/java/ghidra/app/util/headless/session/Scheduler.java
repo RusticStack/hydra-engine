@@ -393,10 +393,22 @@ final class Scheduler {
 			while (!t.granted) {
 				if (m != null && v3) {
 					JsonObject q = queueInfo(s, t);
-					m.waiting(what, q);
-					m.queueSeen(q);
-					m.setMessage("waiting for a " + s.lane.json() + " slot (position " +
-						q.get("position") + ", " + q.get("ahead") + " ahead" + etaText(q) + ")");
+					String text = "waiting for a " + s.lane.json() + " slot (position " +
+						q.get("position") + ", " + q.get("ahead") + " ahead" + etaText(q) + ")";
+					// the progress event is written to the client's socket: never under the
+					// scheduler lock, which every admission and release takes
+					lock.unlock();
+					try {
+						m.waiting(what, q);
+						m.queueSeen(q);
+						m.setMessage(text);
+					}
+					finally {
+						lock.lock();
+					}
+					if (t.granted) {
+						break;
+					}
 				}
 				if (m != null && m.isCancelled()) {
 					dequeue(s, t);
