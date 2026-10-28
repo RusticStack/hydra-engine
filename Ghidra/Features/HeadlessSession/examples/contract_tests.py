@@ -434,7 +434,7 @@ def gs_capability_order():
     """The declaration order of 3.2 (Advertised.CAPABILITIES)."""
     return ["errorNext", "expectAll", "idempotency", "laneHint", "maintLane", "queueInfo",
             "cancelWait", "forkReport", "format", "backup", "upgradeGate", "scriptIsolation",
-            "scriptSha256", "attemptedChanges", "health", "identity"]
+            "scriptSha256", "attemptedChanges", "health", "identity", "forkAtomic"]
 
 
 def self_test(c, *flags, engine=None):

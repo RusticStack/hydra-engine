@@ -106,8 +106,14 @@ final class ProjectFork {
 			ch.write(java.nio.ByteBuffer.wrap(GSON.toJson(o).getBytes(StandardCharsets.UTF_8)));
 			ch.force(true);
 		}
-		Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING,
-			StandardCopyOption.ATOMIC_MOVE);
+		try {
+			Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING,
+				StandardCopyOption.ATOMIC_MOVE);
+		}
+		catch (IOException e) {
+			Files.deleteIfExists(tmp.toPath()); // best effort: the next attempt writes it again
+			throw e;
+		}
 	}
 
 	/** What a fork of {@code r} into {@code destDir} costs, and how it would be made. */
@@ -161,9 +167,20 @@ final class ProjectFork {
 		return a == null ? f.getAbsoluteFile() : a;
 	}
 
-	/** The outcome of {@link #stage}: the copy in its staging folder, not yet published. */
+	/**
+	 * The outcome of {@link #stage}: the copy in its staging folder, not yet published.
+	 * {@code unfinished} is set by {@link #publish} when the fork is committed (its {@code .gpr}
+	 * is in place) but the sidecar could not be rewritten {@code complete} (a handle holder on it,
+	 * SP6): the staging folder, whose intent proves the fork is this engine's, is then kept so
+	 * that the next sweep of the name finishes the sidecar.
+	 */
 	record Staged(File dir, String id, ForkIntent intent, String sourceName, long ms,
-			long freeBefore, long freeAfter) {
+			long freeBefore, long freeAfter,
+			java.util.concurrent.atomic.AtomicBoolean unfinished) {
+
+		boolean keep() {
+			return unfinished.get();
+		}
 	}
 
 	/** The loser of a publish race: the {@code .rep} of the destination is already there. */
@@ -206,12 +223,13 @@ final class ProjectFork {
 		UpgradeCache.copyProject(r.dir().toPath(), r.name(), tmp.toPath(), m);
 		m.checkCancelled();
 		long ms = (System.nanoTime() - t0) / 1_000_000;
-		return new Staged(tmp, id, intent, r.name(), ms, freeBefore, store.getUsableSpace());
+		return new Staged(tmp, id, intent, r.name(), ms, freeBefore, store.getUsableSpace(),
+			new java.util.concurrent.atomic.AtomicBoolean());
 	}
 
 	/** Removes a staging folder (and warns when it cannot). */
 	static void discard(Staged st) {
-		if (st == null) {
+		if (st == null || st.keep()) {
 			return;
 		}
 		FileUtilities.deleteDir(st.dir());
@@ -266,17 +284,28 @@ final class ProjectFork {
 		}
 		sidecar.addProperty("state", completeState);
 		IOException last = null;
-		for (int i = 0; i < 3; i++) {
+		for (int i = 0; i < 6; i++) {
 			try {
 				writeSidecar(sc, sidecar);
 				return;
 			}
 			catch (IOException e) {
+				// a handle holder on the sidecar (a scanner reading it) stops the rename over
+				// it for a moment: the same backoff as the moves
 				last = e;
+				try {
+					Thread.sleep(25L << i);
+				}
+				catch (InterruptedException ie) {
+					Thread.currentThread().interrupt();
+					break;
+				}
 			}
 		}
 		// the fork is committed; a sidecar that still says "publishing" is finished by the next
-		// sweep once this process is gone
+		// sweep of the name (the staging folder is kept for it: its intent proves the fork ours)
+		// or, once this process is gone, by any sweep
+		st.unfinished().set(true);
 		ghidra.util.Msg.warn(ProjectFork.class,
 			"fork_project: could not finish the sidecar of " + destGpr + ": " + last);
 	}

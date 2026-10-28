@@ -40,7 +40,8 @@ final class Advertised {
 	/** The capability names, in reply order (3.2). A capability's value is its integer version. */
 	static final List<String> CAPABILITIES = List.of("errorNext", "expectAll", "idempotency",
 		"laneHint", "maintLane", "queueInfo", "cancelWait", "forkReport", "format", "backup",
-		"upgradeGate", "scriptIsolation", "scriptSha256", "attemptedChanges", "health", "identity");
+		"upgradeGate", "scriptIsolation", "scriptSha256", "attemptedChanges", "health", "identity",
+		"forkAtomic");
 
 	/** The limit names, in reply order. */
 	static final List<String> LIMITS = List.of("maxQuick", "maxLong", "maxMaint", "maxImports",

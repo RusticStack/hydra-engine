@@ -194,7 +194,8 @@ final class ForkSweeper {
 	 * is live while that process runs. An intent of this very process is live only while a
 	 * {@link Claim} of this process holds its id: a staging folder this process left behind (its
 	 * delete failed, for example against a handle holder) is nobody's work in progress, and must
-	 * neither block a retry of the name nor survive the sweeper for as long as the daemon runs.
+	 * neither block a retry of the name nor survive the sweeper for as long as the daemon runs
+	 * (the same holds for such a folder whose intent the failed delete already removed).
 	 */
 	static boolean isLive(ForkIntent i) {
 		if (!i.ownerAlive()) {
@@ -302,6 +303,20 @@ final class ForkSweeper {
 		return r;
 	}
 
+	private static long ownPid() {
+		return ProcessHandle.current().pid();
+	}
+
+	/**
+	 * True for a staging folder of this very process (the pid in its name) that no publish of this
+	 * process holds: nobody is working in it, whatever its intent says or lacks.
+	 */
+	private static boolean ownIdle(String folderName) {
+		String id = ForkIntent.idOf(folderName);
+		return ForkIntent.pidOf(folderName) == ownPid() && id != null &&
+			CLAIMS.values().stream().noneMatch(c -> c.id.equals(id));
+	}
+
 	private static boolean old(File f, long now) {
 		return now - f.lastModified() > AGE_MS;
 	}
@@ -314,11 +329,16 @@ final class ForkSweeper {
 			// was written, or the record is damaged. The process id in the name settles the first
 			// case; a damaged record of a live process is left until it is old
 			String fn = folder.getName();
-			if (onlyName != null && !onlyName.equals(fn.substring(1, fn.lastIndexOf(".fork-")))) {
+			if (onlyName != null && !onlyName.equals(fn.substring(1, fn.lastIndexOf(".fork-"))) &&
+				!ownIdle(fn)) {
 				return;
 			}
 			long pid = ForkIntent.pidOf(folder.getName());
 			boolean dead = pid > 0 && ProcessHandle.of(pid).map(h -> !h.isAlive()).orElse(true);
+			// a folder of this very process that no publish of this process holds: its delete
+			// failed part way (against a handle holder, SP6) and took the intent with it. Nobody
+			// is working in it, and waiting for it to grow old would block the K6 invariant
+			dead |= ownIdle(fn);
 			if (dead || old(folder, now)) {
 				FileUtilities.deleteDir(folder);
 				note(folder, r, "staging folder without an intent");
@@ -329,7 +349,10 @@ final class ForkSweeper {
 			return;
 		}
 		ForkIntent i = oi.get();
-		if (onlyName != null && !i.name().equals(onlyName)) {
+		if (onlyName != null && !i.name().equals(onlyName) &&
+			!(i.pid() == ownPid() && !isLive(i))) {
+			// another name's folder: only this process's own idle leftovers are every fork's
+			// business
 			return;
 		}
 		if (isLive(i)) {

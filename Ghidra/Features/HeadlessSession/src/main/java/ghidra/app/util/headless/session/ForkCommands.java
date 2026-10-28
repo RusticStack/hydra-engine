@@ -249,8 +249,11 @@ final class ForkCommands {
 				name, destGpr, id, rk, staging);
 		}
 		finally {
-			ProjectFork.discard(staging.get());
-			ForkSweeper.removeStagingFolder(destDir, name, id);
+			ProjectFork.Staged st = staging.get();
+			ProjectFork.discard(st);
+			if (st == null || !st.keep()) {
+				ForkSweeper.removeStagingFolder(destDir, name, id);
+			}
 		}
 	}
 

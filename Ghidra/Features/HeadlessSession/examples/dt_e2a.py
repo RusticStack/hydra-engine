@@ -35,6 +35,9 @@ Tests:
   path then succeeds (or, for a fork that was already complete, answers the ordinary ``conflict``
   and the fork is finished and complete); and no staging folder is left after that fork.
 * ``e2a_client_kill``: a client killed during ``fork_project`` leaves nothing (0 of 18 measured).
+* ``e2a_handle_holder`` (SP6): a handle without delete sharing on the staged ``.rep``, ``.gpr`` or
+  staging folder during the publish moves: retried and complete when brief, an error with nothing
+  published when long, a clean retry afterwards (``E2A_SP6_REPORT`` names the per-case table).
 * ``e2a_sweeper``: the planted states of D41: the sweeper removes the staging folders and ``.rep`` of
   dead owners, the temporary files older than 10 minutes, finishes a ``publishing`` sidecar, and
   never touches a path whose intent names a live process; the rest is only reported.
@@ -519,7 +522,12 @@ def t_e2a_self_leftover(c):
                    wait=60000)
         check(r["name"] == "First", f"first fork: {r}")
         _plant_intent(base / ".M.fork-self3.tmp", id="self3", name="M", **mine)
-        for n in ("K", "L", "M"):
+        # P: the daemon's own folder after a delete that failed part way (SP6): its intent is
+        # gone and only the process id in the name says whose it was
+        ghost = base / f".P.fork-{pid:x}-1abc.tmp"
+        ghost.mkdir()
+        (ghost / "payload.bin").write_bytes(b"x" * 1000)
+        for n in ("K", "L", "M", "P"):
             try:
                 r = s.call("fork_project", project=str(src), path=str(base), name=n, mode="full",
                            wait=60000)
@@ -533,5 +541,250 @@ def t_e2a_self_leftover(c):
     return "a leftover of the daemon's own pid never blocks a retry and is swept"
 
 
+# ---- SP6: a handle holder on the staged files during the publish moves ------------------------
+
+class Holder:
+    """A handle without ``FILE_SHARE_DELETE`` (what an indexer or a scanner may hold): reads and
+    writes of the file are still allowed to others, a rename or a delete of it, or of a folder above
+    it for a directory, is not."""
+
+    def __init__(self, path, is_dir):
+        import ctypes
+        from ctypes import wintypes
+        self.k = ctypes.WinDLL("kernel32", use_last_error=True)
+        self.k.CreateFileW.restype = wintypes.HANDLE
+        self.k.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                       wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD,
+                                       wintypes.HANDLE]
+        self.k.CloseHandle.argtypes = [wintypes.HANDLE]
+        access = 0x1 if is_dir else 0x80000000   # FILE_LIST_DIRECTORY / GENERIC_READ
+        # share read and write, not delete; FILE_FLAG_BACKUP_SEMANTICS opens a folder
+        h = self.k.CreateFileW(str(path), access, 0x3, None, 3, 0x02000000, None)
+        self.ok = h is not None and h != wintypes.HANDLE(-1).value and h != 2 ** 64 - 1 \
+            and h != 0xFFFFFFFF
+        self.h = h
+        self.err = ctypes.get_last_error()
+
+    def close(self):
+        if self.ok:
+            self.k.CloseHandle(self.h)
+            self.ok = False
+
+
+#: (case, what is held, seconds held): the brief holds are shorter than the engine's retry budget
+#: (6 attempts, 25 ms doubling: about 1.6 s), the long ones longer than it
+SP6_CASES = [("rep_dir_brief", "rep_dir", 0.4), ("rep_dir_long", "rep_dir", 5.0),
+             ("rep_file_brief", "rep_file", 0.4), ("rep_file_long", "rep_file", 5.0),
+             ("gpr_file_brief", "gpr_file", 0.4), ("gpr_file_long", "gpr_file", 5.0),
+             ("staging_dir_long", "staging_dir", 5.0),
+             ("sidecar_brief", "sidecar", 0.4), ("sidecar_long", "sidecar", 5.0)]
+
+
+def _sp6_holder(pdir, what, hold_s, rec, stop):
+    """Waits for the staging folder, takes the handle as soon as the thing to hold exists, holds it
+    ``hold_s`` seconds, releases it, and records the times (perf_counter seconds)."""
+    t_end = time.perf_counter() + 60
+    stg = None
+    while not stop.is_set() and time.perf_counter() < t_end:
+        try:
+            stg = next((e for e in os.listdir(pdir) if STAGING.match(e)), None)
+        except OSError:
+            stg = None
+        if stg:
+            break
+    if not stg:
+        rec["error"] = "no staging folder seen"
+        return
+    base = pdir / stg
+    target, is_dir = {"sidecar": (pdir / "H.fork.json", False),"rep_dir": (base / "Src.rep", True),
+                      "rep_file": (base / "Src.rep" / "ballast" / "b0.bin", False),
+                      "gpr_file": (base / "Src.gpr", False),
+                      "staging_dir": (base, True)}[what]
+    h = None
+    while not stop.is_set() and time.perf_counter() < t_end:
+        if target.exists():
+            h = Holder(target, is_dir)
+            if h.ok:
+                break
+            h = None
+    if h is None:
+        rec["error"] = f"could not take a handle on {target}"
+        return
+    rec["t_open"] = time.perf_counter()
+    time.sleep(hold_s)
+    h.close()
+    rec["t_release"] = time.perf_counter()
+
+
+def _sp6_observer(pdir, name, seen, stop):
+    """Every state of the destination, sampled as fast as the file system answers."""
+    while not stop.is_set():
+        try:
+            st = classify(pdir, name)[0]
+        except OSError:
+            continue
+        seen[st] = seen.get(st, 0) + 1
+        time.sleep(0.002)   # a scanner or indexer, not a spin loop
+
+
+def _volume_fs(path):
+    """The file system name of the volume of ``path`` ("NTFS", "ReFS"), or "" when unknown."""
+    try:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(64)
+        ok = ctypes.windll.kernel32.GetVolumeInformationW(
+            pathlib.Path(path).drive + "\\", None, 0, None, None, None, buf, 64)
+        return buf.value if ok else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def t_e2a_handle_holder(c):
+    """SP6 (PROTOCOL-3.md 9.20): the fork publish against a handle holder, on the file system of
+    ``--work`` (run it once on NTFS and once on ReFS). For each case a holder without delete sharing
+    sits on the staged ``.rep`` (the folder itself, and a file inside it), on the staged ``.gpr``, or
+    on the staging folder, from the moment it exists. A hold shorter than the retry budget must end in
+    a complete fork after the retries; a longer one in an error with nothing published (no ``.gpr``,
+    no ``.rep``, no sidecar) and a retry that succeeds once the holder is gone, with no staging
+    folder or leftover after it. Throughout, no state with a ``.gpr`` but without its ``.rep`` or
+    sidecar is ever seen. ``E2A_SP6_REPORT`` names a file the per-case table is written to."""
+    if os.name != "nt":
+        return "skipped: the handle holder is a Windows handle without FILE_SHARE_DELETE"
+    src = make_source(c, "sp6")
+    before_tree = tree(src.parent)
+    base = c.work / "e2a-sp6"
+    if base.exists():
+        shutil.rmtree(base)
+    base.mkdir(parents=True)
+    fs = _volume_fs(base)
+    d = c.daemon("e2a-sp6")
+    rows, problems = [], []
+    with d.connect("e2a-sp6", "tests") as s:
+        for case, what, hold_s in SP6_CASES:
+            pdir = base / case
+            name = "H"
+            rec, seen, stop = {}, {}, threading.Event()
+            th = threading.Thread(target=_sp6_holder, args=(pdir, what, hold_s, rec, stop))
+            ob = threading.Thread(target=_sp6_observer, args=(pdir, name, seen, stop))
+            pdir.mkdir()
+            th.start()
+            ob.start()
+            t0 = time.perf_counter()
+            outcome, err = "ok", ""
+            try:
+                s.call("fork_project", project=str(src), path=str(pdir), name=name, mode="full",
+                       wait=60000)
+            except Exception as e:  # noqa: BLE001
+                outcome, err = "error", f"{getattr(e, 'code', type(e).__name__)}: {e}"[:200]
+            t1 = time.perf_counter()
+            th.join(30)
+            stop.set()
+            ob.join(5)
+            row = {"case": case, "held": what, "hold_s": hold_s, "fs": fs,
+                   "outcome": outcome, "error": err, "fork_s": round(t1 - t0, 3),
+                   "holder_open_after_s": round(rec["t_open"] - t0, 3) if "t_open" in rec else None,
+                   "released_after_s": round(rec["t_release"] - t0, 3) if "t_release" in rec else None,
+                   "states_seen": seen}
+            rows.append(row)
+            if "error" in rec:
+                problems.append(f"{case}: holder: {rec['error']}")
+                continue
+            blocked = rec["t_open"] < t1 and (outcome == "error" or t1 >= rec["t_release"] - 0.05)
+            if what == "sidecar":
+                # the fork is committed when the sidecar is held: it answers ok either way; the
+                # hold shows as a late answer (brief) or as a sidecar still saying "publishing"
+                blocked = t1 >= rec["t_release"] - 0.05 or                     classify(pdir, name)[2] == "publishing"
+            row["blocked_the_move"] = blocked
+            row["fork_ended_before_release"] = t1 < rec["t_release"]
+            # a sidecar alone (no .gpr) is the rollback in progress: the fork does not exist yet
+            bad_states = [k for k in seen if k in ("gpr_no_rep", "gpr_no_sidecar")]
+            if bad_states:
+                problems.append(f"{case}: half-published states seen: {bad_states}")
+            after = classify(pdir, name)
+            row["after_fork_call"] = {"state": after[0], "staging": after[1],
+                                      "sidecar_state": after[2]}
+            long_hold = hold_s > 2
+            if what == "sidecar":
+                if outcome != "ok" or after[0] != "complete":
+                    problems.append(f"{case}: expected a committed fork, got {outcome}/{after[0]}")
+                if not long_hold and after[2] != "complete":
+                    problems.append(f"{case}: a {hold_s}s hold on the sidecar was not survived: "
+                                    f"{after[2]}")
+                if not blocked:
+                    problems.append(f"{case}: the holder did not hold up the sidecar rewrite")
+                if long_hold and after[2] == "publishing" and not after[1]:
+                    problems.append(f"{case}: sidecar unfinished and its staging folder (the "
+                                    f"intent that lets the sweep finish it) is gone")
+            elif what == "staging_dir":
+                # moves out of a held folder are allowed; only its delete is held up
+                if outcome != "ok" or after[0] != "complete":
+                    problems.append(f"{case}: expected a complete fork, got {outcome}/{after[0]}")
+            elif long_hold:
+                if outcome != "error":
+                    problems.append(f"{case}: the fork succeeded against a {hold_s}s hold "
+                                    f"(blocked={blocked}); expected the retries to give up")
+                if after[0] != "absent":
+                    problems.append(f"{case}: a failed fork left {after[0]} at the destination")
+            else:
+                if outcome != "ok" or after[0] != "complete":
+                    problems.append(f"{case}: a {hold_s}s hold was not survived: {outcome} "
+                                    f"{err} / {after[0]}")
+                if not blocked:
+                    problems.append(f"{case}: the holder did not block the move, so the retry "
+                                    f"was not exercised (fork {t1 - t0:.2f}s, released at "
+                                    f"{rec['t_release'] - t0:.2f}s)")
+            # the holder is gone: a retry completes the fork and leaves nothing behind
+            if long_hold or what == "staging_dir":
+                time.sleep(0.05)
+                try:
+                    if what == "sidecar":
+                        # the fork exists: a repeat is the ordinary conflict, and its sweep
+                        # finishes the sidecar that the holder kept at "publishing"
+                        try:
+                            s.call("fork_project", project=str(src), path=str(pdir), name=name,
+                                   mode="full", wait=60000)
+                            row["retry"] = "ok (unexpected: the fork exists)"
+                            problems.append(f"{case}: a repeat over a complete fork succeeded")
+                        except Exception as e:  # noqa: BLE001
+                            row["retry"] = f"{getattr(e, 'code', type(e).__name__)} (the fork exists)"
+                            if getattr(e, "code", "") != "conflict":
+                                problems.append(f"{case}: the repeat answered {row['retry']}")
+                    elif after[0] == "complete":
+                        # staging_dir: the next fork (another name) sweeps the folder that was held
+                        s.call("fork_project", project=str(src), path=str(pdir), name="H2",
+                               mode="full", wait=60000)
+                        row["retry"] = "ok (another name: the sweep removes the held folder)"
+                    else:
+                        s.call("fork_project", project=str(src), path=str(pdir), name=name,
+                               mode="full", wait=60000)
+                        row["retry"] = "ok"
+                except Exception as e:  # noqa: BLE001
+                    row["retry"] = f"{getattr(e, 'code', type(e).__name__)}: {e}"[:200]
+                    problems.append(f"{case}: the retry after the release failed: {row['retry']}")
+            fin = classify(pdir, name)
+            row["final"] = {"state": fin[0], "staging": fin[1], "sidecar_state": fin[2],
+                            "leftovers": leftovers(pdir)}
+            if fin[0] != "complete" or fin[2] != "complete":
+                problems.append(f"{case}: final state {fin[0]}/{fin[2]}")
+            else:
+                try:
+                    check_fork_matches_source(src, pdir / f"{name}.gpr")
+                    row["matches_source"] = True
+                except Fail as e:
+                    problems.append(f"{case}: {e}")
+            if fin[1] or row["final"]["leftovers"]:
+                problems.append(f"{case}: left after the retry: {fin[1]} {row['final']['leftovers']}")
+    d.stop()
+    rp = os.environ.get("E2A_SP6_REPORT")
+    if rp:
+        pathlib.Path(rp).write_text(json.dumps(rows, indent=1))
+    c.timings["e2a_handle_holder"] = rows
+    check(tree(src.parent) == before_tree, "the source project was written (K1)")
+    check(not problems, " | ".join(problems) + " :: " + json.dumps(rows)[:1500])
+    return f"{fs or '?'}: " + "; ".join(
+        f"{r['case']}={r['outcome']} {r['fork_s']}s" for r in rows)
+
+
 TESTS = {"e2a_kill_fork": t_e2a_kill_fork, "e2a_client_kill": t_e2a_client_kill,
-         "e2a_sweeper": t_e2a_sweeper, "e2a_self_leftover": t_e2a_self_leftover}
+         "e2a_sweeper": t_e2a_sweeper, "e2a_self_leftover": t_e2a_self_leftover,
+         "e2a_handle_holder": t_e2a_handle_holder}

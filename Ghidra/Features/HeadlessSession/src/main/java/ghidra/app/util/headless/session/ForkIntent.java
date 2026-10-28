@@ -167,6 +167,15 @@ record ForkIntent(String id, long pid, long procStartMs, String rk, String name,
 		}
 	}
 
+	/** The publish id in a staging folder's name, or null when the name does not carry one. */
+	static String idOf(String folder) {
+		int i = folder.lastIndexOf(".fork-");
+		if (i < 0 || !folder.endsWith(".tmp")) {
+			return null;
+		}
+		return folder.substring(i + ".fork-".length(), folder.length() - 4);
+	}
+
 	/** True when {@code folder} is named like a staging folder: {@code .<name>.fork-<id>.tmp}. */
 	static boolean isStagingName(String folder) {
 		return folder.startsWith(".") && folder.endsWith(".tmp") &&

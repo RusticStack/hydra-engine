@@ -228,18 +228,21 @@ def t_fork_sidecar_state(c):
 
 
 def t_fork_capability(c):
-    """E2a enables the ``forkAtomic`` capability, which E1's Advertised declares (section 3.2).
-    That file is not E2a's: until the coordinator adds the name there, this check is enforced only
-    when E2A_REQUIRE_FORKATOMIC=1 is set (the integration gate sets it); without it, it says so."""
+    """E2a enables the ``forkAtomic`` capability, which E1's Advertised declares (section 3.2; the
+    name was added there by the coordinator's decision, sequence E1 -> E2a). It is advertised at 1
+    in the hello, after ``identity``, so the guard in ForkCommands is live. E2A_REQUIRE_FORKATOMIC=0
+    only skips the check against an engine that predates the name."""
     c.need_engine()
     d = c.new_daemon("e2a-cap")
     with d.connect("cc-e2a-cap", "tests") as s:
         caps = dict(s.hello.get("capabilities", {}))
     d.stop()
-    if os.environ.get("E2A_REQUIRE_FORKATOMIC") != "1" and "forkAtomic" not in caps:
-        return ("skipped: forkAtomic is not advertised yet (Advertised.java is E1's file, "
-                "the coordinator adds the name); set E2A_REQUIRE_FORKATOMIC=1 to enforce")
+    if os.environ.get("E2A_REQUIRE_FORKATOMIC") == "0" and "forkAtomic" not in caps:
+        return "skipped: this engine does not advertise forkAtomic (E2A_REQUIRE_FORKATOMIC=0)"
     check(caps.get("forkAtomic") == 1, f"forkAtomic is not advertised at 1: {caps}")
+    names = list(caps)
+    check(names.index("forkAtomic") > names.index("identity"),
+          f"forkAtomic is not declared after identity: {names}")
     return "forkAtomic advertised at 1"
 
 
