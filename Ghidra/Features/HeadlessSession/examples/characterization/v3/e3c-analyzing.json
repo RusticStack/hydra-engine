@@ -1,0 +1,55 @@
+{
+ "scenario": "e3c-analyzing",
+ "protocol": 3,
+ "steps": [
+  {
+   "step": 1,
+   "who": "reader",
+   "cmd": "open_program",
+   "request": {},
+   "response": {
+    "ok": false,
+    "error": {
+     "code": "busy",
+     "reason": "analyzing",
+     "wanted": "shared",
+     "detailKeys": [
+      "etaMs",
+      "gpr",
+      "heldMs",
+      "holder",
+      "holderInfo",
+      "job",
+      "path",
+      "program",
+      "progress",
+      "project",
+      "reason",
+      "sha256",
+      "suggest",
+      "wanted"
+     ],
+     "job": {
+      "cmd": "analyze",
+      "keys": [
+       "client",
+       "cmd",
+       "elapsedMs",
+       "label",
+       "startedAt"
+      ]
+     },
+     "progressKeys": [
+      "maximum",
+      "message",
+      "progress"
+     ],
+     "etaMs": "<masked>",
+     "retryAfterMs": "<masked>",
+     "suggest": "retry"
+    }
+   },
+   "note": "busy behind an analysis: at once, with the job and its progress"
+  }
+ ]
+}

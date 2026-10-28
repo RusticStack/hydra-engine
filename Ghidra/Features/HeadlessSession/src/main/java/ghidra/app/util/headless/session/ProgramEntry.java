@@ -271,6 +271,60 @@ final class ProgramEntry implements Decompilers {
 		return a;
 	}
 
+	// ---- analysis, deferred work and the project view this program was opened from (E3c) -------
+
+	/** One analysis running on this program: it holds the lock exclusively for its whole run. */
+	record Analysis(Client client, RequestMonitor monitor, String cmd, long since,
+			Caller.Identity who) {
+	}
+
+	/**
+	 * The analysis that holds this program now, or null. A protocol 3 reader that would have to wait
+	 * for it is told {@code busy{reason:"analyzing"}} at once, with the job's progress (BP5, 3.13).
+	 */
+	volatile Analysis analysis;
+	/**
+	 * Set when the last user left and the program could not be disposed without waiting for its
+	 * lock: {@link Session#completeLeaves} (after the release of the lock that stood in the way, or
+	 * the next reap) finishes it. Nobody waits for it.
+	 */
+	volatile boolean disposePending;
+	/**
+	 * Set by a refresh that could not reopen this program from the new project view without
+	 * waiting for its lock (readers were running): it is reopened when the lock is free, readers
+	 * meanwhile keep the program they have (a consistent older revision), nobody queues (BP7).
+	 */
+	volatile long reopenPendingSince;
+	/** The project view {@link #program} (and {@link #file}) came from; one reference is held on it. */
+	volatile ProjectEntry.View view;
+
+	/** True when something is waiting to be finished the moment this lock is free. */
+	boolean hasDeferredWork() {
+		return !pendingLeaves.isEmpty() || disposePending || reopenPendingSince > 0;
+	}
+
+	/**
+	 * Whose request holds this lock, as seen by a request of {@code waiter} that has to queue
+	 * ({@link Waits#HELD_BY_NONE}, {@link Waits#HELD_BY_OTHER}, {@link Waits#HELD_BY_OPENER}). The
+	 * wait of a second client for the request that is opening this very program is kept apart: it
+	 * is one open per program, not a lock another client could have held back.
+	 */
+	int heldBy(Client waiter) {
+		int result = Waits.HELD_BY_NONE;
+		for (Hold h : holds.values()) {
+			if (h.client == waiter) {
+				continue;
+			}
+			if (program == null && h.exclusive && "open_program".equals(h.cmd)) {
+				result = Math.max(result, Waits.HELD_BY_OPENER);
+			}
+			else {
+				return Waits.HELD_BY_OTHER;
+			}
+		}
+		return result;
+	}
+
 	/** Lock acquisition, bounded and cancel-aware ({@link Waits}); records the holder. */
 	Lock acquire(boolean exclusive, long waitMs, Client c, String cmd) {
 		// a dead client's request still holds the lock and ignores cancel: tell at once (3.5)
@@ -278,7 +332,14 @@ final class ProgramEntry implements Decompilers {
 		if (ab != null) {
 			throw abandonedBusy(ab, exclusive);
 		}
-		Waits.Outcome got = Waits.lock(lock, exclusive, waitMs, waiters);
+		// a protocol 3 reader of a program under analysis is told at once (BP5); not when its client is
+		// gone: that analysis is being cancelled and released (E3b), so the wait is a short one
+		Analysis an = analysis;
+		if (!exclusive && an != null && !an.client().leaving && Waits.v3() &&
+			!lock.isWriteLockedByCurrentThread()) {
+			throw analyzingBusy(an);
+		}
+		Waits.Outcome got = Waits.lock(lock, exclusive, waitMs, waiters, this::heldBy);
 		Lock l = exclusive ? lock.writeLock() : lock.readLock();
 		if (got != Waits.Outcome.GOT) {
 			throw busy(exclusive, waitMs, got == Waits.Outcome.QUEUE_FULL);
@@ -336,6 +397,37 @@ final class ProgramEntry implements Decompilers {
 		return ex;
 	}
 
+	/**
+	 * The {@code busy} of a read that would wait for an analysis: {@code reason:"analyzing"} and the
+	 * job ({@code cmd}, who, how long), its progress and an estimate of the time left when the
+	 * progress says enough for one ({@code etaMs} null otherwise).
+	 */
+	private SessionException analyzingBusy(Analysis a) {
+		long elapsed = System.currentTimeMillis() - a.since();
+		RequestMonitor m = a.monitor();
+		JsonObject progress = Json.of("message", m == null ? "" : m.getMessage(), "progress",
+			m == null ? 0 : m.getProgress(), "maximum", m == null ? 0 : m.getMaximum());
+		Long eta = null;
+		if (m != null && m.getMaximum() > 0 && m.getProgress() > 0) {
+			eta = elapsed * Math.max(0, m.getMaximum() - m.getProgress()) / m.getProgress();
+		}
+		JsonObject d = identity();
+		Json.put(d, "wanted", "shared");
+		Json.put(d, "holder", Caller.label(a.client()) + " " + a.cmd());
+		Json.put(d, "holderInfo", a.client().holder(a.cmd(), a.since(), a.who()));
+		Json.put(d, "heldMs", elapsed);
+		Json.put(d, "job", Json.of("cmd", a.cmd(), "client", a.client().id, "label",
+			a.client().label(), "startedAt", a.since(), "elapsedMs", elapsed));
+		d.add("progress", progress);
+		Json.put(d, "etaMs", eta);
+		Json.put(d, "suggest", "retry");
+		d = SessionException.busyDetails(true, d, "analyzing", null, null);
+		return new SessionException(SessionException.BUSY,
+			path + " is being analysed by " + Caller.label(a.client()) + " (" + elapsed / 1000 +
+				" s so far); retry later, or read a generation that is not under analysis",
+			d).withRetryAfterMs(eta != null ? Math.max(1000, Math.min(eta, 30_000)) : 5000);
+	}
+
 	/** The {@code busy} for a lock whose holder is a request of a client that is gone. */
 	private SessionException abandonedBusy(Hold h, boolean exclusive) {
 		boolean v3 = Waits.v3();
@@ -382,7 +474,7 @@ final class ProgramEntry implements Decompilers {
 		}
 		lastUsed = System.currentTimeMillis();
 		l.unlock();
-		if (!pendingLeaves.isEmpty()) {
+		if (hasDeferredWork()) {
 			java.util.function.Consumer<ProgramEntry> after = afterRelease;
 			if (after != null) {
 				after.accept(this);
@@ -505,6 +597,10 @@ final class ProgramEntry implements Decompilers {
 		JsonObject o = describeUse(uc);
 		if (v3) {
 			o.add("abandonedRequests", abandonedRequests());
+			long since = reopenPendingSince;
+			Analysis a = analysis;
+			Json.put(o, "reopenPendingMs", since > 0 ? System.currentTimeMillis() - since : null);
+			Json.put(o, "analyzing", a != null);
 		}
 		return o;
 	}

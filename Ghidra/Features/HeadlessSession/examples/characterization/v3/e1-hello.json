@@ -181,6 +181,17 @@
        "peakRunning": 0
       }
      },
+     "waits": {
+      "foreignBlocked": {
+       "total": 0,
+       "lastMinute": 0,
+       "shared": 0
+      },
+      "singleFlightOpen": 0,
+      "contended": 0,
+      "lockWaitP99Ms": null
+     },
+     "projectStates": [],
      "youAre": {
       "client": "e1-a",
       "harness": "e1-h",
@@ -483,6 +494,17 @@
        "peakRunning": 0
       }
      },
+     "waits": {
+      "foreignBlocked": {
+       "total": 0,
+       "lastMinute": 0,
+       "shared": 0
+      },
+      "singleFlightOpen": 0,
+      "contended": 0,
+      "lockWaitP99Ms": null
+     },
+     "projectStates": [],
      "youAre": {
       "client": "e1-b",
       "harness": "e1-h",

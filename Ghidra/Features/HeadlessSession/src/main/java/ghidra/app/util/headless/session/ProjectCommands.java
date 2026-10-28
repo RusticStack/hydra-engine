@@ -22,10 +22,8 @@ import static ghidra.app.util.headless.session.Requests.waitMs;
 
 import java.io.*;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReentrantLock;
 
 import com.google.gson.*;
 
@@ -81,17 +79,41 @@ final class ProjectCommands {
 		ProjectEntry p;
 		boolean opened = false;
 		while (true) {
-			synchronized (s.registry) {
-				if (s.shuttingDown) {
-					throw new SessionException(SessionException.CONFLICT,
-						"the session is shutting down");
+			if (s.shuttingDown) {
+				throw new SessionException(SessionException.CONFLICT, "the session is shutting down");
+			}
+			// The project's life cycle is a state machine in ProjectRegistry (BP8): the first request
+			// of a path opens it under that slot's own lock, followers wait for that lock (bounded and
+			// cancel-aware) and find it OPEN. Only requests for this very project meet here.
+			ProjectRegistry.Slot slot = s.registry.slot(canonical);
+			if (Waits.lock(slot.transition, wait) != Waits.Outcome.GOT) {
+				throw slotBusy(c, r);
+			}
+			boolean reopen = false;
+			try {
+				if (s.registry.current(canonical) != slot) {
+					continue; // closed or replaced while we waited for it
 				}
-				p = s.projects.get(canonical);
-				if (!(p != null && writable && !p.writable())) {
-					if (p == null) {
-						p = openProjectEntry(c, r, canonical, writable);
+				if (slot.state == ProjectRegistry.State.OPENING) {
+					try {
+						slot.entry = openProjectEntry(c, r, canonical, writable);
+						slot.state = ProjectRegistry.State.OPEN;
 						opened = true;
 					}
+					catch (RuntimeException ex) {
+						s.registry.drop(slot);
+						throw ex;
+					}
+				}
+				p = slot.entry;
+				if (p == null || p.closed || p.closing) {
+					s.registry.drop(slot);
+					continue;
+				}
+				if (writable && !p.writable()) {
+					reopen = true;
+				}
+				else {
 					synchronized (p.users) {
 						p.users.add(c);
 					}
@@ -103,10 +125,14 @@ final class ProjectCommands {
 					break;
 				}
 			}
-			// Readers keep using the view; it is reopened writable in place, same id. This waits for
-			// the project's lock, so it runs outside the registry monitor: an unrelated project's
-			// open_project must not wait for it (BP8, 3.10). The loop joins afterwards.
-			makeWritable(c, p, wait);
+			finally {
+				slot.transition.unlock();
+			}
+			if (reopen) {
+				// Readers keep using the view; it is reopened writable in place, same id, without
+				// holding anything but the project's structure lock (BP7, BP8). The loop joins after.
+				makeWritable(c, p, wait);
+			}
 		}
 		JsonObject info = p.info(c);
 		Json.put(info, "opened", opened);
@@ -118,6 +144,17 @@ final class ProjectCommands {
 			}
 		}
 		return info;
+	}
+
+	/** The {@code busy} of a request that waited for another request's open or close of its project. */
+	private static SessionException slotBusy(Client c, ProjectResolver.Resolved r) {
+		JsonObject d = Json.of("gpr", r.gpr().getPath(), "name", r.name(), "suggest", "retry");
+		d = SessionException.busyDetails(c.v3(), d, "lock_wait", null, null);
+		SessionException ex = new SessionException(SessionException.BUSY,
+			"project " + r.name() + " is being opened or closed by another request; retry, or pass " +
+				"a longer \"wait\"",
+			d);
+		return c.v3() ? ex.withRetryAfterMs(1000) : ex;
 	}
 
 	/**
@@ -137,16 +174,16 @@ final class ProjectCommands {
 	}
 
 	/**
-	 * Reopens a read-only view writable in place, while its clients keep using it: the project
-	 * is opened writable (taking its lock), then under the project's exclusive lock (requests
-	 * running on it finish first) it replaces the view, and every program clients use is reopened
-	 * from it under the same key, read-only, with its overlays rebuilt. The id, the keys and the
-	 * clients' joins stay. Held: {@link #upgrading} (not the registry, BP8).
+	 * Reopens a read-only view writable in place, while its clients keep using it (a repoint, not a
+	 * drain, E3c/BP7): the project is opened writable (taking its OS lock) and becomes the current
+	 * view; the programs clients use are reopened from it under the same key, read-only, with their
+	 * overlays rebuilt, each as soon as its lock is free (never queueing for it); the read-only view
+	 * closes when its last command and program let go. The id, the keys and the clients' joins
+	 * stay. Held: {@link ProjectEntry#structure} only (not the project lock, not a registry).
 	 */
 	private void makeWritable(Client c, ProjectEntry p, long wait) {
-		// one reopen per project at a time; a second opener that waited here finds it done
-		ReentrantLock one = upgrading.computeIfAbsent(p.canonical, k -> new ReentrantLock());
-		if (Waits.lock(one, wait) != Waits.Outcome.GOT) {
+		// one structure change per project at a time; a second opener that waited here finds it done
+		if (Waits.lock(p.structure, wait) != Waits.Outcome.GOT) {
 			throw new SessionException(SessionException.BUSY,
 				"project " + p.id + " is being reopened writable by another request; retry",
 				p.identity());
@@ -158,12 +195,9 @@ final class ProjectCommands {
 			reopenWritable(c, p, wait);
 		}
 		finally {
-			one.unlock();
+			p.structure.unlock();
 		}
 	}
-
-	/** Per project (canonical path): the lock that serialises {@link #makeWritable}. */
-	private final Map<String, ReentrantLock> upgrading = new ConcurrentHashMap<>();
 
 	private void reopenWritable(Client c, ProjectEntry p, long wait) {
 		ProjectLocator locator = new ProjectLocator(p.resolved.dir().getPath(), p.resolved.name());
@@ -194,52 +228,44 @@ final class ProjectCommands {
 		catch (NotFoundException | IOException e) {
 			throw new SessionException(SessionException.NOT_FOUND, e.getMessage(), null, e);
 		}
-		Lock l;
+		JsonArray progs;
 		try {
-			l = lockProject(p, true, wait, "open_project writable");
-			p.exclusiveClient = c;
+			progs = repointTo(p, nv, rev, new RequestMonitor(null, null));
 		}
 		catch (RuntimeException e) {
 			nv.close();
 			throw e;
-		}
-		SessionProject old = p.project;
-		JsonArray progs;
-		try {
-			progs = swapView(p, nv, rev, new RequestMonitor(null, null));
-		}
-		finally {
-			unlockProject(p, l);
-		}
-		try {
-			old.close();
-		}
-		catch (RuntimeException e) {
-			Msg.warn(s, "could not close the read-only view of " + p.id, e);
 		}
 		Msg.info(s, c.label() + " reopened project " + p.id + " writable in place for " +
 			p.userCount() + " client(s): " + progs);
 	}
 
 	/**
-	 * Replaces a project's view with {@code nv} (from revision {@code rev}) and reopens its
-	 * programs from it. Held: the project's exclusive lock.
+	 * Makes {@code nv} (from revision {@code rev}) the project's view and moves its programs over:
+	 * each is reopened from it when its lock is free this instant, else marked for the moment it is
+	 * (the readers it has keep reading what they have). The old view closes when nothing uses it.
+	 * Held: {@link ProjectEntry#structure}.
 	 */
-	private JsonArray swapView(ProjectEntry p, SessionProject nv, String rev, RequestMonitor m) {
+	private JsonArray repointTo(ProjectEntry p, SessionProject nv, String rev, RequestMonitor m) {
 		JsonArray progs = new JsonArray();
-		p.project = nv;
+		ProjectEntry.View old = p.repoint(nv);
 		p.previousRevision = p.openRevision;
 		p.openRevision = rev;
 		p.invalidateRevision();
 		p.generation++;
 		p.refreshedAt = System.currentTimeMillis();
-		for (ProgramEntry e : new ArrayList<>(p.programs.values())) {
-			progs.add(reopenIn(p, nv, e, m));
+		try {
+			for (ProgramEntry e : new ArrayList<>(p.programs.values())) {
+				progs.add(reopenIn(p, e, m, 0));
+			}
+		}
+		finally {
+			old.release(); // its current-view reference; commands and programs hold their own
 		}
 		return progs;
 	}
 
-	/** Held: {@link #registry}. */
+	/** Held: the project's slot ({@link ProjectRegistry.Slot#transition}), state {@code OPENING}. */
 	private ProjectEntry openProjectEntry(Client c, ProjectResolver.Resolved r, String canonical,
 			boolean writable) {
 		ProjectLocator locator;
@@ -289,8 +315,9 @@ final class ProjectCommands {
 	}
 
 	/**
-	 * Closes a project for everyone. Held: {@link #registry}. Refused while a program has unsaved
-	 * changes, unless {@code discard}.
+	 * Closes a project for everyone. Held: the project's slot ({@link ProjectRegistry}, state
+	 * {@code CLOSING}). Refused while a program has unsaved changes, unless {@code discard}. Takes the
+	 * project lock exclusively, which is free of commands because nobody has joined the project.
 	 */
 	void closeProjectEntry(ProjectEntry p, long wait, boolean discard) {
 		if (!discard) {
@@ -313,7 +340,7 @@ final class ProjectCommands {
 				s.programCmds.closeEntry(e);
 			}
 			p.closed = true;
-			p.project.close();
+			p.closeViews();
 		}
 		finally {
 			unlockProject(p, l);
@@ -396,22 +423,23 @@ final class ProjectCommands {
 				pl.unlock();
 			}
 		}
-		synchronized (s.registry) {
-			synchronized (p.users) {
-				p.users.remove(c);
-			}
-			p.joinedAt.remove(c);
-			c.seenGeneration.remove(p.id);
-			c.projects.remove(p.id);
-			if (p.id.equals(c.activeProject)) {
-				c.activeProject = firstOf(c.projects);
-			}
-			p.lastUsed = System.currentTimeMillis();
-			if (!p.closed && p.userCount() == 0 && (p.writable() || s.keepWarmMs == 0) &&
-				p.programs.values().stream().noneMatch(ProgramEntry::holdsOrphanedWork) &&
-				p.programs.values().stream().noneMatch(x -> !x.pendingLeaves.isEmpty())) {
-				long w = dying ? Math.max(0, (end - System.nanoTime()) / 1_000_000L) : wait;
-				closeProjectEntry(p, w, true);
+		synchronized (p.users) {
+			p.users.remove(c);
+		}
+		p.joinedAt.remove(c);
+		c.seenGeneration.remove(p.id);
+		c.projects.remove(p.id);
+		if (p.id.equals(c.activeProject)) {
+			c.activeProject = firstOf(c.projects);
+		}
+		p.lastUsed = System.currentTimeMillis();
+		if (!p.closed && p.userCount() == 0 && (p.writable() || s.keepWarmMs == 0) &&
+			p.programs.values().stream().noneMatch(ProgramEntry::holdsOrphanedWork) &&
+			p.programs.values().stream().noneMatch(x -> !x.pendingLeaves.isEmpty())) {
+			long w = dying ? Math.max(0, (end - System.nanoTime()) / 1_000_000L) : wait;
+			// the slot's state machine decides (a join in flight keeps the project open); the one
+			// exclusive project lock the close needs is taken under that slot's lock only (BP8)
+			if (s.registry.closeIdle(p, x -> closeProjectEntry(x, w, true))) {
 				return true;
 			}
 		}
@@ -468,28 +496,38 @@ final class ProjectCommands {
 			throw new SessionException(SessionException.FAILED,
 				"could not reopen project " + p.id + ": " + e.getMessage(), null, e);
 		}
-		Lock l;
-		try {
-			l = lockProject(p, true, waitMs(req), "refresh");
-			p.exclusiveClient = c;
-		}
-		catch (RuntimeException e) {
-			nv.close();
-			throw e;
-		}
-		SessionProject old = p.project;
+		// A refresh is a repoint (E3c, BP7): it does not take the project lock, so it cannot queue
+		// behind running requests and refuse every later request of the project. One structure change
+		// of a project at a time.
 		JsonArray progs;
+		if (Waits.lock(p.structure, waitMs(req)) != Waits.Outcome.GOT) {
+			nv.close();
+			throw new SessionException(SessionException.BUSY,
+				"project " + p.id + " is being refreshed or reopened by another request; retry",
+				p.identity());
+		}
 		try {
-			progs = swapView(p, nv, rev, m);
+			if (p.closed) {
+				nv.close();
+				throw new SessionException(SessionException.NO_PROJECT,
+					"project " + p.id + " was closed", Json.of("project", p.id));
+			}
+			if (p.writable()) {
+				nv.close(); // reopened writable while this waited: that view shows what is saved
+				return Json.of("project", p.id, "refreshed", false, "reason",
+					"writable: this daemon holds the project lock, so it always shows what is saved",
+					"revision", p.diskRevision(), "generation", p.generation);
+			}
+			try {
+				progs = repointTo(p, nv, rev, m);
+			}
+			catch (RuntimeException e) {
+				nv.close();
+				throw e;
+			}
 		}
 		finally {
-			unlockProject(p, l);
-		}
-		try {
-			old.close();
-		}
-		catch (RuntimeException e) {
-			Msg.warn(s, "refresh: could not close the old view of " + p.id, e);
+			p.structure.unlock();
 		}
 		c.seenGeneration.put(p.id, p.generation);
 		Msg.info(s, c.label() + " refreshed project " + p.id + " from revision " + from +
@@ -503,30 +541,39 @@ final class ProjectCommands {
 
 	/**
 	 * One program of a refreshed view: reopened from the new view when clients use it, closed
-	 * otherwise. Held: the project's exclusive lock (no request runs on it).
+	 * otherwise. It never queues for the program's lock: when readers are running ({@code waitMs} 0,
+	 * the barging {@code tryLock}) the program keeps what it has, is marked
+	 * ({@link ProgramEntry#reopenPendingSince}) and is reopened by {@link #completeReopen} the moment
+	 * its lock is free, so no reader is refused because a refresh is waiting (BP7). Held: the
+	 * project's structure lock or the project pin of the caller.
+	 *
+	 * @param waitMs 0, or a short bounded queued wait (the reap's last resort for a program that
+	 *            steady readers never leave free)
 	 */
-	private JsonObject reopenIn(ProjectEntry p, SessionProject nv, ProgramEntry e,
-			RequestMonitor m) {
+	private JsonObject reopenIn(ProjectEntry p, ProgramEntry e, RequestMonitor m, long waitMs) {
 		JsonObject r = Json.of("program", e.key, "revision", e.revision);
-		boolean got = false;
-		try {
-			got = e.lock.writeLock().tryLock(Session.abandonWaitMs(), TimeUnit.MILLISECONDS);
-		}
-		catch (InterruptedException ex) {
-			Thread.currentThread().interrupt();
-		}
+		Lock wl = e.lock.writeLock();
+		boolean got = waitMs <= 0 ? wl.tryLock() : Waits.tryLock(wl, waitMs);
 		if (!got) {
-			Json.put(r, "action", "kept (still in use: " + e.exclusiveHolder + ")");
+			if (e.reopenPendingSince == 0) {
+				e.reopenPendingSince = System.currentTimeMillis();
+			}
+			String why = e.exclusiveHolder != null ? e.exclusiveHolder
+					: e.lock.getReadLockCount() + " reader(s)";
+			Json.put(r, "action", "kept (still in use: " + why + "); reopened when it is free");
 			return r;
 		}
 		boolean unlock = true;
+		ProjectEntry.View nv = p.retainView();
+		boolean bound = false;
 		try {
+			e.reopenPendingSince = 0;
 			if (e.userCount() == 0) {
 				s.programCmds.disposeProgram(e);
 				Json.put(r, "action", "closed (nobody used it)");
 				return r;
 			}
-			DomainFile df = nv.getProjectData().getFile(e.path);
+			DomainFile df = nv.project.getProjectData().getFile(e.path);
 			if (df == null || !Program.class.isAssignableFrom(df.getDomainObjectClass())) {
 				e.lock.writeLock().unlock();
 				unlock = false;
@@ -541,6 +588,8 @@ final class ProjectCommands {
 				e.file = df;
 				e.program = s.programCmds.openReadOnly(e, df, m);
 				e.mode = ProgramEntry.Mode.READ_ONLY;
+				s.programCmds.bindView(e, nv);
+				bound = true;
 				e.stampRevision();
 				Json.put(r, "action", "reopened");
 				Json.put(r, "newRevision", e.revision);
@@ -556,9 +605,41 @@ final class ProjectCommands {
 			return r;
 		}
 		finally {
+			if (!bound) {
+				nv.release();
+			}
 			if (unlock) {
 				e.lock.writeLock().unlock();
 			}
+		}
+	}
+
+	/**
+	 * Finishes a reopen that a refresh could not do because readers were running ({@link
+	 * ProgramEntry#reopenPendingSince}): called when the lock of the program is released and at the
+	 * reap. Without waiting (the barging {@code tryLock}) unless {@code waitMs} is positive.
+	 */
+	void completeReopen(ProgramEntry e, long waitMs) {
+		ProjectEntry p = e.project;
+		if (e.reopenPendingSince == 0) {
+			return;
+		}
+		ProjectEntry.Pin pin = p.tryPin();
+		if (pin == null) {
+			return;
+		}
+		try {
+			if (p.programs.get(e.path) != e || p.closed) {
+				e.reopenPendingSince = 0;
+				return;
+			}
+			JsonObject r = reopenIn(p, e, new RequestMonitor(null, null), waitMs);
+			if (e.reopenPendingSince == 0) {
+				Msg.info(s, "refresh: " + e.key + " " + Json.str(r, "action", "?"));
+			}
+		}
+		finally {
+			pin.unlock();
 		}
 	}
 

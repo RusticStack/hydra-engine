@@ -887,7 +887,9 @@ public class HeadlessSession implements GhidraLaunchable {
 			Client c = new Client(40, "selftest", false, null);
 			Client other = new Client(41, "selftest", false, null);
 			Scheduler.Ticket t = s.admit(c, "decompile", new JsonObject(), null, 100);
+			int[] before = s.recorded(Scheduler.Lane.QUICK);
 			t.yieldSlot();
+			int[] yielded = s.recorded(Scheduler.Lane.QUICK);
 			Scheduler.Ticket o = s.admit(other, "decompile", new JsonObject(), null, 100);
 			boolean busy = false;
 			try {
@@ -900,10 +902,16 @@ public class HeadlessSession implements GhidraLaunchable {
 			t.reacquire(null, 1000);
 			boolean held = s.describe(false).getAsJsonObject("quick").get("inUse").getAsInt() == 1;
 			t.close();
+			int[] closed = s.recorded(Scheduler.Lane.QUICK);
 			check("yieldSlot gives the slot to another key, reacquire waits for one again " +
 				"(busy while it is taken) and close releases it once",
 				busy && held &&
 					s.describe(false).getAsJsonObject("quick").get("inUse").getAsInt() == 0);
+			// E3c (the E3a review nit): a yield is not a completion and records no hold time; only the
+			// end of the request does (the other key's close above is the one completion before it)
+			check("yieldSlot records neither a hold time nor a completion; the final close records one",
+				yielded[0] == before[0] && yielded[1] == before[1] && closed[0] == yielded[0] + 2 &&
+					closed[1] == yielded[1] + 2);
 		}
 
 		private static void negotiation() {
