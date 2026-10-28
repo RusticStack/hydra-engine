@@ -1,0 +1,1103 @@
+{
+ "scenario": "session",
+ "steps": [
+  {
+   "step": 1,
+   "who": "a",
+   "cmd": "ping",
+   "request": {},
+   "response": {
+    "id": 2,
+    "ok": true,
+    "result": {
+     "pong": true
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 2,
+   "who": "a",
+   "cmd": "hello",
+   "request": {
+    "client": "char-a",
+    "harness": "char-h",
+    "clientVersion": "9.9.9"
+   },
+   "response": {
+    "id": 3,
+    "ok": true,
+    "result": {
+     "protocol": 2,
+     "minClient": "<masked>",
+     "hydraVersion": "<masked>",
+     "ghidraVersion": "<masked>",
+     "installId": "<masked>",
+     "startedAt": "<masked>",
+     "ghidra": "<masked>",
+     "install": "<masked>",
+     "java": "<masked>",
+     "pid": "<masked>",
+     "uptimeMs": "<masked>",
+     "listen": {
+      "host": "<masked>",
+      "port": "<masked>"
+     },
+     "launch": {
+      "mode": "fast",
+      "aot": null,
+      "classCache": "miss",
+      "readyMs": "<masked>",
+      "jvmToReadyMs": "<masked>"
+     },
+     "keepWarmS": 600,
+     "memory": {
+      "usedMb": "<masked>",
+      "committedMb": "<masked>",
+      "maxMb": "<masked>"
+     },
+     "projects": [],
+     "client": 1
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 3,
+   "who": "a",
+   "cmd": "status",
+   "request": {},
+   "response": {
+    "id": 4,
+    "ok": true,
+    "result": {
+     "protocol": 2,
+     "minClient": "<masked>",
+     "hydraVersion": "<masked>",
+     "ghidraVersion": "<masked>",
+     "installId": "<masked>",
+     "startedAt": "<masked>",
+     "ghidra": "<masked>",
+     "install": "<masked>",
+     "java": "<masked>",
+     "pid": "<masked>",
+     "uptimeMs": "<masked>",
+     "listen": {
+      "host": "<masked>",
+      "port": "<masked>"
+     },
+     "launch": {
+      "mode": "fast",
+      "aot": null,
+      "classCache": "miss",
+      "readyMs": "<masked>",
+      "jvmToReadyMs": "<masked>"
+     },
+     "keepWarmS": 600,
+     "memory": {
+      "usedMb": "<masked>",
+      "committedMb": "<masked>",
+      "maxMb": "<masked>"
+     },
+     "projects": [],
+     "you": 1,
+     "programs": [],
+     "clients": [
+      {
+       "id": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "transport": "socket",
+       "launcher": false,
+       "clientVersion": "9.9.9",
+       "activeProject": null,
+       "active": null,
+       "connectedMs": "<masked>",
+       "projects": [],
+       "programs": [],
+       "running": [],
+       "requests": []
+      },
+      {
+       "id": 2,
+       "name": "char-b",
+       "harness": "char-h",
+       "transport": "socket",
+       "launcher": false,
+       "clientVersion": "1.0.0",
+       "activeProject": null,
+       "active": null,
+       "connectedMs": "<masked>",
+       "projects": [],
+       "programs": [],
+       "running": [],
+       "requests": []
+      }
+     ],
+     "overlays": [],
+     "scheduler": {
+      "quick": {
+       "slots": 24,
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 0,
+       "everQueued": 0,
+       "backgroundQueued": 0
+      },
+      "long": {
+       "slots": 6,
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 0,
+       "everQueued": 0,
+       "backgroundQueued": 0
+      }
+     },
+     "imports": {
+      "maxImports": 4,
+      "holder": null,
+      "running": [],
+      "queue": [],
+      "history": {
+       "count": 0,
+       "completed": 0,
+       "meanMs": null,
+       "msPerMb": null,
+       "peakRunning": 0
+      }
+     },
+     "youAre": {
+      "client": "char-a",
+      "harness": "char-h",
+      "labelled": false
+     },
+     "upgradeCache": {
+      "enabled": true,
+      "dir": "<WORK>/state/upgrade-cache",
+      "buildsStarted": 0,
+      "builds": []
+     },
+     "deferredInitMs": "<masked>"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 4,
+   "who": "b",
+   "cmd": "status",
+   "request": {},
+   "response": {
+    "id": 2,
+    "ok": true,
+    "result": {
+     "protocol": 2,
+     "minClient": "<masked>",
+     "hydraVersion": "<masked>",
+     "ghidraVersion": "<masked>",
+     "installId": "<masked>",
+     "startedAt": "<masked>",
+     "ghidra": "<masked>",
+     "install": "<masked>",
+     "java": "<masked>",
+     "pid": "<masked>",
+     "uptimeMs": "<masked>",
+     "listen": {
+      "host": "<masked>",
+      "port": "<masked>"
+     },
+     "launch": {
+      "mode": "fast",
+      "aot": null,
+      "classCache": "miss",
+      "readyMs": "<masked>",
+      "jvmToReadyMs": "<masked>"
+     },
+     "keepWarmS": 600,
+     "memory": {
+      "usedMb": "<masked>",
+      "committedMb": "<masked>",
+      "maxMb": "<masked>"
+     },
+     "projects": [],
+     "you": 2,
+     "programs": [],
+     "clients": [
+      {
+       "id": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "transport": "socket",
+       "launcher": false,
+       "clientVersion": "9.9.9",
+       "activeProject": null,
+       "active": null,
+       "connectedMs": "<masked>",
+       "projects": [],
+       "programs": [],
+       "running": [],
+       "requests": []
+      },
+      {
+       "id": 2,
+       "name": "char-b",
+       "harness": "char-h",
+       "transport": "socket",
+       "launcher": false,
+       "clientVersion": "1.0.0",
+       "activeProject": null,
+       "active": null,
+       "connectedMs": "<masked>",
+       "projects": [],
+       "programs": [],
+       "running": [],
+       "requests": []
+      }
+     ],
+     "overlays": [],
+     "scheduler": {
+      "quick": {
+       "slots": 24,
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 0,
+       "everQueued": 0,
+       "backgroundQueued": 0
+      },
+      "long": {
+       "slots": 6,
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 0,
+       "everQueued": 0,
+       "backgroundQueued": 0
+      }
+     },
+     "imports": {
+      "maxImports": 4,
+      "holder": null,
+      "running": [],
+      "queue": [],
+      "history": {
+       "count": 0,
+       "completed": 0,
+       "meanMs": null,
+       "msPerMb": null,
+       "peakRunning": 0
+      }
+     },
+     "youAre": {
+      "client": "char-b",
+      "harness": "char-h",
+      "labelled": false
+     },
+     "upgradeCache": {
+      "enabled": true,
+      "dir": "<WORK>/state/upgrade-cache",
+      "buildsStarted": 0,
+      "builds": []
+     },
+     "deferredInitMs": "<masked>"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 5,
+   "who": "a",
+   "cmd": "projects",
+   "request": {},
+   "response": {
+    "id": 5,
+    "ok": true,
+    "result": {
+     "activeProject": null,
+     "projects": []
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 6,
+   "who": "a",
+   "cmd": "programs",
+   "request": {},
+   "response": {
+    "id": 6,
+    "ok": true,
+    "result": {
+     "activeProject": null,
+     "active": null,
+     "programs": []
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 7,
+   "who": "a",
+   "cmd": "overlays",
+   "request": {},
+   "response": {
+    "id": 7,
+    "ok": true,
+    "result": {
+     "overlays": []
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 8,
+   "who": "a",
+   "cmd": "list",
+   "request": {},
+   "response": {
+    "id": 8,
+    "ok": false,
+    "error": {
+     "code": "no_project",
+     "message": "no project selected; send open_project first"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 9,
+   "who": "a",
+   "cmd": "project",
+   "request": {},
+   "response": {
+    "id": 9,
+    "ok": false,
+    "error": {
+     "code": "no_project",
+     "message": "no project selected; send open_project first"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 10,
+   "who": "a",
+   "cmd": "refresh",
+   "request": {},
+   "response": {
+    "id": 10,
+    "ok": false,
+    "error": {
+     "code": "no_project",
+     "message": "no project selected; send open_project first"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 11,
+   "who": "a",
+   "cmd": "reopen",
+   "request": {},
+   "response": {
+    "id": 11,
+    "ok": false,
+    "error": {
+     "code": "no_project",
+     "message": "no project selected; send open_project first"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 12,
+   "who": "a",
+   "cmd": "close_project",
+   "request": {},
+   "response": {
+    "id": 12,
+    "ok": false,
+    "error": {
+     "code": "no_project",
+     "message": "no project selected; send open_project first"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 13,
+   "who": "a",
+   "cmd": "import",
+   "request": {
+    "file": "x"
+   },
+   "response": {
+    "id": 13,
+    "ok": false,
+    "error": {
+     "code": "no_project",
+     "message": "no project selected; send open_project first"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 14,
+   "who": "a",
+   "cmd": "open_program",
+   "request": {
+    "path": "/alpha.exe"
+   },
+   "response": {
+    "id": 14,
+    "ok": false,
+    "error": {
+     "code": "no_project",
+     "message": "no project selected; send open_project first"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 15,
+   "who": "a",
+   "cmd": "switch",
+   "request": {
+    "path": "/alpha.exe"
+   },
+   "response": {
+    "id": 15,
+    "ok": false,
+    "error": {
+     "code": "no_project",
+     "message": "no project selected; send open_project first"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 16,
+   "who": "a",
+   "cmd": "info",
+   "request": {},
+   "response": {
+    "id": 16,
+    "ok": false,
+    "error": {
+     "code": "no_program",
+     "message": "no active program; send open_program first"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 17,
+   "who": "a",
+   "cmd": "save",
+   "request": {},
+   "response": {
+    "id": 17,
+    "ok": false,
+    "error": {
+     "code": "no_program",
+     "message": "no active program; send open_program first"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 18,
+   "who": "a",
+   "cmd": "functions",
+   "request": {},
+   "response": {
+    "id": 18,
+    "ok": false,
+    "error": {
+     "code": "no_program",
+     "message": "no active program; send open_program first"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 19,
+   "who": "a",
+   "cmd": "decompile",
+   "request": {
+    "name": "x"
+   },
+   "response": {
+    "id": 19,
+    "ok": false,
+    "error": {
+     "code": "no_program",
+     "message": "no active program; send open_program first"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 20,
+   "who": "a",
+   "cmd": "rename",
+   "request": {
+    "address": "0x140001000",
+    "name": "x"
+   },
+   "response": {
+    "id": 20,
+    "ok": false,
+    "error": {
+     "code": "no_program",
+     "message": "no active program; send open_program first"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 21,
+   "who": "a",
+   "cmd": "edit",
+   "request": {
+    "ops": [
+     {
+      "op": "rename",
+      "address": "0x140001000",
+      "name": "x"
+     }
+    ]
+   },
+   "response": {
+    "id": 21,
+    "ok": false,
+    "error": {
+     "code": "no_program",
+     "message": "no active program; send open_program first"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 22,
+   "who": "a",
+   "cmd": "journal",
+   "request": {},
+   "response": {
+    "id": 22,
+    "ok": false,
+    "error": {
+     "code": "no_program",
+     "message": "no active program; send open_program first"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 23,
+   "who": "a",
+   "cmd": "discard_edits",
+   "request": {
+    "author": 1
+   },
+   "response": {
+    "id": 23,
+    "ok": false,
+    "error": {
+     "code": "no_program",
+     "message": "no active program; send open_program first"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 24,
+   "who": "a",
+   "cmd": "comment",
+   "request": {
+    "address": "0x140001000",
+    "text": "x"
+   },
+   "response": {
+    "id": 24,
+    "ok": false,
+    "error": {
+     "code": "no_program",
+     "message": "no active program; send open_program first"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 25,
+   "who": "a",
+   "cmd": "analyze",
+   "request": {},
+   "response": {
+    "id": 25,
+    "ok": false,
+    "error": {
+     "code": "no_program",
+     "message": "no active program; send open_program first"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 26,
+   "who": "a",
+   "cmd": "close_program",
+   "request": {},
+   "response": {
+    "id": 26,
+    "ok": false,
+    "error": {
+     "code": "no_program",
+     "message": "no active program; send open_program first"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 27,
+   "who": "a",
+   "cmd": "promote_overlay",
+   "request": {
+    "overlay": "o"
+   },
+   "response": {
+    "id": 27,
+    "ok": false,
+    "error": {
+     "code": "no_program",
+     "message": "no active program; send open_program first"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 28,
+   "who": "a",
+   "cmd": "fork_project",
+   "request": {
+    "path": "x"
+   },
+   "response": {
+    "id": 28,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "missing field: project (an open project's id, or a project path)"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 29,
+   "who": "a",
+   "cmd": "script",
+   "request": {},
+   "response": {
+    "id": 29,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "missing field: script"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 30,
+   "who": "a",
+   "cmd": "script",
+   "request": {
+    "script": "NoSuchScript.java"
+   },
+   "response": {
+    "id": 30,
+    "ok": false,
+    "error": {
+     "code": "not_found",
+     "message": "script not found: NoSuchScript.java (give a file path, or start the session with -scriptPath)"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 31,
+   "who": "a",
+   "cmd": "apply_overlay",
+   "request": {},
+   "response": {
+    "id": 31,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "missing field: overlay"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 32,
+   "who": "a",
+   "cmd": "drop_overlay",
+   "request": {},
+   "response": {
+    "id": 32,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "missing field: overlay"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 33,
+   "who": "a",
+   "cmd": "bogus",
+   "request": {},
+   "response": {
+    "id": 33,
+    "ok": false,
+    "error": {
+     "code": "unknown_command",
+     "message": "unknown cmd 'bogus'; send status or see the README for the list"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 34,
+   "who": "a",
+   "cmd": "open_project",
+   "request": {},
+   "response": {
+    "id": 34,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "missing field: path"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 35,
+   "who": "a",
+   "cmd": "open_project",
+   "request": {
+    "path": "<WORK>/nowhere/Nothing.gpr"
+   },
+   "response": {
+    "id": 35,
+    "ok": false,
+    "error": {
+     "code": "not_found",
+     "message": "Path does not exist: <WORK>/nowhere/Nothing.gpr"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 36,
+   "who": "a",
+   "cmd": "ping",
+   "request": {
+    "client": 5
+   },
+   "response": {
+    "id": 36,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "\"client\" is a label: a string"
+    },
+    "ms": "<masked>"
+   },
+   "note": "a label is a string"
+  },
+  {
+   "step": 37,
+   "who": "a",
+   "cmd": "ping",
+   "request": {
+    "client": "labelled",
+    "harness": "other"
+   },
+   "response": {
+    "id": 37,
+    "ok": true,
+    "result": {
+     "pong": true
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 38,
+   "who": "a",
+   "cmd": "cancel",
+   "request": {},
+   "response": {
+    "id": 38,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "missing field: target (the id of your request), or \"all\":true"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 39,
+   "who": "a",
+   "cmd": "cancel",
+   "request": {
+    "target": 999
+   },
+   "response": {
+    "id": 39,
+    "ok": true,
+    "result": {
+     "cancelled": false
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 40,
+   "who": "a",
+   "cmd": "cancel",
+   "request": {
+    "all": true
+   },
+   "response": {
+    "id": 40,
+    "ok": true,
+    "result": {
+     "cancelled": 0,
+     "scope": null
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 41,
+   "who": "a",
+   "cmd": "cancel",
+   "request": {
+    "cacheBuild": "all"
+   },
+   "response": {
+    "id": 41,
+    "ok": true,
+    "result": {
+     "cancelled": 0
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 42,
+   "who": "a",
+   "cmd": "cancel",
+   "request": {
+    "all": true,
+    "client": "lab",
+    "harness": "lab-h"
+   },
+   "response": {
+    "id": 42,
+    "ok": true,
+    "result": {
+     "cancelled": 0,
+     "scope": "lab / lab-h"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 43,
+   "who": "a",
+   "cmd": "shutdown",
+   "request": {},
+   "response": {
+    "id": 43,
+    "ok": false,
+    "error": {
+     "code": "conflict",
+     "message": "1 other client(s) are connected; pass \"force\":true to stop anyway",
+     "details": {
+      "clients": 1
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 44,
+   "who": "b",
+   "cmd": "status",
+   "request": {},
+   "response": {
+    "id": 3,
+    "ok": true,
+    "result": {
+     "protocol": 2,
+     "minClient": "<masked>",
+     "hydraVersion": "<masked>",
+     "ghidraVersion": "<masked>",
+     "installId": "<masked>",
+     "startedAt": "<masked>",
+     "ghidra": "<masked>",
+     "install": "<masked>",
+     "java": "<masked>",
+     "pid": "<masked>",
+     "uptimeMs": "<masked>",
+     "listen": {
+      "host": "<masked>",
+      "port": "<masked>"
+     },
+     "launch": {
+      "mode": "fast",
+      "aot": null,
+      "classCache": "miss",
+      "readyMs": "<masked>",
+      "jvmToReadyMs": "<masked>"
+     },
+     "keepWarmS": 600,
+     "memory": {
+      "usedMb": "<masked>",
+      "committedMb": "<masked>",
+      "maxMb": "<masked>"
+     },
+     "projects": [],
+     "you": 2,
+     "programs": [],
+     "clients": [
+      {
+       "id": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "transport": "socket",
+       "launcher": false,
+       "clientVersion": "9.9.9",
+       "activeProject": null,
+       "active": null,
+       "connectedMs": "<masked>",
+       "projects": [],
+       "programs": [],
+       "running": [],
+       "requests": []
+      },
+      {
+       "id": 2,
+       "name": "char-b",
+       "harness": "char-h",
+       "transport": "socket",
+       "launcher": false,
+       "clientVersion": "1.0.0",
+       "activeProject": null,
+       "active": null,
+       "connectedMs": "<masked>",
+       "projects": [],
+       "programs": [],
+       "running": [],
+       "requests": []
+      }
+     ],
+     "overlays": [],
+     "scheduler": {
+      "quick": {
+       "slots": 24,
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 9,
+       "everQueued": 0,
+       "backgroundQueued": 0
+      },
+      "long": {
+       "slots": 6,
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 8,
+       "everQueued": 0,
+       "backgroundQueued": 0
+      }
+     },
+     "imports": {
+      "maxImports": 4,
+      "holder": null,
+      "running": [],
+      "queue": [],
+      "history": {
+       "count": 0,
+       "completed": 0,
+       "meanMs": null,
+       "msPerMb": null,
+       "peakRunning": 0
+      }
+     },
+     "youAre": {
+      "client": "char-b",
+      "harness": "char-h",
+      "labelled": false
+     },
+     "upgradeCache": {
+      "enabled": true,
+      "dir": "<WORK>/state/upgrade-cache",
+      "buildsStarted": 0,
+      "builds": []
+     },
+     "deferredInitMs": "<masked>"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 45,
+   "who": "a",
+   "cmd": "shutdown",
+   "request": {},
+   "response": {
+    "id": 44,
+    "ok": false,
+    "error": {
+     "code": "conflict",
+     "message": "1 other client(s) are connected; pass \"force\":true to stop anyway",
+     "details": {
+      "clients": 1
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 46,
+   "who": "a",
+   "cmd": "shutdown",
+   "request": {},
+   "response": {
+    "id": 45,
+    "ok": true,
+    "result": {
+     "stopping": true
+    },
+    "ms": "<masked>"
+   }
+  }
+ ]
+}

@@ -72,6 +72,10 @@ public class LocalDatabaseItem extends LocalFolderItem implements DatabaseItem {
 			throws IOException {
 		super(fileSystem, propertyFile, true, false);
 
+		// Hydra E8: in a writable disposable tree a newest version with an invalid header
+		// (an interrupted save) is quarantined here, so the scan below sees the previous one
+		VersionFileCheck.repairOnOpen(getDataDir(), !fileSystem.isReadOnly());
+
 		if (isVersioned) {
 			versionedDbListener = new LocalVersionedDbListener();
 			versionedDb = new VersionedDatabase(getDataDir(), versionedDbListener);
@@ -537,6 +541,7 @@ public class LocalDatabaseItem extends LocalFolderItem implements DatabaseItem {
 				return versionedDb.openBufferFile(version, minChangeDataVer);
 			}
 			if (version == LATEST_VERSION) {
+				VersionFileCheck.requireIntact(getDataDir());
 				return privateDb.openBufferFile();
 			}
 			throw new IllegalArgumentException("only LATEST_VERSION may be opened");
@@ -553,6 +558,7 @@ public class LocalDatabaseItem extends LocalFolderItem implements DatabaseItem {
 				return versionedDb.openBufferFile(version, -1);
 			}
 			if (version == LATEST_VERSION) {
+				VersionFileCheck.requireIntact(getDataDir());
 				return privateDb.openBufferFile();
 			}
 			throw new IllegalArgumentException("only LATEST_VERSION may be opened");
@@ -568,6 +574,7 @@ public class LocalDatabaseItem extends LocalFolderItem implements DatabaseItem {
 			if (isVersioned) {
 				return versionedDb.openBufferFile(LATEST_VERSION, -1);
 			}
+			VersionFileCheck.requireIntact(getDataDir());
 			return privateDb.openBufferFile();
 		}
 	}
@@ -599,6 +606,7 @@ public class LocalDatabaseItem extends LocalFolderItem implements DatabaseItem {
 					}
 				}
 			}
+			VersionFileCheck.requireIntact(getDataDir());
 			return privateDb.openBufferFileForUpdate();
 		}
 	}

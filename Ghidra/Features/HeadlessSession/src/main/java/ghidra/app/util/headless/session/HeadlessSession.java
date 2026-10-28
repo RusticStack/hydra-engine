@@ -65,6 +65,7 @@ public class HeadlessSession implements GhidraLaunchable {
 		                       [-maxQuick <n>] [-maxLong <n>] [-maxImports <n>]
 		                       [-scriptPath <dir>]... [-log <file>]
 		                       [-upgradeCache <dir>] [-forkCopyLimitMb <n>]
+		                       [-set <key>=<value>]... [-selfTest]
 		  (normally started by Ghidra/Features/HeadlessSession/support/ghidra_session.py)
 		  -project      open this project at start (a .gpr, its folder, or a parent with one)
 		  -writable     open it writable (takes the project lock); default: read-only view
@@ -85,6 +86,10 @@ public class HeadlessSession implements GhidraLaunchable {
 		                upgraded copy of their project kept in this directory (default: none)
 		  -forkCopyLimitMb  fork_project mode auto refuses a full (not block-cloned) copy larger
 		                than this (default 2048)
+		  -set          an engine setting (PROTOCOL-3.md 3.7); repeat it. The launcher passes every
+		                entry of the "engine" object of config.json this way
+		  -selfTest     check the engine's registries and seams, print one line each and exit
+		                (0 when every check held); starts no session
 		""";
 
 	private final Object exitLock = new Object();
@@ -97,8 +102,10 @@ public class HeadlessSession implements GhidraLaunchable {
 	public void launch(GhidraApplicationLayout layout, String[] args) throws Exception {
 		long t0 = System.nanoTime();
 		Options o;
+		boolean requireExpect = false;
 		try {
 			o = Options.parse(args);
+			requireExpect = Settings.bool("requireExpect", false); // a bad value is a usage error
 		}
 		catch (IllegalArgumentException e) {
 			System.err.println(e.getMessage());
@@ -106,6 +113,11 @@ public class HeadlessSession implements GhidraLaunchable {
 			System.exit(2);
 			return;
 		}
+		if (o.selfTest) {
+			System.exit(SelfTest.run());
+			return;
+		}
+		boolean requireExpectSetting = requireExpect;
 
 		// Claim the protocol channel before anything else can print to stdout.
 		OutputStream proto = new FileOutputStream(FileDescriptor.out);
@@ -130,10 +142,19 @@ public class HeadlessSession implements GhidraLaunchable {
 			() -> GhidraScriptUtil.acquireBundleHostReference().add(scriptDirs, true, true));
 
 		int cpus = Runtime.getRuntime().availableProcessors();
-		Scheduler scheduler = new Scheduler(o.maxQuick > 0 ? o.maxQuick : cpus,
-			o.maxLong > 0 ? o.maxLong : Math.max(2, cpus / 4));
-		ImportGate.GLOBAL.setPermits(
-			o.maxImports > 0 ? o.maxImports : ImportGate.defaultPermits(cpus));
+		int maxQuick = o.maxQuick > 0 ? o.maxQuick : cpus;
+		int maxLong = o.maxLong > 0 ? o.maxLong : Math.max(2, cpus / 4);
+		Scheduler scheduler = new Scheduler(maxQuick, maxLong);
+		int maxImports = o.maxImports > 0 ? o.maxImports : ImportGate.defaultPermits(cpus);
+		ImportGate.GLOBAL.setPermits(maxImports);
+		// what hello reports to a protocol 3 client (3.2); the other packages set their own
+		Advertised.limit("maxQuick", () -> maxQuick);
+		Advertised.limit("maxLong", () -> maxLong);
+		Advertised.limit("maxImports", () -> maxImports);
+		Advertised.policy("requireExpect", () -> requireExpectSetting);
+		Identity.setPaths(o.stateDir == null ? null : Path.of(o.stateDir).toAbsolutePath().toString(),
+			o.daemon ? o.instance : null, o.endpoint, o.log, o.scriptDirs, o.upgradeCache);
+		Identity.warm();
 		session = new Session(scheduler, o.keepWarmSeconds,
 			new UpgradeCache(o.upgradeCache == null ? null : new File(o.upgradeCache), scheduler));
 		if (o.forkCopyLimitMb >= 0) {
@@ -183,9 +204,11 @@ public class HeadlessSession implements GhidraLaunchable {
 				o);
 		}
 
-		JsonObject ready = session.info();
+		JsonObject ready = session.info(null);
 		ready.addProperty("event", "ready");
 		ready.addProperty("startupMs", readyMs);
+		ready.addProperty("protocolMin", HydraInfo.PROTOCOL_MIN); // V6: additive
+		ready.addProperty("protocolMax", HydraInfo.PROTOCOL_MAX);
 		if (token != null && o.stdio) {
 			ready.addProperty("token", token); // the launcher's own pipe
 		}
@@ -353,7 +376,8 @@ public class HeadlessSession implements GhidraLaunchable {
 	}
 
 	private void writeEndpoint(Path file, int port, String token, Options o) throws IOException {
-		JsonObject e = Json.of("protocol", Session.PROTOCOL_VERSION, "minClient",
+		JsonObject e = Json.of("protocol", HydraInfo.PROTOCOL, "protocolMin",
+			HydraInfo.PROTOCOL_MIN, "protocolMax", HydraInfo.PROTOCOL_MAX, "minClient",
 			HydraInfo.minClient(), "hydraVersion", HydraInfo.hydraVersion(), "ghidraVersion",
 			Application.getApplicationVersion(), "installId", HydraInfo.installId(), "pid",
 			ProcessHandle.current().pid(), "host", o.listenHost.getHostAddress(), "port", port,
@@ -414,6 +438,7 @@ public class HeadlessSession implements GhidraLaunchable {
 		String log;
 		String upgradeCache;
 		long forkCopyLimitMb = -1;
+		boolean selfTest;
 
 		static Options parse(String[] args) {
 			Options o = new Options();
@@ -443,6 +468,8 @@ public class HeadlessSession implements GhidraLaunchable {
 					case "-log" -> o.log = value(args, ++i, a);
 					case "-upgradeCache" -> o.upgradeCache = value(args, ++i, a);
 					case "-forkCopyLimitMb" -> o.forkCopyLimitMb = number(args, ++i, a);
+					case "-set" -> Settings.set(value(args, ++i, a));
+					case "-selfTest" -> o.selfTest = true;
 					default -> throw new IllegalArgumentException("unknown option: " + a);
 				}
 			}
@@ -510,6 +537,240 @@ public class HeadlessSession implements GhidraLaunchable {
 			catch (NumberFormatException e) {
 				throw new IllegalArgumentException(opt + " needs a number >= 0");
 			}
+		}
+	}
+
+	/**
+	 * {@code -selfTest}: checks the registries and the seams of package E1 without starting a
+	 * session (no Ghidra application, no project), so that a test can run it against any build:
+	 * one line per check, {@code ok} or {@code FAIL}, then {@code SETTINGS <json>} with what
+	 * {@code -set} stored, and the exit code is 0 only when every check held.
+	 */
+	static final class SelfTest {
+		private static int bad;
+
+		private SelfTest() {
+		}
+
+		private static void check(String what, boolean cond) {
+			System.out.println((cond ? "ok   " : "FAIL ") + what);
+			if (!cond) {
+				bad++;
+			}
+		}
+
+		private static boolean throwsIllegal(Runnable r) {
+			try {
+				r.run();
+				return false;
+			}
+			catch (IllegalArgumentException e) {
+				return true;
+			}
+		}
+
+		private static JsonObject obj(String json) {
+			return com.google.gson.JsonParser.parseString(json).getAsJsonObject();
+		}
+
+		static int run() {
+			advertised();
+			settings();
+			lanes();
+			negotiation();
+			errors();
+			preflight();
+			dbVersions();
+			System.out.println(
+				bad == 0 ? "all self-test checks held" : bad + " self-test check(s) FAILED");
+			return bad == 0 ? 0 : 1;
+		}
+
+		private static void advertised() {
+			check("registering an unknown capability throws",
+				throwsIllegal(() -> Advertised.capability("noSuchCapability", 1)));
+			check("registering an unknown limit throws",
+				throwsIllegal(() -> Advertised.limit("noSuchLimit", () -> 1)));
+			check("registering an unknown policy throws",
+				throwsIllegal(() -> Advertised.policy("noSuchPolicy", () -> true)));
+			check("a capability version below 1 throws",
+				throwsIllegal(() -> Advertised.capability("health", 0)));
+			// registered out of order, rendered in declaration order
+			Advertised.capability("identity", 1);
+			Advertised.capability("expectAll", 2);
+			Advertised.limit("maxLong", () -> 4);
+			Advertised.limit("maxQuick", () -> 16);
+			Advertised.policy("requireExpect", () -> false);
+			check("capabilities render in declaration order, only those registered",
+				Json.GSON.toJson(Advertised.capabilities()).equals("{\"expectAll\":2,\"identity\":1}"));
+			check("limits render in declaration order",
+				Json.GSON.toJson(Advertised.limits()).equals("{\"maxQuick\":16,\"maxLong\":4}"));
+			check("policy renders what was set",
+				Json.GSON.toJson(Advertised.policy()).equals("{\"requireExpect\":false}"));
+		}
+
+		private static void settings() {
+			check("a setting without = throws", throwsIllegal(() -> Settings.set("novalue")));
+			check("a setting with a bad key throws", throwsIllegal(() -> Settings.set("1x=2")));
+			check("an integer that is not one throws", throwsIllegal(() -> {
+				Settings.set("selfTestInt", "x");
+				Settings.integer("selfTestInt", 0);
+			}));
+			check("a boolean that is not true or false throws", throwsIllegal(() -> {
+				Settings.set("selfTestBool", "yes");
+				Settings.bool("selfTestBool", false);
+			}));
+			Settings.set("selfTestInt", "7");
+			Settings.set("selfTestBool", "true");
+			check("a value reaches its typed reader", Settings.integer("selfTestInt", 0) == 7 &&
+				Settings.bool("selfTestBool", false) && Settings.integer("selfTestUnset", 5) == 5);
+			Settings.set("selfTestInt", "8");
+			check("a repeated key keeps its last value", Settings.integer("selfTestInt", 0) == 8);
+		}
+
+		private static final List<String> LONG = List.of("analyze", "import", "script", "save",
+			"fork_project", "refresh", "reopen", "promote_overlay");
+		private static final List<String> QUICK = List.of("list", "functions", "decompile",
+			"rename", "comment", "open_program", "switch", "open_project");
+		private static final List<String> NONE = List.of("ping", "hello", "status", "cancel",
+			"shutdown", "projects", "programs", "info", "close_project", "close_program", "edit",
+			"journal", "discard_edits", "project", "overlays", "apply_overlay", "drop_overlay",
+			"health", "nosuchcommand", "");
+
+		private static void lanes() {
+			boolean same = true;
+			JsonObject quickHint = Json.of("lane", "quick", "timeout", 30);
+			for (boolean v3 : new boolean[] { false, true }) {
+				for (JsonObject req : new JsonObject[] { new JsonObject(), quickHint }) {
+					for (String cmd : LONG) {
+						same &= Scheduler.laneOf(cmd, req, v3) == Scheduler.Lane.LONG;
+					}
+					for (String cmd : QUICK) {
+						same &= Scheduler.laneOf(cmd, req, v3) == Scheduler.Lane.QUICK;
+					}
+					for (String cmd : NONE) {
+						same &= Scheduler.laneOf(cmd, req, v3) == null;
+					}
+				}
+			}
+			check("laneOf(cmd, req, v3) is today's lane for every command, v2 and v3, with and " +
+				"without a lane hint", same);
+			Scheduler s = new Scheduler(3, 2);
+			String empty =
+				"{\"quick\":{\"slots\":3,\"inUse\":0,\"queued\":0,\"running\":[],\"waiting\":[]," +
+					"\"admitted\":0,\"everQueued\":0,\"backgroundQueued\":0},\"long\":{\"slots\":2," +
+					"\"inUse\":0,\"queued\":0,\"running\":[],\"waiting\":[],\"admitted\":0," +
+					"\"everQueued\":0,\"backgroundQueued\":0}}";
+			check("describe(false) of an idle scheduler is today's object",
+				Json.GSON.toJson(s.describe(false)).equals(empty));
+			check("describe(true) is the same object until the v3 fields exist",
+				Json.GSON.toJson(s.describe(true)).equals(empty));
+			Client c = new Client(1, "selftest", false, null);
+			try (Scheduler.Ticket t = s.admit(c, "save", new JsonObject(), null, 100)) {
+				JsonObject d = s.describe(false);
+				check("a save holds a long slot, as today",
+					d.getAsJsonObject("long").get("inUse").getAsInt() == 1 &&
+						d.getAsJsonObject("quick").get("inUse").getAsInt() == 0);
+				JsonObject d3 = s.describe(true);
+				check("describe(true) shows the same single running save, in the long lane",
+					d3.getAsJsonObject("long").getAsJsonArray("running").size() == 1 &&
+						!d3.has("maint"));
+			}
+		}
+
+		private static void negotiation() {
+			String[] asks = { "{}", "{\"protocol\":3}", "{\"protocol\":9}", "{\"protocol\":2}",
+				"{\"protocol\":1}", "{\"protocol\":0}", "{\"protocol\":-5}", "{\"protocol\":\"3\"}",
+				"{\"protocol\":3.0}", "{\"protocol\":true}", "{\"protocol\":null}",
+				"{\"protocol\":[3]}", "{\"protocol\":99999999999999999999}",
+				"{\"protocol\":-99999999999999999999}", "{\"protocol\":-4294967293}",
+				"{\"protocol\":-4294967292}", "{\"protocol\":-9223372036854775805}" };
+			int[] want = { 2, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 2, 2, 2, 2 };
+			boolean all = true;
+			StringBuilder sb = new StringBuilder();
+			for (int i = 0; i < asks.length; i++) {
+				int got = Client.requestedProtocol(obj(asks[i]));
+				all &= got == want[i];
+				sb.append(' ').append(asks[i]).append("->").append(got);
+			}
+			check("the protocol a hello asks for is answered as 3.1 says:" + sb, all);
+			Client a = new Client(1, "selftest", false, null);
+			check("a connection is protocol 2 before any hello", a.protocol() == 2 && !a.v3());
+			a.negotiate(obj("{\"protocol\":3}"));
+			a.negotiate(obj("{\"protocol\":2}"));
+			check("the first hello fixes protocol 3; a later hello asking 2 changes nothing",
+				a.protocol() == 3 && a.v3());
+			Client b = new Client(2, "selftest", false, null);
+			b.negotiate(obj("{}"));
+			b.negotiate(obj("{\"protocol\":3}"));
+			check("the first hello fixes protocol 2; a later hello asking 3 changes nothing",
+				b.protocol() == 2 && !b.v3());
+		}
+
+		private static void errors() {
+			JsonObject base = Json.of("lane", "long");
+			check("busyDetails for v2 returns the details as they were",
+				SessionException
+						.busyDetails(false, base.deepCopy(), "slot_wait", Json.of("x", 1), true)
+						.equals(base));
+			check("busyDetails for v3 adds reason, queue and abandoned",
+				Json.GSON.toJson(SessionException.busyDetails(true, base.deepCopy(), "slot_wait",
+					Json.of("position", 1), false)).equals(
+						"{\"lane\":\"long\",\"reason\":\"slot_wait\",\"queue\":{\"position\":1}," +
+							"\"abandoned\":false}"));
+			check("badRequest for v2 has no details",
+				SessionException.badRequest(false, "m", "lane", List.of("quick")).details() == null);
+			check("badRequest for v3 has field and allowed",
+				Json.GSON.toJson(SessionException.badRequest(true, "m", "lane",
+					List.of("quick", "long")).details()).equals(
+						"{\"field\":\"lane\",\"allowed\":[\"quick\",\"long\"]}"));
+			check("retryAfterMs is clamped to 250..10000",
+				new SessionException("busy", "m").withRetryAfterMs(1).retryAfterMs() == 250 &&
+					new SessionException("busy", "m").withRetryAfterMs(1000).retryAfterMs() == 1000 &&
+					new SessionException("busy", "m").withRetryAfterMs(99999).retryAfterMs() == 10000);
+			SessionException e = new SessionException("conflict", "m").withNext(Json.of("cmd", "x"))
+					.withRetryAfterMs(500).rewrap("m2", null);
+			check("rewrap keeps next and retryAfterMs", e.next() != null && e.retryAfterMs() == 500 &&
+				e.getMessage().equals("m2") && e.code().equals("conflict"));
+		}
+
+		private static void preflight() {
+			List<String> order = new ArrayList<>();
+			Preflight.register(Preflight.ALL, (cmd, req) -> order.add("*" + cmd));
+			Preflight.register("selftest", (cmd, req) -> order.add("own"));
+			Preflight.run("selftest", new JsonObject());
+			Preflight.run("other", new JsonObject());
+			check("Preflight runs the * checks, then the command's, in order; a command without " +
+				"its own runs only the *", order.equals(List.of("*selftest", "own", "*other")) &&
+					Preflight.count("selftest") == 2 && Preflight.count("other") == 1);
+			Preflight.register("selftestRefuse", (cmd, req) -> {
+				throw new SessionException(SessionException.BAD_REQUEST, "refused");
+			});
+			boolean refused = false;
+			try {
+				Preflight.run("selftestRefuse", new JsonObject());
+			}
+			catch (SessionException ex) {
+				refused = ex.code().equals(SessionException.BAD_REQUEST);
+			}
+			check("a refusal propagates", refused);
+		}
+
+		private static void dbVersions() {
+			check("DbVersions.program() reads ProgramDB.DB_VERSION (positive)",
+				DbVersions.program() > 0);
+			check("DbVersions.dataTypes() is null until it is read and tested (E2)",
+				DbVersions.dataTypes() == null);
+			JsonObject all = new JsonObject();
+			Settings.all().forEach((k, v) -> {
+				if (!k.startsWith("selfTest")) {
+					all.addProperty(k, v);
+				}
+			});
+			// the line a test reads: what -set stored (the self-test's own keys left out), and how
+			// the two typed readers see the keys the engine itself defines
+			System.out.println("SETTINGS " + Json.GSON.toJson(Json.of("set", all, "requireExpect",
+				Settings.bool("requireExpect", false), "maintSlots", Settings.integer("maintSlots", -1))));
 		}
 	}
 }

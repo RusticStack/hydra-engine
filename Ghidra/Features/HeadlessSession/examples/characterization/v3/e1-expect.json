@@ -1,0 +1,564 @@
+{
+ "scenario": "e1-expect",
+ "protocol": 3,
+ "steps": [
+  {
+   "step": 1,
+   "who": "a",
+   "cmd": "open_project",
+   "request": {
+    "path": "<WORK>/e1expect/Fixture.gpr",
+    "writable": true
+   },
+   "response": {
+    "id": 2,
+    "ok": true,
+    "result": {
+     "id": "p1",
+     "name": "Fixture",
+     "dir": "<WORK>/e1expect",
+     "gpr": "<WORK>/e1expect/Fixture.gpr",
+     "writable": true,
+     "openMs": "<masked>",
+     "idleMs": "<masked>",
+     "files": 2,
+     "users": [
+      1
+     ],
+     "programs": 0,
+     "revision": "<rev1>",
+     "diskRevision": "<rev1>",
+     "stale": false,
+     "generation": 1,
+     "fork": null,
+     "opened": true
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 2,
+   "who": "a",
+   "cmd": "open_program",
+   "request": {
+    "path": "/alpha.exe",
+    "writable": true
+   },
+   "response": {
+    "id": 3,
+    "ok": true,
+    "result": {
+     "key": "p1:/alpha.exe",
+     "project": "p1",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "writable",
+     "owner": 1,
+     "mine": true,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": false,
+     "revision": "<rev2>",
+     "projectRevision": "<rev1>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1
+     ],
+     "overlays": [],
+     "writers": [],
+     "writer": true,
+     "journalSeq": 0,
+     "unsavedEdits": 0,
+     "openMs": "<masked>"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 3,
+   "who": "a",
+   "cmd": "edit",
+   "request": {
+    "ops": [
+     {
+      "op": "signature",
+      "address": "0x140001020",
+      "signature": "int e1_f(int a)"
+     }
+    ]
+   },
+   "response": {
+    "id": 4,
+    "ok": true,
+    "result": {
+     "program": "p1:/alpha.exe",
+     "applied": 1,
+     "results": [
+      {
+       "op": "signature",
+       "address": "0x140001020",
+       "signature": "int e1_f(int a)",
+       "old": "int FUN_140001020(int param_1)",
+       "new": "int e1_f(int a)",
+       "seq": 1
+      }
+     ],
+     "seqs": [
+      1
+     ],
+     "unsavedEdits": 1
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 4,
+   "who": "a",
+   "cmd": "edit",
+   "request": {
+    "ops": [
+     {
+      "op": "signature",
+      "address": "0x140001020",
+      "signature": "int e1_f(int a, int b)",
+      "expect": "int e1_f(int a)"
+     }
+    ]
+   },
+   "response": {
+    "id": 5,
+    "ok": true,
+    "result": {
+     "program": "p1:/alpha.exe",
+     "applied": 1,
+     "results": [
+      {
+       "op": "signature",
+       "address": "0x140001020",
+       "signature": "int e1_f(int a, int b)",
+       "old": "int e1_f(int a)",
+       "new": "int e1_f(int a, int b)",
+       "seq": 2
+      }
+     ],
+     "seqs": [
+      2
+     ],
+     "unsavedEdits": 2
+    },
+    "ms": "<masked>"
+   },
+   "note": "the right expect on a signature"
+  },
+  {
+   "step": 5,
+   "who": "a",
+   "cmd": "edit",
+   "request": {
+    "ops": [
+     {
+      "op": "signature",
+      "address": "0x140001020",
+      "signature": "void e1_g(void)",
+      "expect": "int e1_f(int a)"
+     }
+    ]
+   },
+   "response": {
+    "id": 6,
+    "ok": false,
+    "error": {
+     "code": "conflict",
+     "message": "ops[0]: the signature at 0x140001020 is 'int e1_f(int a, int b)', not the expected 'int e1_f(int a)': someone changed it since you read it (nothing was applied)",
+     "details": {
+      "reason": "changed",
+      "address": "0x140001020",
+      "field": "signature",
+      "expected": "int e1_f(int a)",
+      "current": "int e1_f(int a, int b)",
+      "index": 0,
+      "rolledBack": true,
+      "lastEdit": {
+       "seq": 2,
+       "at": "<masked>",
+       "client": 1,
+       "name": "e1-a",
+       "harness": "e1-h",
+       "cmd": "edit",
+       "op": "signature",
+       "address": "0x140001020",
+       "signature": "int e1_f(int a, int b)",
+       "old": "int e1_f(int a)",
+       "new": "int e1_f(int a, int b)"
+      },
+      "holderInfo": {
+       "client": 1,
+       "name": "e1-a",
+       "harness": "e1-h",
+       "command": "edit",
+       "seq": 2
+      },
+      "suggest": "reread"
+     },
+     "next": {
+      "cmd": "decompile",
+      "address": "0x140001020"
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "a wrong expect on a signature"
+  },
+  {
+   "step": 6,
+   "who": "a",
+   "cmd": "edit",
+   "request": {
+    "ops": [
+     {
+      "op": "data_type",
+      "address": "0x140001060",
+      "type": "int",
+      "expect": null
+     }
+    ]
+   },
+   "response": {
+    "id": 7,
+    "ok": true,
+    "result": {
+     "program": "p1:/alpha.exe",
+     "applied": 1,
+     "results": [
+      {
+       "op": "data_type",
+       "address": "0x140001060",
+       "type": "int",
+       "length": 4,
+       "old": null,
+       "new": "int",
+       "seq": 3
+      }
+     ],
+     "seqs": [
+      3
+     ],
+     "unsavedEdits": 3
+    },
+    "ms": "<masked>"
+   },
+   "note": "no defined data there yet: expect null is right"
+  },
+  {
+   "step": 7,
+   "who": "a",
+   "cmd": "edit",
+   "request": {
+    "ops": [
+     {
+      "op": "data_type",
+      "address": "0x140001060",
+      "type": "short",
+      "expect": "int"
+     }
+    ]
+   },
+   "response": {
+    "id": 8,
+    "ok": true,
+    "result": {
+     "program": "p1:/alpha.exe",
+     "applied": 1,
+     "results": [
+      {
+       "op": "data_type",
+       "address": "0x140001060",
+       "type": "short",
+       "length": 2,
+       "old": "int",
+       "new": "short",
+       "seq": 4
+      }
+     ],
+     "seqs": [
+      4
+     ],
+     "unsavedEdits": 4
+    },
+    "ms": "<masked>"
+   },
+   "note": "the right expect on a data type"
+  },
+  {
+   "step": 8,
+   "who": "a",
+   "cmd": "edit",
+   "request": {
+    "ops": [
+     {
+      "op": "data_type",
+      "address": "0x140001060",
+      "type": "long",
+      "expect": null
+     }
+    ]
+   },
+   "response": {
+    "id": 9,
+    "ok": false,
+    "error": {
+     "code": "conflict",
+     "message": "ops[0]: the type at 0x140001060 is 'short', not the expected 'null': someone changed it since you read it (nothing was applied)",
+     "details": {
+      "reason": "changed",
+      "address": "0x140001060",
+      "field": "type",
+      "expected": null,
+      "current": "short",
+      "index": 0,
+      "rolledBack": true,
+      "lastEdit": {
+       "seq": 4,
+       "at": "<masked>",
+       "client": 1,
+       "name": "e1-a",
+       "harness": "e1-h",
+       "cmd": "edit",
+       "op": "data_type",
+       "address": "0x140001060",
+       "type": "short",
+       "length": 2,
+       "old": "int",
+       "new": "short"
+      },
+      "holderInfo": {
+       "client": 1,
+       "name": "e1-a",
+       "harness": "e1-h",
+       "command": "edit",
+       "seq": 4
+      },
+      "suggest": "reread"
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "a wrong expect on a data type"
+  },
+  {
+   "step": 9,
+   "who": "a",
+   "cmd": "edit",
+   "request": {
+    "ops": [
+     {
+      "op": "rename",
+      "address": "0x140001040",
+      "name": "e1_two",
+      "expect": "not_it"
+     }
+    ]
+   },
+   "response": {
+    "id": 10,
+    "ok": false,
+    "error": {
+     "code": "conflict",
+     "message": "ops[0]: the name at 0x140001040 is 'FUN_140001040', not the expected 'not_it': someone changed it since you read it (nothing was applied)",
+     "details": {
+      "reason": "changed",
+      "address": "0x140001040",
+      "field": "name",
+      "expected": "not_it",
+      "current": "FUN_140001040",
+      "index": 0,
+      "rolledBack": true,
+      "suggest": "reread"
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "the same for a name, for the key order"
+  },
+  {
+   "step": 10,
+   "who": "a",
+   "cmd": "edit",
+   "request": {
+    "ops": [
+     {
+      "op": "signature",
+      "address": "0x140001020",
+      "signature": "int e1_h(void)",
+      "expect": 5
+     }
+    ]
+   },
+   "response": {
+    "id": 11,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "ops[0]: expect must be a string, or null for \"none\" (nothing was applied)",
+     "details": {
+      "field": "expect",
+      "index": 0,
+      "rolledBack": true
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "expect must be a string or null"
+  },
+  {
+   "step": 11,
+   "who": "a",
+   "cmd": "rename",
+   "request": {
+    "address": "0x140001020",
+    "name": "x",
+    "expect": "stale"
+   },
+   "response": {
+    "id": 12,
+    "ok": false,
+    "error": {
+     "code": "conflict",
+     "message": "the name at 0x140001020 is 'e1_f', not the expected 'stale': someone changed it since you read it",
+     "details": {
+      "reason": "changed",
+      "address": "0x140001020",
+      "field": "name",
+      "expected": "stale",
+      "current": "e1_f",
+      "suggest": "reread"
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "a single rename: the existing shape"
+  },
+  {
+   "step": 12,
+   "who": "a",
+   "cmd": "journal",
+   "request": {},
+   "response": {
+    "id": 13,
+    "ok": true,
+    "result": {
+     "program": "p1:/alpha.exe",
+     "seq": 4,
+     "savedSeq": 0,
+     "dropped": 0,
+     "entries": [
+      {
+       "seq": 1,
+       "at": "<masked>",
+       "client": 1,
+       "name": "e1-a",
+       "harness": "e1-h",
+       "cmd": "edit",
+       "op": "signature",
+       "address": "0x140001020",
+       "signature": "int e1_f(int a)",
+       "old": "int FUN_140001020(int param_1)",
+       "new": "int e1_f(int a)"
+      },
+      {
+       "seq": 2,
+       "at": "<masked>",
+       "client": 1,
+       "name": "e1-a",
+       "harness": "e1-h",
+       "cmd": "edit",
+       "op": "signature",
+       "address": "0x140001020",
+       "signature": "int e1_f(int a, int b)",
+       "old": "int e1_f(int a)",
+       "new": "int e1_f(int a, int b)"
+      },
+      {
+       "seq": 3,
+       "at": "<masked>",
+       "client": 1,
+       "name": "e1-a",
+       "harness": "e1-h",
+       "cmd": "edit",
+       "op": "data_type",
+       "address": "0x140001060",
+       "type": "int",
+       "length": 4,
+       "old": null,
+       "new": "int"
+      },
+      {
+       "seq": 4,
+       "at": "<masked>",
+       "client": 1,
+       "name": "e1-a",
+       "harness": "e1-h",
+       "cmd": "edit",
+       "op": "data_type",
+       "address": "0x140001060",
+       "type": "short",
+       "length": 2,
+       "old": "int",
+       "new": "short"
+      }
+     ],
+     "returned": 4
+    },
+    "ms": "<masked>"
+   },
+   "note": "the conflicts changed nothing"
+  },
+  {
+   "step": 13,
+   "who": "a",
+   "cmd": "close_program",
+   "request": {
+    "discard": true
+   },
+   "response": {
+    "id": 14,
+    "ok": true,
+    "result": {
+     "closed": "p1:/alpha.exe",
+     "discarded": true,
+     "active": null
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 14,
+   "who": "a",
+   "cmd": "close_project",
+   "request": {},
+   "response": {
+    "id": 15,
+    "ok": true,
+    "result": {
+     "project": "p1",
+     "left": true,
+     "closed": true,
+     "activeProject": null
+    },
+    "ms": "<masked>"
+   }
+  }
+ ]
+}

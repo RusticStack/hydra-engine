@@ -16,7 +16,6 @@
 package ghidra.app.util.headless.session;
 
 import java.io.*;
-import java.lang.reflect.Field;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.channels.OverlappingFileLockException;
@@ -39,7 +38,6 @@ import ghidra.framework.store.FolderItem;
 import ghidra.framework.store.local.LocalDatabaseItem;
 import ghidra.framework.store.local.LocalFileSystem;
 import ghidra.program.database.DBStringMapAdapter;
-import ghidra.program.database.ProgramDB;
 import ghidra.program.model.lang.*;
 import ghidra.program.model.listing.Program;
 import ghidra.program.util.DefaultLanguageService;
@@ -104,7 +102,7 @@ final class UpgradeCache {
 	private static final int KEEP_FINISHED = 32;
 
 	/** The current program database version, or -1 when it cannot be read (cache off). */
-	private static final int CURRENT_DB_VERSION = currentDbVersion();
+	private static final int CURRENT_DB_VERSION = DbVersions.program();
 
 	private final File root;
 	private final Scheduler scheduler;
@@ -1050,17 +1048,6 @@ final class UpgradeCache {
 		}
 		catch (NumberFormatException e) {
 			return dflt;
-		}
-	}
-
-	private static int currentDbVersion() {
-		try {
-			Field f = ProgramDB.class.getDeclaredField("DB_VERSION");
-			f.setAccessible(true);
-			return f.getInt(null);
-		}
-		catch (ReflectiveOperationException | RuntimeException e) {
-			return -1;
 		}
 	}
 

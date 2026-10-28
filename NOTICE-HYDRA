@@ -24,10 +24,20 @@ CHANGELOG.md):
       A temporary buffer file is truncated to zero length before it is closed and deleted, so
       that ReFS (as on a Windows Dev Drive) does not write its unwritten pages back first.
       A comment at the top of the file says so.
+  Ghidra/Framework/DB/src/main/java/db/buffers/LocalManagedBufferFile.java
+      The header of a new version file is written and synced before the file is renamed to its
+      final name, so a process killed during a save no longer leaves a final-named version file
+      with an empty header. A comment at the top of the file says so.
+  Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/db/VersionedDatabase.java
+      The newest version file is checked when a database is opened (see VersionFileCheck below).
+      A comment at the top of the file says so.
   Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/local/LocalDatabaseItem.java
       A new private database item gets its file type only once its content is complete, so an
       item whose writer was killed is removed as incomplete instead of being listed as a program
       that cannot be opened. A comment at the top of the file says so.
+      The newest version is also checked when an item is opened; an unreadable newest version of
+      a disposable, writable item is quarantined and the previous version is used, and an item
+      opened read-only is never changed (answers corrupt_newest).
   Ghidra/Framework/SoftwareModeling/src/main/java/ghidra/app/plugin/processors/sleigh/SleighLanguageFile.java
       The language lock file is created the first time a language needs it instead of for every
       language description at start-up. A comment at the top of the file says so.
@@ -52,6 +62,9 @@ What Hydra Engine adds to Ghidra (new files, none of them in upstream Ghidra):
   - the HeadlessSession module (Ghidra/Features/HeadlessSession): a shared headless session
     daemon, its Python launcher and client, and their tests;
   - a headless-only build (gradle/hydra/headless.gradle, the buildHeadless task);
+  - Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/db/VersionFileCheck.java, one
+    added class in a Ghidra package (header validation and the quarantine of an unreadable newest
+    version file);
   - the repository's own documentation, assets and CI (NOTICE-HYDRA, CHANGELOG.md,
     README-GHIDRA.md, and the files in .github/: CONTRIBUTING.md, SECURITY.md, issue forms, the
     pull request template, assets, scripts, and the ci.yml and release.yml workflows).

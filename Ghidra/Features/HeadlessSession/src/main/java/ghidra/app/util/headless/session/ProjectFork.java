@@ -89,12 +89,31 @@ final class ProjectFork {
 		return o;
 	}
 
-	/** Writes a sidecar atomically (a temporary file, then a rename). */
+	/** The sidecar while the fork is being published: the {@code .rep} is in place, the {@code .gpr} is not. */
+	static final String STATE_PUBLISHING = "publishing";
+	/** The sidecar of a finished fork: the {@code .gpr} is in place (E2: sealed generations and backups). */
+	static final String STATE_COMPLETE = "complete";
+
+	/**
+	 * Writes a sidecar atomically and flushed (a temporary file forced to disk, then a rename), so
+	 * that a reader sees the old record or the new one and never a torn one.
+	 */
 	static void writeSidecar(File f, JsonObject o) throws IOException {
 		File tmp = new File(f.getPath() + ".tmp");
-		Files.writeString(tmp.toPath(), GSON.toJson(o), StandardCharsets.UTF_8);
-		Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING,
-			StandardCopyOption.ATOMIC_MOVE);
+		try (java.nio.channels.FileChannel ch = java.nio.channels.FileChannel.open(tmp.toPath(),
+			StandardOpenOption.CREATE, StandardOpenOption.WRITE,
+			StandardOpenOption.TRUNCATE_EXISTING)) {
+			ch.write(java.nio.ByteBuffer.wrap(GSON.toJson(o).getBytes(StandardCharsets.UTF_8)));
+			ch.force(true);
+		}
+		try {
+			Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING,
+				StandardCopyOption.ATOMIC_MOVE);
+		}
+		catch (IOException e) {
+			Files.deleteIfExists(tmp.toPath()); // best effort: the next attempt writes it again
+			throw e;
+		}
 	}
 
 	/** What a fork of {@code r} into {@code destDir} costs, and how it would be made. */
@@ -148,50 +167,179 @@ final class ProjectFork {
 		return a == null ? f.getAbsoluteFile() : a;
 	}
 
-	/** The outcome of {@link #copy}. */
-	record Copied(long ms, long freeBefore, long freeAfter) {
+	/**
+	 * The outcome of {@link #stage}: the copy in its staging folder, not yet published.
+	 * {@code unfinished} is set by {@link #publish} when the fork is committed (its {@code .gpr}
+	 * is in place) but the sidecar could not be rewritten {@code complete} (a handle holder on it,
+	 * SP6): the staging folder, whose intent proves the fork is this engine's, is then kept so
+	 * that the next sweep of the name finishes the sidecar.
+	 */
+	record Staged(File dir, String id, ForkIntent intent, String sourceName, long ms,
+			long freeBefore, long freeAfter,
+			java.util.concurrent.atomic.AtomicBoolean unfinished) {
+
+		boolean keep() {
+			return unfinished.get();
+		}
+	}
+
+	/** The loser of a publish race: the {@code .rep} of the destination is already there. */
+	static final class RaceLost extends IOException {
+		private static final long serialVersionUID = 1L;
+
+		RaceLost(String message) {
+			super(message);
+		}
 	}
 
 	/**
-	 * Copies the project {@code r} into {@code destDir} as project {@code name}: first into a
-	 * temporary folder next to it, then moved into place, so that a cancelled or failed fork
-	 * leaves no half project. {@code destDir} may exist (it must not hold a project of that name).
+	 * A fresh publish id: {@code <pid in hex>-<time>-<random>}, unique across processes and across
+	 * requests of one process. The process id is in the name of the staging folder so that a
+	 * folder whose intent was never written (the publisher was killed between creating the folder
+	 * and writing the record) can still be attributed to a dead process ({@link ForkIntent#pidOf}).
 	 */
-	static Copied copy(ProjectResolver.Resolved r, File destDir, String name, RequestMonitor m)
-			throws IOException, CancelledException {
+	static String newId() {
+		return Long.toHexString(ProcessHandle.current().pid()) + "-" +
+			Long.toHexString(System.nanoTime()) + Integer.toHexString(
+				java.util.concurrent.ThreadLocalRandom.current().nextInt(0x1000, 0x10000));
+	}
+
+	/**
+	 * Step 1 of the publish (D41): copies the project {@code r} into a staging folder
+	 * {@code .<name>.fork-<id>.tmp} next to the destination, after writing the intent record that
+	 * names this process. Nothing of the fork is at the destination yet. {@code destDir} may exist.
+	 * On any failure the staging folder is removed by the caller ({@link #discard}).
+	 */
+	static Staged stage(ProjectResolver.Resolved r, File destDir, String name, String id,
+			String rk, RequestMonitor m) throws IOException, CancelledException {
 		Files.createDirectories(destDir.toPath());
 		FileStore store = Files.getFileStore(destDir.toPath());
 		long freeBefore = store.getUsableSpace();
-		File tmp = new File(destDir,
-			"." + name + ".fork-" + Long.toHexString(System.nanoTime()) + ".tmp");
+		File tmp = new File(destDir, ForkIntent.stagingName(name, id));
 		long t0 = System.nanoTime();
-		boolean ok = false;
+		Files.createDirectory(tmp.toPath());
+		ForkIntent intent = ForkIntent.create(id, rk, name);
+		intent.write(tmp.toPath());
+		UpgradeCache.copyProject(r.dir().toPath(), r.name(), tmp.toPath(), m);
+		m.checkCancelled();
+		long ms = (System.nanoTime() - t0) / 1_000_000;
+		return new Staged(tmp, id, intent, r.name(), ms, freeBefore, store.getUsableSpace(),
+			new java.util.concurrent.atomic.AtomicBoolean());
+	}
+
+	/** Removes a staging folder (and warns when it cannot). */
+	static void discard(Staged st) {
+		if (st == null || st.keep()) {
+			return;
+		}
+		FileUtilities.deleteDir(st.dir());
+		warnLeft(st.dir());
+	}
+
+	/**
+	 * Steps 2 to 5 of the publish (D41), in this order, which is the whole point: the {@code .rep}
+	 * is moved into place, the sidecar is written with {@code state:"publishing"}, the
+	 * {@code .gpr} is moved (the commit point: from here the fork exists, and its {@code .rep} and
+	 * sidecar already do), and the sidecar is rewritten {@code state:"complete"} and flushed. A
+	 * kill at any point leaves the destination without a {@code .gpr} (and a staging folder whose
+	 * intent names the dead process, which the next fork or the sweeper removes) or with a
+	 * complete fork whose sidecar may still say {@code publishing} (which they finish).
+	 *
+	 * @param sidecar the record to write; {@code state} and {@code forkId} are set here
+	 * @throws RaceLost when another publisher's {@code .rep} is at the destination; nothing of
+	 *             the other publisher was touched
+	 */
+	static void publish(Staged st, File destDir, String name, JsonObject sidecar,
+			String completeState) throws IOException {
+		String ext = ProjectLocator.getProjectExtension();
+		String repExt = ProjectLocator.getProjectDirExtension();
+		Path stagedRep = st.dir().toPath().resolve(st.sourceName() + repExt);
+		Path stagedGpr = st.dir().toPath().resolve(st.sourceName() + ext);
+		Path destRep = destDir.toPath().resolve(name + repExt);
+		Path destGpr = destDir.toPath().resolve(name + ext);
+		File sc = sidecar(new ProjectResolver.Resolved(destDir, name));
+		// the intent says the .rep may be ours from here on, and which one it is
+		st.intent().withPhase(ForkIntent.MOVING, ForkSweeper.creationMs(stagedRep))
+				.write(st.dir().toPath());
 		try {
-			UpgradeCache.copyProject(r.dir().toPath(), r.name(), tmp.toPath(), m);
-			// the copy has the source's name; give it the fork's name
-			String ext = ProjectLocator.getProjectExtension();
-			String repExt = ProjectLocator.getProjectDirExtension();
-			Path gpr = tmp.toPath().resolve(r.name() + ext);
-			Path rep = tmp.toPath().resolve(r.name() + repExt);
-			m.checkCancelled();
-			Files.move(rep, destDir.toPath().resolve(name + repExt));
-			try {
-				Files.move(gpr, destDir.toPath().resolve(name + ext));
-			}
-			catch (IOException e) {
-				FileUtilities.deleteDir(destDir.toPath().resolve(name + repExt).toFile());
-				throw e;
-			}
-			ok = true;
+			moveRetrying(stagedRep, destRep);
+		}
+		catch (FileAlreadyExistsException e) {
+			throw new RaceLost("another publisher holds " + destRep);
+		}
+		boolean committed = false;
+		try {
+			sidecar.addProperty("forkId", st.id());
+			sidecar.addProperty("state", STATE_PUBLISHING);
+			writeSidecar(sc, sidecar);
+			moveRetrying(stagedGpr, destGpr);
+			committed = true;
 		}
 		finally {
-			FileUtilities.deleteDir(tmp);
-			if (!ok) {
-				warnLeft(tmp);
+			if (!committed) {
+				FileUtilities.deleteDir(destRep.toFile());
+				Files.deleteIfExists(sc.toPath());
+				Files.deleteIfExists(Path.of(sc.getPath() + ".tmp"));
 			}
 		}
-		long ms = (System.nanoTime() - t0) / 1_000_000;
-		return new Copied(ms, freeBefore, store.getUsableSpace());
+		sidecar.addProperty("state", completeState);
+		IOException last = null;
+		for (int i = 0; i < 6; i++) {
+			try {
+				writeSidecar(sc, sidecar);
+				return;
+			}
+			catch (IOException e) {
+				// a handle holder on the sidecar (a scanner reading it) stops the rename over
+				// it for a moment: the same backoff as the moves
+				last = e;
+				try {
+					Thread.sleep(25L << i);
+				}
+				catch (InterruptedException ie) {
+					Thread.currentThread().interrupt();
+					break;
+				}
+			}
+		}
+		// the fork is committed; a sidecar that still says "publishing" is finished by the next
+		// sweep of the name (the staging folder is kept for it: its intent proves the fork ours)
+		// or, once this process is gone, by any sweep
+		st.unfinished().set(true);
+		ghidra.util.Msg.warn(ProjectFork.class,
+			"fork_project: could not finish the sidecar of " + destGpr + ": " + last);
+	}
+
+	/**
+	 * A move that survives a handle holder (an indexer or antivirus scanner holds a file of the
+	 * source for a moment: {@link AccessDeniedException} or a sharing violation) by retrying a few
+	 * times with a growing pause. {@link FileAlreadyExistsException} is not retried.
+	 */
+	private static void moveRetrying(Path from, Path to) throws IOException {
+		IOException last = null;
+		for (int i = 0; i < 6; i++) {
+			try {
+				Files.move(from, to);
+				return;
+			}
+			catch (FileAlreadyExistsException | NoSuchFileException e) {
+				throw e;
+			}
+			catch (FileSystemException e) {
+				if (Files.exists(to)) {
+					throw new FileAlreadyExistsException(to.toString());
+				}
+				last = e;
+				try {
+					Thread.sleep(25L << i);
+				}
+				catch (InterruptedException ie) {
+					Thread.currentThread().interrupt();
+					throw e;
+				}
+			}
+		}
+		throw last;
 	}
 
 	private static void warnLeft(File tmp) {

@@ -1,0 +1,2294 @@
+{
+ "scenario": "readonly",
+ "steps": [
+  {
+   "step": 1,
+   "who": "a",
+   "cmd": "open_project",
+   "request": {
+    "path": "<WORK>/ro/Fixture.gpr"
+   },
+   "response": {
+    "id": 2,
+    "ok": true,
+    "result": {
+     "id": "p1",
+     "name": "Fixture",
+     "dir": "<WORK>/ro",
+     "gpr": "<WORK>/ro/Fixture.gpr",
+     "writable": false,
+     "openMs": "<masked>",
+     "idleMs": "<masked>",
+     "files": 2,
+     "users": [
+      1
+     ],
+     "programs": 0,
+     "revision": "<rev1>",
+     "diskRevision": "<rev1>",
+     "stale": false,
+     "generation": 1,
+     "fork": null,
+     "opened": true
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 2,
+   "who": "a",
+   "cmd": "open_project",
+   "request": {
+    "path": "<WORK>/ro/Fixture.gpr"
+   },
+   "response": {
+    "id": 3,
+    "ok": true,
+    "result": {
+     "id": "p1",
+     "name": "Fixture",
+     "dir": "<WORK>/ro",
+     "gpr": "<WORK>/ro/Fixture.gpr",
+     "writable": false,
+     "openMs": "<masked>",
+     "idleMs": "<masked>",
+     "files": 2,
+     "users": [
+      1
+     ],
+     "programs": 0,
+     "revision": "<rev1>",
+     "diskRevision": "<rev1>",
+     "stale": false,
+     "generation": 1,
+     "fork": null,
+     "opened": false
+    },
+    "ms": "<masked>"
+   },
+   "note": "again: joins, opened false"
+  },
+  {
+   "step": 3,
+   "who": "b",
+   "cmd": "open_project",
+   "request": {
+    "path": "<WORK>/ro/Fixture.gpr"
+   },
+   "response": {
+    "id": 2,
+    "ok": true,
+    "result": {
+     "id": "p1",
+     "name": "Fixture",
+     "dir": "<WORK>/ro",
+     "gpr": "<WORK>/ro/Fixture.gpr",
+     "writable": false,
+     "openMs": "<masked>",
+     "idleMs": "<masked>",
+     "files": 2,
+     "users": [
+      1,
+      2
+     ],
+     "programs": 0,
+     "revision": "<rev1>",
+     "diskRevision": "<rev1>",
+     "stale": false,
+     "generation": 1,
+     "fork": null,
+     "opened": false
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 4,
+   "who": "a",
+   "cmd": "project",
+   "request": {},
+   "response": {
+    "id": 4,
+    "ok": true,
+    "result": {
+     "id": "p1",
+     "name": "Fixture",
+     "dir": "<WORK>/ro",
+     "gpr": "<WORK>/ro/Fixture.gpr",
+     "writable": false,
+     "openMs": "<masked>",
+     "idleMs": "<masked>",
+     "files": 2,
+     "users": [
+      1,
+      2
+     ],
+     "programs": 0,
+     "revision": "<rev1>",
+     "diskRevision": "<rev1>",
+     "stale": false,
+     "generation": 1,
+     "fork": null
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 5,
+   "who": "a",
+   "cmd": "projects",
+   "request": {},
+   "response": {
+    "id": 5,
+    "ok": true,
+    "result": {
+     "activeProject": "p1",
+     "projects": [
+      {
+       "id": "p1",
+       "name": "Fixture",
+       "dir": "<WORK>/ro",
+       "gpr": "<WORK>/ro/Fixture.gpr",
+       "writable": false,
+       "openMs": "<masked>",
+       "idleMs": "<masked>",
+       "files": 2,
+       "users": [
+        1,
+        2
+       ],
+       "programs": 0,
+       "revision": "<rev1>",
+       "diskRevision": "<rev1>",
+       "stale": false,
+       "generation": 1,
+       "fork": null,
+       "joined": true,
+       "active": true
+      }
+     ]
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 6,
+   "who": "b",
+   "cmd": "projects",
+   "request": {},
+   "response": {
+    "id": 3,
+    "ok": true,
+    "result": {
+     "activeProject": "p1",
+     "projects": [
+      {
+       "id": "p1",
+       "name": "Fixture",
+       "dir": "<WORK>/ro",
+       "gpr": "<WORK>/ro/Fixture.gpr",
+       "writable": false,
+       "openMs": "<masked>",
+       "idleMs": "<masked>",
+       "files": 2,
+       "users": [
+        1,
+        2
+       ],
+       "programs": 0,
+       "revision": "<rev1>",
+       "diskRevision": "<rev1>",
+       "stale": false,
+       "generation": 1,
+       "fork": null,
+       "joined": true,
+       "active": true
+      }
+     ]
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 7,
+   "who": "a",
+   "cmd": "list",
+   "request": {},
+   "response": {
+    "id": 6,
+    "ok": true,
+    "result": {
+     "project": "p1",
+     "folder": "/",
+     "entries": [
+      {
+       "path": "/beta.exe",
+       "key": "p1:/beta.exe",
+       "kind": "file",
+       "name": "beta.exe",
+       "contentType": "Program",
+       "program": true,
+       "versioned": false,
+       "readOnly": true,
+       "bytes": 1179648,
+       "sha256": "e298b217a30dc8f62b0ef4fbdf6424497e797b74fb71b9537447ebdc61b7e912",
+       "language": "x86:LE:64:default (4.9)",
+       "format": "Portable Executable (PE)",
+       "executable": "/<WORK>/bin/beta.exe",
+       "open": null
+      },
+      {
+       "path": "/alpha.exe",
+       "key": "p1:/alpha.exe",
+       "kind": "file",
+       "name": "alpha.exe",
+       "contentType": "Program",
+       "program": true,
+       "versioned": false,
+       "readOnly": true,
+       "bytes": 1179648,
+       "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+       "language": "x86:LE:64:default (4.9)",
+       "format": "Portable Executable (PE)",
+       "executable": "/<WORK>/bin/alpha.exe",
+       "open": null
+      }
+     ],
+     "offset": 0,
+     "returned": 2,
+     "truncated": false
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 8,
+   "who": "a",
+   "cmd": "list",
+   "request": {
+    "programsOnly": true,
+    "metadata": false
+   },
+   "response": {
+    "id": 7,
+    "ok": true,
+    "result": {
+     "project": "p1",
+     "folder": "/",
+     "entries": [
+      {
+       "path": "/beta.exe",
+       "key": "p1:/beta.exe",
+       "kind": "file",
+       "name": "beta.exe",
+       "contentType": "Program",
+       "program": true,
+       "versioned": false,
+       "readOnly": true,
+       "bytes": 1179648,
+       "open": null
+      },
+      {
+       "path": "/alpha.exe",
+       "key": "p1:/alpha.exe",
+       "kind": "file",
+       "name": "alpha.exe",
+       "contentType": "Program",
+       "program": true,
+       "versioned": false,
+       "readOnly": true,
+       "bytes": 1179648,
+       "open": null
+      }
+     ],
+     "offset": 0,
+     "returned": 2,
+     "truncated": false
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 9,
+   "who": "a",
+   "cmd": "list",
+   "request": {
+    "folder": "/",
+    "recursive": false,
+    "offset": 1,
+    "limit": 1
+   },
+   "response": {
+    "id": 8,
+    "ok": true,
+    "result": {
+     "project": "p1",
+     "folder": "/",
+     "entries": [
+      {
+       "path": "/alpha.exe",
+       "key": "p1:/alpha.exe",
+       "kind": "file",
+       "name": "alpha.exe",
+       "contentType": "Program",
+       "program": true,
+       "versioned": false,
+       "readOnly": true,
+       "bytes": 1179648,
+       "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+       "language": "x86:LE:64:default (4.9)",
+       "format": "Portable Executable (PE)",
+       "executable": "/<WORK>/bin/alpha.exe",
+       "open": null
+      }
+     ],
+     "offset": 1,
+     "returned": 1,
+     "truncated": false
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 10,
+   "who": "a",
+   "cmd": "list",
+   "request": {
+    "sha256": "e298b217a30dc8f62b0ef4fbdf6424497e797b74fb71b9537447ebdc61b7e912"
+   },
+   "response": {
+    "id": 9,
+    "ok": true,
+    "result": {
+     "project": "p1",
+     "folder": "/",
+     "entries": [
+      {
+       "path": "/beta.exe",
+       "key": "p1:/beta.exe",
+       "kind": "file",
+       "name": "beta.exe",
+       "contentType": "Program",
+       "program": true,
+       "versioned": false,
+       "readOnly": true,
+       "bytes": 1179648,
+       "sha256": "e298b217a30dc8f62b0ef4fbdf6424497e797b74fb71b9537447ebdc61b7e912",
+       "language": "x86:LE:64:default (4.9)",
+       "format": "Portable Executable (PE)",
+       "executable": "/<WORK>/bin/beta.exe",
+       "open": null
+      }
+     ],
+     "offset": 0,
+     "returned": 1,
+     "truncated": false
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 11,
+   "who": "a",
+   "cmd": "list",
+   "request": {
+    "folder": "/nope"
+   },
+   "response": {
+    "id": 10,
+    "ok": false,
+    "error": {
+     "code": "not_found",
+     "message": "no such folder: /nope"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 12,
+   "who": "a",
+   "cmd": "list",
+   "request": {
+    "limit": "many"
+   },
+   "response": {
+    "id": 11,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "limit must be a number"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 13,
+   "who": "a",
+   "cmd": "project",
+   "request": {
+    "project": "p1"
+   },
+   "response": {
+    "id": 12,
+    "ok": true,
+    "result": {
+     "id": "p1",
+     "name": "Fixture",
+     "dir": "<WORK>/ro",
+     "gpr": "<WORK>/ro/Fixture.gpr",
+     "writable": false,
+     "openMs": "<masked>",
+     "idleMs": "<masked>",
+     "files": 2,
+     "users": [
+      1,
+      2
+     ],
+     "programs": 0,
+     "revision": "<rev1>",
+     "diskRevision": "<rev1>",
+     "stale": false,
+     "generation": 1,
+     "fork": null
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 14,
+   "who": "a",
+   "cmd": "project",
+   "request": {
+    "project": "p9"
+   },
+   "response": {
+    "id": 13,
+    "ok": false,
+    "error": {
+     "code": "no_project",
+     "message": "project p9 is not open; send open_project",
+     "details": {
+      "project": "p9"
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 15,
+   "who": "a",
+   "cmd": "open_program",
+   "request": {
+    "path": "alpha.exe"
+   },
+   "response": {
+    "id": 14,
+    "ok": true,
+    "result": {
+     "key": "p1:/alpha.exe",
+     "project": "p1",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "read_only",
+     "owner": null,
+     "mine": false,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": false,
+     "revision": "<rev2>",
+     "projectRevision": "<rev1>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1
+     ],
+     "overlays": [],
+     "writers": [],
+     "writer": false,
+     "journalSeq": 0,
+     "unsavedEdits": 0,
+     "openMs": "<masked>"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 16,
+   "who": "a",
+   "cmd": "programs",
+   "request": {},
+   "response": {
+    "id": 15,
+    "ok": true,
+    "result": {
+     "activeProject": "p1",
+     "active": "p1:/alpha.exe",
+     "programs": [
+      {
+       "key": "p1:/alpha.exe",
+       "project": "p1",
+       "path": "/alpha.exe",
+       "name": "alpha.exe",
+       "mode": "read_only",
+       "owner": null,
+       "mine": false,
+       "active": true,
+       "language": "x86:LE:64:default",
+       "compiler": "windows",
+       "imageBase": "0x140000000",
+       "format": "Portable Executable (PE)",
+       "executable": "/<WORK>/bin/alpha.exe",
+       "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+       "md5": "b890095eec6aea60ef369f0140482870",
+       "functions": 3,
+       "analyzed": true,
+       "changed": false,
+       "revision": "<rev2>",
+       "projectRevision": "<rev1>",
+       "generation": 1,
+       "cachedUpgrade": false,
+       "upgradeCache": null,
+       "cacheBuild": "none",
+       "cacheBuildInfo": null,
+       "users": [
+        1
+       ],
+       "overlays": [],
+       "writers": [],
+       "writer": false,
+       "journalSeq": 0,
+       "unsavedEdits": 0
+      }
+     ]
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 17,
+   "who": "a",
+   "cmd": "info",
+   "request": {},
+   "response": {
+    "id": 16,
+    "ok": true,
+    "result": {
+     "key": "p1:/alpha.exe",
+     "project": "p1",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "read_only",
+     "owner": null,
+     "mine": false,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": false,
+     "revision": "<rev2>",
+     "projectRevision": "<rev1>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1
+     ],
+     "overlays": [],
+     "writers": [],
+     "writer": false,
+     "journalSeq": 0,
+     "unsavedEdits": 0
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 18,
+   "who": "a",
+   "cmd": "info",
+   "request": {
+    "program": "p1:/alpha.exe"
+   },
+   "response": {
+    "id": 17,
+    "ok": true,
+    "result": {
+     "key": "p1:/alpha.exe",
+     "project": "p1",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "read_only",
+     "owner": null,
+     "mine": false,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": false,
+     "revision": "<rev2>",
+     "projectRevision": "<rev1>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1
+     ],
+     "overlays": [],
+     "writers": [],
+     "writer": false,
+     "journalSeq": 0,
+     "unsavedEdits": 0
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 19,
+   "who": "a",
+   "cmd": "functions",
+   "request": {},
+   "response": {
+    "id": 18,
+    "ok": true,
+    "result": {
+     "functions": [
+      {
+       "name": "entry",
+       "address": "0x140001000",
+       "size": 19,
+       "thunk": false,
+       "external": false
+      },
+      {
+       "name": "FUN_140001020",
+       "address": "0x140001020",
+       "size": 6,
+       "thunk": false,
+       "external": false
+      },
+      {
+       "name": "FUN_140001040",
+       "address": "0x140001040",
+       "size": 17,
+       "thunk": false,
+       "external": false
+      }
+     ],
+     "offset": 0,
+     "returned": 3,
+     "truncated": false
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 20,
+   "who": "a",
+   "cmd": "functions",
+   "request": {
+    "limit": 2,
+    "offset": 1
+   },
+   "response": {
+    "id": 19,
+    "ok": true,
+    "result": {
+     "functions": [
+      {
+       "name": "FUN_140001020",
+       "address": "0x140001020",
+       "size": 6,
+       "thunk": false,
+       "external": false
+      },
+      {
+       "name": "FUN_140001040",
+       "address": "0x140001040",
+       "size": 17,
+       "thunk": false,
+       "external": false
+      }
+     ],
+     "offset": 1,
+     "returned": 2,
+     "truncated": false
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 21,
+   "who": "a",
+   "cmd": "functions",
+   "request": {
+    "contains": "FUN"
+   },
+   "response": {
+    "id": 20,
+    "ok": true,
+    "result": {
+     "functions": [
+      {
+       "name": "FUN_140001020",
+       "address": "0x140001020",
+       "size": 6,
+       "thunk": false,
+       "external": false
+      },
+      {
+       "name": "FUN_140001040",
+       "address": "0x140001040",
+       "size": 17,
+       "thunk": false,
+       "external": false
+      }
+     ],
+     "offset": 0,
+     "returned": 2,
+     "truncated": false
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 22,
+   "who": "a",
+   "cmd": "functions",
+   "request": {
+    "regex": "^entry$"
+   },
+   "response": {
+    "id": 21,
+    "ok": true,
+    "result": {
+     "functions": [
+      {
+       "name": "entry",
+       "address": "0x140001000",
+       "size": 19,
+       "thunk": false,
+       "external": false
+      }
+     ],
+     "offset": 0,
+     "returned": 1,
+     "truncated": false
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 23,
+   "who": "a",
+   "cmd": "functions",
+   "request": {
+    "regex": "("
+   },
+   "response": {
+    "id": 22,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "bad regex: Unclosed group near index 1\r\n("
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 24,
+   "who": "a",
+   "cmd": "decompile",
+   "request": {
+    "name": "entry"
+   },
+   "response": {
+    "id": 23,
+    "ok": true,
+    "result": {
+     "name": "entry",
+     "entry": "0x140001000",
+     "completed": true,
+     "signature": "void entry(int param_1);",
+     "chars": 102,
+     "truncated": false,
+     "c": "\r\nvoid entry(int param_1)\r\n\r\n{\r\n  FUN_140001020(param_1);\r\n  FUN_140001040(param_1);\r\n  return;\r\n}\r\n\r\n"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 25,
+   "who": "a",
+   "cmd": "decompile",
+   "request": {
+    "address": "0x140001040",
+    "maxChars": 40
+   },
+   "response": {
+    "id": 24,
+    "ok": true,
+    "result": {
+     "name": "FUN_140001040",
+     "entry": "0x140001040",
+     "completed": true,
+     "signature": "int FUN_140001040(int param_1);",
+     "chars": 118,
+     "truncated": true,
+     "c": "\r\nint FUN_140001040(int param_1)\r\n\r\n{\r\n "
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 26,
+   "who": "a",
+   "cmd": "decompile",
+   "request": {
+    "address": "rva:0x1020",
+    "timeout": 30
+   },
+   "response": {
+    "id": 25,
+    "ok": true,
+    "result": {
+     "name": "FUN_140001020",
+     "entry": "0x140001020",
+     "completed": true,
+     "signature": "int FUN_140001020(int param_1);",
+     "chars": 67,
+     "truncated": false,
+     "c": "\r\nint FUN_140001020(int param_1)\r\n\r\n{\r\n  return param_1 + 7;\r\n}\r\n\r\n"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 27,
+   "who": "a",
+   "cmd": "decompile",
+   "request": {
+    "name": "nothing_here"
+   },
+   "response": {
+    "id": 26,
+    "ok": false,
+    "error": {
+     "code": "not_found",
+     "message": "no function named nothing_here"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 28,
+   "who": "a",
+   "cmd": "decompile",
+   "request": {
+    "address": "0x140001ff0"
+   },
+   "response": {
+    "id": 27,
+    "ok": false,
+    "error": {
+     "code": "not_found",
+     "message": "no function contains 0x140001ff0",
+     "details": {
+      "address": "0x140001ff0"
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 29,
+   "who": "a",
+   "cmd": "decompile",
+   "request": {
+    "address": "zz"
+   },
+   "response": {
+    "id": 28,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "bad address 'zz': use 0x<hex>, va:0x<hex>, rva:0x<hex> or space:offset"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 30,
+   "who": "a",
+   "cmd": "decompile",
+   "request": {},
+   "response": {
+    "id": 29,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "missing field: name"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 31,
+   "who": "a",
+   "cmd": "open_program",
+   "request": {
+    "path": "/beta.exe"
+   },
+   "response": {
+    "id": 30,
+    "ok": true,
+    "result": {
+     "key": "p1:/beta.exe",
+     "project": "p1",
+     "path": "/beta.exe",
+     "name": "beta.exe",
+     "mode": "read_only",
+     "owner": null,
+     "mine": false,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/beta.exe",
+     "sha256": "e298b217a30dc8f62b0ef4fbdf6424497e797b74fb71b9537447ebdc61b7e912",
+     "md5": "41262ada725c96fcaf1e4df159d97e1f",
+     "functions": 3,
+     "analyzed": true,
+     "changed": false,
+     "revision": "<rev3>",
+     "projectRevision": "<rev1>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1
+     ],
+     "overlays": [],
+     "writers": [],
+     "writer": false,
+     "journalSeq": 0,
+     "unsavedEdits": 0,
+     "openMs": "<masked>"
+    },
+    "ms": "<masked>"
+   },
+   "note": "second program, becomes active"
+  },
+  {
+   "step": 32,
+   "who": "a",
+   "cmd": "switch",
+   "request": {
+    "path": "p1:/alpha.exe"
+   },
+   "response": {
+    "id": 31,
+    "ok": true,
+    "result": {
+     "key": "p1:/alpha.exe",
+     "project": "p1",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "read_only",
+     "owner": null,
+     "mine": false,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": false,
+     "revision": "<rev2>",
+     "projectRevision": "<rev1>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1
+     ],
+     "overlays": [],
+     "writers": [],
+     "writer": false,
+     "journalSeq": 0,
+     "unsavedEdits": 0,
+     "openMs": "<masked>"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 33,
+   "who": "b",
+   "cmd": "open_program",
+   "request": {
+    "path": "/alpha.exe"
+   },
+   "response": {
+    "id": 4,
+    "ok": true,
+    "result": {
+     "key": "p1:/alpha.exe",
+     "project": "p1",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "read_only",
+     "owner": null,
+     "mine": false,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": false,
+     "revision": "<rev2>",
+     "projectRevision": "<rev1>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1,
+      2
+     ],
+     "overlays": [],
+     "writers": [],
+     "writer": false,
+     "journalSeq": 0,
+     "unsavedEdits": 0,
+     "openMs": "<masked>"
+    },
+    "ms": "<masked>"
+   },
+   "note": "second user of a read-only program"
+  },
+  {
+   "step": 34,
+   "who": "a",
+   "cmd": "programs",
+   "request": {},
+   "response": {
+    "id": 32,
+    "ok": true,
+    "result": {
+     "activeProject": "p1",
+     "active": "p1:/alpha.exe",
+     "programs": [
+      {
+       "key": "p1:/alpha.exe",
+       "project": "p1",
+       "path": "/alpha.exe",
+       "name": "alpha.exe",
+       "mode": "read_only",
+       "owner": null,
+       "mine": false,
+       "active": true,
+       "language": "x86:LE:64:default",
+       "compiler": "windows",
+       "imageBase": "0x140000000",
+       "format": "Portable Executable (PE)",
+       "executable": "/<WORK>/bin/alpha.exe",
+       "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+       "md5": "b890095eec6aea60ef369f0140482870",
+       "functions": 3,
+       "analyzed": true,
+       "changed": false,
+       "revision": "<rev2>",
+       "projectRevision": "<rev1>",
+       "generation": 1,
+       "cachedUpgrade": false,
+       "upgradeCache": null,
+       "cacheBuild": "none",
+       "cacheBuildInfo": null,
+       "users": [
+        1,
+        2
+       ],
+       "overlays": [],
+       "writers": [],
+       "writer": false,
+       "journalSeq": 0,
+       "unsavedEdits": 0
+      },
+      {
+       "key": "p1:/beta.exe",
+       "project": "p1",
+       "path": "/beta.exe",
+       "name": "beta.exe",
+       "mode": "read_only",
+       "owner": null,
+       "mine": false,
+       "active": false,
+       "language": "x86:LE:64:default",
+       "compiler": "windows",
+       "imageBase": "0x140000000",
+       "format": "Portable Executable (PE)",
+       "executable": "/<WORK>/bin/beta.exe",
+       "sha256": "e298b217a30dc8f62b0ef4fbdf6424497e797b74fb71b9537447ebdc61b7e912",
+       "md5": "41262ada725c96fcaf1e4df159d97e1f",
+       "functions": 3,
+       "analyzed": true,
+       "changed": false,
+       "revision": "<rev3>",
+       "projectRevision": "<rev1>",
+       "generation": 1,
+       "cachedUpgrade": false,
+       "upgradeCache": null,
+       "cacheBuild": "none",
+       "cacheBuildInfo": null,
+       "users": [
+        1
+       ],
+       "overlays": [],
+       "writers": [],
+       "writer": false,
+       "journalSeq": 0,
+       "unsavedEdits": 0
+      }
+     ]
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 35,
+   "who": "a",
+   "cmd": "status",
+   "request": {},
+   "response": {
+    "id": 33,
+    "ok": true,
+    "result": {
+     "protocol": 2,
+     "minClient": "<masked>",
+     "hydraVersion": "<masked>",
+     "ghidraVersion": "<masked>",
+     "installId": "<masked>",
+     "startedAt": "<masked>",
+     "ghidra": "<masked>",
+     "install": "<masked>",
+     "java": "<masked>",
+     "pid": "<masked>",
+     "uptimeMs": "<masked>",
+     "listen": {
+      "host": "<masked>",
+      "port": "<masked>"
+     },
+     "launch": {
+      "mode": "fast",
+      "aot": null,
+      "classCache": "hit",
+      "readyMs": "<masked>",
+      "jvmToReadyMs": "<masked>"
+     },
+     "keepWarmS": 600,
+     "memory": {
+      "usedMb": "<masked>",
+      "committedMb": "<masked>",
+      "maxMb": "<masked>"
+     },
+     "projects": [
+      {
+       "id": "p1",
+       "name": "Fixture",
+       "dir": "<WORK>/ro",
+       "gpr": "<WORK>/ro/Fixture.gpr",
+       "writable": false,
+       "openMs": "<masked>",
+       "idleMs": "<masked>",
+       "files": 2,
+       "users": [
+        1,
+        2
+       ],
+       "programs": 2,
+       "revision": "<rev1>",
+       "diskRevision": "<rev1>",
+       "stale": false,
+       "generation": 1,
+       "fork": null
+      }
+     ],
+     "you": 1,
+     "programs": [
+      {
+       "project": "p1",
+       "path": "/alpha.exe",
+       "mode": "read_only",
+       "owner": null,
+       "idleMs": "<masked>",
+       "users": [
+        1,
+        2
+       ],
+       "ownerLabel": null,
+       "busy": null,
+       "writers": [],
+       "journalSeq": 0,
+       "unsavedEdits": 0,
+       "orphanedMs": null,
+       "revision": "<rev2>",
+       "cachedUpgrade": false,
+       "cacheBuild": "none"
+      },
+      {
+       "project": "p1",
+       "path": "/beta.exe",
+       "mode": "read_only",
+       "owner": null,
+       "idleMs": "<masked>",
+       "users": [
+        1
+       ],
+       "ownerLabel": null,
+       "busy": null,
+       "writers": [],
+       "journalSeq": 0,
+       "unsavedEdits": 0,
+       "orphanedMs": null,
+       "revision": "<rev3>",
+       "cachedUpgrade": false,
+       "cacheBuild": "none"
+      }
+     ],
+     "clients": [
+      {
+       "id": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "transport": "socket",
+       "launcher": false,
+       "clientVersion": "1.0.0",
+       "activeProject": "p1",
+       "active": "p1:/alpha.exe",
+       "connectedMs": "<masked>",
+       "projects": [
+        "p1"
+       ],
+       "programs": [
+        "p1:/alpha.exe",
+        "p1:/beta.exe"
+       ],
+       "running": [],
+       "requests": []
+      },
+      {
+       "id": 2,
+       "name": "char-b",
+       "harness": "char-h",
+       "transport": "socket",
+       "launcher": false,
+       "clientVersion": "1.0.0",
+       "activeProject": "p1",
+       "active": "p1:/alpha.exe",
+       "connectedMs": "<masked>",
+       "projects": [
+        "p1"
+       ],
+       "programs": [
+        "p1:/alpha.exe"
+       ],
+       "running": [],
+       "requests": []
+      }
+     ],
+     "overlays": [],
+     "scheduler": {
+      "quick": {
+       "slots": 24,
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 25,
+       "everQueued": 0,
+       "backgroundQueued": 0
+      },
+      "long": {
+       "slots": 6,
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 0,
+       "everQueued": 0,
+       "backgroundQueued": 0
+      }
+     },
+     "imports": {
+      "maxImports": 4,
+      "holder": null,
+      "running": [],
+      "queue": [],
+      "history": {
+       "count": 0,
+       "completed": 0,
+       "meanMs": null,
+       "msPerMb": null,
+       "peakRunning": 0
+      }
+     },
+     "youAre": {
+      "client": "char-a",
+      "harness": "char-h",
+      "labelled": false
+     },
+     "upgradeCache": {
+      "enabled": true,
+      "dir": "<WORK>/state/upgrade-cache",
+      "buildsStarted": 0,
+      "builds": []
+     },
+     "deferredInitMs": "<masked>"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 36,
+   "who": "a",
+   "cmd": "journal",
+   "request": {},
+   "response": {
+    "id": 34,
+    "ok": true,
+    "result": {
+     "program": "p1:/alpha.exe",
+     "seq": 0,
+     "savedSeq": 0,
+     "dropped": 0,
+     "entries": [],
+     "returned": 0
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 37,
+   "who": "a",
+   "cmd": "open_program",
+   "request": {
+    "path": "/missing.exe"
+   },
+   "response": {
+    "id": 35,
+    "ok": false,
+    "error": {
+     "code": "not_found",
+     "message": "no such file in project p1: /missing.exe"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 38,
+   "who": "a",
+   "cmd": "open_program",
+   "request": {
+    "path": "missing.exe"
+   },
+   "response": {
+    "id": 36,
+    "ok": false,
+    "error": {
+     "code": "not_found",
+     "message": "no file named missing.exe in project p1"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 39,
+   "who": "a",
+   "cmd": "open_program",
+   "request": {
+    "path": "/alpha.exe",
+    "share": true
+   },
+   "response": {
+    "id": 37,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "\"share\":true opens a program writable for several clients; it needs \"writable\":true"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 40,
+   "who": "a",
+   "cmd": "open_program",
+   "request": {},
+   "response": {
+    "id": 38,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "missing field: path"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 41,
+   "who": "a",
+   "cmd": "open_program",
+   "request": {
+    "path": "/alpha.exe",
+    "writable": true
+   },
+   "response": {
+    "id": 39,
+    "ok": false,
+    "error": {
+     "code": "read_only",
+     "message": "project p1 is open read-only; send open_project with \"writable\":true first (this takes the project lock), or fork_project to write a working copy while others keep reading",
+     "details": {
+      "project": "p1",
+      "name": "Fixture",
+      "gpr": "<WORK>/ro/Fixture.gpr",
+      "writable": false,
+      "revision": "<rev1>",
+      "suggest": "fork_project",
+      "suggestion": {
+       "cmd": "fork_project",
+       "project": "p1",
+       "path": "<WORK>/ro-fork-char-a",
+       "writable": true
+      },
+      "alternative": "open_project writable"
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 42,
+   "who": "a",
+   "cmd": "info",
+   "request": {
+    "program": "p1:/beta2.exe"
+   },
+   "response": {
+    "id": 40,
+    "ok": false,
+    "error": {
+     "code": "no_program",
+     "message": "p1:/beta2.exe is not open for this client; send open_program first",
+     "details": {
+      "program": "p1:/beta2.exe"
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 43,
+   "who": "a",
+   "cmd": "save",
+   "request": {},
+   "response": {
+    "id": 41,
+    "ok": false,
+    "error": {
+     "code": "read_only",
+     "message": "p1:/alpha.exe is open read-only; save needs open_program with \"writable\":true in a writable project (fork_project makes one)",
+     "details": {
+      "program": "p1:/alpha.exe",
+      "path": "/alpha.exe",
+      "project": "p1",
+      "gpr": "<WORK>/ro/Fixture.gpr",
+      "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+      "suggest": "fork_project",
+      "suggestion": {
+       "cmd": "fork_project",
+       "project": "p1",
+       "path": "<WORK>/ro-fork-char-a",
+       "writable": true
+      }
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 44,
+   "who": "a",
+   "cmd": "rename",
+   "request": {
+    "address": "0x140001020",
+    "name": "x"
+   },
+   "response": {
+    "id": 42,
+    "ok": false,
+    "error": {
+     "code": "read_only",
+     "message": "p1:/alpha.exe is open read-only; rename needs open_program with \"writable\":true in a writable project (fork_project makes one)",
+     "details": {
+      "program": "p1:/alpha.exe",
+      "path": "/alpha.exe",
+      "project": "p1",
+      "gpr": "<WORK>/ro/Fixture.gpr",
+      "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+      "suggest": "fork_project",
+      "suggestion": {
+       "cmd": "fork_project",
+       "project": "p1",
+       "path": "<WORK>/ro-fork-char-a",
+       "writable": true
+      }
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 45,
+   "who": "a",
+   "cmd": "comment",
+   "request": {
+    "address": "0x140001020",
+    "text": "x"
+   },
+   "response": {
+    "id": 43,
+    "ok": false,
+    "error": {
+     "code": "read_only",
+     "message": "p1:/alpha.exe is open read-only; comment needs open_program with \"writable\":true in a writable project (fork_project makes one)",
+     "details": {
+      "program": "p1:/alpha.exe",
+      "path": "/alpha.exe",
+      "project": "p1",
+      "gpr": "<WORK>/ro/Fixture.gpr",
+      "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+      "suggest": "fork_project",
+      "suggestion": {
+       "cmd": "fork_project",
+       "project": "p1",
+       "path": "<WORK>/ro-fork-char-a",
+       "writable": true
+      }
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 46,
+   "who": "a",
+   "cmd": "edit",
+   "request": {
+    "ops": [
+     {
+      "op": "comment",
+      "address": "0x140001020",
+      "text": "x"
+     }
+    ]
+   },
+   "response": {
+    "id": 44,
+    "ok": false,
+    "error": {
+     "code": "read_only",
+     "message": "p1:/alpha.exe is open read-only; edit needs open_program with \"writable\":true in a writable project (fork_project makes one)",
+     "details": {
+      "program": "p1:/alpha.exe",
+      "path": "/alpha.exe",
+      "project": "p1",
+      "gpr": "<WORK>/ro/Fixture.gpr",
+      "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+      "suggest": "fork_project",
+      "suggestion": {
+       "cmd": "fork_project",
+       "project": "p1",
+       "path": "<WORK>/ro-fork-char-a",
+       "writable": true
+      }
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 47,
+   "who": "a",
+   "cmd": "discard_edits",
+   "request": {
+    "author": 1
+   },
+   "response": {
+    "id": 45,
+    "ok": false,
+    "error": {
+     "code": "read_only",
+     "message": "p1:/alpha.exe is open read-only; discard_edits needs open_program with \"writable\":true in a writable project (fork_project makes one)",
+     "details": {
+      "program": "p1:/alpha.exe",
+      "path": "/alpha.exe",
+      "project": "p1",
+      "gpr": "<WORK>/ro/Fixture.gpr",
+      "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+      "suggest": "fork_project",
+      "suggestion": {
+       "cmd": "fork_project",
+       "project": "p1",
+       "path": "<WORK>/ro-fork-char-a",
+       "writable": true
+      }
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 48,
+   "who": "a",
+   "cmd": "analyze",
+   "request": {},
+   "response": {
+    "id": 46,
+    "ok": false,
+    "error": {
+     "code": "read_only",
+     "message": "p1:/alpha.exe is open read-only; analyze needs open_program with \"writable\":true in a writable project (fork_project makes one)",
+     "details": {
+      "program": "p1:/alpha.exe",
+      "path": "/alpha.exe",
+      "project": "p1",
+      "gpr": "<WORK>/ro/Fixture.gpr",
+      "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+      "suggest": "fork_project",
+      "suggestion": {
+       "cmd": "fork_project",
+       "project": "p1",
+       "path": "<WORK>/ro-fork-char-a",
+       "writable": true
+      }
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 49,
+   "who": "a",
+   "cmd": "import",
+   "request": {
+    "file": "<WORK>/bin/alpha.exe"
+   },
+   "response": {
+    "id": 47,
+    "ok": false,
+    "error": {
+     "code": "read_only",
+     "message": "import needs project p1 open writable (open_project \"writable\":true)"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 50,
+   "who": "a",
+   "cmd": "refresh",
+   "request": {},
+   "response": {
+    "id": 48,
+    "ok": true,
+    "result": {
+     "project": "p1",
+     "refreshed": false,
+     "reason": "unchanged",
+     "revision": "<rev1>",
+     "generation": 1
+    },
+    "ms": "<masked>"
+   },
+   "note": "unchanged"
+  },
+  {
+   "step": 51,
+   "who": "a",
+   "cmd": "refresh",
+   "request": {
+    "force": true
+   },
+   "response": {
+    "id": 49,
+    "ok": true,
+    "result": {
+     "project": "p1",
+     "refreshed": true,
+     "from": "<rev1>",
+     "revision": "<rev1>",
+     "generation": 2,
+     "programs": [
+      {
+       "program": "p1:/alpha.exe",
+       "revision": "<rev2>",
+       "action": "reopened",
+       "newRevision": "<rev2>"
+      },
+      {
+       "program": "p1:/beta.exe",
+       "revision": "<rev3>",
+       "action": "reopened",
+       "newRevision": "<rev3>"
+      }
+     ],
+     "ms": "<masked>",
+     "info": {
+      "id": "p1",
+      "name": "Fixture",
+      "dir": "<WORK>/ro",
+      "gpr": "<WORK>/ro/Fixture.gpr",
+      "writable": false,
+      "openMs": "<masked>",
+      "idleMs": "<masked>",
+      "files": 2,
+      "users": [
+       1,
+       2
+      ],
+      "programs": 2,
+      "revision": "<rev1>",
+      "diskRevision": "<rev1>",
+      "stale": false,
+      "generation": 2,
+      "refreshedMsAgo": "<masked>",
+      "fork": null
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 52,
+   "who": "a",
+   "cmd": "reopen",
+   "request": {},
+   "response": {
+    "id": 50,
+    "ok": true,
+    "result": {
+     "project": "p1",
+     "refreshed": false,
+     "reason": "unchanged",
+     "revision": "<rev1>",
+     "generation": 2
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 53,
+   "who": "b",
+   "cmd": "info",
+   "request": {},
+   "response": {
+    "id": 5,
+    "ok": true,
+    "result": {
+     "key": "p1:/alpha.exe",
+     "project": "p1",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "read_only",
+     "owner": null,
+     "mine": false,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": false,
+     "revision": "<rev2>",
+     "projectRevision": "<rev1>",
+     "generation": 2,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      1,
+      2
+     ],
+     "overlays": [],
+     "writers": [],
+     "writer": false,
+     "journalSeq": 0,
+     "unsavedEdits": 0
+    },
+    "ms": "<masked>",
+    "refreshed": [
+     {
+      "project": "p1",
+      "generation": 2,
+      "from": "<rev1>",
+      "revision": "<rev1>"
+     }
+    ]
+   }
+  },
+  {
+   "step": 54,
+   "who": "a",
+   "cmd": "close_program",
+   "request": {
+    "program": "p1:/beta.exe"
+   },
+   "response": {
+    "id": 51,
+    "ok": true,
+    "result": {
+     "closed": "p1:/beta.exe",
+     "discarded": false,
+     "active": "p1:/alpha.exe"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 55,
+   "who": "a",
+   "cmd": "close_program",
+   "request": {},
+   "response": {
+    "id": 52,
+    "ok": true,
+    "result": {
+     "closed": "p1:/alpha.exe",
+     "discarded": false,
+     "active": null
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 56,
+   "who": "a",
+   "cmd": "close_program",
+   "request": {},
+   "response": {
+    "id": 53,
+    "ok": false,
+    "error": {
+     "code": "no_program",
+     "message": "no active program; send open_program first"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 57,
+   "who": "a",
+   "cmd": "open_program",
+   "request": {
+    "path": "/alpha.exe"
+   },
+   "response": {
+    "id": 54,
+    "ok": true,
+    "result": {
+     "key": "p1:/alpha.exe",
+     "project": "p1",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "read_only",
+     "owner": null,
+     "mine": false,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": false,
+     "revision": "<rev2>",
+     "projectRevision": "<rev1>",
+     "generation": 2,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      2,
+      1
+     ],
+     "overlays": [],
+     "writers": [],
+     "writer": false,
+     "journalSeq": 0,
+     "unsavedEdits": 0,
+     "openMs": "<masked>"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 58,
+   "who": "b",
+   "cmd": "close_project",
+   "request": {},
+   "response": {
+    "id": 6,
+    "ok": true,
+    "result": {
+     "project": "p1",
+     "left": true,
+     "closed": false,
+     "activeProject": null
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 59,
+   "who": "a",
+   "cmd": "status",
+   "request": {},
+   "response": {
+    "id": 55,
+    "ok": true,
+    "result": {
+     "protocol": 2,
+     "minClient": "<masked>",
+     "hydraVersion": "<masked>",
+     "ghidraVersion": "<masked>",
+     "installId": "<masked>",
+     "startedAt": "<masked>",
+     "ghidra": "<masked>",
+     "install": "<masked>",
+     "java": "<masked>",
+     "pid": "<masked>",
+     "uptimeMs": "<masked>",
+     "listen": {
+      "host": "<masked>",
+      "port": "<masked>"
+     },
+     "launch": {
+      "mode": "fast",
+      "aot": null,
+      "classCache": "hit",
+      "readyMs": "<masked>",
+      "jvmToReadyMs": "<masked>"
+     },
+     "keepWarmS": 600,
+     "memory": {
+      "usedMb": "<masked>",
+      "committedMb": "<masked>",
+      "maxMb": "<masked>"
+     },
+     "projects": [
+      {
+       "id": "p1",
+       "name": "Fixture",
+       "dir": "<WORK>/ro",
+       "gpr": "<WORK>/ro/Fixture.gpr",
+       "writable": false,
+       "openMs": "<masked>",
+       "idleMs": "<masked>",
+       "files": 2,
+       "users": [
+        1
+       ],
+       "programs": 2,
+       "revision": "<rev1>",
+       "diskRevision": "<rev1>",
+       "stale": false,
+       "generation": 2,
+       "refreshedMsAgo": "<masked>",
+       "fork": null
+      }
+     ],
+     "you": 1,
+     "programs": [
+      {
+       "project": "p1",
+       "path": "/alpha.exe",
+       "mode": "read_only",
+       "owner": null,
+       "idleMs": "<masked>",
+       "users": [
+        1
+       ],
+       "ownerLabel": null,
+       "busy": null,
+       "writers": [],
+       "journalSeq": 0,
+       "unsavedEdits": 0,
+       "orphanedMs": null,
+       "revision": "<rev2>",
+       "cachedUpgrade": false,
+       "cacheBuild": "none"
+      },
+      {
+       "project": "p1",
+       "path": "/beta.exe",
+       "mode": "read_only",
+       "owner": null,
+       "idleMs": "<masked>",
+       "users": [],
+       "ownerLabel": null,
+       "busy": null,
+       "writers": [],
+       "journalSeq": 0,
+       "unsavedEdits": 0,
+       "orphanedMs": null,
+       "revision": "<rev3>",
+       "cachedUpgrade": false,
+       "cacheBuild": "none"
+      }
+     ],
+     "clients": [
+      {
+       "id": 1,
+       "name": "char-a",
+       "harness": "char-h",
+       "transport": "socket",
+       "launcher": false,
+       "clientVersion": "1.0.0",
+       "activeProject": "p1",
+       "active": "p1:/alpha.exe",
+       "connectedMs": "<masked>",
+       "projects": [
+        "p1"
+       ],
+       "programs": [
+        "p1:/alpha.exe"
+       ],
+       "running": [],
+       "requests": []
+      },
+      {
+       "id": 2,
+       "name": "char-b",
+       "harness": "char-h",
+       "transport": "socket",
+       "launcher": false,
+       "clientVersion": "1.0.0",
+       "activeProject": null,
+       "active": null,
+       "connectedMs": "<masked>",
+       "projects": [],
+       "programs": [],
+       "running": [],
+       "requests": []
+      }
+     ],
+     "overlays": [],
+     "scheduler": {
+      "quick": {
+       "slots": 24,
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 33,
+       "everQueued": 0,
+       "backgroundQueued": 0
+      },
+      "long": {
+       "slots": 6,
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 5,
+       "everQueued": 0,
+       "backgroundQueued": 0
+      }
+     },
+     "imports": {
+      "maxImports": 4,
+      "holder": null,
+      "running": [],
+      "queue": [],
+      "history": {
+       "count": 0,
+       "completed": 0,
+       "meanMs": null,
+       "msPerMb": null,
+       "peakRunning": 0
+      }
+     },
+     "youAre": {
+      "client": "char-a",
+      "harness": "char-h",
+      "labelled": false
+     },
+     "upgradeCache": {
+      "enabled": true,
+      "dir": "<WORK>/state/upgrade-cache",
+      "buildsStarted": 0,
+      "builds": []
+     },
+     "deferredInitMs": "<masked>"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 60,
+   "who": "a",
+   "cmd": "close_project",
+   "request": {},
+   "response": {
+    "id": 56,
+    "ok": true,
+    "result": {
+     "project": "p1",
+     "left": true,
+     "closed": false,
+     "activeProject": null
+    },
+    "ms": "<masked>"
+   },
+   "note": "last user of a read-only view: stays warm"
+  },
+  {
+   "step": 61,
+   "who": "a",
+   "cmd": "projects",
+   "request": {},
+   "response": {
+    "id": 57,
+    "ok": true,
+    "result": {
+     "activeProject": null,
+     "projects": [
+      {
+       "id": "p1",
+       "name": "Fixture",
+       "dir": "<WORK>/ro",
+       "gpr": "<WORK>/ro/Fixture.gpr",
+       "writable": false,
+       "openMs": "<masked>",
+       "idleMs": "<masked>",
+       "files": 2,
+       "users": [],
+       "programs": 2,
+       "revision": "<rev1>",
+       "diskRevision": "<rev1>",
+       "stale": false,
+       "generation": 2,
+       "refreshedMsAgo": "<masked>",
+       "fork": null,
+       "joined": false,
+       "active": false
+      }
+     ]
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 62,
+   "who": "a",
+   "cmd": "list",
+   "request": {},
+   "response": {
+    "id": 58,
+    "ok": false,
+    "error": {
+     "code": "no_project",
+     "message": "no project selected; send open_project first"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 63,
+   "who": "a",
+   "cmd": "open_project",
+   "request": {
+    "path": "<WORK>/ro/Fixture.gpr"
+   },
+   "response": {
+    "id": 59,
+    "ok": true,
+    "result": {
+     "id": "p1",
+     "name": "Fixture",
+     "dir": "<WORK>/ro",
+     "gpr": "<WORK>/ro/Fixture.gpr",
+     "writable": false,
+     "openMs": "<masked>",
+     "idleMs": "<masked>",
+     "files": 2,
+     "users": [
+      1
+     ],
+     "programs": 2,
+     "revision": "<rev1>",
+     "diskRevision": "<rev1>",
+     "stale": false,
+     "generation": 2,
+     "refreshedMsAgo": "<masked>",
+     "fork": null,
+     "opened": false
+    },
+    "ms": "<masked>"
+   },
+   "note": "the warm view is reused"
+  }
+ ]
+}

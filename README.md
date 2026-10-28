@@ -8,8 +8,7 @@
 <h1 align="center">Hydra Engine</h1>
 
 <p align="center"><b>One Ghidra, many heads: a headless reverse-engineering engine for AI agents and tools.</b><br>
-Many agents work in it at the same time, on any number of projects. A warm decompile takes
-milliseconds to tens of milliseconds, by function size, not seconds.</p>
+Several agents work in it at the same time, on several projects (tested with up to 4 clients). Warm native decompiles take milliseconds, not seconds.</p>
 
 <p align="center"><sub>Hydra Engine is a fork of NSA's Ghidra (12.3 DEV, Apache-2.0) and depends on it: the project format, decompiler, analyzers and scripts are Ghidra's own. It is not affiliated with or endorsed by the National Security Agency or the Ghidra project, and it is not affiliated with Marvel. The Ghidra name belongs to its authors.</sub></p>
 
@@ -33,56 +32,60 @@ milliseconds to tens of milliseconds, by function size, not seconds.</p>
 </p>
 
 <p align="center"><i>Every head at work at once. One body holds them all.</i><br>
-<sub>Here Claude Code, Codex, OpenCode and QoderCLI all reach the engine through the
+<sub>Illustrative, not a recorded session. Here Claude Code, Codex, OpenCode and QoderCLI all reach the engine through the
 <a href="https://github.com/RusticStack/Hydralysis">Hydralysis</a> MCP server; any client can also connect directly.</sub></p>
 
 In the myth, the Hydra has one body and many heads. Here the body is one long-lived JVM holding
 Ghidra, its open projects, its analysed programs and its warm decompilers. The heads are the
-clients: agent harnesses, MCP servers, scripts. They all work at the same time. They read the
-same programs in parallel, each with its own pooled decompiler; they write through working
-copies, private overlays or shared writing with an author journal (writes are serialized and never
-corrupt a program; [what that does not promise](#platform-and-limits) is spelled out below); and one
-head's import or whole-program analysis runs in the long lane while the others' native
-millisecond commands (decompile, functions, list) keep flowing in the quick lane. A `script`
-runs in the long lane, so a query sent as a script can queue behind long work
-([measured, and what is planned](#platform-and-limits)). Heads come and go; the body stays. If a
-client disconnects, its unsaved edits are dropped and its locks are released when its running
-request ends; the others carry on.
+clients: agent harnesses, MCP servers, scripts. Several work at the same time. They read the
+same programs in parallel, each with its own pooled decompiler. Writes are serialized, through
+working copies, private overlays or shared writing with an author journal, and no corruption was
+seen in the tests listed in the [module README](Ghidra/Features/HeadlessSession/README.md#tests);
+collisions are only detected when you pass `expect`. Native commands stay in the quick lane while
+imports and analyses run in the long lane. Heads come and go; the body stays. A disconnected
+client's requests are cancelled and its uncommitted changes rolled back when its running request
+ends; a request blocked on a lock, or a script that ignores cancel, keeps its place until the lock
+frees or the script ends.
 
 **Hydra Engine is the project name; inside, it's Ghidra:** the same packages, modules, Gradle
-projects and paths (`ghidra.*`, `Ghidra/Features/...`, `ghidra_12.3_DEV`), so Ghidra scripts and
-extensions work unchanged. It is a fork of Ghidra 12.3 DEV: upstream `master` plus one module,
-`Ghidra/Features/HeadlessSession`, a headless-only build and three small fixes to Ghidra classes,
-tracking upstream by merge. The project format, the decompiler, the analyzers, the loaders and the
-scripting API are Ghidra's, and the answers come from them. [NOTICE-HYDRA](NOTICE-HYDRA) lists
-every upstream file changed.
+projects and paths (`ghidra.*`, `Ghidra/Features/...`, `ghidra_12.3_DEV`), so scripts that use the
+headless API run unchanged; GUI-only extensions do not apply, because there is no GUI: Hydra
+Engine is headless only. What it adds is one module, `Ghidra/Features/HeadlessSession`, and a
+headless-only build. It is upstream Ghidra `master` plus those, kept in sync by merge;
+[NOTICE-HYDRA](NOTICE-HYDRA) lists every upstream file changed. [What the guarantees do not
+promise](#platform-and-limits) is spelled out below.
 
 ## What it does
 
-- **Many agents at the same time.** Claude Code, Codex, OpenCode, QoderCLI, MCP servers such as
-  [Hydralysis](https://github.com/RusticStack/Hydralysis) and your own scripts all work in one daemon at
-  once: one JVM per user. The first client starts it; the rest find it through a per-user endpoint
-  file and join in milliseconds.
-- **Many projects and programs at once.** Open any number of projects in place, by their `.gpr`
-  or folder, and switch between programs without importing them again.
-- **Read-only without a lock.** A project opens the way *File > View Project* does: no lock file,
-  nothing written, so several clients, and a Ghidra window, can read it at the same time. Ask for
+- **Several agents at the same time.** Claude Code, Codex, OpenCode, QoderCLI, MCP servers such as
+  [Hydralysis](https://github.com/RusticStack/Hydralysis) and your own scripts work in one daemon
+  at once (tested with up to 4 clients): one JVM per state directory and instance. The first
+  client starts it; the rest find it through an endpoint file in the state directory and join in
+  milliseconds.
+- **Several projects and programs at once.** Open projects in place, by their `.gpr` or folder,
+  and switch between programs without importing them again.
+- **Read-only without a lock.** A project opens as a read-only view: no lock file, nothing
+  written, so several clients, and other processes, can read it at the same time. Ask for
   `writable` when you want to change it.
-- **Fair under load.** Quick requests (decompile, functions, list) and long ones (analyze,
-  import, script) run in separate lanes, admitted round-robin by client, so one agent's
-  whole-program analysis never stalls another's 10 ms query. Per-client (and per-label) cancel,
-  and `busy`, `conflict` and `not_owner` answers that name who holds what and suggest what to
-  do instead of a silent wait.
-- **Several agents writing at once.** Each in the way its work needs:
+- **Two lanes under load.** Native commands (decompile, functions, list) stay in the quick lane
+  while imports and analyses run in the long lane. Scripts run in the long lane, so questions
+  asked through scripts, as Hydralysis does, share it, and a full long lane delays them (measured
+  up to about 8 s). Readers of the program being analysed wait for its lock. Waiting requests are
+  admitted round-robin by connection; there is no cap on how many slots one connection runs.
+  `cancel` (per client and per label) stops requests waiting for a slot and cooperative scripts;
+  a request waiting for a program lock stays until its `wait` runs out. `busy`, `conflict` and
+  `not_owner` answers name who holds what and suggest what to do instead of a silent wait.
+- **Several agents writing.** Each in the way its work needs. Writes are serialized, and no
+  corruption was seen in the tests listed; collisions are only detected when you pass `expect`:
   - a **working copy** of a project (`fork_project`) while the others keep reading the master:
     a block clone on ReFS (about 0.2 s and a few MB for a 1.5 GB project), a full copy
     elsewhere, with its source and base revision recorded;
   - a private **overlay** of a program others read: names, labels, comments, signatures and
     data types only that client sees, never saved unless promoted into a working copy;
   - **several writers** of one project (different programs in parallel), or of one program in
-    shared mode, with every change journalled with its author, an optional `expect` per call
-    against lost updates (without it, the last writer wins per value), atomic multi-operation
-    `edit`s and `discard_edits`.
+    shared mode, with every change journalled with its author, `expect` to detect lost updates
+    (last writer wins when you do not pass it), atomic multi-operation `edit`s and
+    `discard_edits`.
 - **Fresh views.** Every project and program has a revision; when another process saves a
   project that a read-only view serves, its clients are told (`stale`), and `refresh` reopens it
   for all of them at once.
@@ -94,8 +97,8 @@ every upstream file changed.
   engine and Ghidra versions and an install id; each release ships the Python client as its own
   versioned zip, which refuses an engine it cannot drive.
 - **Scripts, contained.** Any GhidraScript, Java or Python, with arguments. On a program you do
-  not own, it runs inside a transaction that is always rolled back, so it cannot change what
-  others see.
+  not own, a contained script's changes are rolled back and never saved; while it runs, other
+  clients can see them.
 - **Fast start.** A standard-library Python launcher builds the classpath itself (no `.bat`, no
   `.sh`, no three extra JVMs), caches Ghidra's class search, and on JDK 25 uses an AOT cache.
   What no query needs (the language service, TLS, the script compiler) starts after `ready`.
@@ -115,7 +118,7 @@ search caches on. Medians from the
 |---|---|
 | No daemon running: start it and connect | 533 ms |
 | Daemon start until the first decompile answer | 1,637 ms |
-| Warm `decompile` of the benchmark's function (its size was not recorded; see below) | 6.7-7.1 ms |
+| Warm `decompile` | 6.7-7.1 ms for this function; about 1 to 45 ms by function size |
 | Another harness joins a running daemon: connect + `hello`, join the project, `open_program` (already open), `decompile` | 14 ms, 0.9 ms, 0.9 ms, 7.4 ms (measured on 12.1.4) |
 
 A warm decompile depends on the function's size. Measured by the owner on a KotOR executable
@@ -123,7 +126,7 @@ A warm decompile depends on the function's size. Measured by the owner on a KotO
 blocks. So "about 7 ms" is one function in one program, not a constant.
 
 The same question through stock `analyzeHeadless` (`-process ... -readOnly -postScript`, one
-decompile) took 7.0-7.8 s per question, and needed a copy of the project (measured on 12.1.4).
+decompile) took 7.0-7.8 s per question, and needed a copy of the project (stock Ghidra 12.1.4).
 
 Several at once (same machine; the module README has the method):
 
@@ -132,7 +135,7 @@ Several at once (same machine; the module README has the method):
 | Four large PEs imported in parallel (`maxImports` 4) | 63.9 s, against 165.1 s one after another |
 | Decompiles while two 128 MB imports write into the same project | median 4.9 ms (5.7 ms before) |
 | Working copy of a 1.5 GB project on ReFS (`fork_project`) | 204-225 ms, 2.8-5.0 MB |
-| Four clients x two threads, shared writing on one program | 3,200 renames and comments with 64 saves in 6.0 s, none dropped, each value ending as its last writer left it |
+| Four clients x two threads, shared writing on one program | 3,200 renames and comments with 64 saves in 6.0 s, none lost (in this test) |
 
 ## Platform and limits
 
@@ -181,11 +184,10 @@ fetches the pinned Hydra Engine release and a JDK, so setting up Hydralysis sets
 Hydra Engine stays a generic Ghidra front end that any client can use directly; Hydralysis is the
 quickest way to put it to work.
 
-> **Status.** Hydralysis is the new name of RusticRE (v0.4.0, twenty tools), and the rename is
-> in progress: the `RusticStack/Hydralysis` repository, the `hydralysis` command and
-> `HYDRALYSIS_ROOT` are not published yet, so the links and commands below do not work until
-> they are. Until then Hydra Engine works on its own, as described above and in the module
-> README.
+> **Status.** Hydralysis is the new name of RusticRE (0.5.0.dev0, twenty tools). The
+> `RusticStack/Hydralysis` repository is renamed but still private and has no release yet, so the
+> links and commands below work only with access to it. Until it is public Hydra Engine works on
+> its own, as described above and in the module README.
 
 ## Quick start
 
@@ -221,8 +223,9 @@ cd hydra-engine
 ./gradlew buildHeadless                                             # -> build/dist/ghidra_12.3_DEV
 ```
 
-(On Windows, `gradlew.bat`. The full Ghidra build with the GUI is still there:
-`gradle buildGhidra`. Details in [CONTRIBUTING](.github/CONTRIBUTING.md#build).)
+(On Windows, `gradlew.bat`. There is no GUI: Hydra Engine is headless only, and projects it
+writes cannot be opened by Ghidra 12.2 or 12.1.4. Details in
+[CONTRIBUTING](.github/CONTRIBUTING.md#build).)
 
 Start the daemon and look at it:
 
@@ -273,7 +276,7 @@ with gs.connect(client="my-tool", harness="claude-code") as s:   # joins the dae
   they expose, and a per-request `client`/`harness` label for each agent they serve. The session
   is a generic Ghidra front end; the tools belong to the client.
 
-**Through Hydralysis** (not published yet; renamed from RusticRE). By hand, from a checkout of
+**Through Hydralysis** (private, no release yet; renamed from RusticRE). By hand, from a checkout of
 [Hydralysis](https://github.com/RusticStack/Hydralysis) (Python 3.11 or later), with
 `HYDRALYSIS_ROOT` set to a directory for its engine, prepared projects, evidence and logs:
 
@@ -307,17 +310,17 @@ are in the [docs](https://www.hydrare.dev/docs/quick-start).
 
 | | `analyzeHeadless` | Hydra Engine |
 |---|---|---|
-| Lifetime | one run per command, then exit | one daemon per user, stays up (or idles out) |
-| Clients | the one that started it | any number, at once |
-| Projects | one per run | any number, at once |
+| Lifetime | one run per command, then exit | one daemon per state directory and instance, stays up (or idles out) |
+| Clients | the one that started it | several at once (tested with up to 4 clients) |
+| Projects | one per run | several at once |
 | Project lock | always, even with `-readOnly` | none for a read-only view; one per daemon when writable, shared by its clients |
 | Several writers | one process per project | several clients per project or per program, overlays, working copies; one change at a time, last writer wins unless `expect` is sent |
 | Programs | the ones `-import`/`-process` select | open, switch, close at will, without importing |
-| A question about an analysed program | 7.0-7.8 s (start, open, decompile, exit) | about 1-45 ms warm, by function size ("Measured") |
+| A question about an analysed program | 7.0-7.8 s (start, open, decompile, exit; stock Ghidra 12.1.4) | native decompile about 1 to 45 ms by function size when warm (7 ms in the benchmark function) |
 | Re-import of the same file | a second copy | refused by SHA-256 |
 | Scripts | pre/post scripts per run | any time, contained or as owner, with arguments |
 | Launcher | `.bat` / `.sh` + `LaunchSupport` | one Python file, standard library only |
-| A client crashes | the run dies | its locks are released when its running request ends, the rest carry on |
+| A client crashes | the run dies | its requests are cancelled and its uncommitted changes rolled back when its running request ends; a request blocked on a lock keeps its place until the lock frees |
 
 `analyzeHeadless` is still in the install and still the right tool for a one-shot batch
 import.
@@ -342,22 +345,24 @@ config` prints the effective configuration; the full table is in the
 
 **Security.** The daemon binds loopback only and every connection must present the 256-bit
 token from the owner-only endpoint file. Anyone who can read your state directory can drive the
-daemon with your rights, and a script runs with the daemon's rights: containment protects other
-clients' view of a program, not the machine. See [SECURITY](.github/SECURITY.md).
+daemon with your rights, and a script runs with the daemon's rights: a contained script's
+changes are rolled back and never saved, but other clients can see them while it runs, and
+containment is not a sandbox for the machine. See [SECURITY](.github/SECURITY.md).
 
 ## Building
 
 | | Command | What you get |
 |---|---|---|
 | Headless (default) | `gradle buildHeadless` | an unzipped install in `build/dist/`, or `-PheadlessInstallDir=<dir>`; `zipHeadless` zips it |
-| Full Ghidra, with the GUI | `gradle buildGhidra` | Ghidra's usual zip in `build/dist/` |
+| Whole source tree (built weekly in CI; not released) | `gradle buildGhidra` | Ghidra's usual zip in `build/dist/` |
 
-The headless install leaves out the window-only modules, the help, javadoc and Python stubs, the
-user docs and `ghidraRun`, and keeps everything headless analysis uses: every processor, the
-loaders and analyzers, the decompiler, scripting, the Ghidra server and the session module.
+There is no GUI: Hydra Engine is headless only. The headless install leaves out the modules that
+only an interactive tool uses, the help, javadoc and Python stubs, the user docs and `ghidraRun`,
+and keeps everything headless analysis uses: every processor, the loaders and analyzers, the
+decompiler, scripting, the Ghidra server and the session module.
 
 
-| Windows x64, same commit | `buildHeadless` | `buildGhidra` |
+| Windows x64, same commit | `buildHeadless` | `buildGhidra` (whole tree) |
 |---|---|---|
 | Gradle tasks that run (clean build) | 524 | 836 |
 | Install | 2,790 files, 639 MB (a directory) | 5,332 files, 862 MB (538 MB zip) |
@@ -380,8 +385,8 @@ tested routinely. The full build
 runs weekly. Releases are cut by [`release.yml`](.github/workflows/release.yml)
 ([CONTRIBUTING](.github/CONTRIBUTING.md#releases)).
 
-For Ghidra's own GUI build and usage docs, see Ghidra's original README:
-[README-GHIDRA.md](README-GHIDRA.md).
+Ghidra's original README is kept as [README-GHIDRA.md](README-GHIDRA.md); it describes the
+upstream project, not Hydra Engine.
 
 ## Upstream sync
 
@@ -389,7 +394,8 @@ For Ghidra's own GUI build and usage docs, see Ghidra's original README:
 upstream moves. Few upstream files are changed: `README.md`, one line of `build.gradle`, two
 lines of `gradle/distributableGhidraModule.gradle`, `.gitattributes`, the issue templates (replaced
 by issue forms), and
-three small Java fixes (`LocalBufferFile`, `LocalDatabaseItem`, `SleighLanguageFile`; see the
+small changes to five Java classes (`LocalBufferFile`, `LocalDatabaseItem`, `SleighLanguageFile`,
+`LocalManagedBufferFile`, `VersionedDatabase`) and one added class (`VersionFileCheck`; see the
 module README's "Changes outside this module"), so a sync conflicts in those at most. All of
 them are listed in [NOTICE-HYDRA](NOTICE-HYDRA), which every release ships. The steps
 and the resolutions are in [CONTRIBUTING](.github/CONTRIBUTING.md#upstream-sync).
