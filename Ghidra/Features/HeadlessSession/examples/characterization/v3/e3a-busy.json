@@ -1,0 +1,201 @@
+{
+ "scenario": "e3a-busy",
+ "protocol": 3,
+ "steps": [
+  {
+   "step": 1,
+   "who": "b",
+   "cmd": "script",
+   "request": {
+    "script": "CharPrint.java",
+    "program": null,
+    "wait": 300
+   },
+   "response": {
+    "id": 2,
+    "ok": false,
+    "error": {
+     "code": "busy",
+     "message": "all 1 long slots are in use (client 1 (e3a-a, e3a-h) script); retry, or pass a longer \"wait\"",
+     "details": {
+      "lane": "long",
+      "slots": 1,
+      "queued": 0,
+      "waitedMs": "<masked>",
+      "running": [
+       "client 1 (e3a-a, e3a-h) script"
+      ],
+      "reason": "slot_wait",
+      "queue": {
+       "lane": "long",
+       "position": 1,
+       "ahead": 0,
+       "estimatedWaitMs": null,
+       "estimate": true
+      }
+     },
+     "retryAfterMs": "<masked>"
+    },
+    "ms": "<masked>"
+   },
+   "note": "the long lane is full: busy with reason, queue and retryAfterMs"
+  },
+  {
+   "step": 2,
+   "who": "a",
+   "cmd": "status",
+   "request": {},
+   "response": {
+    "ok": true,
+    "result": {
+     "scheduler": {
+      "quick": {
+       "slots": "<masked>",
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 0,
+       "everQueued": 0,
+       "backgroundQueued": 0,
+       "oldestWaitMs": "<masked>",
+       "longestRunningMs": "<masked>",
+       "starving": false,
+       "perKeyCap": "<masked>",
+       "perKey": []
+      },
+      "long": {
+       "slots": "<masked>",
+       "inUse": 1,
+       "queued": 1,
+       "running": [
+        {
+         "client": 1,
+         "who": "client 1 (e3a-a, e3a-h)",
+         "cmd": "script",
+         "ms": "<masked>"
+        }
+       ],
+       "waiting": [
+        {
+         "client": 2,
+         "who": "client 2 (e3a-b, e3a-h)",
+         "cmd": "script",
+         "waitedMs": "<masked>",
+         "position": 1,
+         "estimatedWaitMs": null
+        }
+       ],
+       "admitted": 1,
+       "everQueued": 2,
+       "backgroundQueued": 0,
+       "oldestWaitMs": "<masked>",
+       "longestRunningMs": "<masked>",
+       "starving": false,
+       "perKeyCap": "<masked>",
+       "perKey": [
+        {
+         "client": 1,
+         "who": "client 1 (e3a-a, e3a-h)",
+         "running": 1,
+         "queued": 0
+        },
+        {
+         "client": 2,
+         "who": "client 2 (e3a-b, e3a-h)",
+         "running": 0,
+         "queued": 1
+        }
+       ]
+      },
+      "maint": {
+       "slots": "<masked>",
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 0,
+       "everQueued": 0,
+       "backgroundQueued": 0,
+       "oldestWaitMs": "<masked>",
+       "longestRunningMs": "<masked>",
+       "starving": false,
+       "perKeyCap": "<masked>",
+       "perKey": []
+      }
+     }
+    }
+   },
+   "note": "a waiting request: position, ahead, and the per-key figures"
+  },
+  {
+   "step": 3,
+   "who": "a",
+   "cmd": "script",
+   "request": {
+    "script": "CharSleep.java",
+    "args": [
+     "1800"
+    ],
+    "program": null
+   },
+   "response": {
+    "id": 2,
+    "ok": true,
+    "result": {
+     "script": "<WORK>/scripts/CharSleep.java",
+     "mode": "none",
+     "program": null,
+     "seconds": "<masked>",
+     "chars": 7,
+     "truncated": false,
+     "output": "slept\r\n",
+     "changed": false,
+     "unsaved": false,
+     "artifact": null
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 4,
+   "who": "b",
+   "cmd": "script",
+   "request": {
+    "script": "CharPrint.java",
+    "program": null,
+    "wait": 20000
+   },
+   "response": {
+    "id": 3,
+    "ok": true,
+    "result": {
+     "script": "<WORK>/scripts/CharPrint.java",
+     "mode": "none",
+     "program": null,
+     "seconds": "<masked>",
+     "chars": 21,
+     "truncated": false,
+     "output": "program none\r\nargs \r\n",
+     "changed": false,
+     "unsaved": false,
+     "artifact": null
+    },
+    "queue": {
+     "lane": "long",
+     "position": 1,
+     "ahead": 0,
+     "estimatedWaitMs": null,
+     "estimate": true
+    },
+    "waited": {
+     "queueMs": "<masked>",
+     "lockMs": "<masked>",
+     "slotMs": "<masked>"
+    },
+    "ms": "<masked>"
+   },
+   "note": "it waited 250 ms or more: the reply names the queue and the time"
+  }
+ ]
+}
