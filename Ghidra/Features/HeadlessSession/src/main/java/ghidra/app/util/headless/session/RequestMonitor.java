@@ -15,6 +15,7 @@
  */
 package ghidra.app.util.headless.session;
 
+import java.util.List;
 import java.util.concurrent.*;
 import java.util.function.Consumer;
 
@@ -35,6 +36,7 @@ final class RequestMonitor extends TaskMonitorAdapter {
 			t.setDaemon(true);
 			return t;
 		});
+	private static final long WAITED_MIN_MS = 250;
 	private static final long EVENT_INTERVAL_NANOS = 1_000_000_000L;
 
 	private final JsonElement requestId;
@@ -54,6 +56,18 @@ final class RequestMonitor extends TaskMonitorAdapter {
 	private volatile String waiting;
 	/** Queue details added to this request's progress events while it waits, or null. */
 	private volatile JsonObject queue;
+	/** Run once when this request is cancelled (by {@code cancel}, its timeout or a dead client). */
+	private final List<Runnable> cancelHooks = new CopyOnWriteArrayList<>();
+	/** The lane the scheduler put this request in ({@code quick}, {@code long}, {@code maint}). */
+	private volatile String lane;
+	/** Why a lane hint was not honoured (E3a's decision, copied into the {@code script} reply). */
+	private volatile String laneNote;
+	/** How long this request waited for a slot, the import queue and a lock (milliseconds). */
+	private volatile long slotWaitedMs;
+	private volatile long queueWaitedMs;
+	private volatile long lockWaitedMs;
+	/** The last queue details a wait of this request saw, or null. */
+	private volatile JsonObject lastQueue;
 
 	RequestMonitor(JsonElement requestId, Consumer<JsonObject> events) {
 		super(true);
@@ -98,6 +112,99 @@ final class RequestMonitor extends TaskMonitorAdapter {
 	void waiting(String what, JsonObject queueInfo) {
 		waiting = what;
 		queue = queueInfo;
+	}
+
+	/**
+	 * Registers {@code hook} to run when this request is cancelled, whatever cancelled it. It runs
+	 * at once, on the calling thread, when the request is already cancelled. A hook must be short
+	 * and must not throw (an exception is logged by nobody and ignored); it runs on the thread
+	 * that cancels, never while a scheduler or lock monitor of the hook's owner is required.
+	 */
+	void addCancelHook(Runnable hook) {
+		cancelHooks.add(hook);
+		if (isCancelled()) {
+			runHook(hook);
+		}
+	}
+
+	void removeCancelHook(Runnable hook) {
+		cancelHooks.remove(hook);
+	}
+
+	/** Cancels this request and runs its cancel hooks (each at most once per cancel). */
+	@Override
+	public void cancel() {
+		boolean first = !isCancelled();
+		super.cancel();
+		if (first && isCancelled()) {
+			for (Runnable h : cancelHooks) {
+				runHook(h);
+			}
+		}
+	}
+
+	private static void runHook(Runnable h) {
+		try {
+			h.run();
+		}
+		catch (RuntimeException ignored) {
+			// a hook must not stop the cancel
+		}
+	}
+
+	/** Records the lane decision of the scheduler: the lane and, if a hint was refused, why. */
+	void lane(String lane, String note) {
+		this.lane = lane;
+		this.laneNote = note;
+	}
+
+	/** The lane the scheduler put this request in, or null before it was admitted. */
+	String lane() {
+		return lane;
+	}
+
+	/** Why the {@code lane} hint of this request was not honoured, or null. */
+	String laneNote() {
+		return laneNote;
+	}
+
+	/** Adds time this request spent waiting: {@code kind} is {@code slot}, {@code queue} or {@code lock}. */
+	void waited(String kind, long ms) {
+		switch (kind) {
+			case "slot" -> slotWaitedMs += ms;
+			case "queue" -> queueWaitedMs += ms;
+			case "lock" -> lockWaitedMs += ms;
+			default -> throw new IllegalArgumentException("waited: " + kind);
+		}
+	}
+
+	/** Remembers the queue details of the latest wait, for the reply's {@code queue} (C9). */
+	void queueSeen(JsonObject q) {
+		lastQueue = q;
+	}
+
+	/**
+	 * The {@code waited} object of a protocol 3 reply (D49): present only when this request
+	 * waited 250 ms or more for a slot, the import queue or a lock; else null.
+	 */
+	JsonObject waited() {
+		long q = queueWaitedMs;
+		long l = lockWaitedMs;
+		long s = slotWaitedMs;
+		if (Math.max(q, Math.max(l, s)) < WAITED_MIN_MS) {
+			return null;
+		}
+		return Json.of("queueMs", q, "lockMs", l, "slotMs", s);
+	}
+
+	/** The queue details of the latest wait when {@link #waited} is present, else null. */
+	JsonObject queueSeen() {
+		return waited() == null ? null : lastQueue;
+	}
+
+	/** Clears the progress message without sending an event. */
+	void clearMessage() {
+		message = "";
 	}
 
 	/** This request as {@code status} shows it. */
