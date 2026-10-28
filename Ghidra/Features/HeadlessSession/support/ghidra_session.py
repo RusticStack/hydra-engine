@@ -1033,6 +1033,7 @@ class _Base:
                            {"deadlineS": deadline, "target": rid, "cancelId": cancel_id})
 
     def wait(self, rid: int, deadline: float | None = None):
+        self._check_deadline(deadline)
         end = None if deadline is None else time.monotonic() + deadline
         while True:
             with self._done:
@@ -1138,6 +1139,15 @@ class Labelled:
         return getattr(self.base, name)
 
 
+HELLO_DEADLINE_S = 5.0
+
+
+def _hello_left(end: float) -> float:
+    """The deadline for one ``hello``: at most HELLO_DEADLINE_S, at least 0.5 s, and no more
+    than what is left until the monotonic time ``end``."""
+    return max(0.5, min(HELLO_DEADLINE_S, end - time.monotonic()))
+
+
 class SocketSession(_Base):
     """A client of a session that serves a loopback socket (the daemon)."""
 
@@ -1193,8 +1203,13 @@ class SocketSession(_Base):
                 return line.decode("utf-8")
             if end is not None:
                 left = end - time.monotonic()
-                if left <= 0 or not select.select([self.sock], [], [], left)[0]:
+                if left <= 0:
                     return None
+                try:
+                    if not select.select([self.sock], [], [], left)[0]:
+                        return None
+                except (OSError, ValueError):
+                    return ""  # closed by another thread meanwhile: the stream ended
             try:
                 chunk = self.sock.recv(65536)
             except OSError:
@@ -1803,10 +1818,23 @@ class Daemon:
         daemon runs in the job of the harness that started it and ends with it;
         ``duplicate_daemon``: a live daemon of the same install runs under another state dir)."""
         install = Install.locate(self.ghidra)
-        s = self._try_connect(client, harness)
+        t_end = time.monotonic() + timeout
+        # A daemon that is alive but wedged accepts the TCP connection and never answers hello:
+        # every dial gets a deadline taken from the time that is left.
+        s = self._try_connect(client, harness, hello_deadline=_hello_left(t_end))
         if s:
             self._check_install(s.endpoint, install)
             return self._annotate(s)
+        if not start and self.jvm_alive():
+            # a daemon runs but did not answer hello within the deadline: wedged, not absent
+            ep = self.read_endpoint()
+            raise LaunchError(f"the {self.instance!r} daemon is running but did not answer; "
+                              f"see {self.log_file}", "no_answer",
+                              {"timeoutS": timeout, "log": str(self.log_file),
+                               "logTail": self._log_tail(0),
+                               "holder": {"pid": ep.get("pid")} if ep else None,
+                               "suggest": "the daemon may be wedged: health() tells "
+                                          "whether it answers; stop(force) or kill() it"})
         if not start:
             raise LaunchError(f"no {self.instance!r} daemon is running (state {self.state})",
                               "not_running", {"stateDir": str(self.state),
@@ -1820,13 +1848,14 @@ class Daemon:
                                    "holder": None,
                                    "suggest": "wait for the other launcher, or find the process "
                                               "that holds the lock"})
-            s = self._try_connect(client, harness)  # someone else started it meanwhile
+            s = self._try_connect(client, harness,  # someone else started it meanwhile
+                                  hello_deadline=_hello_left(t_end))
             if s:
                 self._check_install(s.endpoint, install)
                 return self._annotate(s)
             if self.jvm_alive():
                 # starting up, or wedged: wait for its endpoint
-                s = self._wait_ready(None, client, harness, timeout, 0)  # since=0: logTail has the last lines
+                s = self._wait_ready(None, client, harness, max(0.0, t_end - time.monotonic()), 0)  # since=0: logTail has the last lines
                 self._check_install(s.endpoint, install)
                 return self._annotate(s)
             with contextlib.suppress(OSError):
@@ -2019,7 +2048,8 @@ class Daemon:
             ep = self.read_endpoint()
             # the endpoint of the JVM we started (not a stale file a killed one left behind)
             if ep and (proc is None or ep.get("pid") == proc.pid):
-                s = self._try_connect(client, harness)
+                # a hello that times out is "not up yet": the loop goes on until the end
+                s = self._try_connect(client, harness, hello_deadline=_hello_left(end))
                 if s:
                     return s
             time.sleep(0.05)
@@ -2032,15 +2062,17 @@ class Daemon:
                                                    "whether it answers; stop(force) or kill() it"})
 
     def status(self) -> dict | None:
-        s = self._try_connect("ghidra_session", "cli", check=False)  # also of an older release
+        s = self._try_connect("ghidra_session", "cli", check=False,  # also of an older release
+                              hello_deadline=HELLO_DEADLINE_S)
         if not s:
             return None
         with s:
-            return s.call("status")
+            return s.call("status", deadline=HELLO_DEADLINE_S)
 
     def stop(self, force: bool = False, timeout: float = 60.0) -> bool:
         """Asks the daemon to shut down; returns True when its JVM is gone."""
-        s = self._try_connect("ghidra_session", "cli", check=False)  # stop what we cannot drive
+        s = self._try_connect("ghidra_session", "cli", check=False,  # stop what we cannot drive
+                              hello_deadline=HELLO_DEADLINE_S)
         if not s:
             return not self.jvm_alive()
         pid = s.endpoint.get("pid")

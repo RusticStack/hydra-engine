@@ -39,6 +39,9 @@ Tests:
   hung script is cancelled (it ends long before it would have) and the connection survives.
 * ``p1b_concurrent_launchers``  N processes call ``connect`` at once on one root: exactly one
   starts the daemon, all get the same pid, one JVM per root (two roots in parallel).
+* ``p1b_wedged_connect``  a real daemon is suspended (NtSuspendProcess): ``connect(timeout=3)``
+  and ``attach`` raise ``no_answer`` in well under 15 s and ``status()`` returns ``None``, instead
+  of waiting for a ``hello`` that never comes; resumed, the daemon answers again.
 * ``p1b_native_access_flag``  the JVM command line carries ``--enable-native-access=ALL-UNNAMED``
   once, also when launch.properties or ``vmargs`` already carry it, and not for
   ``--enable-native-access=java.base``.
@@ -680,6 +683,7 @@ def _win():
     k.IsProcessInJob.argtypes = [H, H, ctypes.POINTER(wt.BOOL)]
     k.GetExitCodeProcess.argtypes = [H, ctypes.POINTER(wt.DWORD)]
     nt.NtResumeProcess.argtypes = [H]
+    nt.NtSuspendProcess.argtypes = [H]
     _K.update(k=k, nt=nt)
     return k, nt
 
@@ -798,9 +802,11 @@ def run_survival_case(c, key):
     job = create_job(cs["job"]) if cs["job"] is not None else None
     cmd = [sys.executable, str(HERE / "dt_p1b.py"), "--harness", str(c.support), c.a.ghidra,
            str(st), inst, str(base), cs["routes"], cs.get("mode", "real")]
-    kw = dict(stdin=subprocess.DEVNULL, stdout=open(base / "harness.out", "wb"),
+    harness_out = open(base / "harness.out", "wb")
+    kw = dict(stdin=subprocess.DEVNULL, stdout=harness_out,
               stderr=subprocess.STDOUT, creationflags=0x08000000)  # CREATE_NO_WINDOW
     hp = spawn_in_job(cmd, job, **kw) if job else subprocess.Popen(cmd, **kw)
+    harness_out.close()  # the child has its own handle
     r = {"case": cs["name"]}
     dp = None
     try:
@@ -909,6 +915,54 @@ def t_daemon_survives_launcher_exit(c):
                      for r in rows)
 
 
+# ---- p1b_wedged_connect -----------------------------------------------------------------------
+
+def t_wedged_connect(c):
+    """A real daemon whose process is suspended (NtSuspendProcess): its endpoint file is there, its
+    instance lock is held, the kernel accepts the connection, and nobody answers ``hello``. Before
+    the fix ``connect(timeout=3)`` stayed blocked until the daemon was resumed."""
+    if not IS_WINDOWS:
+        return "skipped: Windows only (NtSuspendProcess)"
+    import ctypes
+    gs = c.gs
+    _GS["gs"] = gs
+    base = fresh_dir(c, "wedged")
+    st = fresh_state(c, base)
+    d = gs.Daemon(c.a.ghidra, str(st), "p1b-wedge")
+    c.daemons.append(d)
+    k, nt = _win()
+    h = None
+    try:
+        s = d.connect("t", "p1b", timeout=180)
+        pid = s.endpoint["pid"]
+        s.close()
+        h = k.OpenProcess(0x800, False, pid)  # PROCESS_SUSPEND_RESUME
+        check(h, f"could not open the daemon process {pid}")
+        check(nt.NtSuspendProcess(h) == 0, "NtSuspendProcess failed")
+        res = {}
+        for what, fn in (("connect", lambda: d.connect("t", "p1b", timeout=3)),
+                         ("attach", lambda: d.connect("t", "p1b", start=False, timeout=3))):
+            t0 = time.monotonic()
+            e = raises_launch("no_answer", fn, f"{what} on a suspended daemon")
+            took = time.monotonic() - t0
+            check(took < 15, f"{what} took {took:.1f} s on a suspended daemon (timeout 3 s)")
+            check(e.details.get("holder", {}).get("pid") == pid, f"{what} holder: {e.details}")
+            res[what] = f"{took:.1f} s"
+        t0 = time.monotonic()
+        st_ = d.status()
+        check(st_ is None and time.monotonic() - t0 < 15, "status() of a suspended daemon hung")
+        res["status"] = f"{time.monotonic() - t0:.1f} s"
+        nt.NtResumeProcess(h)
+        s = d.connect("t", "p1b", timeout=30)  # resumed: it answers again
+        s.close()
+        return "no_answer on a suspended daemon: " + ", ".join(f"{a} {b}" for a, b in res.items())
+    finally:
+        if h:
+            nt.NtResumeProcess(h)  # a suspended JVM cannot be stopped politely
+            k.CloseHandle(h)
+        stop_quietly(d)
+
+
 def isolated(fn):
     """Runs a test with its own user state root (GHIDRA_SESSION_HOME, inherited by every child
     process): the registry of the real user, and the daemons of other agents, never take part."""
@@ -925,6 +979,7 @@ TESTS = {
     "p1b_call_deadline": isolated(t_call_deadline),
     "p1b_concurrent_launchers": isolated(t_concurrent_launchers),
     "p1b_native_access_flag": isolated(t_native_access_flag),
+    "p1b_wedged_connect": isolated(t_wedged_connect),
     "p1b_daemon_survives_launcher_exit": isolated(t_daemon_survives_launcher_exit),
 }
 
