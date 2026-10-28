@@ -44,8 +44,9 @@ the matrix is changed only by the packages of its cells, whatever the package te
 The spec itself is not a package file: nobody edits it.
 
 Hydra paths are relative to ``Ghidra/Features/HeadlessSession`` (``S/`` is the session source
-directory), Hydralysis paths to ``src/hydralysis`` (``tests/`` and ``tools/`` to the repository
-root), site paths to the root of the website repository. The package ids are every id the wave plan
+directory), Hydralysis paths to ``src/hydralysis`` (the root documents ``README.md``, ``THIRD_PARTY.md``,
+``CHANGELOG.md``, ``config.example.json``, and ``tests/``, ``tools/``, ``docs/``, ``skills/``,
+``benchmarks/`` and ``.github/`` to the repository root, amendment A1), site paths to the root of the website repository. The package ids are every id the wave plan
 of revision 8 uses: ``E<n>[a-c]``, ``X0``, ``P1a``/``P1b``, ``Y0a-e``, ``Y1``-``Y3``, ``Y4a/b/d/e``, ``Y5``, ``R0``/``R1``, ``S1``/``S2``
 and ``Z<n>[ab]`` (revision 8.1, amendment A2: the pattern did not see ``X0``, ``S1``, ``S2`` or any ``Z``).
 ``--repo`` is the worktree to check (default: this script's repository); it is Hydralysis
@@ -72,6 +73,11 @@ ANY_ID = re.compile(r"\b[A-Z]\d+[a-z]?\b")
 THEN = "**then**"
 HEADER = re.compile(r"\*\*(" + ID + r") \(")
 ROOT_DOCS = {"README.md", "CHANGELOG.md"}
+#: The Hydralysis repository-root documents and trees (amendment A1/E1's first commit, 8.1): rows of
+#: the Hydralysis table that live at the repository root, not under ``src/hydralysis/``.
+HY_ROOT_FILES = {"README.md", "THIRD_PARTY.md", "CHANGELOG.md", "LICENSE", "config.example.json",
+                 "pyproject.toml", ".gitignore"}
+HY_ROOT_DIRS = ("tests/", "tools/", "docs/", "skills/", "benchmarks/", ".github/")
 
 
 class SpecError(Exception):
@@ -182,8 +188,8 @@ def resolve(kind, tok):
     if kind == "site":
         return {tok}
     if kind == "hydralysis":
-        if tok.startswith(("tests/", "tools/")):
-            return {tok}
+        if tok in HY_ROOT_FILES or tok.startswith(HY_ROOT_DIRS):
+            return {tok}      # README.md, THIRD_PARTY.md, docs/..., config.example.json: the root
         return {"src/hydralysis/" + tok}
     if tok == "release workflow":
         return {".github/workflows/release.yml"}
@@ -353,6 +359,9 @@ SYNTHETIC = """
 | File | W0 | W1 |
 |---|---|---|
 | **`durable.py`** | Y0a | |
+| `README.md`, `THIRD_PARTY.md` | Y0a | |
+| `docs/upstream-setup.md` | | E1 |
+| `config.example.json` | | E1 |
 
 ## 8. Work packages
 
@@ -399,6 +408,23 @@ def selftest():
                                                       "tests/test_durable.py"]), [])
     expect("Y0a changes a file in no row",
            len(check_changes(spec, "hydralysis", "Y0a", ["src/hydralysis/hydra.py"])), 1)
+    expect("Hydralysis root documents resolve to the repository root",
+           [sorted(resolve("hydralysis", t)) for t in
+            ("README.md", "THIRD_PARTY.md", "docs/upstream-setup.md", "config.example.json",
+             "skills/hydralysis/SKILL.md", ".github/workflows/release.yml", "tools/x.py",
+             "durable.py", "scripts/RusticQuery.java", "config.py")],
+           [["README.md"], ["THIRD_PARTY.md"], ["docs/upstream-setup.md"], ["config.example.json"],
+            ["skills/hydralysis/SKILL.md"], [".github/workflows/release.yml"], ["tools/x.py"],
+            ["src/hydralysis/durable.py"], ["src/hydralysis/scripts/RusticQuery.java"],
+            ["src/hydralysis/config.py"]])
+    expect("the Hydra table keeps README.md at the module and the root",
+           sorted(resolve("hydra", "README.md")), sorted({"README.md", MODULE + "/README.md"}))
+    expect("Y0a changes the root README.md and docs/ row of E1: only the first is its row",
+           check_changes(spec, "hydralysis", "Y0a", ["README.md", "THIRD_PARTY.md"]) == []
+           and len(check_changes(spec, "hydralysis", "Y0a", ["docs/upstream-setup.md"])) == 1, True)
+    expect("a root config.example.json is E1's, src/hydralysis/README.md is in no row",
+           len(check_changes(spec, "hydralysis", "Y0a", ["config.example.json",
+                                                         "src/hydralysis/README.md"])), 2)
     expect("an unknown package", len(check_changes(spec, "hydra", "E9", ["x"])), 1)
     E = MODULE + "/"
     expect("E0 changes a named dt_*.py and a named v3 directory's file",

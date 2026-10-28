@@ -180,6 +180,31 @@ git merge upstream/master                  # a merge, never a rebase: main is pu
 Push the branch, let CI pass, then merge it into `main`. Note the upstream commit in
 `CHANGELOG.md`.
 
+### The scheduled sync
+
+[`upstream-sync.yml`](workflows/upstream-sync.yml) does the first half of this by itself. Weekly
+(Wednesdays, 05:23 UTC) and on demand it fetches upstream `master`; if there is nothing new it
+stops. Otherwise it cuts `sync/upstream-YYYY-MM-DD` from `main`, **merges** `upstream/master` into
+it (never a rebase), runs `buildHeadless`, the three session suites (`session_smoke.py`,
+`daemon_tests.py`, `contract_tests.py`) and the golden diff (`characterization_tests.py`, protocol
+2 and 3: the recorded replies must be byte-identical), and opens a pull request whose body carries
+the upstream shortlog, the files changed on both sides and the `DB_VERSION` comparison.
+`gh workflow run upstream-sync.yml -f dry_run=true` does everything except the push and the pull
+request. The workflow never merges the pull request and never pushes to `main`.
+
+Two things make the job fail, and both are merged by hand:
+
+- **The patched-core-file guard.** [`hydra-touched-files.txt`](hydra-touched-files.txt) lists the
+  upstream Java classes we patch (the five in the table below). If upstream changed any of them
+  since the last sync, the report names it and the job fails after the tests have run. A new patch
+  to an upstream class is added to that file, to `NOTICE-HYDRA` and to the table in the same commit.
+  `scripts/upstream-sync-report.sh <base> <upstream>` makes the report locally;
+  `scripts/test-upstream-sync-report.sh` tests the guard on a throwaway repository.
+- **A merge conflict.** The job lists the files and stops.
+
+What the workflow does not check, and a person must before merging the pull request: the decompile
+golden set above (it stays outside the repository), and the Actions page for a new upstream workflow.
+
 ### What conflicts, and how to resolve it
 
 Hydra Engine changes only these upstream files, so these are the only places a sync can
@@ -198,7 +223,8 @@ Every file in this table, and any other upstream file we change, is listed in `N
 (Apache-2.0 section 4(b)); update it in the same commit.
 
 Files we only add (`gradle/hydra/`, `.github/CONTRIBUTING.md`, `.github/SECURITY.md`,
-`.github/workflows/ci.yml`, `.github/workflows/release.yml`, `.github/assets/`, `NOTICE-HYDRA`, `CHANGELOG.md`,
+`.github/workflows/ci.yml`, `.github/workflows/release.yml`, `.github/workflows/upstream-sync.yml`,
+`.github/hydra-touched-files.txt`, `.github/assets/`, `NOTICE-HYDRA`, `CHANGELOG.md`,
 `README-GHIDRA.md`, `Ghidra/Features/HeadlessSession/`) cannot conflict, unless upstream adds a
 file with the same path.
 
@@ -254,6 +280,24 @@ Releases are Windows-only, like CI. The build matrix in `release.yml` takes more
 (`ubuntu-latest` as `linux_x86_64` and `macos-latest` as `mac_arm_64` passed in a dry run), but
 their test steps then need PE files as test inputs, which their runners do not have; a platform
 is added only together with CI, and never ships untested.
+
+## Cadence and support
+
+These numbers are **defaults, not commitments**: the owner has not yet decided them (decision N9).
+Until that is done they say what the maintainers aim at, nothing stronger, and no release note may
+promise more than this section does.
+
+| | Default |
+|---|---|
+| Upstream sync | Checked weekly by `upstream-sync.yml`; a sync pull request is reviewed within 14 days of being opened. |
+| Releases | When there is something to ship, and always after a sync whose changes reach the build. There is no fixed release day. |
+| Supported versions | The newest `<Ghidra version>-hydra.<n>` only. The version before it gets fixes for a security problem for 30 days after a newer one is published. `legacy-12.1.4` is end of life (see "Upstream sync"). The table is in [`SECURITY.md`](SECURITY.md). |
+| Security fix time | A confirmed vulnerability in code this repository adds: a fix in `main` within 30 days of the report, released with it. A vulnerability fixed upstream: merged and released within 30 days of the upstream fix. See `SECURITY.md`. |
+| Which upstream line | `main` follows upstream Ghidra `master` (12.3 DEV at the time of writing), not a stable release line. A move to a stable line is a decision for the owner and is recorded in `CHANGELOG.md` when taken. |
+
+The Hydralysis companion project pins an engine release and follows the engine's releases: it
+moves to a new `hydra.<n>` after that release's session suites have passed against it, not
+automatically.
 
 ## Code style
 

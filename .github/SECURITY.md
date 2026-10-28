@@ -19,6 +19,31 @@ Please include:
 
 We aim to acknowledge a report within a week and to agree on a disclosure date with you.
 
+## Supported versions
+
+The numbers in this section are **defaults, not commitments**: the owner has not yet decided them
+(decision N9; see "Cadence and support" in [`CONTRIBUTING.md`](CONTRIBUTING.md)).
+
+| Version | Security fixes |
+|---|---|
+| Newest `12.3-hydra.<n>` release (today `12.3-hydra.3`) and `main` | Yes |
+| The release before the newest | Yes, for 30 days after a newer release is published |
+| Older `12.3-hydra.<n>` releases | No: update to the newest |
+| `legacy-12.1.4` | No: end of life, frozen |
+
+## Fix time
+
+Targets, not guarantees, and counted from the day a report is confirmed:
+
+- Acknowledgement: within 7 days.
+- A vulnerability in code this repository adds: a fix on `main` and a release within 30 days.
+- A vulnerability in Ghidra, fixed upstream: merged (see the upstream sync in `CONTRIBUTING.md`)
+  and released within 30 days of the upstream fix. A vulnerability that upstream has not fixed is
+  reported to the Ghidra project (below); we do not publish our own fix for upstream code ahead of it
+  unless the Ghidra project agrees.
+
+A release that contains a security fix says so in its `CHANGELOG.md` section.
+
 ## Scope
 
 In scope: everything this repository adds to Ghidra, above all the HeadlessSession module
