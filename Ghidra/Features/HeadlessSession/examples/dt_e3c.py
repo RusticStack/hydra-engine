@@ -31,10 +31,13 @@
   not after ``keepWarm``. A writable reopen then works.
 * ``reader_leave_all`` (protocol 2 and 3): every reader leaves at once, some by ``close_program``,
   some by closing the socket, while one read runs: no leave waits for it, the read is unharmed.
-* ``refcount_leak``: users return to zero after 200 cancels raced against release, no stray
-  interrupt, the daemon log has no ``ClosedByInterruptException``.
-* ``lock_matrix_rows``: every row of the lock map (``lock_matrix.json``, 19 rows in the file; 3.10
-  says 17) is mapped to blocking points whose row in 3.10 has a decision, a package and a test.
+* ``refcount_leak``: users return to zero after 200 cancels raced against release, 40 of them by a
+  cut connection (10 with a refresh racing it); the current view's reference count returns to 1 + its
+  programs, no deferred work (reopen, disposal, leave) stays pending, no stray interrupt, the daemon
+  log has no ``ClosedByInterruptException``.
+* ``lock_matrix_rows``: every row of the lock map (``lock_matrix.json`` next to this file, 19 rows, the
+  count 3.10 states) is mapped to blocking points whose row in 3.10 has a decision and a package; a
+  missing file, a row the test does not know, or another count in 3.10 fails.
 * ``analyzing_join`` (BP5): while ``analyze`` runs, a protocol 3 join, read and script of another
   client are answered at once with ``busy{reason:"analyzing"}`` and the job's progress; a protocol 2
   client waits as before.
@@ -54,6 +57,10 @@
   two that queued are served, and a protocol 2 waiter is not capped.
 * ``yield_slots_stress`` (SP9): with ``yieldSlots`` on, a lock queue does not hold the lane and
   nothing deadlocks. The setting stays off by default; this is the evidence it needs.
+* ``close_vs_view_change``: in the engine's ``-selfTest``, a close of an idle project cannot run while a
+  refresh or writable reopen of it holds its structure lock (the forced interleaving of review finding 1).
+* ``abandoned_open_writable``: a client cut off inside its writable ``open_program`` leaves no dead
+  owner: another client opens the program writable at once (review finding 2).
 """
 import contextlib
 import json
@@ -504,13 +511,33 @@ def t_refcount_leak(c):
         probe = reader(c, d, gpr, exe, "probe")
         keep.append(probe)
         fn = bl.first_function(probe)
+        import chaos_lib as chaos
+        pid = obs.call("project")["id"]
         rnd = random.Random(20261030)
-        counts = {"ok": 0, "cancelled": 0, "other": {}}
+        counts = {"ok": 0, "cancelled": 0, "other": {}, "cut": 0, "refresh": 0}
+        names = [f"x{i}" for i in range(len(rs))]
+        cut = set()
         for i in range(200):
-            x = rs[i % len(rs)]
+            k = i % len(rs)
+            x = rs[k]
             x.call("open_program", path=exe)
             rid = x.send("decompile", address=fn, wait=20000, parallel=True)
             order = rnd.random()
+            if i % 5 == 4:
+                # the disconnect path: the client is cut off (a reset) while its decompile runs or
+                # ends, its leave runs in Session.disconnect, and a fresh client takes its place
+                time.sleep(rnd.random() * 0.02)
+                chaos.abort_connection(x)
+                cut.add(names[k])
+                names[k] = f"x{i}n"
+                rs[k] = reader(c, d, gpr, exe, names[k], 3, open_program=False)
+                counts["cut"] += 1
+                if i % 20 == 19:
+                    # and a refresh races the cut: the programs move to a new view, the old one is
+                    # released by the last program and command that held it
+                    obs.call("refresh", project=pid, force=True)
+                    counts["refresh"] += 1
+                continue
             if order < 0.5:
                 x.call("cancel", target=rid)
                 code, det, _ = attempt(c, x, rid)
@@ -526,14 +553,37 @@ def t_refcount_leak(c):
             else:
                 counts["other"][code] = counts["other"].get(code, 0) + 1
         dt.check(not counts["other"], f"requests ended with {counts['other']}")
-        # the probe session joined once; everybody else left 200 times
+        # the probe session joined once; everybody else left 200 times, 40 of them by a cut
         for x in rs:
             with contextlib.suppress(c.gs.SessionError):
                 x.call("close_program")
+        dt.wait_for(lambda: not any(cl["name"] in cut for cl in obs.call("status")["clients"]),
+                    "the cut clients to be released", 60)
+
+        def settled():
+            st = obs.call("status")
+            pgs = [pg for pg in st["programs"] if pg["project"] == pid]
+            slot = [x for x in st["projectStates"] if x["project"] == pid]
+            return st, pgs, slot
+        # deferred work (a pending reopen, disposal or leave) finishes at the next release or reap
+        dt.wait_for(lambda: all(pg.get("reopenPendingMs") is None and not pg.get("disposePending") and
+                                not pg.get("pendingLeaves") for pg in settled()[1]),
+                    "the deferred work of the program to finish", 30)
+        st, pgs, slot = settled()
         pg = program(obs, exe)
         dt.check(pg is not None, "the warm program is gone")
         ids = pg["users"]
         dt.check(len(ids) == 1, f"users did not return to zero (only the probe stays): {ids}")
+        dt.check(not pg.get("abandonedRequests"), f"abandoned requests stay listed: {pg}")
+        # the current view: 1 reference for being current and 1 per program opened from it; a pin
+        # of a cancelled or cut command that was never released, or a program left on a retired
+        # view, shows as a different count
+        end = time.time() + 20   # a cut client's cancelled request may still be ending
+        while time.time() < end and not (len(slot) == 1 and slot[0].get("viewRefs") == 1 + len(pgs)):
+            time.sleep(0.5)
+            st, pgs, slot = settled()
+        dt.check(len(slot) == 1 and slot[0].get("viewRefs") == 1 + len(pgs),
+                 f"view references did not return to 1 + {len(pgs)} program(s): {slot}")
         dt.check(bl.timed(c, obs, "status")["ok"], "status")
         # nothing is stuck: shared, exclusive acquirers and an interrupt-free channel
         j = reader(c, d, gpr, exe, "after")
@@ -542,7 +592,9 @@ def t_refcount_leak(c):
         dt.check("ClosedByInterruptException" not in log, "ClosedByInterruptException in the log")
         close_all(j)
         return (f"200 join/cancel/leave rounds: {counts['ok']} completed, {counts['cancelled']} "
-                f"cancelled; users back to {len(ids)} (the probe), no stray interrupt")
+                f"cancelled, {counts['cut']} cut off ({counts['refresh']} with a refresh); users back "
+                f"to {len(ids)} (the probe), viewRefs {slot[0]['viewRefs']} = 1 + {len(pgs)} program(s), "
+                f"no deferred work left, no stray interrupt")
     finally:
         close_all(obs, *rs, *keep)
         d.stop(force=True)
@@ -550,8 +602,8 @@ def t_refcount_leak(c):
 
 # ---- lock_matrix_rows -----------------------------------------------------------------------
 
-#: the 19 rows of the lock map (lockmap/lock_matrix.json; 3.10 calls them 17) and the blocking points
-#: of 3.10 that decide each one
+#: the 19 rows of the lock map (``lock_matrix.json`` next to this file, a copy of measurement B's
+#: ``lockmap/lock_matrix.json``) and the blocking points of 3.10 that decide each one
 MATRIX = {
     "L1": ("Program read/write lock, fair", ["BP1", "BP4"]),
     "L2a": ("releaseUse: every leave takes the program exclusive", ["BP3"]),
@@ -574,7 +626,7 @@ MATRIX = {
     "L11": ("Ghidra: program Lock and DBHandle monitor", ["BP2"]),
     "L12": ("minor / bounded", ["BP17"]),
 }
-MATRIX_FILE = pathlib.Path("D:/Projects/Hydra/_logs/lockmap/lock_matrix.json")
+MATRIX_FILE = HERE / "lock_matrix.json"
 
 
 def _spec_rows():
@@ -603,13 +655,17 @@ def t_lock_matrix_rows(c):
             if len(r) >= 6 and bp not in ("BP1", "BP17") and not r[4]:
                 missing.append(f"{rid}->{bp}: no package")
     dt.check(not missing, "rows of the lock map without a decision in 3.10: " + "; ".join(missing))
-    note = ""
-    if MATRIX_FILE.is_file():
-        ids = [r["id"] for r in json.loads(MATRIX_FILE.read_text(encoding="utf-8"))["rows"]]
-        dt.check(sorted(ids) == sorted(MATRIX),
-                 f"the lock map file has rows {ids}, this test knows {list(MATRIX)}")
-        note = f"; the file {MATRIX_FILE} has the same {len(ids)} rows"
-    return f"{len(MATRIX)} rows of the lock map map to {len({b for _, v in MATRIX.values() for b in v})} decided blocking points{note}"
+    # the matrix is part of the repository: a missing file fails, it is never skipped
+    dt.check(MATRIX_FILE.is_file(), f"the lock map {MATRIX_FILE} is missing: the rows cannot be compared")
+    ids = [r["id"] for r in json.loads(MATRIX_FILE.read_text(encoding="utf-8"))["rows"]]
+    dt.check(len(ids) == len(set(ids)) and sorted(ids) == sorted(MATRIX),
+             f"the lock map file has rows {ids}, this test knows {list(MATRIX)}")
+    # and 3.10 states the count the file has
+    text = (HERE.parent / "PROTOCOL-3.md").read_text(encoding="utf-8")
+    dt.check(f"`lockmap/lock_matrix.json` has {len(ids)} rows" in text,
+             f"PROTOCOL-3.md 3.10 does not say the matrix has {len(ids)} rows")
+    return (f"{len(ids)} rows of {MATRIX_FILE.name} (as 3.10 states) map to "
+            f"{len({b for _, v in MATRIX.values() for b in v})} decided blocking points")
 
 
 # ---- analyzing_join -------------------------------------------------------------------------
@@ -1011,10 +1067,16 @@ def t_yield_slots_stress(c):
     """SP9 (D39): with ``yieldSlots`` on, waiters for a lock give their lane slot back. A stress of
     mixed holders and waiters on a small lane must end with every request answered (no deadlock
     between a lock holder that waits for a slot and slot holders that wait for the lock), and a
-    client on another project must be served while the waiters wait."""
+    client on another project must be served while the waiters wait.
+
+    The lane has 2 quick slots, so the waiter cap (``max(2, 2 / 4)`` = 2 per lock, Waits.cap) lets
+    the two queued waiters hold every quick slot: without the yield the victim's quick request (a
+    ``list``, a quick-lane command) finds no slot until the hold ends (1.5 s after it is sent) and
+    is refused after its 1 s wait; with the yield it is served at once. The cap alone cannot save
+    the victim here (with 3 slots it did, and the test passed without the yield)."""
     gpr, exe, other = _two_program_project(c, "e3cYs")
     gpr2 = c.copy_fixture("e3cYs2")
-    d = c.daemon("e3c-ys", maxQuick=3, engine={"yieldSlots": True})
+    d = c.daemon("e3c-ys", maxQuick=2, engine={"yieldSlots": True})
     O = V = None
     ws = []
     try:
@@ -1025,6 +1087,8 @@ def t_yield_slots_stress(c):
         V = c.connect(d, "victim", "e3c", 3)
         V.call("open_project", path=str(gpr2))
         V.call("open_program", path=exe)
+        vp = V.call("project")["id"]
+        V.call("list", project=vp, programsOnly=True)   # warm
         ws = [reader(c, d, gpr, exe, f"w{i}") for i in range(12)]
         fn = bl.first_function(O)
         deadline = time.time() + 40
@@ -1044,7 +1108,8 @@ def t_yield_slots_stress(c):
         for round_ in range(6):
             hid = sleeper(c, O, 2000, "TestSleep.java", exclusive=True)
             time.sleep(0.5)
-            victims.append(bl.timed(c, V, "info", wait=3000))
+            # both quick slots are held by lock waiters now unless they yielded them
+            victims.append(bl.timed(c, V, "list", project=vp, programsOnly=True, wait=1000))
             attempt(c, O, hid)
         for th in ths:
             th.join(60)
@@ -1055,11 +1120,12 @@ def t_yield_slots_stress(c):
             codes[code or "ok"] = codes.get(code or "ok", 0) + 1
         dt.check(set(codes) <= {"ok", "busy", "cancelled"}, f"unexpected codes {codes}")
         dt.check(codes.get("ok", 0) >= 20, f"too few completed requests {codes}")
-        slow = [v for v in victims if not v["ok"]]
-        dt.check(not slow, f"the client of another project was refused while the waiters waited: {slow[:2]}")
+        slow = [v for v in victims if not v["ok"] or v["ms"] >= 1000]
+        dt.check(not slow, f"the quick request of a client of another project was refused or slow while "
+                           f"the waiters waited: {[(v.get('code'), v['ms']) for v in slow]}")
         st = O.call("status")["scheduler"]["quick"]
         dt.check(st["inUse"] == 0, f"quick slots still held after the stress: {st}")
-        return (f"yieldSlots on, 3 quick slots, 12 waiters on one program under 6 exclusive holds: "
+        return (f"yieldSlots on, 2 quick slots, 12 waiters on one program under 6 exclusive holds: "
                 f"{codes}, no deadlock, the victim on another project served {len(victims)} of "
                 f"{len(victims)} (slowest {max(v['ms'] for v in victims)} ms)")
     finally:
@@ -1194,6 +1260,97 @@ def t_chaos_oracle(c):
         d.stop(force=True)
 
 
+# ---- close_vs_view_change -------------------------------------------------------------------
+
+def t_close_vs_view_change(c):
+    """The close of an idle project and a view change of it (``refresh``, the writable reopen of a
+    read-only view) exclude each other (ProjectRegistry.closeIdle takes the project's structure lock).
+    The interleaving is forced in the engine's own ``-selfTest`` with latches (no test code in a
+    daemon): a thread holds the structure lock past its ``closed`` check, the reap's ``closeIdle`` runs
+    meanwhile. Before the fix the close ran and the view change installed a writable view on a closed
+    project that nothing ever closed (the daemon kept the project's OS lock)."""
+    import contract_tests as ct
+    code, lines, err = ct.self_test(c)
+    want = "ok   a close of an idle project does not run while a view change of it"
+    hit = [ln for ln in lines if "a close of an idle project does not run" in ln]
+    dt.check(any(ln.startswith(want) for ln in hit),
+             f"the self-test check failed or did not run: {hit or 'absent'} (exit {code}) {err[-400:]}")
+    return "selftest: a close waits out a view change of the project and runs once after it"
+
+
+# ---- abandoned_open_writable ----------------------------------------------------------------
+
+def t_abandoned_open_writable(c):
+    """A client cut off while its writable ``open_program`` runs (after its leave, before the open
+    registers it): the open must undo what it set up (the owner, a shared writer, the program), so that
+    another client opens the program writable at once. Before the fix the program stayed open WRITABLE
+    with the dead client as owner, and every writable open spun on ``owner.leaving`` until its wait
+    ran out (``busy``). The cuts are placed across the measured time of a writable open; the daemon
+    log counts the ones that landed inside it, and at least one must have."""
+    import chaos_lib as chaos
+    exe = prepare(c)
+    gpr = c.copy_fixture("e3cAo")
+    # keepWarm 60: the reap's closeIdleProgram (keepWarm 0 makes it dispose an unused program every
+    # second) must not be what clears a dead owner within B's wait
+    d = c.daemon("e3c-ao", keepWarm=60)
+    B = None
+    try:
+        B = c.connect(d, "B", "e3c", 3)
+        B.call("open_project", path=str(gpr), writable=True)
+        spans = []
+        for _ in range(3):
+            t0 = time.perf_counter()
+            B.call("open_program", path=exe, writable=True)
+            spans.append((time.perf_counter() - t0) * 1000)
+            B.call("close_program")
+        open_ms = sorted(spans)[1]
+        # The cut is steered to the end of the open (a stochastic search): a cut that comes too early is
+        # seen by the open's own cancel checks (the request ends cancelled, the next cut comes later), one
+        # that comes after the answer changes nothing (the next comes earlier). The window that matters,
+        # after the last cancel check and before the open registers the client, is at that edge.
+        import re
+        delay = open_ms * 0.4
+        step = max(0.3, open_ms / 25)
+        bad = []
+        tries = 0
+        hits = 0
+        outcomes = {"ok": 0, "cancelled": 0}
+        while tries < 120 and hits < 3:
+            name = f"A{tries}"
+            tries += 1
+            A = c.connect(d, name, "e3c", 3)
+            A.call("open_project", path=str(gpr), writable=True)
+            # parallel: the connection's reader goes on reading and sees the cut while the open
+            # runs (a request that is not parallel holds the reader until it is answered)
+            A.send("open_program", path=exe, writable=True, wait=10000, parallel=True)
+            chaos.sleep_precise(delay / 1000.0)
+            chaos.abort_connection(A)
+            dt.wait_for(lambda: not any(cl["name"] == name for cl in B.call("status")["clients"]),
+                        f"{name} to be released", 30)
+            pat = re.compile(r"\(" + name + r", e3c\) open_program \d+ ms (\w+)")
+            m = dt.wait_for(lambda: pat.search(log_text(d)), f"the end of {name}'s open", 30)
+            outcome = m.group(1)
+            outcomes[outcome] = outcomes.get(outcome, 0) + 1
+            r = bl.timed(c, B, "open_program", path=exe, writable=True, wait=2000)
+            if r["ok"]:
+                B.call("close_program")
+            else:
+                bad.append((name, round(delay, 1), r.get("code"), (r.get("message") or "")[:90]))
+                break   # a dead owner stays: every later try would only repeat it
+            delay = delay + step if outcome != "ok" else max(0.0, delay - step)
+            hits = log_text(d).count("its open of")
+        dt.check(not bad, f"after a cut inside a writable open, another client could not open the program "
+                          f"writable: {bad[:3]}")
+        dt.check(hits >= 1, f"none of the {tries} cuts landed inside the writable open (about {open_ms:.0f} ms): "
+                            f"the path was not exercised")
+        return (f"{tries} cuts steered to the end of a writable open of about {open_ms:.0f} ms ({outcomes}), "
+                f"{hits} inside the window (undone); after each, another client opened the program writable "
+                f"at once")
+    finally:
+        close_all(B)
+        d.stop(force=True)
+
+
 TESTS = {
     "reader_leave_no_freeze": t_reader_leave_no_freeze,
     "last_user_leave_disposes": t_last_user_leave_disposes,
@@ -1208,6 +1365,8 @@ TESTS = {
     "yield_slots_stress": t_yield_slots_stress,
     "chaos_oracle": t_chaos_oracle,
     "project_waiter_caps": t_project_waiter_caps,
+    "close_vs_view_change": t_close_vs_view_change,
+    "abandoned_open_writable": t_abandoned_open_writable,
 }
 
 BASELINE = {}

@@ -32,6 +32,7 @@ examples/fixtures/legacy-12.1.4/legacy.rep/user/~index.dat||GHIDRA||||END|
 examples/fixtures/legacy-12.1.4/legacy.rep/versioned/~index.bak||GHIDRA||||END|
 examples/fixtures/legacy-12.1.4/legacy.rep/versioned/~index.dat||GHIDRA||||END|
 examples/fixtures/legacy-12.1.4/README.txt||GHIDRA||||END|
+examples/lock_matrix.json||GHIDRA||||END|
 examples/vectors/canonical-manifest.json||GHIDRA||||END|
 format-matrix.json||GHIDRA||||END|
 Module.manifest||GHIDRA||||END|

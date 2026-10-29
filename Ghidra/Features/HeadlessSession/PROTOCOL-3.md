@@ -1222,7 +1222,7 @@ has a script and an output file:
 | Stream | What it measured | Where |
 |---|---|---|
 | A (capacity) | 12 and 24 agents on their own writable forks, one daemon; fork, memory and throughput cost; heap probes; the long lane; the Hydralysis work-copy path | `D:/Projects/Hydra/_logs/measA/` (`scripts/`, `out/`; `out/ramp3-scale.json`, `out/ramp4-p1.json`, `out/lane-def.json`, `out/lane-ml24.json`, `out/forkcost-ntfs.json`, `out/hlm-c.json`, `out/hlm-d.json`) |
-| B (lock map) | every blocking point of the engine, static and on real daemons, 17-row `lock_matrix.json`, scripts `s1` to `s13`, `t3_scaling` | `D:/Projects/Hydra/_logs/lockmap/` |
+| B (lock map) | every blocking point of the engine, static and on real daemons, 19-row `lock_matrix.json`, scripts `s1` to `s13`, `t3_scaling` | `D:/Projects/Hydra/_logs/lockmap/` |
 | C (crash) | 952 forced kills (`TerminateProcess`) with a fresh daemon and an oracle after each | `D:/Projects/Hydra/_logs/crash-C/` (`final_numbers.json`, `run/<run>/results.jsonl`, `run/repair-check/repair_result.json`) |
 | D (claims) | about 45 claims of the site and READMEs against the measurements | `D:/Projects/Hydra/_logs/claims-audit/` |
 
@@ -1315,7 +1315,7 @@ that blocks another client).**
 
 ### 3.10 Non-blocking engine: every blocking point, its decision and its test
 
-The matrix `lockmap/lock_matrix.json` has 17 rows. **E3c's acceptance includes a test that enumerates its rows and
+The matrix `lockmap/lock_matrix.json` has 19 rows (L1, L2a to L2g, L3, L3x, L4 to L12; revisions up to E3c said 17, which was wrong; the copy the test reads is `examples/lock_matrix.json`). **E3c's acceptance includes a test that enumerates its rows and
 fails if a row has no decision here.** The lock order today is lane slot (`Session.java:248`), project lock
 (`Access.java:105-109`), program lock (`ProgramEntry.java:191-196`), overlay lock (`OverlayCommands.java:139-143`);
 all three read/write locks are **fair** (`ProgramEntry.java:115`, `ProjectEntry.java:43`, `Overlay.java:54`), so
