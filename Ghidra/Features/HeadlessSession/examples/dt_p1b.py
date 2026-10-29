@@ -47,6 +47,12 @@ Tests:
 * ``p1b_stop_shutdown_deadline``  a fake engine answers ``hello`` and never ``shutdown``:
   ``stop()`` does not block on the call (it ends in ``LaunchError`` after the deadline and the
   wait for the exit).
+* ``p1b_children_of_threads``  ``_children_of`` (the WMI route's lookup of the JVM under ``cmd.exe``)
+  called from several threads at once never fails with ``expected LP_PE32 instance instead of
+  pointer to PE32`` (the structure class is made once, not per call; integration check V3,
+  ``e2a_kill_fork``: two workers restart daemons at the same time).
+* ``p1b_breakaway_probe``  the rule that skips case D below: ``breakaway_blocked`` is True only for
+  the access-denied answer (WinError 5) of a job that refuses ``CREATE_BREAKAWAY_FROM_JOB``.
 * ``p1b_native_access_flag``  the JVM command line carries ``--enable-native-access=ALL-UNNAMED``
   once, also when launch.properties or ``vmargs`` already carry it, and not for
   ``--enable-native-access=java.base``.
@@ -59,6 +65,11 @@ Tests:
   with the WMI route off: ``spawn:"task"``; (N) the revision 6 design, a launcher-owned job, kills
   the daemon. A, B, D, E: the daemon answers after the harness is gone and was never in the
   harness's job. Windows only.
+
+Cases D and N need a launcher that may break away from the job the test runs in. In a job that
+refuses breakaway (WinError 5 on a probe: a restricted harness, the hosted CI runner) they are
+SKIPPED with that reason and the test ends as SKIP, never as ok (the cases that ran are named in the
+note); they are never loosened.
 
 Environment: ``P1B_SURVIVAL`` (comma list of case letters, default ``A,B,C,D,E,N``).
 """
@@ -672,6 +683,10 @@ CASES = {
               spawn="owned_job", survival="bound_to_launcher", survives=False),
 }
 
+#: the cases whose set-up is a plain ``Popen`` that must be allowed to break away from the job the
+#: test itself runs in (D: the detached route; N: the launcher with its own job, outside the harness's)
+NEEDS_BREAKAWAY = ("D", "N")
+
 _K = {}
 
 
@@ -911,19 +926,84 @@ def run_survival_case(c, key):
             r["tasks_left"] = left.stdout.strip()
 
 
+def breakaway_blocked(spawn=None):
+    """Whether THIS process is in a job object that refuses ``CREATE_BREAKAWAY_FROM_JOB``: it tries,
+    with a process that does nothing, exactly what the launcher's breakaway route does. True when
+    the job answers ``WinError 5`` (access denied), False when the process starts (not in a job, or
+    in one that allows breakaway), None when the probe cannot tell (any other failure). ``spawn``
+    replaces ``subprocess.Popen`` in the unit test."""
+    spawn = spawn or subprocess.Popen
+    try:
+        p = spawn([sys.executable, "-c", "pass"], stdin=subprocess.DEVNULL,
+                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                  creationflags=0x01000000 | 0x08000000)   # CREATE_BREAKAWAY_FROM_JOB | NO_WINDOW
+    except PermissionError as e:
+        return True if getattr(e, "winerror", None) == 5 else None
+    except OSError:
+        return None
+    with contextlib.suppress(Exception):
+        p.wait(30)
+    return False
+
+
+def t_breakaway_probe(c):
+    """The rule that turns case D into a SKIP: ``breakaway_blocked`` says True only for the
+    access-denied answer of a job that forbids breakaway, False when the process starts, and None
+    (undecided: case D then runs and can fail) for every other failure. Then the real answer for
+    this process is shown in the note."""
+    if not IS_WINDOWS:
+        return "skipped: Windows only (Job Objects)"
+
+    def refuses(exc):
+        def spawn(*a, **kw):
+            raise exc
+        return spawn
+
+    class _P:
+        def wait(self, t=None):
+            return 0
+
+    denied = PermissionError(13, "Access is denied")
+    denied.winerror = 5
+    check(breakaway_blocked(refuses(denied)) is True, "WinError 5 must mean blocked")
+    check(breakaway_blocked(lambda *a, **kw: _P()) is False, "a started process must mean allowed")
+    check(breakaway_blocked(refuses(OSError(2, "nope"))) is None,
+          "another failure must be undecided, not blocked")
+    check(breakaway_blocked(refuses(PermissionError(13, "x"))) is None,
+          "a PermissionError that is not WinError 5 must be undecided")
+    real = breakaway_blocked()
+    return f"probe rule ok; this process: breakaway blocked={real}, job={c.gs.caller_job()}"
+
+
 def t_daemon_survives_launcher_exit(c):
     if not IS_WINDOWS:
         return "skipped: Windows only (Job Objects)"
     want = [x for x in os.environ.get("P1B_SURVIVAL", "A,B,C,D,E,N").split(",") if x]
-    rows = []
+    rows, skipped = [], []
     for key in want:
+        if key in NEEDS_BREAKAWAY:
+            # Case D asks for a daemon that is *detached* because the launcher may break away from
+            # its job, and case N starts its launcher outside the harness's job the same way. In a
+            # job that refuses breakaway (a restricted harness, the hosted CI runner) the
+            # launcher's own answer to D is "wmi", which is right, and neither case has anything
+            # to show: they are SKIPPED with the reason. They never pass there and no assertion is
+            # changed; they run wherever the probe says breakaway works (or cannot tell).
+            if breakaway_blocked() is True:
+                skipped.append(f"{CASES[key]['name']}: this process runs in a job object that "
+                               f"refuses CREATE_BREAKAWAY_FROM_JOB (WinError 5; job "
+                               f"{c.gs.caller_job()}), so the case cannot be set up here")
+                continue
         r = run_survival_case(c, key)
         rows.append(r)
         if r.get("tasks_left") not in (None, "0"):
             raise Fail(f"{r['case']}: scheduled tasks left behind: {r['tasks_left']}")
     c.timings["p1b_survival"] = rows
-    return "; ".join(f"{r['case']}: {r.get('spawn')}/{r.get('survival')} survives={r.get('survives')}"
+    note = "; ".join(f"{r['case']}: {r.get('spawn')}/{r.get('survival')} survives={r.get('survives')}"
                      for r in rows)
+    if skipped:
+        # not a pass: the cases that ran passed (they raised nothing), the others did not run
+        raise dt.Skipped(f"{'; '.join(skipped)}. Cases that ran and passed: {note}")
+    return note
 
 
 # ---- p1b_wedged_connect -----------------------------------------------------------------------
@@ -1032,6 +1112,34 @@ def t_stop_shutdown_deadline(c):
         fe.close()
 
 
+def t_children_of_threads(c):
+    """Four threads call ``_children_of`` on this process 200 times each: ctypes checks ``argtypes``
+    by class identity and ``_kernel32()`` is shared, so a structure class made per call made the
+    threads overwrite each other's ``argtypes`` (an ``ArgumentError``)."""
+    if not IS_WINDOWS:
+        return "skipped: Windows only (Toolhelp)"
+    gs = c.gs
+    errs = []
+    gate = threading.Barrier(4)
+
+    def work():
+        try:
+            gate.wait(30)
+            for _ in range(200):
+                gs._children_of(os.getpid())
+        except Exception as e:  # noqa: BLE001 - the failure is the finding
+            errs.append(f"{type(e).__name__}: {e}")
+
+    ths = [threading.Thread(target=work, daemon=True) for _ in range(4)]
+    for t in ths:
+        t.start()
+    for t in ths:
+        t.join(120)
+    check(not any(t.is_alive() for t in ths), "a _children_of thread did not end")
+    check(not errs, f"_children_of failed under threads: {errs[:2]}")
+    return "4 threads x 200 calls of _children_of, no error"
+
+
 def isolated(fn):
     """Runs a test with its own user state root (GHIDRA_SESSION_HOME, inherited by every child
     process): the registry of the real user, and the daemons of other agents, never take part."""
@@ -1047,6 +1155,8 @@ TESTS = {
     "p1b_duplicate_daemon": isolated(t_duplicate_daemon),
     "p1b_call_deadline": isolated(t_call_deadline),
     "p1b_concurrent_launchers": isolated(t_concurrent_launchers),
+    "p1b_children_of_threads": isolated(t_children_of_threads),
+    "p1b_breakaway_probe": isolated(t_breakaway_probe),
     "p1b_native_access_flag": isolated(t_native_access_flag),
     "p1b_wedged_connect": isolated(t_wedged_connect),
     "p1b_stop_shutdown_deadline": isolated(t_stop_shutdown_deadline),
