@@ -249,6 +249,14 @@ final class Session {
 	 * waits: anything in use is left for the next round.
 	 */
 	void reap() {
+		reap(keepWarmMs);
+	}
+
+	/**
+	 * {@link #reap()} with another retention: {@code 0} closes every program and project nobody
+	 * uses, which the governor (E9) does before it refuses an open for lack of room.
+	 */
+	void reap(long warmMs) {
 		long now = System.currentTimeMillis();
 		long orphanKeepMs = Math.max(0, Settings.integer("orphanKeepS", 0)) * 1000L;
 		for (ProjectEntry p : projectsById.values()) {
@@ -265,7 +273,7 @@ final class Session {
 					expireOrphan(p, e);
 				}
 				if (e.userCount() == 0 && !e.holdsOrphanedWork() &&
-					(now - e.lastUsed >= keepWarmMs || programCmds.swappable(e))) {
+					(now - e.lastUsed >= warmMs || programCmds.swappable(e))) {
 					closeIdleProgram(p, e);
 				}
 			}
@@ -289,7 +297,7 @@ final class Session {
 					continue;
 				}
 			}
-			if (p.userCount() == 0 && p.programs.isEmpty() && now - p.lastUsed >= keepWarmMs) {
+			if (p.userCount() == 0 && p.programs.isEmpty() && now - p.lastUsed >= warmMs) {
 				try {
 					if (registry.closeIdle(p, x -> projectCmds.closeProjectEntry(x, 0, true))) {
 						Msg.info(this, "closed idle project " + p.id + " " + p.canonical);
@@ -517,14 +525,22 @@ final class Session {
 		// An import queues for the import gate (maxImports) first and takes its long slot only
 		// when it is its turn (importProgram), so that queued imports do not occupy the slots
 		// that analysis and scripts need.
+		// E9: the resource governor decides before the request queues for a slot (3.11); a refusal
+		// is an immediate structured busy{reason:"capacity"}. The reservation ends with the request.
+		Governor.Admission admission = Governor.admit(c, cmd, req);
 		Scheduler.Ticket slot;
 		try {
 			slot = cmd.equals("import") ? null : scheduler.admit(c, cmd, req, m, waitMs(req));
 		}
 		catch (SessionException ex) {
+			admission.close();
 			if (SessionException.CANCELLED.equals(ex.code())) {
 				m.cancelPhase("queued"); // cancelled.details.phase of a slot wait (3.3)
 			}
+			throw ex;
+		}
+		catch (RuntimeException | Error ex) {
+			admission.close();
 			throw ex;
 		}
 		Scheduler.bind(slot); // the optional slot yield of a lock wait finds its ticket here (D39)
@@ -584,6 +600,7 @@ final class Session {
 		}
 		finally {
 			Scheduler.bind(null);
+			admission.close();
 			if (slot != null) {
 				slot.close();
 			}

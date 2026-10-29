@@ -183,7 +183,8 @@ final class Health {
 
 		JsonObject o = new JsonObject();
 		o.addProperty("state", state(ageMs, stallMs, lockOk,
-			dead.size(), abandoned.size(), DbVersions.program() >= 0, TEST_HOOKS));
+			dead.size(), abandoned.size(), DbVersions.program() >= 0,
+			TEST_HOOKS || Governor.degraded())); // E9: above the hard heap watermark
 		o.addProperty("pid", ProcessHandle.current().pid());
 		o.addProperty("uptimeMs", upMs);
 		o.addProperty("protocol", c == null ? HydraInfo.PROTOCOL : c.protocol());
