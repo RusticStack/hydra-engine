@@ -53,6 +53,14 @@ Tests:
 * ``sweeper_pid_reuse``: an intent-less staging folder named for a live process that started after
   the folder was created is swept; one named for a process that was already running is not.
 * ``prepare_upgrade``, ``fork_purposes``, ``promote_marker``.
+* ``sidecar_unfinished``: a sidecar held past the retry budget leaves the committed fork saying
+  ``publishing`` and the reply says so. The handle holder is a polling thread that must land in a
+  window of a few milliseconds, so the case is run again (as ``e2a_handle_holder`` does) while the
+  holder arrived too late to hold anything; the assertions are never loosened.
+* ``legacy_foreign_owner``: the fixture's ``project.prp`` names its maker as owner, which Ghidra
+  refuses for another user (the hosted CI runner: nine tests failed with "Project is owned by"),
+  so ``legacy_copy`` rewrites the owner of its copies to the current user.
+* ``failed_test_releases``: a test that fails halfway leaves no daemon and no open project behind.
 """
 import contextlib
 import hashlib
@@ -114,6 +122,7 @@ def legacy_copy(c, tag):
     src = src.parent if src.suffix == ".gpr" else src
     dst = c.work / tag
     dt.clone_tree(src, dst)
+    dt.own_project(dst)  # the fixture names its maker as owner: another user could not open it
     return next(dst.glob("*.gpr"))
 
 
@@ -1367,32 +1376,54 @@ def t_promote_marker(c):
 def t_sidecar_unfinished(c):
     """E2a review nit, decided: a sidecar held longer than the retry budget (about 1.6 s) ends the
     fork as ok (its .gpr is the commit point) with the sidecar still saying ``publishing``; the
-    reply says so (``sidecarState``, a warning) and the next fork under the folder finishes it."""
+    reply says so (``sidecarState``, a warning) and the next fork under the folder finishes it.
+
+    The holder is a polling thread of this process that has to take its handle in the few
+    milliseconds between the sidecar's first write ("publishing") and its final rewrite
+    ("complete"). On a slower or busier machine (the hosted Windows runner: the reply said
+    ``complete``) it arrives after the engine is done and holds a settled file, which exercises
+    nothing. Like ``e2a_handle_holder`` this runs the case again, in a fresh folder, while the
+    holder did not hold the rewrite up (the sidecar says ``complete`` and the reply agrees), at most
+    ``SP6_ATTEMPTS`` times. The assertions are the same for every attempt and the last is judged;
+    a holder that never engaged fails the test, it never passes it."""
     if os.name != "nt":
         return "skipped: the handle holder is a Windows handle without FILE_SHARE_DELETE"
     import importlib
     e2a = sys.modules.get("dt_e2a") or importlib.import_module("dt_e2a")
     src = e2a.make_source(c, "e2sc")
-    pdir = c.work / "e2-sidecar-unfinished"
-    if pdir.exists():
-        rmtree(pdir)
-    pdir.mkdir(parents=True)
     d = c.daemon("e2-sidecar", keepWarm=0)
-    rec, stop = {}, threading.Event()
-    th = threading.Thread(target=e2a._sp6_holder, args=(pdir, "sidecar", 4.0, rec, stop))
     with v3(c, d, "sc") as s:
-        th.start()
-        t0 = time.perf_counter()
-        r = s.call("fork_project", project=str(src), path=str(pdir), name="H", mode="full",
-                   wait=60000)
-        took = time.perf_counter() - t0
-        th.join(30)
-        stop.set()
-        check("error" not in rec, f"holder: {rec}")
+        for attempt in range(1, e2a.SP6_ATTEMPTS + 1):
+            pdir = c.work / ("e2-sidecar-unfinished" if attempt == 1
+                             else f"e2-sidecar-unfinished-try{attempt}")
+            if pdir.exists():
+                rmtree(pdir)
+            pdir.mkdir(parents=True)
+            rec, stop = {}, threading.Event()
+            th = threading.Thread(target=e2a._sp6_holder, args=(pdir, "sidecar", 4.0, rec, stop))
+            th.start()
+            t0 = time.perf_counter()
+            r = s.call("fork_project", project=str(src), path=str(pdir), name="H", mode="full",
+                       wait=60000)
+            t1 = time.perf_counter()
+            took = t1 - t0
+            th.join(30)
+            stop.set()
+            check("error" not in rec, f"holder: {rec}")
+            engaged = sidecar_engaged(r, e2a.classify(pdir, "H"))
+            if engaged:
+                break
+        check(engaged, f"the holder arrived after the engine had finished the sidecar in all "
+                       f"{attempt} attempts (reply {r.get('sidecarState')}): the premise never "
+                       f"held, so nothing was tested")
         check(r["sidecarState"] == "publishing" and any("publishing" in w for w in r["warnings"]),
               f"the reply must say the sidecar is unfinished: {r.get('sidecarState')} "
               f"{r.get('warnings')}")
-        check(1.4 <= took <= 3.9, f"the retries should end after about 1.6 s, not {took:.2f} s")
+        # the retries are timed from the moment the holder had its handle, not from the call: the
+        # call also copies the project (seconds on a slow disk), which is not what is measured
+        retry_s = t1 - rec["t_open"]
+        check(1.4 <= retry_s <= 3.9, f"the retries should end about 1.6 s after the holder took "
+                                     f"the sidecar, not {retry_s:.2f} s (the call took {took:.2f} s)")
         state = e2a.classify(pdir, "H")
         check(state[0] == "complete" and state[2] == "publishing" and state[1],
               f"a committed fork, sidecar unfinished, staging kept for the sweep: {state}")
@@ -1403,11 +1434,84 @@ def t_sidecar_unfinished(c):
         check(state[0] == "complete" and state[2] == "complete" and not state[1],
               f"the next fork must finish the sidecar and remove the staging folder: {state}")
     d.stop()
-    return f"held 4 s: ok after {took:.2f} s with sidecarState publishing + warning; finished by the next fork"
+    return (f"held 4 s: ok {took:.2f} s after the call, {retry_s:.2f} s after the hold began, with "
+            f"sidecarState publishing + warning; finished by the next fork (attempt {attempt})")
+
+
+def sidecar_engaged(reply, state):
+    """Whether the holder held the sidecar's final rewrite up: the sidecar, read from disk, still
+    says ``publishing`` or the reply does. A reply and a file that both say ``complete`` mean the
+    holder took its handle on a settled file."""
+    return reply.get("sidecarState") == "publishing" or state[2] == "publishing"
+
+
+def t_legacy_foreign_owner(c):
+    """The committed 12.1.4 fixture names its maker as the project owner, and Ghidra refuses a
+    writable open for anyone else ("Project is owned by X"). On the hosted CI runner (another user)
+    that failed nine tests at once. ``legacy_copy`` must hand out a copy the current user owns, also
+    when the project comes from ``--legacy-project``. Here the source is made foreign on purpose."""
+    import getpass
+    me = getpass.getuser()
+    foreign = c.work / "e2-owner-src"
+    dt.clone_tree(LEGACY_DIR, foreign)
+    check(dt.own_project(foreign, "someone-else-" + me) == 1, "the fixture has no OWNER to change")
+    d = c.daemon("e2-owner", keepWarm=0)
+    notes = []
+    with v3(c, d, "ow") as s:
+        raw = c.work / "e2-owner-raw"
+        dt.clone_tree(foreign, raw)  # no own_project: what the tests did before
+        e = expect_error("conflict", s.call, "open_project", path=str(next(raw.glob("*.gpr"))),
+                         writable=True)
+        check("owned by someone-else-" in str(e), f"the premise: a foreign owner refuses: {e}")
+        notes.append("a foreign owner refuses a writable open")
+        old = c.a.legacy_project
+        c.a.legacy_project = str(foreign)
+        try:
+            gpr = legacy_copy(c, "e2-owner-copy")
+        finally:
+            c.a.legacy_project = old
+        r = s.call("open_project", path=str(gpr), writable=True)
+        check(r.get("id"), f"the copy must open writable for {me}: {r}")
+        s.call("close_project", discard=True)
+        notes.append(f"legacy_copy gives a copy {me} can open writable")
+    d.stop()
+    return "; ".join(notes)
+
+
+def t_failed_test_releases(c):
+    """A test that fails halfway must not leave its daemon or its project behind (the runner's
+    ``release`` shuts the daemons down, ``cleanup`` kills what is left): run a throwaway test that
+    opens a project writable, leaves a daemon up and fails, then open the same project again."""
+    gpr = legacy_copy(c, "e2-release")
+    holder = {}
+
+    def failing(cx):
+        d = cx.daemon("e2-release", keepWarm=0)
+        holder["d"] = d
+        s = v3(cx, d, "r1")  # never closed: the test dies with it open
+        s.call("open_project", path=str(gpr), writable=True)
+        raise Fail("planted failure")
+
+    dt.REGISTRY["_planted_failure"] = failing
+    try:
+        status, note, _secs, _ev = dt.run_test(c, "_planted_failure", 0)
+    finally:
+        dt.REGISTRY.pop("_planted_failure", None)
+    check(status == "fail" and "planted failure" in note, f"{status} {note}")
+    check(not holder["d"].jvm_alive(), "the failed test's daemon is still running")
+    d2 = c.daemon("e2-release2", keepWarm=0)
+    with v3(c, d2, "r2") as s:
+        r = s.call("open_project", path=str(gpr), writable=True)
+        check(r.get("id"), f"the project must open again after the failed test: {r}")
+        s.call("close_project", discard=True)
+    d2.stop()
+    return "a failed test left no daemon; its project opened writable again"
 
 
 TESTS = {
     "sidecar_unfinished": t_sidecar_unfinished,
+    "legacy_foreign_owner": t_legacy_foreign_owner,
+    "failed_test_releases": t_failed_test_releases,
     "format_readonly": t_format_readonly,
     "format_truncated": t_format_truncated,
     "folder_singletons": t_folder_singletons,
