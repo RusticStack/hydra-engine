@@ -822,6 +822,14 @@ def t_import_isolation(c: Ctx):
     project), and concurrent loads each handed their own project land in it. Runs
     ImportIsolationProbe in a throwaway daemon and records what it saw (README, "Parallel
     imports")."""
+    return _import_isolation(c, ISO_ROUNDS)
+
+
+ISO_ROUNDS, ISO_SHARDS = 6, 3     # concurrent-load rounds of import_isolation; its shards split them
+
+
+def _import_isolation(c: Ctx, rounds: int):
+    """import_isolation with ``rounds`` concurrent-load rounds (each shard repeats the search-path check)."""
     a = c.a.exe
     b = c.a.dll
     d = c.daemon("iso")
@@ -833,7 +841,7 @@ def t_import_isolation(c: Ctx):
         if folder.exists():
             shutil.rmtree(folder)
         folder.mkdir(parents=True)
-        out = s.call("script", script=probe, program=None, args=[str(folder), a, b, "6"],
+        out = s.call("script", script=probe, program=None, args=[str(folder), a, b, str(rounds)],
                      timeout=900, wait=600000)["output"]
     d.stop()
     got = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
@@ -2926,6 +2934,12 @@ def split_n(n, k):
         out.append((first, cnt))
         first += cnt
     return out
+
+
+# import_isolation's concurrent-load rounds split over shards (each its own daemon and projects, each repeating the
+# search-path check); the rounds add up to ISO_ROUNDS
+SHARDS["import_isolation"] = {f"r{j}": (lambda n: lambda c: _import_isolation(c, n))(n)
+                              for j, (_, n) in enumerate(split_n(ISO_ROUNDS, ISO_SHARDS))}
 
 
 def test_fn(name):
