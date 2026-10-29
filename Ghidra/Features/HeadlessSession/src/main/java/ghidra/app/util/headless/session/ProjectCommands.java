@@ -472,8 +472,18 @@ final class ProjectCommands {
 			long w = dying ? Math.max(0, (end - System.nanoTime()) / 1_000_000L) : wait;
 			// the slot's state machine decides (a join in flight keeps the project open); the one
 			// exclusive project lock the close needs is taken under that slot's lock only (BP8)
-			if (s.registry.closeIdle(p, x -> closeProjectEntry(x, w, true))) {
-				return true;
+			try {
+				if (s.registry.closeIdle(p, x -> closeProjectEntry(x, w, true))) {
+					return true;
+				}
+			}
+			catch (SessionException ex) {
+				// a request still runs in it (a dead client's, that ignored cancel): the reap
+				// closes it once that request has ended, never after keepWarm only
+				if (SessionException.BUSY.equals(ex.code())) {
+					p.closePending = true;
+				}
+				throw ex;
 			}
 		}
 		return false;

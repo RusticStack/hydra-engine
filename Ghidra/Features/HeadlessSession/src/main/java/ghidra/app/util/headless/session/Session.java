@@ -259,6 +259,26 @@ final class Session {
 					closeIdleProgram(p, e);
 				}
 			}
+			if (p.closePending) {
+				// the last leave could not close it while a request of a gone client still ran
+				if (p.closed || p.userCount() > 0) {
+					p.closePending = false;
+				}
+				else if (p.programs.values().stream().noneMatch(ProgramEntry::holdsOrphanedWork) &&
+					p.programs.values().stream().allMatch(x -> x.pendingLeaves.isEmpty())) {
+					try {
+						if (registry.closeIdle(p, x -> projectCmds.closeProjectEntry(x, 0, true))) {
+							Msg.info(this, "closed project " + p.id + " " + p.canonical +
+								" that its last user left while a request ran");
+						}
+						p.closePending = false;
+					}
+					catch (SessionException e) {
+						// the request still runs; next round
+					}
+					continue;
+				}
+			}
 			if (p.userCount() == 0 && p.programs.isEmpty() && now - p.lastUsed >= keepWarmMs) {
 				try {
 					if (registry.closeIdle(p, x -> projectCmds.closeProjectEntry(x, 0, true))) {

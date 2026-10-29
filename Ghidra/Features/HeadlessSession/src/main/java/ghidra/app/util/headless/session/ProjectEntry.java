@@ -67,6 +67,12 @@ final class ProjectEntry {
 	final Map<Client, Long> joinedAt = new ConcurrentHashMap<>();
 	volatile long lastUsed = System.currentTimeMillis();
 	volatile boolean closed;
+	/**
+	 * Set when the last user left a project that is to close at once (writable, or {@code keepWarm}
+	 * 0) and the close could not have it to itself (a request of a client that is gone still ran):
+	 * {@link Session#reap} tries the close again without waiting, until it is done or a user joins.
+	 */
+	volatile boolean closePending;
 
 	/**
 	 * The revision ({@link Revision}) of the files this view was opened from: what its answers

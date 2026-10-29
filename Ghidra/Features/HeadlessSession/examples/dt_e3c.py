@@ -24,6 +24,11 @@
 * ``last_user_leave_disposes``: N concurrent leavers (the last user included): nobody is registered
   afterwards, the program is disposed (``keepWarm`` 0) or kept warm as before, a last user whose
   request still holds the program is disposed when that request ends, and the next join works.
+* ``deferred_leave_closes_project``: the last user of a writable project dies under its own deaf
+  request (``keepWarm`` 600 s). As the program's owner its leave is left pending and
+  ``Session.completeLeaves`` closes the project when the request ends; as a plain reader it leaves at
+  once and the reap closes the project once the request has ended (``ProjectEntry.closePending``),
+  not after ``keepWarm``. A writable reopen then works.
 * ``reader_leave_all`` (protocol 2 and 3): every reader leaves at once, some by ``close_program``,
   some by closing the socket, while one read runs: no leave waits for it, the read is unharmed.
 * ``refcount_leak``: users return to zero after 200 cancels raced against release, no stray
@@ -353,6 +358,80 @@ def t_last_user_leave_disposes(c):
         close_all(obs)
         d.stop(force=True)
     return "; ".join(notes)
+
+
+# ---- deferred_leave_closes_project ----------------------------------------------------------
+
+REAP_TICK_S = 15  # HeadlessSession: the reaper runs every min(15 s, max(1 s, keepWarm / 4))
+
+
+def _deferred_close(c, how):
+    """The last user of a writable project dies (FIN) while its own deaf request runs there.
+
+    ``owner``: it owns the program writable, so its leave needs the program's exclusive lock, cannot
+    have it within ``abandonWaitS`` and is left pending (``ProgramEntry.pendingLeaves``); when the
+    request ends ``Session.completeLeaves`` finishes the leave and closes the project at once.
+    ``reader``: a plain reader leaves at once (D63b), but the close of the project cannot have the
+    project to itself while the request runs (``ProjectEntry.closePending``); the reap closes it once
+    the request has ended. ``keepWarm`` is 600 s in both, so the keep-warm expiry is not what closes it.
+    """
+    exe = prepare(c)
+    gpr = c.copy_fixture(f"e3cDl{how}")
+    deaf_ms = 7000
+    d = c.daemon(f"e3c-dl-{how}", keepWarm=600, engine={"cleanupGraceS": 1, "abandonWaitS": 1})
+    obs = B = again = None
+    try:
+        obs = c.connect(d, "obs", "e3c", 3)          # joins no project: it does not keep one open
+        B = c.connect(d, "B", "e3c", 3)
+        pid = B.call("open_project", path=str(gpr), writable=True)["id"]
+        if how == "owner":
+            B.call("open_program", path=exe, writable=True)
+        else:
+            B.call("open_program", path=exe)
+        warm(c, B, "E3cDeaf.java")
+
+        def listed():
+            return any(p["id"] == pid for p in obs.call("status")["projects"])
+        dt.check(listed(), "the project is not listed after the open")
+        B.send("script", script=c.script("E3cDeaf.java"), args=[str(deaf_ms)], parallel=True,
+               wait=deaf_ms + 60000)
+        dt.wait_for(lambda: running(obs, "B"), "B's deaf request to run", 30)
+        t0 = time.perf_counter()
+        B.close()                                    # a FIN while the deaf request runs
+        B = None
+        dt.wait_for(lambda: "(B, e3c) disconnected" in log_text(d), "B's release to end", 15, 0.1)
+        released_s = time.perf_counter() - t0
+        dt.check(released_s < deaf_ms / 1000.0 - 1.0,
+                 f"{how}: B's release ended only after {released_s:.1f} s (abandonWaitS is 1 s)")
+        log = log_text(d)
+        if how == "owner":
+            dt.check("is gone and could not leave" in log,
+                     "owner: the leave was not left pending (the scenario did not exercise completeLeaves)")
+        dt.check(listed(), f"{how}: the project closed while the deaf request still ran")
+        bound = deaf_ms / 1000.0 + (5 if how == "owner" else REAP_TICK_S + 5)
+        dt.wait_for(lambda: not listed(), f"{how}: the project to be closed once the deaf request ended",
+                    bound + 10, 0.2)
+        closed_s = time.perf_counter() - t0
+        dt.check(closed_s >= deaf_ms / 1000.0 - 1.5,
+                 f"{how}: the project closed after {closed_s:.1f} s, before the deaf request ended")
+        dt.check(closed_s <= bound, f"{how}: the project closed {closed_s:.1f} s after the FIN (bound "
+                                    f"{bound:.0f} s)")
+        if how == "owner":
+            dt.check("that was waiting for its lock is done" in log_text(d),
+                     "owner: the log does not show the pending leave being finished")
+        # the next client opens it writable again and reads
+        again = c.connect(d, "again", "e3c", 3)
+        r = bl.timed(c, again, "open_project", path=str(gpr), writable=True, wait=10000)
+        dt.check(r["ok"], f"{how}: a writable open after the close: {r}")
+        return (f"{how}: released in {released_s:.1f} s, project closed {closed_s:.1f} s after the FIN "
+                f"(deaf request {deaf_ms // 1000} s, keepWarm 600 s)")
+    finally:
+        close_all(obs, B, again)
+        d.stop(force=True)
+
+
+def t_deferred_leave_closes_project(c):
+    return "; ".join(_deferred_close(c, how) for how in ("owner", "reader"))
 
 
 # ---- reader_leave_all -----------------------------------------------------------------------
@@ -1118,6 +1197,7 @@ def t_chaos_oracle(c):
 TESTS = {
     "reader_leave_no_freeze": t_reader_leave_no_freeze,
     "last_user_leave_disposes": t_last_user_leave_disposes,
+    "deferred_leave_closes_project": t_deferred_leave_closes_project,
     "reader_leave_all": t_reader_leave_all,
     "refcount_leak": t_refcount_leak,
     "lock_matrix_rows": t_lock_matrix_rows,
