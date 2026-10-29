@@ -730,10 +730,12 @@ in `error.details`:
   12.3-hydra.4 a lock wait stayed until its `wait` ran out).
 - **Leaving.** When a client disconnects or its process dies (the OS resets its socket), its
   requests are cancelled and its uncommitted changes are rolled back (and logged) when its
-  running request ends, and its programs go back to read-only for the others. A request blocked
-  on a lock, or a script that ignores cancel, keeps its place until the lock frees or the script
-  ends. Another client that asks for the program meanwhile waits for that release within its
-  `wait`.
+  running request ends, and its programs go back to read-only for the others. A lock wait ends
+  on cancel. A request that is still running `cleanupGraceS` (15 s) after the disconnect is
+  interrupted, and `abandonWaitS` (5 s) later the client is released even if it ignores that: the
+  locks it holds are flagged abandoned and a request for such a program answers `busy` at once.
+  Only a script that does not poll for cancellation runs to its own end (Java cannot stop it).
+  Another client that asks for the program meanwhile waits within its `wait`.
 - **Opening a project writable while other clients use its read-only view reopens it writable
   in place**: same id and keys, their programs reopened from the writable project (read-only for
   them), their overlays rebuilt; they are told once with `refreshed`. A second writable open
@@ -876,8 +878,9 @@ When `maxImports` imports run, the next ones wait, and the wait is visible and u
   untouched. Cancelling a running import frees its place and the next one starts.
 - An import waits in the import queue: without limit unless the request passes a numeric `wait`,
   in which case it fails with `busy` (details: the same queue information) after that long; the
-  same `wait` also limits a wait for the same file. At the front it still needs a long slot and
-  fails `busy` when its `wait` runs out if none comes free.
+  same `wait` also limits a wait for the same file. At the front it still needs a long slot:
+  with a numeric `wait` it fails `busy` when that `wait` runs out; without a numeric `wait` it
+  waits for the slot without limit (V2; up to 12.3-hydra.3 it failed `busy` after 10 s).
 - Duplicates: the SHA-256 check runs when the import gets its turn, so two queued requests for
   the same file import it once and the second answers `imported: false`.
 

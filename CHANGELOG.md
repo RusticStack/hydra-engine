@@ -28,8 +28,9 @@ claims audit in `Ghidra/Features/HeadlessSession/PROTOCOL-3.md`, section 8.3.
   never saved, but other clients can see them while it runs. `cancel` stops requests waiting for
   a slot or for a program lock, and cooperative scripts. A disconnected client's requests are cancelled and its uncommitted changes rolled
   back when its running request ends.
-- Imports (C6): an import waits in the import queue; at the front it still needs a long slot and
-  fails `busy` when its `wait` runs out.
+- Imports (C6): an import waits in the import queue; at the front it still needs a long slot. With
+  a numeric `wait` it fails `busy` when that `wait` runs out; without a numeric `wait` it waits
+  for the slot without limit (V2).
 - Facts (C8, C11, U10, U11): one daemon per state directory and instance; small fixes to
   Ghidra classes (three at the time of 12.3-hydra.3; see Unreleased below for the storage change); a native decompile takes about 1 to 45 ms by function size (7 ms in
   the benchmark function); the 7.0-7.8 s of `analyzeHeadless` was measured on stock Ghidra 12.1.4.
@@ -356,7 +357,7 @@ You need a JDK 25 and Python 3.10 or later; the install has no JDK.
   `positionAtEntry`, `behind`). Cancelling a queued import removes it without touching the
   running one; cancelling the running one starts the next. A numeric `wait` now limits the queue
   wait; without one a queued import waits in the queue without limit, and at the front it still
-  needs a long slot and fails `busy` when its `wait` runs out.
+  needs a long slot and fails `busy` after `wait` (10 s default).
 - **Per-request `client` and `harness` labels.** Any request may carry them; they replace the
   connection's name for that request in `busy`/`conflict` holders (`holder` and `holderInfo`), `status` (requests, scheduler
   lanes, owner of a writable program, `youAre`), the import queue and the log, and they scope
