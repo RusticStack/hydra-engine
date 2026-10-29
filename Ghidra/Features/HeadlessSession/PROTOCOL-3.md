@@ -3245,7 +3245,7 @@ Paths are relative to `Ghidra/Features/HeadlessSession` unless they begin with `
 | **`tools/scenarios/kotor_vfs_lookup.py`**, **`tests/test_runtime_scenario_fixture.py`** | | | | | | | | Z11 |
 | **`tools/watch_conformance.py`**, **`tests/test_runtime_watch.py`**, **`tests/test_runtime_write.py`**, **`runtime_memory.py`**, **`tests/fakememory.py`** | | | | | | | | Z12 (A20: `runtime_memory.py` is a new mixin of `runtime_worker.RuntimeAgent`, `tests/fakememory.py` a shared helper of the two watch tests) |
 | `docs/tool-mapping.md`, **`docs/data/tool-surfaces.json`**, `docs/verification.md`, **`tools/count_surfaces.py`**, **`tests/test_tool_mapping.py`** | | | | | | Z13b | | |
-| **`CHANGELOG.md`**, **`.github/workflows/release.yml`**, **`docs/versioning.md`** | | | | | | | Z14 | |
+| **`CHANGELOG.md`**, **`.github/workflows/release.yml`**, **`docs/versioning.md`**, **`tests/test_release.py`** | | | | | | | Z14 | |
 
 **Site (`F:/Projects/hydra-engine-site`, the website repository; it had no owner in revision 5)**
 
