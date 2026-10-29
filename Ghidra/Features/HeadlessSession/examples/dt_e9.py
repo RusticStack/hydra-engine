@@ -450,7 +450,9 @@ def t_decompiler_faults(c):
     ch = chaos()
     exe = fixture_args(c)
     gpr = c.copy_fixture("e9Flt")
-    d = c.daemon("e9-flt", engine={"decompilerNegativeS": 8})
+    # the breaker (e9_negative_cache) is out of the way: a function that failed more than three times in a minute
+    # would be refused at once and the load would count refusals instead of decompiles
+    d = c.daemon("e9-flt", engine={"decompilerFailLimit": 100000})
     ss = []
     try:
         ss = [c.connect(d, f"load{i}", "e9", 3) for i in range(12)]
