@@ -29,15 +29,21 @@ numbers are from a 122 MB program of 8,966 functions, so a different program giv
 times and the accepted ranges are those of the design, not tuned. Run it twice (``--tag run1``,
 ``--tag run2`` with the same ``--work`` is fine: tags separate every output) to see determinism.
 
-By default the scripts run at once (``--jobs``, s1 and s4 split in their parts, the two crash scenarios in
-``--crash-shards`` shards whose kill counts add up to ``--crash-n``/``--fork-n``; the shards' results.jsonl are
-merged before the rows are judged), and the s6 project (which has no row; s7 and s10 copy it) and the crash
-sample come from a content-keyed cache (``--cache``, default ``<work>/cache``) when the engine, the project and
-the scripts are the same. The crash shards start after the lock-map scripts: with 16 shards at once an
-iteration took 20 s instead of 6-7 s, the calibrated fork window grew from 0.2 s to 0.6-0.9 s and the outcome mix
-changed (no partial destination left, complete destinations that differ from the canonical one instead), so the
-shard count is kept small (``--crash-shards 3``) and ``--crash-overlap`` is only for a quick look. ``--serial`` is the original one-at-a-time order with neither (it reproduces the
-recorded numbers); the rows and their ranges are the same in both modes.
+By default the scripts run at once (``--jobs``, s1 and s4 split in their parts, the poison scenario in
+``--crash-shards`` and the fork scenario in ``--fork-shards`` shards whose kill counts add up to
+``--crash-n``/``--fork-n``; the shards' results.jsonl are merged before the rows are judged), and the s6 project
+(which has no row; s7 and s10 copy it) and the crash sample come from a content-keyed cache (``--cache``, default
+``<work>/cache``) when the engine, the project and the scripts are the same. The crash shards start after the
+lock-map scripts: with 16 shards at once an iteration took 20 s instead of 6-7 s, the calibrated fork window grew
+from 0.2 s to 0.6-0.9 s and the outcome mix changed (no partial destination left, complete destinations that differ
+from the canonical one instead), so the shards are few (3 and 2), and the first shard of a scenario calibrates once
+for all of them (the others wait for its calibration and use it; ``--own-calibration`` makes each calibrate under
+its own load, as before). ``--shard-cores N`` pins each crash shard to N logical processors of its own (its daemons
+inherit the mask); it is off by default: pinned to 2, the crash phase took 921 s instead of about 350 s (one run
+on a shared machine; C-fork RED with 55 records, the verdicts otherwise those of the unpinned runs).
+``--crash-overlap`` is only for a quick look, and ``--fast`` runs the lock-map and regression scripts only (the
+counted crash rows are NOT RUN; not for a release). ``--serial`` is the original one-at-a-time order with none of
+this (it reproduces the recorded numbers); the rows and their ranges are the same in every mode.
 
 Output: ``<work>/red-table<TAG>.json`` and a text table on stdout; the exit code is 0 when every row
 ran (RED, GREEN or NOT RUN with a reason are all valid results of an honest run), 1 when a script failed
@@ -252,17 +258,61 @@ COST = {"s6_import.py": 175, "s1_xqueue.py": 79, "s4_dead.py": 65, "s2_writer.py
         "t3_scaling.py": 16, "s12_instances.py": 7}
 
 
-def run(cmd, log, env=None, timeout=3600):
+def set_affinity(proc, mask):
+    """Pins a just-started process to the logical processors of ``mask`` (Windows; its children, the daemons it starts
+    with a direct spawn, inherit the mask). Returns False when it could not."""
+    if not mask or os.name != "nt":
+        return False
+    import ctypes
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.SetProcessAffinityMask.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+    return bool(k.SetProcessAffinityMask(ctypes.c_void_p(int(proc._handle)), mask))
+
+
+def cpu_masks(total, per, k):
+    """``k`` disjoint masks of ``per`` logical processors from the top of ``total`` down (processor 0 and its sibling,
+    where the system and the harness are, are the last ones handed out), and the mask of what is left."""
+    masks = []
+    hi = total
+    for _ in range(k):
+        lo = hi - per
+        if lo < 0:
+            break
+        masks.append(((1 << per) - 1) << lo)
+        hi = lo
+    rest = (1 << hi) - 1 if hi > 0 else 0
+    return masks, rest
+
+
+def _wait_file(path, timeout, stop):
+    """Until ``path`` exists, ``stop`` is set or ``timeout`` s passed; True when the file is there."""
+    end = time.time() + timeout
+    while not path.exists() and not stop.is_set() and time.time() < end:
+        time.sleep(0.2)
+    return path.exists()
+
+
+#: parallel defaults, chosen by measurement (see the docstring)
+CRASH_SHARDS, FORK_SHARDS, SHARD_CORES = 3, 2, 0
+
+
+def run(cmd, log, env=None, timeout=3600, mask=None):
     t = time.time()
     with open(log, "ab") as f:
-        f.write(("\n$ " + " ".join(cmd) + "\n").encode())
+        f.write(("\n$ " + " ".join(cmd) + (f"   [affinity {mask:#x}]" if mask else "") + "\n").encode())
         f.flush()
+        p = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT, env=env, stdin=subprocess.DEVNULL)
+        pinned = set_affinity(p, mask) if mask else None
         try:
-            p = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, env=env, timeout=timeout, stdin=subprocess.DEVNULL)
-            code = p.returncode
+            code = p.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
+            p.kill()
+            p.wait()
             code = "timeout"
-    return {"exit": code, "seconds": round(time.time() - t, 1)}
+    r = {"exit": code, "seconds": round(time.time() - t, 1)}
+    if mask:
+        r["affinity"] = hex(mask) if pinned else f"{mask:#x} NOT SET"
+    return r
 
 
 def stop_daemons(support, work, tag, names=None):
@@ -516,7 +566,7 @@ def run_parallel(ctx):
     def script_task(script, part=None, extra=()):
         tg = a.tag + ("-p" + part if part else "")
         cmd = py + [str(HERE / script)] + notag + ["--tag", tg] + (["--parts", part] if part else []) + list(extra)
-        r = run(cmd, logs / (script[:-3] + tg + ".log"))
+        r = run(cmd, logs / (script[:-3] + tg + ".log"), mask=ctx["lock_mask"])
         r["stopped"] = stop_daemons(support, work, a.tag, state_names(script, part, tg))
         return r
 
@@ -586,15 +636,32 @@ def run_parallel(ctx):
         finally:
             sample_done.set()
 
-    def shard_task(scen, j, k, n, seed):
+    cal_done = {}       # scenario -> Event: its first shard has written the shared calibration (or ended)
+
+    def shard_task(scen, j, k, n, seed, mask=None):
         sample_done.wait()
         rt = "red" + a.tag + (f"-k{j}" if k > 1 else "")
         env = dict(os.environ, RUN_TAG=rt)
         if scen == "a":
             env["TRIG"] = "1"
+        cal = work / "run" / f"{scen}-fixture-ntfs-red{a.tag}-calibration.json"
+        shared = None
+        if k > 1 and not a.own_calibration:
+            if j == 0:
+                if cal.exists():
+                    cal.unlink()
+                env["CALIB_OUT"] = str(cal)
+                watch = threading.Thread(target=lambda: (_wait_file(cal, 4 * 3600, cal_done[scen]), cal_done[scen].set()), daemon=True)
+                watch.start()
+            else:
+                cal_done[scen].wait()
+                if cal.exists():
+                    env["CALIB_IN"] = shared = str(cal)
         r = run(py + [str(HERE / "run_c.py"), scen, "fixture", "ntfs", str(n), str(seed)] + ctx["common"],
-                logs / (f"run_c_{scen}{a.tag}" + (f"-k{j}" if k > 1 else "") + ".log"), env, timeout=4 * 3600)
-        r.update(n=n, seed=seed, run_tag=rt)
+                logs / (f"run_c_{scen}{a.tag}" + (f"-k{j}" if k > 1 else "") + ".log"), env, timeout=4 * 3600, mask=mask)
+        if j == 0 and scen in cal_done:
+            cal_done[scen].set()           # also when it ended without a calibration: the others then make their own
+        r.update(n=n, seed=seed, run_tag=rt, calibration=("shared " + shared) if shared else ("written for the others" if j == 0 and k > 1 and not a.own_calibration else "own"))
         return r
 
     t_start = time.time()
@@ -634,17 +701,22 @@ def run_parallel(ctx):
         crash_jobs.append(crash_ex.submit(timed_job("crash", "c_sample", sample_task)))
         plan = []
         if ctx["want"]("C-poison"):
-            plan.append(("a", a.crash_n, a.seed))
+            plan.append(("a", a.crash_n, a.seed, a.crash_shards))
         if ctx["want"]("C-fork"):
-            plan.append(("b", a.fork_n, a.seed + 2))
+            plan.append(("b", a.fork_n, a.seed + 2, a.fork_shards or a.crash_shards))
         shards = {}
-        for scen, n, seed in plan:
-            ns = split_n(n, a.crash_shards)
+        splits = [(scen, n, seed, split_n(n, k)) for scen, n, seed, k in plan]
+        masks = ctx["masks"]
+        m = 0
+        for scen, n, seed, ns in splits:
             shards[scen] = ns
+            cal_done[scen] = threading.Event()
             for j, nj in enumerate(ns):
+                mask = masks[m] if m < len(masks) else None
+                m += 1
                 # shard 0 keeps the seed of the serial run; the others draw their delays from their own stream
                 crash_jobs.append(crash_ex.submit(timed_job("crash", f"run_c {scen}" + (f" k{j}" if len(ns) > 1 else ""),
-                                                            shard_task, scen, j, len(ns), nj, seed + 7919 * j)))
+                                                            shard_task, scen, j, len(ns), nj, seed + 7919 * j, mask)))
     [f.result() for f in lock_jobs]
     lock_ex.shutdown()
     ctx["phases"]["lock"] = round(phase_end.get("lock", time.time()) - t_start, 1)
@@ -684,15 +756,23 @@ def main(argv=None):
     ap.add_argument("--no-crash", action="store_true")
     ap.add_argument("--serial", action="store_true", help="one script at a time in the original order, no cache, no shards")
     ap.add_argument("--jobs", type=int, default=6, help="parallel: lock-map/regression scripts at once (default 6; s1/s4 parts inside)")
-    ap.add_argument("--crash-shards", type=int, default=3, help="parallel: shards per crash scenario (default 3; the kill counts add up to --crash-n/--fork-n)")
+    ap.add_argument("--crash-shards", type=int, default=CRASH_SHARDS, help=f"parallel: shards of the poison scenario (default {CRASH_SHARDS}; the kill counts add up to --crash-n)")
+    ap.add_argument("--fork-shards", type=int, default=FORK_SHARDS, help=f"parallel: shards of the fork scenario (default {FORK_SHARDS}; the kill counts add up to --fork-n)")
     ap.add_argument("--crash-jobs", type=int, default=0, help="parallel: crash shards at once (default: every shard of both scenarios)")
+    ap.add_argument("--shard-cores", type=int, default=SHARD_CORES, help=f"parallel: logical processors each crash shard is pinned to (default {SHARD_CORES}; "
+                                                                    "0: no pinning). The shards get disjoint sets from the top; the lock-map scripts the rest when they overlap")
+    ap.add_argument("--own-calibration", dest="own_calibration", action="store_true",
+                    help="parallel: every crash shard calibrates its own window (default: the first shard of a scenario calibrates, the others take its window and baselines)")
+    ap.add_argument("--fast", action="store_true", help="the lock-map and regression scripts only: the counted crash rows are NOT RUN (use the full mode for a release or a nightly)")
     ap.add_argument("--crash-overlap", action="store_true", help="parallel: run the crash shards together with the lock-map scripts (default: after them; "
                                                                   "the kill timing is load-sensitive, see the docstring)")
     ap.add_argument("--cache", help="parallel: cache folder of the s6 project and the crash sample (default <work>/cache; keep it on an SSD)")
     ap.add_argument("--no-cache", action="store_true", help="parallel: run s6 and c_sample even when the cache has their result")
     a = ap.parse_args(argv)
+    if a.fast:
+        a.no_crash = True
     if not a.crash_jobs:
-        a.crash_jobs = 2 * max(1, a.crash_shards)
+        a.crash_jobs = 1 + max(1, a.crash_shards) + max(1, a.fork_shards or a.crash_shards)
     work = pathlib.Path(a.work).absolute()
     work.mkdir(parents=True, exist_ok=True)
     logs = work / "logs"
@@ -722,12 +802,25 @@ def main(argv=None):
         stop_daemons(support, work, a.tag)
         phases["mkbase"] = round(time.time() - t0, 1)
     crash = not a.no_crash and (want("C-poison") or want("C-fork"))
+    n_shards = (max(1, a.crash_shards) if want("C-poison") else 0) + (max(1, a.fork_shards or a.crash_shards) if want("C-fork") else 0)
+    masks, rest = cpu_masks(os.cpu_count() or 1, a.shard_cores, n_shards) if crash and a.shard_cores > 0 and not a.serial else ([], 0)
+    if crash and a.shard_cores > 0 and len(masks) < n_shards and not a.serial:
+        print(f"only {len(masks)} of {n_shards} crash shards can have {a.shard_cores} processors of their own; the others are not pinned", flush=True)
+    lock_mask = rest if (a.crash_overlap and masks and rest) else None
     ctx = {"a": a, "work": work, "logs": logs, "py": py, "notag": notag, "common": common, "support": support, "runs": runs,
-           "phases": phases, "want": want, "crash": crash, "scripts": needed_scripts(want, only)}
+           "phases": phases, "want": want, "crash": crash, "scripts": needed_scripts(want, only), "masks": masks, "lock_mask": lock_mask}
     (run_serial if a.serial else run_parallel)(ctx)
     results, failed = judge_rows(work, a.tag, runs, want, crash)
+    if a.fast:
+        for row in ("C-poison", "C-fork"):
+            if want(row):
+                results.append({"row": row, "script": "run_c.py", "recorded": RECORDED[row], "verdict": "NOT RUN",
+                                "note": "--fast: the counted crash scenarios run only in the full mode (release, nightly)"})
     report = {"engine": a.ghidra, "tag": a.tag, "project_copy_of": a.project, "program": a.program,
-              "mode": "serial" if a.serial else {"parallel": True, "jobs": a.jobs, "crash_shards": a.crash_shards,
+              "mode": "serial" if a.serial else {"parallel": True, "fast": a.fast, "jobs": a.jobs, "crash_shards": a.crash_shards,
+                                                  "fork_shards": a.fork_shards or a.crash_shards, "shard_cores": a.shard_cores,
+                                                  "crash_masks": [hex(x) for x in masks], "lock_mask": hex(lock_mask) if lock_mask else None,
+                                                  "shared_calibration": not a.own_calibration,
                                                   "crash_jobs": a.crash_jobs, "crash_overlap": a.crash_overlap, "cache": not a.no_cache},
               "phases": phases, "runs": runs, "results": results, "seconds": round(time.time() - t_all, 1)}
     (work / f"red-table{a.tag}.json").write_text(json.dumps(report, indent=1, default=str), encoding="utf-8")
