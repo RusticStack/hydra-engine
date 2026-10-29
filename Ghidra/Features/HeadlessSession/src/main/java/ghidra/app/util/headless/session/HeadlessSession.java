@@ -109,7 +109,6 @@ public class HeadlessSession implements GhidraLaunchable {
 		// every process it starts afterwards (native decompilers, script workers) dies with it.
 		// It never throws; health.processJob reports what happened.
 		ProcessJob.start(layout.getApplicationInstallationDir().getFile(false).toPath());
-		Health.contribute("processJob", ProcessJob::describe);
 		long t0 = System.nanoTime();
 		Options o;
 		boolean requireExpect = false;
@@ -185,7 +184,9 @@ public class HeadlessSession implements GhidraLaunchable {
 		Health.announce();
 		session.startWatchdog();
 		// E9: the governor after the watchdog (admission, the decompiler gate, the guarded sampler)
+		Health.contribute("processJob", ProcessJob::describe); // after E3c's waits (the order is pinned)
 		Governor.start(session);
+		// after the contributors of Session (waits, leakedWorkers, leaked, repairs: the order E5 pins)
 		Runtime.getRuntime().addShutdownHook(new Thread(this::removeEndpoint, "session-exit"));
 
 		Connection stdio = null;
