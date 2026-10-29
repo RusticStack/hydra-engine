@@ -45,6 +45,8 @@ protocol 2 behaviour is ``cc_e3b.py``'s):
   the exclusive leave waits at most ``cleanupGraceS + abandonWaitS``, readers wait no longer.
 * ``lock_queue_full``: more than ``max(2, slots/4)`` waiters on one lock are answered ``busy`` at
   once with ``reason:"lock_queue_full"`` and ``retryAfterMs``.
+* ``v2_program_shape`` (protocol 2 and 3): a protocol 2 ``status.programs[]`` and ``list`` ``open`` have
+  hydra.3's keys exactly (no ``lockWaiters``); a protocol 3 ``status`` adds ``lockWaiters``.
 * ``applied_flag``: ``cancelled.details.applied`` for ``rename``, ``comment``, ``save`` and an owner
   script.
 * ``stalled_socket`` (BP23): a client that stops reading holds no lock of anyone else for longer than
@@ -744,6 +746,46 @@ def t_lock_queue_full(c):
         d.stop(force=True)
 
 
+# ---- v2_program_shape -----------------------------------------------------------------------
+
+#: the keys of a ``status.programs[]`` entry and of a ``list`` entry's ``open`` on hydra.3, in order:
+#: what a protocol 2 connection must see (the protocol-2 characterization goldens, gate 9.8)
+V2_PROGRAM_KEYS = ["project", "path", "mode", "owner", "idleMs", "users", "ownerLabel", "busy",
+                   "writers", "journalSeq", "unsavedEdits", "orphanedMs", "revision",
+                   "cachedUpgrade", "cacheBuild"]
+
+
+def t_v2_program_shape(c):
+    """A protocol 2 connection gets hydra.3's ``status.programs[]`` and ``list`` ``open`` keys,
+    exactly and in order; the protocol 3 figures (``lockWaiters``, ``abandonedRequests``, ...)
+    are on a protocol 3 connection's ``status`` only."""
+    exe = prepare(c)
+    gpr = c.copy_fixture("e3bShape")
+    d = c.daemon("e3b-shape")
+    P = Q = None
+    try:
+        P = reader(c, d, gpr, exe, "p2", protocol=2)
+        Q = reader(c, d, gpr, exe, "p3", protocol=3)
+        dt.check(P.hello.get("protocol", 2) == 2 and Q.hello.get("protocol") == 3,
+                 f"protocols: {P.hello.get('protocol')} / {Q.hello.get('protocol')}")
+        v2 = program(P, exe)
+        dt.check(v2 is not None and list(v2) == V2_PROGRAM_KEYS,
+                 f"a protocol 2 status.programs[] is not hydra.3's: {list(v2 or {})}")
+        opened = [e["open"] for e in P.call("list", programsOnly=True, metadata=False)["entries"]
+                  if e["path"] == "/" + exe]
+        dt.check(len(opened) == 1 and list(opened[0]) == V2_PROGRAM_KEYS,
+                 f"a protocol 2 list entry's open is not hydra.3's: {[list(o or {}) for o in opened]}")
+        v3 = program(Q, exe)
+        dt.check(v3 is not None and v3.get("lockWaiters") == 0
+                 and list(v3)[:len(V2_PROGRAM_KEYS)] == V2_PROGRAM_KEYS,
+                 f"a protocol 3 status.programs[]: {v3}")
+        extra = [k for k in v3 if k not in V2_PROGRAM_KEYS]
+        return f"protocol 2: hydra.3's {len(V2_PROGRAM_KEYS)} keys; protocol 3 adds {extra}"
+    finally:
+        close_all(P, Q)
+        d.stop(force=True)
+
+
 # ---- applied_flag ---------------------------------------------------------------------------
 
 RENAMER = """// @category HeadlessSession.Test
@@ -1108,6 +1150,7 @@ TESTS = {
     "abandoned_holder": t_abandoned_holder,
     "owner_leave_bounded": t_owner_leave_bounded,
     "lock_queue_full": t_lock_queue_full,
+    "v2_program_shape": t_v2_program_shape,
     "applied_flag": t_applied_flag,
     "stalled_socket": t_stalled_socket,
     "parallel_reads": t_parallel_reads,
