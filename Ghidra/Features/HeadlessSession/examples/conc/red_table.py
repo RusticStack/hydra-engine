@@ -33,7 +33,10 @@ By default the scripts run at once (``--jobs``, s1 and s4 split in their parts, 
 ``--crash-shards`` shards whose kill counts add up to ``--crash-n``/``--fork-n``; the shards' results.jsonl are
 merged before the rows are judged), and the s6 project (which has no row; s7 and s10 copy it) and the crash
 sample come from a content-keyed cache (``--cache``, default ``<work>/cache``) when the engine, the project and
-the scripts are the same. ``--serial`` is the original one-at-a-time order with neither (it reproduces the
+the scripts are the same. The crash shards start after the lock-map scripts: with 16 shards at once an
+iteration took 20 s instead of 6-7 s, the calibrated fork window grew from 0.2 s to 0.6-0.9 s and the outcome mix
+changed (no partial destination left, complete destinations that differ from the canonical one instead), so the
+shard count is kept small (``--crash-shards 3``) and ``--crash-overlap`` is only for a quick look. ``--serial`` is the original one-at-a-time order with neither (it reproduces the
 recorded numbers); the rows and their ranges are the same in both modes.
 
 Output: ``<work>/red-table<TAG>.json`` and a text table on stdout; the exit code is 0 when every row
@@ -625,7 +628,7 @@ def run_parallel(ctx):
             fn = timed_job("lock", script, whole_script, script)
         lock_jobs.append(lock_ex.submit(fn))
     if ctx["crash"]:
-        if a.crash_after:
+        if not a.crash_overlap:
             [f.result() for f in lock_jobs]
         t_crash = time.time()
         crash_jobs.append(crash_ex.submit(timed_job("crash", "c_sample", sample_task)))
@@ -681,9 +684,10 @@ def main(argv=None):
     ap.add_argument("--no-crash", action="store_true")
     ap.add_argument("--serial", action="store_true", help="one script at a time in the original order, no cache, no shards")
     ap.add_argument("--jobs", type=int, default=6, help="parallel: lock-map/regression scripts at once (default 6; s1/s4 parts inside)")
-    ap.add_argument("--crash-shards", type=int, default=8, help="parallel: shards per crash scenario (default 8; the kill counts add up to --crash-n/--fork-n)")
+    ap.add_argument("--crash-shards", type=int, default=3, help="parallel: shards per crash scenario (default 3; the kill counts add up to --crash-n/--fork-n)")
     ap.add_argument("--crash-jobs", type=int, default=0, help="parallel: crash shards at once (default: every shard of both scenarios)")
-    ap.add_argument("--crash-after", action="store_true", help="parallel: start the crash shards only after the lock-map scripts (quiet lock phase)")
+    ap.add_argument("--crash-overlap", action="store_true", help="parallel: run the crash shards together with the lock-map scripts (default: after them; "
+                                                                  "the kill timing is load-sensitive, see the docstring)")
     ap.add_argument("--cache", help="parallel: cache folder of the s6 project and the crash sample (default <work>/cache; keep it on an SSD)")
     ap.add_argument("--no-cache", action="store_true", help="parallel: run s6 and c_sample even when the cache has their result")
     a = ap.parse_args(argv)
@@ -724,7 +728,7 @@ def main(argv=None):
     results, failed = judge_rows(work, a.tag, runs, want, crash)
     report = {"engine": a.ghidra, "tag": a.tag, "project_copy_of": a.project, "program": a.program,
               "mode": "serial" if a.serial else {"parallel": True, "jobs": a.jobs, "crash_shards": a.crash_shards,
-                                                  "crash_jobs": a.crash_jobs, "crash_after": a.crash_after, "cache": not a.no_cache},
+                                                  "crash_jobs": a.crash_jobs, "crash_overlap": a.crash_overlap, "cache": not a.no_cache},
               "phases": phases, "runs": runs, "results": results, "seconds": round(time.time() - t_all, 1)}
     (work / f"red-table{a.tag}.json").write_text(json.dumps(report, indent=1, default=str), encoding="utf-8")
     print(f"engine {a.ghidra}  tag {a.tag!r}  {report['seconds']} s  phases {phases}")
