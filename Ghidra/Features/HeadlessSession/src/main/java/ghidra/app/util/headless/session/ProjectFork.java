@@ -487,6 +487,9 @@ final class ProjectFork {
 			}
 		}
 		List<String> moved = new ArrayList<>();
+		// E12: every staged byte and name is on the disk before anything is moved, so that the
+		// .gpr (the commit point) can never be durable while a file it names is not
+		forceTree(st.dir().toPath());
 		// the intent says the .rep may be ours from here on, and which one it is
 		st.intent().withPhase(ForkIntent.MOVING, ForkSweeper.creationMs(stagedRep))
 				.write(st.dir().toPath());
@@ -505,8 +508,10 @@ final class ProjectFork {
 				Files.move(st.dir().toPath().resolve(extra), destDir.toPath().resolve(extra));
 				moved.add(extra);
 			}
+			syncDirectory(destDir.toPath()); // the .rep, the sidecar and the extras before the .gpr
 			moveRetrying(stagedGpr, destGpr);
 			committed = true;
+			syncDirectory(destDir.toPath()); // the commit itself
 		}
 		finally {
 			if (!committed) {
@@ -551,6 +556,89 @@ final class ProjectFork {
 		st.unfinished().set(true);
 		ghidra.util.Msg.warn(ProjectFork.class,
 			"fork_project: could not finish the sidecar of " + destGpr + ": " + last);
+	}
+
+	/**
+	 * Forces every file of {@code root} to the disk, then every folder of it (deepest first), so
+	 * that after a power loss a file of the tree is either absent or has exactly the content that
+	 * was copied (E12: {@link Files#copy} does not flush). A read-only file (a Ghidra version file
+	 * copied with its attributes) is made writable for the flush and read-only again: on Windows
+	 * {@code FlushFileBuffers} needs a handle with write access, and a read-only channel's
+	 * {@code force} does nothing there.
+	 *
+	 * @throws IOException when a file cannot be forced (nothing has been moved yet: the caller
+	 *             discards the staging folder)
+	 */
+	static void forceTree(Path root) throws IOException {
+		List<Path> dirs = new ArrayList<>();
+		Files.walkFileTree(root, new SimpleFileVisitor<>() {
+			@Override
+			public FileVisitResult visitFile(Path f, java.nio.file.attribute.BasicFileAttributes a)
+					throws IOException {
+				if (a.isRegularFile()) {
+					forceFile(f);
+				}
+				return FileVisitResult.CONTINUE;
+			}
+
+			@Override
+			public FileVisitResult postVisitDirectory(Path d, IOException e) throws IOException {
+				if (e != null) {
+					throw e;
+				}
+				dirs.add(d);
+				return FileVisitResult.CONTINUE;
+			}
+		});
+		for (Path d : dirs) {
+			syncDirectory(d);
+		}
+	}
+
+	private static final boolean WINDOWS =
+		System.getProperty("os.name", "").toLowerCase(Locale.ROOT).startsWith("windows");
+
+	/** Forces one file's content and length to the disk (see {@link #forceTree}). */
+	static void forceFile(Path f) throws IOException {
+		if (!WINDOWS) {
+			try (java.nio.channels.FileChannel ch =
+				java.nio.channels.FileChannel.open(f, StandardOpenOption.READ)) {
+				ch.force(true); // fsync works on any descriptor
+			}
+			return;
+		}
+		java.nio.file.attribute.DosFileAttributeView v = Files.getFileAttributeView(f,
+			java.nio.file.attribute.DosFileAttributeView.class, LinkOption.NOFOLLOW_LINKS);
+		boolean ro = v != null && v.readAttributes().isReadOnly();
+		if (ro) {
+			v.setReadOnly(false);
+		}
+		try (java.nio.channels.FileChannel ch =
+			java.nio.channels.FileChannel.open(f, StandardOpenOption.WRITE)) {
+			ch.force(true);
+		}
+		finally {
+			if (ro) {
+				v.setReadOnly(true);
+			}
+		}
+	}
+
+	/**
+	 * Forces the entries of a folder (its names) to the disk where the platform allows it: a
+	 * folder opened for reading and forced ({@code fsync} of the directory on Linux and macOS).
+	 * Windows cannot open a folder as a channel, so there it does nothing and the order of the
+	 * names rests on the file system (directory-entry model J of {@code dt_e12.py}, an assumption
+	 * nothing measures). Never throws.
+	 */
+	static void syncDirectory(Path dir) {
+		try (java.nio.channels.FileChannel ch =
+			java.nio.channels.FileChannel.open(dir, StandardOpenOption.READ)) {
+			ch.force(true);
+		}
+		catch (IOException | RuntimeException e) {
+			// not supported here (Windows: AccessDeniedException)
+		}
 	}
 
 	/**
