@@ -1245,8 +1245,7 @@ class Soak:
                         # processes on one ledger. Leave it where it is and count nothing.
                         self.fault_log.append({"t": round(self.t(), 1), "fault": "kill_client", "agent": i, "kill": r,
                                                "counted": False})
-                        r = {}
-                        return False
+                        return False        # i is still in procs, so the finally block does not respawn it
                     self.rc_log.append({"agent": i, "rc": "killed", "t": round(self.t(), 1)})
                     self.procs.pop(i, None)
                 ok = self.k10(label, phase=f"kill_client a{i:02d}")
