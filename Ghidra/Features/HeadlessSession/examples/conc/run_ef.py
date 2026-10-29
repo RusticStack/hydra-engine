@@ -367,7 +367,15 @@ class RunEF(Run):
         def worker(k):
             try:
                 ck = s.rig.daemon.connect("agent-%d" % k, HARNESSES[k % 4])
-                o = ck.call("open_project", path=str(s.canon_gpr(d)))
+                # eight clients open one project at once; the daemon answers `busy` (retry) beyond its waiter cap
+                for _try in range(200):
+                    try:
+                        o = ck.call("open_project", path=str(s.canon_gpr(d)))
+                        break
+                    except SessionError as e:
+                        if e.code != "busy" or _try == 199:
+                            raise
+                        time.sleep(0.1)
                 st[k]["phase"] = "fork"
                 t = now()
                 f = ck.call("fork_project", project=o["id"], path=str(d / ("fork%d" % k)), mode=s.fork_mode)
