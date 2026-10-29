@@ -66,6 +66,9 @@ def t_chaos_runner_selftest(c):
     return last[-1] if last else "chaos selftest ok"
 
 
+SOAK_RUN_S = 60
+
+
 def t_soak_planted_run(c):
     gpr = c.fixture() / "Fixture.gpr"
     program = "/" + os.path.basename(c.a.exe)
@@ -75,9 +78,12 @@ def t_soak_planted_run(c):
         if d.exists():
             import shutil
             shutil.rmtree(d, ignore_errors=True)
+    # 60 s still holds every step the supervisor times (soak_tests.py SoakRun.run): the thread baseline of K7 at
+    # 30 s, the plants at 0.55 x 60 = 33 s (after the baseline), a periodic round at 45 s (smoke round_s), and
+    # 27 s of agents working on the planted state before the drain; 100 s only added more of the same rounds
     rc, out = _run([HERE / "soak_tests.py", "run", "--ghidra", c.a.ghidra, "--work", work, "--project", gpr,
                     "--program", program, "--profile", "smoke", "--agents", "2", "--projects", "1",
-                    "--duration-s", "100", "--no-faults", "--plant", "all", "--evidence", ev], 900)
+                    "--duration-s", str(SOAK_RUN_S), "--no-faults", "--plant", "all", "--evidence", ev], 900)
     verdict_file = ev / "soak-verdict.json"
     dt.check(verdict_file.exists(), "the runner wrote no evidence:\n" + out[-2500:])
     v = json.loads(verdict_file.read_text(encoding="utf-8"))["data"]
@@ -86,6 +92,8 @@ def t_soak_planted_run(c):
              f"violations seen: {v['violations']}")
     dt.check(v["smoke_numbers_are_not_gate_numbers"] and not v["gate_eligible"], "a planted short run claimed to be a gate run")
     dt.check(rc == 0, f"exit {rc} for a planted run that caught every plant:\n{out[-1500:]}")
+    dt.check(any(f.get("planted") for f in v.get("fault_log", [])),
+             "the run ended before the plants were made")
     return (f"FAIL as planted, {len(v['violations'])} violation kinds named, plants caught: "
             f"{sorted(v['plants']['requested'])}; ops {v['workload_counts']}")
 
