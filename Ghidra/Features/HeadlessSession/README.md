@@ -139,13 +139,52 @@ Lowest to highest: defaults, `<state>/config.json`, environment, command-line op
 | `idleTimeout` | `GHIDRA_SESSION_IDLE_TIMEOUT` | `0` | Seconds without clients before the daemon exits; `0`: stay up. |
 | `keepWarm` | `GHIDRA_SESSION_KEEP_WARM` | `3600` | Seconds an unused read-only program or project stays open, so the next client gets it at once with warm decompilers; `0`: close at once. |
 | `maxQuick` | | CPU count | Concurrent quick requests. |
-| `maxLong` | | CPU / 4 (at least 2) | Concurrent long requests (analyze, import, script, save). |
+| `maxLong` | | `max(8, CPUs)` | Concurrent long requests (analyze, import, script; `save`, `fork_project`, `refresh`, `reopen` and `promote_overlay` on a protocol 2 connection; protocol 3 runs those in the maint lane). Hydra Engine 12.3-hydra.3 and earlier: CPU / 4, at least 2. |
 | `maxImports` | | CPU / 4, between 1 and 4 | Concurrent imports, in any projects (see "Parallel imports"). Each running import also holds a long slot, so at most `min(maxImports, maxLong)` run at once. Each holds its whole program in memory until it is saved: budget about 0.7 GB of heap per 25 MB PE. |
 | `scriptPath` | | `[]` | Extra GhidraScript directories. |
 | `log` | | `<state>/<instance>.log` | The daemon's log (Ghidra's log and stderr). |
 | `upgradeCache` | `GHIDRA_SESSION_UPGRADE_CACHE` (`off`, `false`, `0`: off) | `true` | Serve read-only opens of programs saved in an older database format from an upgraded copy (below). |
 | `upgradeCacheDir` | `GHIDRA_SESSION_UPGRADE_CACHE_DIR` | `<state>/upgrade-cache` | Where those copies live; best on the same volume as the projects (a block clone there costs nothing). |
 | `forkCopyLimitMb` | `GHIDRA_SESSION_FORK_COPY_LIMIT_MB` | `2048` | `fork_project` in `auto` mode refuses a full copy (one the file system cannot block-clone) larger than this; `"mode": "full"` copies anyway. |
+
+#### Engine settings (protocol 3 release)
+
+Further settings are not options of the launcher: every entry of the `engine` object of `config.json`
+is passed to the daemon as a repeatable `-set key=value`, and each part of the engine reads its own keys
+(`Settings.java`). A value that does not parse as the type its reader expects stops the daemon at start-up with
+a message that names the key; an unset key reads as its default. Only keys that the engine reads today are
+listed. The design text for keys that belong to packages not yet part of the release is in
+`PROTOCOL-3.md` 3.7; they are not settings of this release until their package is.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `maintSlots` | 4 | Slots of the maint lane (protocol 3 `save`, `fork_project`, `refresh`, `reopen`, `promote_overlay`). |
+| `maxLong` | `max(8, CPUs)` | Same as the `maxLong` option above. |
+| `quickScriptMaxS` | 60 (at most 120) | Longest `timeout` for a script that asks for `lane:"quick"`. |
+| `maxRunningPerKey` (and `.quick`, `.long`, `.maint`) | quick `max(1, slots / 2)`, long `max(1, slots - 1)`, maint 1 | The work-conserving cap of running requests per connection while another connection waits. |
+| `cleanupGraceS`, `abandonWaitS` | 15, 5 | Release of a dead client: seconds its requests may keep running, then seconds to wait for the interrupt before the client is released regardless. |
+| `requireExpect` | false | An edit on a program with shared writers must carry `expect`. |
+| `requireBackupForUpgrade` | true | The upgrade gate: a writable upgrade of a canonical project needs a valid backup. |
+| `orphanKeepS` | 0 (never) | When above 0: after this many seconds the unsaved edits of a shared program whose last writer died are written to `<state>/recovery/` and discarded. |
+| `starveMs` | 30000 | A lane with a request waiting longer than this reports `starving` in `status`. |
+| `writeStallMs` | 5000 | A client that does not read its socket for this long is disconnected. |
+| `scriptMaxS`, `scriptGraceS` | 600, 5 | Wall-clock budget of a script, and the seconds a script that ignores its cancel may run on before it is quarantined. |
+
+#### Stamping a local build
+
+The build tool does not stamp a release version. The engine reports `hydraVersion` from
+`src/main/resources/hydra.properties`, which is empty in the tree, so a plain `gradle buildHeadless` or
+`gradle zipHeadless` says `<Ghidra version>-hydra.dev` and Hydralysis classifies it as a stock Ghidra. The
+release workflow writes the stamp before it builds. To get the same in a local build:
+
+```
+echo hydra.version=12.3-hydra.4 > Ghidra/Features/HeadlessSession/src/main/resources/hydra.properties
+gradle zipHeadless            # or buildHeadless
+git checkout -- Ghidra/Features/HeadlessSession/src/main/resources/hydra.properties
+```
+
+Restore the file afterwards: the tree must keep it empty (the release workflow's dry run fails when the zip it
+built does not carry the stamp it wrote, and `tools/bump_hydra.py` of Hydralysis refuses a zip without it).
 
 The state dir is `--state`, else `GHIDRA_SESSION_HOME`, else per user:
 `%LOCALAPPDATA%\GhidraSession` (Windows), `~/Library/Application Support/GhidraSession` (macOS),
@@ -542,7 +581,11 @@ Turn it off with `"upgradeCache": false`.
 
 ## Protocol (version 2)
 
-> Design for the next protocol (3, hydra.4), not implemented: see [PROTOCOL-3.md](PROTOCOL-3.md).
+> Protocol 3 (hydra.4) is served beside protocol 2 on the same port; a client that asks for nothing newer gets
+> protocol 2 exactly as described below. What a protocol 3 client may ask for, and every change a protocol 2
+> client can see, are in [PROTOCOL-3.md](PROTOCOL-3.md) (section 5.1) and in the release notes
+> (`docs/release-notes-12.3-hydra.4.md`). The design is not complete in this tree: a part that is not part of the
+> release is not described in this README.
 
 One JSON object per line, UTF-8, `\n`-terminated, at most 64 MiB per line.
 

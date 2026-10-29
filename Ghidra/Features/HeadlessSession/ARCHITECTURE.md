@@ -48,6 +48,22 @@ The classes that hold the session's objects are unchanged and are not command cl
 `ProjectEntry`, `ProgramEntry`, `Overlay`, `Client`, `Journal`, `Scheduler`, `ImportGate`,
 `UpgradeCache`, `Revision`, `ProjectFork`, `ProjectLocks`, `ProjectResolver`, `Connection`.
 
+Classes added for protocol 3 (hydra.4). None is a command class; each is the one place for its concern, and
+the package that owns it registers into it from its own files, so no class below needs an edit to `Session`:
+
+| Class | What it holds |
+|---|---|
+| `Advertised` | the capability, limit and policy names that `hello` and `status` report, declared in reply order; a package enables its own name, and a name nobody enables is absent from the reply |
+| `Settings` | the `-set key=value` flags (the `engine` object of `config.json`); each reader names its key and default, and a value of the wrong type fails at start-up |
+| `Identity`, `DbVersions` | the identity block of `hello` (`paths`, `platform`, `analysisIdentity`) and the database format versions in one place; read-only |
+| `Preflight` | validation of a request before it queues, registered per command (`fork_project`, `script`) and run by `Scheduler` for a protocol 3 request |
+| `Waits` | the one request-bound lock wait: a single timed `tryLock` that `cancel`, a `timeout`, a dead client or a stalled socket can end |
+| `WaitStats` | counts the lock waits that had to queue behind another client (`foreignBlocked`), for the tests that assert "no client blocks another" |
+| `ProjectRegistry` | the life cycle of each open project as its own state (`OPENING`, `OPEN`, `CLOSING`), so one project's open, join and close never waits on another's |
+| `Seals`, `ProjectBackup`, `ProjectFormat` | the sealed predicate (the union of the registry record, `SEALED.json` and the sidecars) and `seal_project`; the backup manifest and its canonical form; the per-project database-format block read without opening a program |
+| `ForkIntent`, `ForkSweeper` | the intent record in a fork's staging folder, the admission of `fork_project` publishers (`fork_in_progress`, `exists`) and the lazy sweeper of what a dead publisher left |
+| `PrivateInstance` | a throwaway program object opened from the stored file, shared by overlays and by `script` with `isolation:"private"` |
+
 Conventions:
 
 - A command class is `final`, package-private, and is constructed with the `Session` it works

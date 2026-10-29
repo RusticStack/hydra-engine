@@ -42,6 +42,68 @@ claims audit in `Ghidra/Features/HeadlessSession/PROTOCOL-3.md`, section 8.3.
   1 MiB in the upgrade cache test), not a byte-for-byte copy of every file.
 - `how-it-works.gif` is labelled as an illustration (U5).
 
+### Protocol 3 and the lock changes (not released)
+
+Text prepared for the 12.3-hydra.4 section; the release renames the heading. It lists what the
+code does on the integration branch at the time of writing. It makes no guarantee: a statement
+that a failure "cannot" happen appears only with the test that was run for it, and the
+guarantees that hydra.4 may make are listed with their tests in
+`docs/release-notes-12.3-hydra.4.md`.
+
+- **Protocols.** One port serves protocol 2 and protocol 3. The endpoint file and the `ready`
+  event carry `protocolMin` (2) and `protocolMax` (3); `protocol` stays 2 for a client that
+  asks for nothing newer. `minClient` stays `1.0.0`, so no existing client is rejected by this
+  engine. `ghidra_session.py` 1.1.0 asks for protocol 3 and falls back to 2. Hydralysis 0.4.x
+  refuses a hydra.4 engine by its own pin; clients of hydra.2 and hydra.3 keep working at
+  protocol 2.
+- **Changes a protocol 2 client can see.** Everything else a protocol 2 client does is
+  unchanged and checked against the vendored 1.0.0 client (`examples/stock/`,
+  `examples/client_compat_tests.py`); these are the declared exceptions, by name:
+  - V1, the upgrade gate: `open_program` with `writable` and `upgrade` on a canonical project in
+    an older format is refused with `conflict` (`details.reason` `backup_required`) unless the
+    request carries a valid `backup`; a fork is allowed.
+  - V2, the import wait: an import without `wait` no longer fails `busy` ten seconds after it
+    reaches the front; an import with a numeric `wait` spends one budget across the gate, the
+    slot and the project lock, not one per stage.
+  - V3, bounded release of a dead client: its slots and its locks are released after
+    `cleanupGraceS` and `abandonWaitS` (15 s and 5 s by default) instead of waiting for the
+    request to end; the 600 s waits of `disconnect` and `leaveProject` for owners and writers use
+    the same bounds.
+  - V4: a request for a program held by an abandoned request answers `busy` at once.
+  - V5: `cancel`, and a `timeout` deadline, end a request that waits for a program, project or
+    overlay lock.
+  - V6: `protocolMin` and `protocolMax` in the endpoint file and the `ready` event.
+  - V7: the sidecar of every `fork_project` gains `purpose` and `disposable`.
+  - V8: a project that this engine sealed (the registry record, `SEALED.json`, or a `generation`
+    or `backup` sidecar with `state` `complete`) refuses every writable path with `conflict`
+    (`details.reason` `sealed`). A project with none of these behaves as before.
+  - V9: a per-connection cap on running requests applies while another connection waits; the
+    long lane defaults to `max(8, CPUs)` slots.
+  - V10: a client that is neither owner, writer nor overlay holder leaves a program without
+    taking its exclusive lock.
+  - V11: concurrent `fork_project` calls to one destination give one success and `conflict`
+    (`details.reason` `fork_in_progress` or `exists`) to the others.
+- **Protocol 3 additions** (only for a client that asks for protocol 3): the `expect` check on
+  `signature` and `data_type`, the `rk` idempotency key, `error.next`, the identity block of
+  `hello` (`paths`, `platform`, `analysisIdentity`), the capability, limit and policy blocks, the
+  maintenance lane for `save`, `fork_project`, `refresh`, `reopen` and `promote_overlay`, the
+  `queue` key of slot waits, per-request validation before a wait, `seal_project`, backups with
+  a manifest, the `isolation` and `lane` fields of `script`, and the daemon settings passed as
+  `-set key=value` (the `engine` object of `config.json`).
+- **Not in this text:** the `health` command and the watchdog, the resource governor and the
+  killable script worker are separate packages. Until they are part of the release they are not
+  described here, and nothing in this section says they exist.
+- **Build identity.** The build tool does not stamp the release into `hydra.properties`; the
+  release workflow does. A local build says `<Ghidra version>-hydra.dev`, which Hydralysis treats
+  as a stock Ghidra. Stamp it as the workflow does (module README, "Stamping a local build"),
+  and check the stamp with `tools/bump_hydra.py` of Hydralysis, which refuses an engine zip
+  that carries none.
+- **Headless only.** There is no GUI. Hydra Engine is headless only; projects it writes cannot
+  be opened by Ghidra 12.2 or 12.1.4.
+- **NOTICE-HYDRA.** The list of modified Ghidra files was checked against the upstream commit
+  `1b9e58a915cf867e106495eaa2a4b18eb4971c9d` of hydra.3: five modified core Java files, one added
+  class (`VersionFileCheck`), and the build files already listed.
+
 ### Storage integrity (not released)
 
 - Ghidra core: the header of a new version file is written and synced before the file is renamed

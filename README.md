@@ -171,6 +171,26 @@ Several at once (same machine; the module README has the method):
   with this build (it asks for `"upgrade": true`) moves its databases to a format that Ghidra
   12.2 and 12.1.4 cannot read. Work on a `fork_project` copy when the original must stay as it is.
 
+## Protocols
+
+One port serves protocol 2 and protocol 3. A client that asks for nothing newer gets protocol 2, with
+replies byte-identical to 12.3-hydra.3 except for the changes listed by name in the
+[release notes](docs/release-notes-12.3-hydra.4.md) (V1 to V11; the table is in
+[`PROTOCOL-3.md`](Ghidra/Features/HeadlessSession/PROTOCOL-3.md), section 5.1). `minClient` stays `1.0.0`:
+no existing client is rejected. The legacy window: hydra.4 serves protocol 2; whether a later release
+refuses it is the owner's decision.
+
+| Client | hydra.2 / hydra.3 engine | hydra.4 engine |
+|---|---|---|
+| A raw JSON-line client speaking protocol 2 | works | works |
+| `ghidra_session.py` 1.0.0 (protocol 2) | works | works at protocol 2 |
+| `ghidra_session.py` 1.1.0 (protocols 2 to 3) | works at protocol 2, without the protocol 3 additions | the protocol 3 additions |
+| Hydralysis 0.4.x | works (its own pin) | refuses by its own pin, unless `hydra_allow_unpinned` is set |
+
+A build from the tree reports `<Ghidra version>-hydra.dev`, and Hydralysis treats such an engine as a stock
+Ghidra; stamping a local build is described in the module README, "Stamping a local build". The settings of the
+daemon (`maintSlots`, `maxLong`, `cleanupGraceS` and the others) are in the module README, "Engine settings".
+
 ## Works best with Hydralysis
 
 [Hydralysis](https://github.com/RusticStack/Hydralysis) is the reverse-engineering toolkit made for
