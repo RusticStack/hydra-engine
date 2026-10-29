@@ -3113,7 +3113,7 @@ Paths are relative to `Ghidra/Features/HeadlessSession` unless they begin with `
 
 | File | W0 | W1 | W2 | W3 | W4 | W5 | W8 |
 |---|---|---|---|---|---|---|---|
-| `S/Session.java` | | E1 (hello, `info`, `admit` call with the request, the call sites of `ProjectEntry.info(client)` at `:265`, `:333`, `:427`, the admission and `Guarded` seam call sites, `isInline` stays) | E2 (A13: the `seal_project` and `prepare_upgrade` dispatch) | E3b (`disconnect`, `reap`) | E3c (the join of a program under analysis, the registry as a state machine, refcount disposal in `reap`; A32: `completeLeaves` closes the idle project through `registry.closeIdle`) | E5 (`isInline`, `case health`, watchdog start) | |
+| `S/Session.java` | | E1 (hello, `info`, `admit` call with the request, the call sites of `ProjectEntry.info(client)` at `:265`, `:333`, `:427`, the admission and `Guarded` seam call sites, `isInline` stays) | E2 (A13: the `seal_project` and `prepare_upgrade` dispatch) | E3b (`disconnect`, `reap`) | E3c (the join of a program under analysis, the registry as a state machine, refcount disposal in `reap`; A32: `completeLeaves` closes the idle project through `registry.closeIdle`) | E5 (`isInline`, `case health`, watchdog start) **then** E9 (A33: `Governor.admit` before the slot wait of a request and the close of its reservation; `reap(warmMs)`, the overload the governor calls with 0 before it refuses an open) | |
 | `S/Scheduler.java` | | E1 (`laneOf(cmd, req, v3)`, `admit(c, cmd, req, m, waitMs)`, `describe(boolean)`, all behaviour-free) | E3a (maint lane, fair key, cap, queue info, ETA, `Preflight` call, `Ticket.yieldSlot`) | | | E5 (`describe` `tryLock`, lane stats) | |
 | `S/ImportCommands.java` | | E1 (the `admit` call at `:112` only) | E3a (remaining wait; the `ImportGate.enter` call at `:100` passes the client) | | | | |
 | **`S/ImportGate.java`** | | | E3a (`enter` takes the `Client`, `Entry` keeps it, `queueInfo` adds `estimateScope` for v3) | | | | |
@@ -3136,13 +3136,16 @@ Paths are relative to `Ghidra/Features/HeadlessSession` unless they begin with `
 | **`S/ProjectFormat.java`**, **`S/ProjectBackup.java`**, **`S/Seals.java`** | | | E2 | | | | |
 | `S/ProjectEntry.java` | | E1 (`info(Client)`: the signature only, same value) | E2 (`format` for v3) | | E3c (state machine fields) | | |
 | **`S/DbVersions.java`** | | E1 (`program()`, `dataTypes()` returning `null`) | E2 (`dataTypes()`) | | | | |
-| `S/Operations.java`, `S/Journal.java`, `S/Client.java`, `S/SessionException.java`, **`S/Identity.java`**, **`S/Settings.java`**, **`S/Preflight.java`**, **`S/Hooks.java`**, **`S/Guarded.java`** | | E1 (`SessionException`: the new codes, the busy-details and the bad-request-details helpers; `Hooks.Admission` and `Guarded`, both inert) | | | | | |
-| **`S/Advertised.java`** | | E1 (capability, limit and policy names declared up front) **then** E2a (adds the capability name `forkAtomic`, A4) | E2 (A13: the capability name `seal`, inserted before `forkAtomic`, A9) | | | | |
+| `S/Operations.java`, `S/Journal.java`, `S/Client.java`, `S/SessionException.java`, **`S/Identity.java`**, **`S/Settings.java`**, **`S/Preflight.java`**, **`S/Hooks.java`** | | E1 (`SessionException`: the new codes, the busy-details and the bad-request-details helpers; `Hooks.Admission`, inert) | | | | | |
+| **`S/Guarded.java`** | | | | | | E9 (A37: E9 creates it; E1 left no `Guarded` seam: the restart loop, the backoff, the per-thread `beat` and `states`, the emergency reserve, the test fault `inject`) | |
+| **`S/Advertised.java`** | | E1 (capability, limit and policy names declared up front) **then** E2a (adds the capability name `forkAtomic`, A4) | E2 (A13: the capability name `seal`, inserted before `forkAtomic`, A9) | | | E9 (A35: the capability name `admission` after `forkAtomic`; the limit names `minXmxMb` to `decompilerNegativeS` after `maxRunningPerKey`) | |
 | `S/HeadlessSession.java` | | E1 (endpoint and `ready`, `-set`) | E2 **then** E3a (A13, E2: the self-check of `DbVersions.dataTypes()` at `:762`, 5 lines; E3a: the `maxLong` and `maintSlots` defaults at `:133-134` and the usage text at `:78-79`; the option parser stays as it is) | | | E5 **then** E9 (E5: the watchdog and `testHooks`; E9: the governor start and the process job) | |
 | `S/HydraInfo.java` | | E1 (protocol constants) | | | | R1 (version) | |
 | `S/ScriptCommands.java` | | | | | E4 | E7 (the routing to a worker, D64) | |
 | **`S/PrivateInstance.java`** | | | | | E4 | | |
-| **`S/Health.java`**, **`S/Watchdog.java`** | | | | | | E5 | |
+| **`S/Health.java`** | | | | | | E5 **then** E9 (A34: `state` is `degraded` while `Governor.degraded()`; `debug_stall` `what:"thread"` plants one fault in a guarded thread, behind the test hooks) | |
+| **`S/Watchdog.java`** | | | | | | E5 | |
+| `S/QueryCommands.java` | | | | | | E9 (A36: the circuit breaker before the borrow in `decompile`, the error `decompiler_failed{function, entry, reason, retryable, negativeCache}` for protocol 3) | |
 | **`S/Governor.java`**, **`S/Budgets.java`**, **`S/DecompilerGate.java`**, **`S/ProcessJob.java`** | | | | | | E9 (`ProcessJob`: the daemon's own Job Object, D60) | |
 | **`S/ScriptWorker.java`** | | | | | | E7 | |
 | **`S/ReplicaPool.java`** | | | | | | | E11 |
@@ -3788,6 +3791,31 @@ Hydralysis documents is strengthened by it. Gates and rows that still need work:
 E5), gate 9.20 (quiet machine), the power-loss claim (E12, 8.7 (4) item 15), the hosted-runner confirmation of R-V3 and Z4b, the
 load-sensitive Hydralysis tests named in the Y6 and Z4b rows, the A28 sentences, and the Hydralysis real-engine run of Y5/Y6
 (none ran in this stage).
+
+### 8.9 Revision 8.5: the E9 amendments (finishing round, `w2/E9b`)
+
+Revision 8.5 records the ownership amendments of E9, which `integration/w3` carries since the merges `f194c2ed9b` and
+`57fd751d5e` (E9 commits `e321eca763`, `256a9f784f`, `c1a0bff962`, `fc8fd7e3d0`, branched from `47a43f6b06`). It changes no
+design decision and weakens no gate. `examples/check_ownership.py --package E9 --base 47a43f6b06` on the E9 branch reported
+5 violations (14 changed files, 5 outside its rows) before the 8.1 edits below and 0 after them; the matrix check reports
+136 rows, 52 packages, 0 violations (three rows are new: `S/Guarded.java` and `S/Watchdog.java` are split from their former
+shared rows, and `S/QueryCommands.java` had no row).
+
+| Amendment | File | Package, wave | Reason | Where in this file |
+|---|---|---|---|---|
+| A33 | `S/Session.java`: `Governor.admit(c, cmd, req)` before the slot wait in the dispatch of a request, its reservation closed on every exit; `reap(long warmMs)`, the overload of `reap()` the governor calls with 0 before it refuses an open | E9, W5 (after E5) | 3.11 puts the admission seam before `open_project`, `open_program`, `fork_project` and `import`, and E1 built no `Hooks.Admission` call site that an E9 class could fill; reclaiming idle views before a refusal needs a retention of 0 | 8.1 (`Session.java` W5 cell: E5 **then** E9), E9 Files |
+| A34 | `S/Health.java`: `state` is `degraded` while the governor is above the hard watermark; `debug_stall` `what:"thread"` plants one fault in the next lap of a guarded thread (test hooks only) | E9, W5 (after E5) | 3.11 says the daemon is `degraded` above 85% and 3.13 reports it in `health.state`; the restart of a guarded thread cannot be tested in a running daemon without a planted fault | 8.1 (`Health.java` split from `Watchdog.java`, W5 cell: E5 **then** E9), E9 Files |
+| A35 | `S/Advertised.java`: the capability name `admission`; the limit names `minXmxMb`, `maxViews`, `maxViewsPerClient`, `heapSoftPct`, `heapHardPct`, `nativeBudgetMb`, `viewDiskBudget`, `diskReserve`, `decompilerIdleS`, `decompilerWaitS`, `decompilerFailLimit`, `decompilerNegativeS` | E9, W5 | `Advertised` declares every name up front and throws on an undeclared one (3.1); 3.11 requires every value in `hello.limits`. The values are set from `Governor` (E9's file); `examples/char_e9.py` and its golden `e9-limits.json` assert them (3.1: each package in its own `char_<package>.py`) | 8.1 (`Advertised.java` W5 cell), E9 Files |
+| A36 | `S/QueryCommands.java`: the circuit breaker before the decompiler borrow in `decompile` (the negative cache), the fault classification after it, and `decompiler_failed{function, entry, reason, retryable, negativeCache}` with `retryAfterMs` for a protocol 3 client (a protocol 2 client keeps `completed:false` and `error`) | E9, W5 | 3.11 "Decompiler faults" needs the outcome of one decompile, which only `decompile` sees; the borrow sites named in E9's Files (`ProgramEntry`, `Overlay`) hand out the decompiler and never see the result | 8.1 (new row), E9 Files |
+| A37 | `S/Guarded.java` (new): created by E9, not by E1; E1's W1 cell said "`Hooks.Admission` and `Guarded`, both inert", but no `Guarded` class existed before `e321eca763` | E9, W5 | 3.11 "Daemon threads" (restart with backoff, counted in `health`, the 8 MB emergency reserve) is E9's behaviour; the file is new and has no other editor | 8.1 (`Guarded.java` split from the E1 row; the E1 cell keeps `Hooks.Admission` only), E9 Files |
+
+Items that are **not** rows: (a) E7 (`5e5f95cb37`) added one line to `S/Session.java` (`Health.contribute("scriptWorkers", ...)`)
+although its package text says "E7 does not edit `Session.java`"; it is not an E9 edit, so this revision records it as a fact
+and leaves the cell to E7's amendment. (b) BP22 (3.10) names "`-Xmx` laps" as its red test, not a script of `examples/conc/`:
+`conc/red_table.py` has no BP22 row, and `--only BP22` runs nothing. Its laps are `dt_e9` `e9_gate` (a third decompile
+waits, then `busy{capacity, resource:"native"}`), `e9_admission_256` and `e9_admission_512`; they and the X9 plant of
+`dt_x0` (`oracle_selftest`: X9 flagged `K7:orphan_decompiler`) pass on the E9b build. Red on hydra.3 is shown for the
+containment test by its no-job control (`e9_job_containment`), not by a hydra.3 run of `e9_gate`.
 
 ### W0
 
@@ -4569,7 +4597,9 @@ Files (8.1): new `S/Governor.java` (admission: heap after GC, the watermarks, `m
 disk estimate; the `degraded` state), new `S/Budgets.java` (the `Settings` keys and the learned `estHeap`), new
 `S/DecompilerGate.java` (the fair semaphore), new `S/ProcessJob.java` (the daemon's own Job Object, D60), `S/ProgramEntry.java` and `S/Overlay.java` (the gate at
 `borrowDecompiler`, the crash circuit breaker, the negative cache), `S/HeadlessSession.java` (starts the process job as the first statement of `launch`, then the governor
-**after** E5 starts the watchdog), `examples/dt_e9.py`, `examples/cc_e9.py`.
+**after** E5 starts the watchdog), `examples/dt_e9.py`, `examples/cc_e9.py`, `examples/char_e9.py` (the golden
+`characterization/v3/e9-limits.json`). Revision 8.5 (8.9): also `S/Session.java` (A33), `S/Health.java` (A34),
+`S/Advertised.java` (A35), `S/QueryCommands.java` (A36) and new `S/Guarded.java` (A37).
 Depends on: E5, E3c (it edits `ProgramEntry.java` after E3c), E1 (the seams `Hooks.Admission` and `Guarded`), P1b (the `--enable-native-access` flag in the JVM arguments, which E9 does not own) and X0.
 Parallel with: Z13b, Z15 (E6 and E7 run after it).
 Surface: `busy` `details.reason` `capacity`, `decompiler_failed`, `runaway_quarantined`; `limits`; `health.governor` (3.13).
