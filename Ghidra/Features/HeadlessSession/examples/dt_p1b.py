@@ -1147,6 +1147,72 @@ def t_children_of_threads(c):
     check(not errs, f"_children_of failed under threads: {errs[:2]}")
     return "4 threads x 200 calls of _children_of, no error"
 
+# ---- p1b_settings_dir -------------------------------------------------------------------------
+
+def t_settings_dir(c):
+    """Every daemon has its own Ghidra settings dir (``<state>/settings/<instance>``): the OSGi felixcache
+    and the compiled script bundles of two daemons of one user are not shared. The command line carries
+    ``-Dapplication.settingsdir`` (so also the routes without an environment); ``settingsDir: shared``, a
+    JVM option that already names one, and a JVM that is not a daemon keep Ghidra's own choice. Live: two
+    daemons run a script each and each has its own ``osgi/felixcache`` below its own dir."""
+    gs = c.gs
+    _GS["gs"] = gs
+    base = fresh_dir(c, "settings")
+    st = fresh_state(c, base)
+    inst = gs.Install.locate(c.a.ghidra)
+    opt = "-Dapplication.settingsdir="
+
+    def argv_of(instance, over=None, props_vm=None):
+        launch = gs.Launch(inst, gs.load_config(st, over or {}), st, instance)
+        if props_vm is not None:
+            launch.props["vmargs"] = list(props_vm)
+        return launch.command(["-daemon"])[0]
+
+    def dirs_of(argv):
+        return [a[len(opt):] for a in argv if a.startswith(opt)]
+
+    a, b = dirs_of(argv_of("one")), dirs_of(argv_of("two"))
+    check(len(a) == 1 and len(b) == 1 and a != b, f"two instances: {a} {b}")
+    check(pathlib.Path(a[0]) == st / "settings" / "one" and pathlib.Path(a[0]).is_dir(),
+          f"not <state>/settings/<instance>: {a}")
+    check(not dirs_of(argv_of(None)), "a JVM that is not a daemon got a settings dir")
+    check(not dirs_of(argv_of("one", {"settingsDir": "shared"})), "settingsDir shared still set one")
+    mine = str(base / "mine")
+    check(dirs_of(argv_of("one", {"settingsDir": mine})) == [mine], "an explicit settingsDir not used")
+    own = [opt + str(base / "own")]
+    check(dirs_of(argv_of("one", {"vmargs": own})) == [str(base / "own")],
+          "a vmargs settings dir was not the only one")
+    check(dirs_of(argv_of("one", props_vm=own)) == [str(base / "own")],
+          "a launch.properties settings dir was not the only one")
+    # live: two daemons of one state dir, a script each (it starts the OSGi framework)
+    scripts = c.scripts
+    da, db = (gs.Daemon(c.a.ghidra, str(st), n, scriptPath=[str(scripts)]) for n in ("seta", "setb"))
+    c.daemons += [da, db]
+    try:
+        errs = []
+
+        def run_script(d):
+            try:
+                with d.connect("t", "p1b") as s:
+                    s.call("script", script=str(scripts / "TestSleep.java"), program=None, args=["10"])
+            except Exception as ex:  # noqa: BLE001
+                errs.append(f"{d.instance}: {ex!r}")
+
+        ths = [threading.Thread(target=run_script, args=(d,)) for d in (da, db)]
+        for th in ths:
+            th.start()
+        for th in ths:
+            th.join()
+        check(not errs, f"a script failed: {errs}")
+        for name in ("seta", "setb"):
+            felix = [p for p in (st / "settings" / name).rglob("felixcache") if p.is_dir()]
+            check(felix, f"{name}: no osgi/felixcache below {st / 'settings' / name}")
+        check(not (st / "settings" / "default").exists(), "a daemon used the default instance's dir")
+    finally:
+        stop_quietly(da)
+        stop_quietly(db)
+    return "own settings dir per daemon instance; felixcache of two daemons apart; shared/explicit honoured"
+
 
 def isolated(fn):
     """Runs a test with its own user state root (GHIDRA_SESSION_HOME, inherited by every child
@@ -1166,6 +1232,7 @@ TESTS = {
     "p1b_children_of_threads": isolated(t_children_of_threads),
     "p1b_breakaway_probe": isolated(t_breakaway_probe),
     "p1b_native_access_flag": isolated(t_native_access_flag),
+    "p1b_settings_dir": isolated(t_settings_dir),
     "p1b_wedged_connect": isolated(t_wedged_connect),
     "p1b_stop_shutdown_deadline": isolated(t_stop_shutdown_deadline),
     "p1b_daemon_survives_launcher_exit": isolated(t_daemon_survives_launcher_exit),

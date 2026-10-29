@@ -151,6 +151,17 @@ def base_project() -> pathlib.Path:
     return p
 
 
+def wait_file(path, timeout=120.0):
+    """Waits until ``path`` exists (an event the scenario's script creates; polls every 20 ms) and returns
+    ``time.perf_counter()`` at that moment; raises ``TimeoutError`` when it does not appear."""
+    end = time.perf_counter() + timeout
+    while not os.path.exists(path):
+        if time.perf_counter() > end:
+            raise TimeoutError(f"{path} did not appear within {timeout:.0f} s")
+        time.sleep(0.02)
+    return time.perf_counter()
+
+
 def timed(fn, *a, **k):
     t = time.perf_counter()
     try:
