@@ -699,6 +699,9 @@ final class ProgramEntry implements Decompilers, DecompilerGate.Pool {
 		}
 		Json.put(o, "ownerLabel", owner == null ? null : ownerLabel);
 		Json.put(o, "busy", exclusiveHolder);
+		// the requests counted as waiting for the program lock now, the number the waiter cap (D39)
+		// is judged on: a client (or a test) can tell that a wait has queued without a timer
+		Json.put(o, "lockWaiters", waiters.get());
 		Json.put(o, "writers", writerIds());
 		Json.put(o, "journalSeq", journal.seq());
 		Json.put(o, "unsavedEdits", Math.max(0, journal.seq() - savedSeq));

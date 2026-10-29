@@ -52,6 +52,7 @@ TRANSIENT_NAME = "baseline_transient"
 # default 10 s for the scheduler: it fails 20 s in, so inside [LAST_MIN, LAST_MAX]. The imports
 # admitted at once fail 10 s in, so the slowest one ends 10 s (SPREAD_MIN..SPREAD_MAX) after the
 # fastest. A failure at 24 s, or all failures at the same instant, is a different behaviour.
+DEFAULT_WAIT_MS = 10000   # the default ``wait`` of a request, which the premise is about
 SLOWEST_IMPORT_MIN_MS = 19000
 SLOWEST_IMPORT_MAX_MS = 23000
 SPREAD_MIN_MS = 8000
@@ -317,28 +318,53 @@ def t_import_wait(c):
     front with the long lane taken, it fails ``busy`` 10 s later. Wanted: with no ``wait`` an
     import waits for its turn however long it takes (all three succeed once the occupiers end)."""
     exe = prepare(c)
-    occupy_ms = 25000
+    # The occupiers hold the long lane until the test releases them: on the old engine the
+    # imports fail busy at their default 10 s wait while it is held; on the new one they wait.
+    # The release comes when the daemon shows all three imports still waiting (for the lane or
+    # the gate) with the lane waits past that default by the daemon's own waitedMs, or when all
+    # three have ended (old engine: busy), never after a fixed time of the test's.
+    occupy_ms = 3600000
     d = c.daemon("bl-import", maxLong=2, maxImports=2)
     with c.connect(d, "occupier", "baseline", 3) as S, c.connect(d, "importer", "baseline", 3) as I:
         gpr = c.make_project(I, c.work / "projImportWait", "ImportWait")
         I.call("open_project", path=str(gpr), writable=True)
         ids = occupy_long(c, S, 2, occupy_ms)
         t0 = time.perf_counter()
+        res = [None] * 3
+
+        def run(i):
+            res[i] = timed(c, I, "import", file=c.a.exe, name=f"iw{i + 1}", duplicate=True,
+                           parallel=True)
+        ths = [threading.Thread(target=run, args=(i,), daemon=True) for i in range(3)]
         try:
-            calls = [(I, "import", {"file": c.a.exe, "name": f"iw{i}", "duplicate": True,
-                                    "parallel": True}) for i in (1, 2, 3)]
-            res = in_parallel(c, calls, 100)
+            for th in ths:
+                th.start()
+
+            def waiting():
+                if all(r is not None for r in res):
+                    return True
+                st = S.call("status")
+                lane = [w for w in st["scheduler"]["long"]["waiting"] if w.get("cmd") == "import"]
+                gate = len(st["imports"].get("queue") or [])
+                return (len(lane) + gate >= 3 and bool(lane) and
+                        min(w["waitedMs"] for w in lane) > DEFAULT_WAIT_MS + 1000)
+            dt.wait_for(waiting, "the three imports to wait behind the held long lane", 600, 0.1)
+            waited_all = all(r is None for r in res)
         finally:
             release_long(c, S, ids)
+        for th in ths:
+            th.join(1200)
+        if any(r is None for r in res):
+            raise dt.Fail("an import did not end within 1200 s of the release")
         total = time.perf_counter() - t0
         ev = {"protocol": I.hello.get("protocol"), "occupiedS": occupy_ms / 1000,
               "importsMs": [r["ms"] for r in res], "codes": [r.get("code", "ok") for r in res],
               "lanes": [(r.get("details") or {}).get("lane") for r in res],
               "waitedMs": [(r.get("details") or {}).get("waitedMs") for r in res]}
-        if all(r["ok"] for r in res):
+        if all(r["ok"] for r in res) and waited_all:
             d.stop(force=True)
-            return (f"three imports waited for the occupied long lane and succeeded "
-                    f"({ev['importsMs']} ms)")
+            return (f"three imports waited for the held long lane and succeeded once it was "
+                    f"released ({ev['importsMs']} ms)")
         # Two observations are told apart. The weaker one: each failing import is busy on the long
         # lane after the 10 s default wait. The premise needs the stronger one: the import that
         # queued for the gate (admitted only when an earlier one left it, 10 s in) fails busy about
@@ -436,22 +462,27 @@ def t_script_shared_visibility(c):
 def t_fork_save_behind_analysis(c):
     """Premise (Scheduler.java:61): ``save`` and ``fork_project`` are long-lane commands, so with the
     long lane taken (by analyses, here by sleeping scripts) they wait and fail ``busy``; a commit
-    must not queue behind a four-hour analysis. Wanted (the v3 ``maint`` lane): both start at once
-    and finish within QUICK_BOUND_MS."""
+    must not queue behind a four-hour analysis. Wanted (the v3 ``maint`` lane): both start at once.
+
+    The occupiers hold the long lane until the test cancels them, so a save that queued behind
+    them could only end ``busy`` (its ``wait`` runs out): both answered ok means neither queued
+    there, and on a v3 engine the scheduler's counters say so too (the maint lane admitted them
+    and queued nothing). Their time is recorded, not judged against a wall-clock bound."""
     exe = prepare(c)
     gpr = c.copy_fixture("blMaint")
     forks = c.work / "blMaintForks"
     d = c.daemon("bl-maint", maxLong=2)
-    with c.connect(d, "committer", "baseline", 3) as W, \
-            c.connect(d, "analysis", "baseline", 3) as S:
+    with c.connect(d, "committer", "baseline", 3) as W,             c.connect(d, "analysis", "baseline", 3) as S:
         pid = W.call("open_project", path=str(gpr), writable=True)["id"]
         W.call("open_program", path=exe, writable=True)
         W.call("rename", address=first_function(W), name="baseline_commit_name")
-        ids = occupy_long(c, S, 2, 15000)
+        ids = occupy_long(c, S, 2, 3600000)
         try:
+            before = S.call("status")["scheduler"]
             save = timed(c, W, "save", wait=5000)
             fork = timed(c, W, "fork_project", project=pid, path=str(forks / "f1"), mode="full",
                          wait=5000)
+            after = S.call("status")["scheduler"]
         finally:
             release_long(c, S, ids)
         ev = {"protocol": W.hello.get("protocol"), "saveMs": save["ms"],
@@ -459,11 +490,16 @@ def t_fork_save_behind_analysis(c):
               "forkCode": fork.get("code", "ok"),
               "lanes": [(o.get("details") or {}).get("lane") for o in (save, fork)]}
         c.timings["fork/save while the long lane is full (ms)"] = [save["ms"], fork["ms"]]
-        if save["ok"] and fork["ok"] and max(save["ms"], fork["ms"]) < QUICK_BOUND_MS:
+        maint_b, maint_a = before.get("maint"), after.get("maint")
+        not_queued = (after["long"]["admitted"] == before["long"]["admitted"] and
+                      (maint_a is None or maint_a["everQueued"] == maint_b["everQueued"]))
+        if save["ok"] and fork["ok"] and not_queued:
             d.stop(force=True)
-            return f"save {save['ms']} ms and fork {fork['ms']} ms with the long lane full"
+            return f"save {save['ms']} ms and fork {fork['ms']} ms with the long lane full, not queued"
         what = (f"save ended {ev['saveCode']} after {save['ms']} ms and fork_project "
-                f"{ev['forkCode']} after {fork['ms']} ms with the long lane full")
+                f"{ev['forkCode']} after {fork['ms']} ms with the long lane full (scheduler "
+                f"before {before.get('maint')}/{before['long'].get('admitted')}, after "
+                f"{after.get('maint')}/{after['long'].get('admitted')})")
         raise (dt.PremiseFail(what + " (busy naming the long lane)", ev)
                if busy_long(save) and busy_long(fork) else dt.Fail(what))
 

@@ -89,6 +89,12 @@ def finish(c, s, ids):
 # ---- maint_lane -----------------------------------------------------------------------------
 
 def t_maint_lane(c):
+    """The occupiers hold both long slots until the test cancels them (no run time of their own),
+    so "the long lane is full" holds for the whole of save and fork_project however slow the
+    machine. That save and fork_project did not queue behind it is the scheduler's own account:
+    admitted by the maint lane, which queued nothing, and no long slot taken. How long they took
+    is reported, not judged: a wall-clock bound measures the machine's load (a save took 16.7 s
+    under a full suite, in the maint lane, nothing queued)."""
     exe = bl.prepare(c)
     gpr = c.copy_fixture("e3aMaint")
     forks = c.work / "e3aMaintForks"
@@ -98,9 +104,10 @@ def t_maint_lane(c):
         pid = W.call("open_project", path=str(gpr), writable=True)["id"]
         W.call("open_program", path=exe, writable=True)
         W.call("rename", address=bl.first_function(W), name="e3a_maint_name")
-        ids = bl.occupy_long(c, S, 2, 20000)
+        ids = bl.occupy_long(c, S, 2, 3600000)
         try:
             before = S.call("status")["scheduler"]
+            # the wait is the most a queued save could wait before busy: nothing queues here
             save = bl.timed(c, W, "save", wait=5000)
             fork = bl.timed(c, W, "fork_project", project=pid, path=str(forks / "f1"),
                             mode="full", wait=5000)
@@ -109,12 +116,12 @@ def t_maint_lane(c):
             bl.release_long(c, S, ids)
         dt.check(save["ok"] and fork["ok"], f"save {save.get('code')} / fork {fork.get('code')} "
                  f"with the long lane full: {save.get('message')} {fork.get('message')}")
-        dt.check(max(save["ms"], fork["ms"]) < bl.QUICK_BOUND_MS,
-                 f"save took {save['ms']} ms and fork_project {fork['ms']} ms with the long lane "
-                 f"full (bound {bl.QUICK_BOUND_MS})")
         dt.check(before["maint"]["slots"] == 4, f"maint slots {before['maint']['slots']}, not 4")
         dt.check(after["maint"]["admitted"] - before["maint"]["admitted"] >= 2,
                  f"maint admitted {before['maint']['admitted']} -> {after['maint']['admitted']}")
+        dt.check(after["maint"]["everQueued"] == before["maint"]["everQueued"],
+                 f"save or fork_project queued in the maint lane: everQueued "
+                 f"{before['maint']['everQueued']} -> {after['maint']['everQueued']}")
         dt.check(after["long"]["admitted"] == before["long"]["admitted"],
                  "save or fork_project took a long slot")
         dt.check(after["long"]["inUse"] == 2 and after["long"]["queued"] == 0,
@@ -122,8 +129,8 @@ def t_maint_lane(c):
         W.call("close_program", discard=True)
         W.call("close_project")
     d.stop(force=True)
-    return (f"with 2 of 2 long slots taken: save {save['ms']} ms and fork_project {fork['ms']} ms, "
-            f"both in the maint lane")
+    return (f"with 2 of 2 long slots held: save {save['ms']} ms and fork_project {fork['ms']} ms, "
+            f"both admitted by the maint lane at once")
 
 
 # ---- fair_key -------------------------------------------------------------------------------

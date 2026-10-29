@@ -693,43 +693,54 @@ def t_owner_leave_bounded(c):
 # ---- lock_queue_full ------------------------------------------------------------------------
 
 def t_lock_queue_full(c):
+    """The holder holds until the test cancels it (no fixed run time), the third waiter is sent
+    once the daemon counts both earlier waits on the program lock (``lockWaiters``), and "at once"
+    is the daemon's own ``waitedMs: 0``, not a wall-clock bound. The waiters read with
+    ``functions`` (a shared program read that queues behind the exclusive holder like any other):
+    the native decompiler is not what this test is about (E9 owns its failures)."""
     exe = prepare(c)
     gpr = c.copy_fixture("e3bQf")
     d = c.daemon("e3b-qf", maxQuick=4)       # max(2, 4 / 4) = 2 waiters
-    H = None
+    H = M = None
     rs = []
     try:
         H = owner(c, d, gpr, exe)
         rs = [reader(c, d, gpr, exe, f"w{i}") for i in range(5)]
-        fn = bl.first_function(H)
-        hold = script(c, H, 25000)
-        dt.wait_for(lambda: holds(rs[0], exe), "the holder's script to hold the program", 30)
-        waiting = [rs[i].send("decompile", address=fn, wait=40000, parallel=True) for i in range(2)]
-        time.sleep(1.0)
+        M = c.connect(d, "M", "e3b", 3)       # reads the daemon's wait counters, joins nothing
+        hold = script(c, H, 3600000)
+        dt.wait_for(lambda: holds(rs[0], exe), "the holder's script to hold the program", 120)
+
+        def queued():
+            pg = program(M, exe)
+            return pg.get("lockWaiters") if pg else None
+        dt.check(queued() == 0, f"lockWaiters before the waiters: {program(M, exe)}")
+        waiting = [rs[i].send("functions", limit=1, wait=3600000, parallel=True) for i in range(2)]
+        dt.wait_for(lambda: queued() == 2, "both waiters to queue behind the holder", 120)
         t = time.perf_counter()
         try:
-            rs[2].call("decompile", address=fn, wait=40000)
+            rs[2].call("functions", limit=1, wait=3600000)
             raise dt.Fail("the third waiter waited instead of being refused")
         except c.gs.SessionError as e:
             ms = (time.perf_counter() - t) * 1000
             dt.check(e.code == "busy" and (e.details or {}).get("reason") == "lock_queue_full",
                      f"third waiter: {e.code} {e.details}")
-            dt.check(ms < 800, f"it was told after {ms:.0f} ms")
+            dt.check((e.details or {}).get("waitedMs") == 0, f"it waited before the refusal: {e.details}")
             err = rs[2].last_response["error"]
             dt.check(err.get("retryAfterMs") == 1000, f"retryAfterMs: {err.get('retryAfterMs')}")
             dt.check((e.details or {}).get("waitersMax") == 2, f"details: {e.details}")
         # a request on another lock of the same connection is not affected
         dt.check(bl.timed(c, rs[2], "projects")["ok"], "an unrelated request was refused")
+        dt.check(holds(rs[0], exe), "the holder ended before the cancel: the scenario did not hold")
         # the first two keep waiting and are served when the holder ends
         finish(H, hold)
         out = [attempt(c, rs[i], waiting[i])[0] for i in range(2)]
         dt.check(out == ["ok", "ok"], f"the two waiters ended with {out}")
         # when the lock is free the cap is not a limit on callers
-        dt.check(all(bl.timed(c, s, "decompile", address=fn)["ok"] for s in rs[2:]),
+        dt.check(all(bl.timed(c, s, "functions", limit=1)["ok"] for s in rs[2:]),
                  "readers were refused on a free lock")
         return "2 waiters wait, the 3rd gets busy{lock_queue_full} in %.0f ms with retryAfterMs 1000" % ms
     finally:
-        close_all(H, *rs)
+        close_all(H, M, *rs)
         d.stop(force=True)
 
 
