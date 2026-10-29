@@ -192,8 +192,9 @@ def t_health_long_request(c):
                wait=120000)    # the script framework is up
         A.call("open_project", path=str(gpr))
         A.call("open_program", path=exe)
-        rid = A.send("script", script=c.script("TestSleep.java"), args=["7000"], parallel=True,
-                     wait=120000)
+        # an ordinary ordered request (no "parallel"): it occupies the connection's single worker
+        # queue, so a "health" that is not answered on the reader thread would wait behind it
+        rid = A.send("script", script=c.script("TestSleep.java"), args=["7000"], wait=120000)
         time.sleep(3.2)   # the lane figures are the watchdog's snapshot: up to 1 s old
         seen = []
         for who, s in (("own connection", A), ("other connection", B)):
