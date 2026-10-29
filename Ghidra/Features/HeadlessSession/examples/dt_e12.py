@@ -72,7 +72,8 @@ version cannot be rebuilt from the newest one and its version file.
 Tests
 -----
 * ``e12_source_guards``     the facts the model rests on, pinned in the sources (order of the
-  ``flush``, the rename and the directory sync; the copy of a fork is not forced; the sidecar is).
+  ``flush``, the rename and the directory sync; the copy of a fork is not forced by ``copyProject``,
+  ``ProjectFork.publish`` forces the staged tree before it moves anything; the sidecar is forced).
 * ``e12_trace_complete``    replay of the trace equals the real tree (private and versioned item).
 * ``e12_control_*``         the simulator can fail: the pre-E8 order, a save without the data sync
   and a save without the directory sync each produce violations (red), the current code none.
@@ -85,10 +86,11 @@ Tests
   runs after every failure (red).
 * ``e12_save_private``      the matrix for the save of a private database (what a fork holds).
 * ``e12_save_versioned``    the matrix for the save of a versioned database.
-* ``e12_fork_publish``      the matrix for the publish of a fork (modelled from ``ProjectFork``,
-  see the function). Baseline: it names the hole in files E12 does not own.
-* ``e12_fork_publish_finding`` pins the finding and shows the same matrix passing for a publish that
-  forces its copies (a model of a change, not a change).
+* ``e12_fork_publish``      the matrix for the publish of a fork as ``ProjectFork.publish`` now does it
+  (modelled from the source, see ``fork_model``; the order is pinned by ``e12_source_guards``): the
+  staged tree is forced (files, then folders), the directory is synced before and after the ``.gpr``.
+* ``e12_fork_publish_finding`` the control: the same matrix for the publish without those forces (the
+  code before E12b) must find violations under both models.
 
 Environment: ``E12_BUFFERS`` (buffers of the test database, default 8), ``E12_BLOCK`` (buffer size, default
 1024: a block of 1029 bytes; Ghidra's default is 16384), ``E12_SAVES`` (saves in one
@@ -1182,13 +1184,37 @@ def t_source_guards(c):
     dt.check(order == sorted(order), "ProjectFork.publish: rep, sidecar, gpr order changed; the model must follow")
     dt.check(pub.rindex("writeSidecar(sc, sidecar)") > order[2], "ProjectFork.publish: final sidecar after the gpr")
     dt.check("ch.force(true)" in pf, "writeSidecar forces its temporary file")
+    # E12b: what fork_model("current") assumes of publish
+    i_force = pub.index("forceTree(st.dir().toPath());")
+    i_moving = pub.index("withPhase(ForkIntent.MOVING")
+    dt.check(i_force < i_moving < order[0], "ProjectFork.publish: forceTree(staging) before the intent and the .rep move")
+    pre = pub[order[1]:order[2]]
+    dt.check(re.search(r"^\s*syncDirectory\(destDir\.toPath\(\)\);", pre, re.M) is not None and
+             pre.rindex("syncDirectory(destDir.toPath())") > pre.rfind("moved.add(extra)"),
+             "ProjectFork.publish: syncDirectory(destDir) after the sidecar and the extras, before the .gpr move")
+    post = pub[order[2]:pub.rindex("writeSidecar(sc, sidecar)")]
+    dt.check(re.search(r"^\s*syncDirectory\(destDir\.toPath\(\)\);", post, re.M) is not None,
+             "ProjectFork.publish: syncDirectory(destDir) after the .gpr move, before the final sidecar")
+    ft = pf[pf.index("static void forceTree(Path root)"):]
+    ft = ft[:ft.index("private static void moveRetrying")]
+    dt.check("forceFile(f)" in ft and "syncDirectory(d)" in ft and "postVisitDirectory" in ft,
+             "forceTree forces every regular file, then every folder")
+    ff = ft[ft.index("static void forceFile(Path f)"):]
+    ff = ff[:ff.index("static void syncDirectory(Path dir)")]
+    dt.check("StandardOpenOption.WRITE" in ff and "setReadOnly(false)" in ff and "ch.force(true)" in ff,
+             "forceFile: on Windows a writable handle (read-only files made writable for the flush) and force(true)")
+    fi = src_text(FORK_REL.replace("ProjectFork.java", "ForkIntent.java")).replace("\r\n", "\n")
+    fw = fi[fi.index("void write(Path staging)"):]
+    fw = fw[:fw.index("\n\t}\n")]
+    dt.check(not re.search(r"force\(|getFD\(\)|sync\(", fw), "ForkIntent.write is not forced (the model says so)")
     up = src_text(UPG_REL)
     cp = up[up.index("static void copyProject"):]
     cp = cp[:cp.index("/** Opens the copy writable")]
     dt.check("Files.copy(src, to, StandardCopyOption.COPY_ATTRIBUTES)" in cp, "copyProject copies with Files.copy")
     dt.check(not re.search(r"force\(|getFD\(\)|sync\(", cp), "copyProject does not force the copies (the finding, pinned)")
-    return ("saveCompleted: flush, rename, directory sync, setReadOnly in that order; fork publish: rep, sidecar, gpr; "
-            "copyProject forces nothing; writeSidecar forces its file")
+    return ("saveCompleted: flush, rename, directory sync, setReadOnly in that order; fork publish: forceTree, rep, "
+            "sidecar, directory sync, gpr, directory sync; copyProject and ForkIntent.write force nothing; "
+            "writeSidecar forces its file")
 
 
 def t_trace_complete(c):
@@ -1281,14 +1307,23 @@ def t_control_late_version_close(c):
 
 # ---- fork publish -------------------------------------------------------------------------
 
-def fork_model(c, forced_copies):
+def fork_model(c, variant):
     """The operation list of ``ProjectFork.stage`` and ``publish`` for a fork of a project holding one
     database item, built from the order the source documents (guarded by ``e12_source_guards``; the
     publish is NOT traced from the running code: it is Java NIO, which the trace does not reach).
 
-    Layout: ``dest/F.rep`` (the item), ``dest/F.gpr``, ``dest/F.fork.json``, staging ``dest/.F.fork-ID.tmp``."""
+    Layout: ``dest/F.rep`` (the item), ``dest/F.gpr``, ``dest/F.fork.json``, staging ``dest/.F.fork-ID.tmp``.
+
+    ``variant``: ``"current"`` is the code as it is (``forceTree`` of the staging folder before the
+    intent says ``moving``, ``syncDirectory`` of the destination before and after the ``.gpr`` move);
+    ``"plain"`` is the publish before E12b, which forced nothing but the sidecar (the control).
+    ``ForkIntent.write`` is not forced in either (``Files.writeString`` and a move); the oracle does not
+    read the intent."""
+    if variant not in ("current", "plain"):
+        raise ValueError(variant)
+    forced = variant == "current"
     cp = Bench.get(c, "current")
-    d = c.work / "e12" / ("forkbase-" + ("forced" if forced_copies else "plain"))
+    d = c.work / "e12" / ("forkbase-" + variant)
     if d.exists():
         shutil.rmtree(d)
     src = d / "src" / "F.rep"
@@ -1298,38 +1333,36 @@ def fork_model(c, forced_copies):
     tree = read_tree(src)
     stg = ".F.fork-ID.tmp"
     ops = []
-    ops += [("C", f"{stg}/intent.json"), ("W", f"{stg}/intent.json", 0, b'{"id":"ID","phase":"staging"}'),
-            ("S", f"{stg}/intent.json")]                       # ForkIntent.write (forced, see guard)
+    ops += [("C", f"{stg}/intent.json.tmp"), ("W", f"{stg}/intent.json.tmp", 0, b'{"id":"ID","phase":"staging"}'),
+            ("R", f"{stg}/intent.json.tmp", f"{stg}/intent.json")]   # ForkIntent.write: not forced
     ops.append(("M", "staged-intent"))
     for p, b in sorted(tree.items()):                        # UpgradeCache.copyProject: Files.copy per file
         ops += [("C", f"{stg}/F.rep/{p}"), ("W", f"{stg}/F.rep/{p}", 0, b)]
-        if forced_copies:
-            ops.append(("S", f"{stg}/F.rep/{p}"))
     ops += [("C", f"{stg}/F.gpr"), ("W", f"{stg}/F.gpr", 0, gpr)]
-    if forced_copies:
-        ops.append(("S", f"{stg}/F.gpr"))
     ops.append(("M", "staged"))
+    if forced:                                               # publish: forceTree(staging), files then folders
+        ops += [("S", f"{stg}/intent.json")] + [("S", f"{stg}/F.rep/{p}") for p in sorted(tree)]
+        ops += [("S", f"{stg}/F.gpr"), ("DS", stg)]
+        ops.append(("M", "forced"))
     ops += [("C", f"{stg}/intent.json.tmp"), ("W", f"{stg}/intent.json.tmp", 0, b'{"id":"ID","phase":"moving"}'),
-            ("S", f"{stg}/intent.json.tmp"), ("R", f"{stg}/intent.json.tmp", f"{stg}/intent.json")]
+            ("R", f"{stg}/intent.json.tmp", f"{stg}/intent.json")]
     # moveRetrying(stagedRep, destRep): a directory rename, every name under it moves
     for p in sorted(tree):
         ops.append(("R", f"{stg}/F.rep/{p}", f"F.rep/{p}"))
-    if forced_copies:
-        ops.append(("DS", "."))
     ops.append(("M", "rep-moved"))
     ops += [("C", "F.fork.json.tmp"), ("W", "F.fork.json.tmp", 0, sidecar("publishing")), ("S", "F.fork.json.tmp"),
             ("R", "F.fork.json.tmp", "F.fork.json")]         # writeSidecar: forced, then an atomic move
-    if forced_copies:
-        ops.append(("DS", "."))                              # everything the .gpr depends on, durable first
+    if forced:
+        ops.append(("DS", "."))                              # syncDirectory(destDir) before the .gpr
     ops.append(("R", f"{stg}/F.gpr", "F.gpr"))               # the commit point
-    if forced_copies:
-        ops.append(("DS", "."))
+    if forced:
+        ops.append(("DS", "."))                              # syncDirectory(destDir) after it
     ops.append(("M", "gpr-moved"))
     ops += [("C", "F.fork.json.tmp"), ("W", "F.fork.json.tmp", 0, sidecar("complete")), ("S", "F.fork.json.tmp"),
             ("R", "F.fork.json.tmp", "F.fork.json")]
     ops.append(("M", "complete"))
     return {"ops": ops, "tree": tree, "gpr": gpr, "expect": {"1": mk["expect"]}, "dir": d, "cp": cp,
-            "sidecar": sidecar, "name": "forced" if forced_copies else "plain"}
+            "sidecar": sidecar, "name": variant}
 
 
 _FORK_CACHE = {}
@@ -1395,35 +1428,37 @@ def _sidecar_ok(b):
 
 
 def t_fork_publish(c):
-    """The fork-publish matrix for the code as it is. BASELINE: it is expected to find the hole named
-    in ``e12_fork_publish_finding``; it passes only when the publish forces its copies."""
-    fm = fork_model(c, False)
+    """The fork-publish matrix for the code as it is (``fork_model`` "current", its order pinned by
+    ``e12_source_guards``): no cut point may leave a ``.gpr`` whose fork does not open with the
+    content copied (``unopenable``, ``silent_corrupt``); a cut before the commit leaves no ``.gpr``
+    (``absent``: a staging folder or a ``.rep`` without ``.gpr``, which the sweep removes)."""
+    fm = fork_model(c, "current")
     out = []
     bad = 0
     for model in ("J", "U"):
         m = fork_matrix(c, fm, model)
         out.append(summarize(m))
         bad += violations(m)
-    if bad:
-        raise dt.PremiseFail("fork publish: " + " | ".join(out) +
-                             " (the copies of the staging folder are not forced before the .gpr is moved: "
-                             "ProjectFork/UpgradeCache, files E12 does not own)",
-                             {"violations": bad})
+    dt.check(bad == 0, "fork publish: " + " | ".join(out) + " " +
+             json.dumps({mo: {k: v for k, v in fork_matrix(c, fm, mo)["examples"].items() if k in VIOLATIONS}
+                         for mo in ("J", "U")}))
     return " | ".join(out)
 
 
 def t_fork_publish_finding(c):
-    fm = fork_model(c, False)
-    ff = fork_model(c, True)
+    """The control of ``e12_fork_publish``: the publish without the forces (the code before E12b) is red
+    under both models, and the current one is green, so the simulator can tell them apart."""
+    fm = fork_model(c, "plain")
+    ff = fork_model(c, "current")
     rows = []
     for model in ("J", "U"):
         m = fork_matrix(c, fm, model)
         dt.check(violations(m) > 0, f"fork publish {model}: the simulator found no violation in the unforced publish: " + summarize(m))
         rows.append("plain " + summarize(m))
         w = fork_matrix(c, ff, model)
-        dt.check(violations(w) == 0, f"fork publish {model}: even forced copies leave violations: " + summarize(w) +
+        dt.check(violations(w) == 0, f"fork publish {model}: the current publish leaves violations: " + summarize(w) +
                  json.dumps({k: v for k, v in w['examples'].items() if k in VIOLATIONS}))
-        rows.append("forced " + summarize(w))
+        rows.append("current " + summarize(w))
     return " | ".join(rows)
 
 
@@ -1616,7 +1651,4 @@ TESTS = {
     "e12_fork_publish": t_fork_publish,
 }
 
-BASELINE = {
-    "e12_fork_publish": "the staged copies of a fork are not forced to disk before the .gpr is moved "
-                        "into place (UpgradeCache.copyProject, ProjectFork.publish)",
-}
+BASELINE = {}
