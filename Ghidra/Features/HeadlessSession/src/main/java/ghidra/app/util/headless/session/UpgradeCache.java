@@ -768,8 +768,13 @@ final class UpgradeCache {
 			// publish: rename the complete copy, then name it in entry.json
 			b.phase = "publish";
 			m.checkCancelled();
+			// E12: Files.copy (copyProject) does not flush; every byte of the copy and of what the
+			// upgrade wrote is on the disk before the rename and entry.json (the commit point) can
+			// make the generation visible as complete
+			ProjectFork.forceTree(tmp[0].toPath());
 			moveDir(tmp[0].toPath(), published.toPath(), m);
 			tmp[0] = null;
+			ProjectFork.syncDirectory(dir.toPath()); // the rename before entry.json names it
 			boolean first = entry == null;
 			if (first) {
 				entry = Json.of("format", ENTRY_FORMAT, "source", plan.canonical(), "ghidra",
@@ -1279,8 +1284,10 @@ final class UpgradeCache {
 	private static void writeEntry(File dir, JsonObject entry) throws IOException {
 		Path tmp = new File(dir, ENTRY_FILE + ".tmp").toPath();
 		Files.writeString(tmp, GSON.toJson(entry), StandardCharsets.UTF_8);
+		ProjectFork.forceFile(tmp); // E12: the content is durable before the name is
 		Files.move(tmp, new File(dir, ENTRY_FILE).toPath(), StandardCopyOption.REPLACE_EXISTING,
 			StandardCopyOption.ATOMIC_MOVE);
+		ProjectFork.syncDirectory(dir.toPath());
 	}
 
 	/** Removes the entries of older keys of the same source that nobody uses. */
