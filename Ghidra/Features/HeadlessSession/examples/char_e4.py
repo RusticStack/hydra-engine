@@ -92,7 +92,7 @@ def sc_script(c, R):
         raise Fail(f"e4: script_changed details {err['details']}")
     err = R.err("b", b, "script", "bad_request", script=pr, isolation="bogus",
                 note="a closed field: details.field and allowed[]")
-    if err["details"] != {"field": "isolation", "allowed": ["shared", "exclusive", "private"]}:
+    if err["details"] != {"field": "isolation", "allowed": ["shared", "exclusive", "private", "worker"]}:
         raise Fail(f"e4: bad_request details {err['details']}")
     R.err("b", b, "script", "bad_request", script=pr, scriptSha256="xyz")
     c.stop(d)

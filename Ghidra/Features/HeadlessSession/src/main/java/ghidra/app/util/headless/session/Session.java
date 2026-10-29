@@ -132,6 +132,7 @@ final class Session {
 			() -> new com.google.gson.JsonPrimitive(ScriptCommands.leakedWorkers()));
 		Health.contribute("leaked", ScriptCommands::leakedList);
 		Health.contribute("repairs", Health::repairs);
+		Health.contribute("scriptWorkers", ScriptWorker::describe); // E7, after the four E5 pins
 		// E3b: a cancel reaches a request in a lock wait (3.5); the dead-client release is bounded
 		Advertised.capability("cancelWait", 1);
 		// a value that is not an integer is a usage error at start-up, not a failure of the first
