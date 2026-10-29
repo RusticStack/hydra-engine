@@ -385,8 +385,9 @@ def t_protocol(c: Ctx):
               pathlib.Path(paths["endpointFile"]).resolve() == pathlib.Path(d.endpoint_file).resolve(),
               f"paths: {paths}")
         plat = h["platform"]
-        check(list(plat) == ["os", "osVersion", "arch", "cpus", "javaVendor", "javaVersion",
-                             "maxHeapMb", "fileSystems", "cow"], f"platform: {list(plat)}")
+        check([k for k in plat if k != "testHooks"] == [
+            "os", "osVersion", "arch", "cpus", "javaVendor", "javaVersion", "maxHeapMb",
+            "fileSystems", "cow"], f"platform: {list(plat)}")  # testHooks (E5): dt_e5/cc_e5 assert it
         check(list(plat["fileSystems"]) == ["stateDir", "tmpDir", "upgradeCacheDir"] and
               list(plat["cow"]) == ["stateDir", "tmpDir"] and
               all(isinstance(v, str) for v in plat["fileSystems"].values()), f"platform: {plat}")

@@ -72,6 +72,8 @@ final class Session {
 	}
 
 	private final long startedAt = System.currentTimeMillis();
+	/** The watchdog thread that publishes the snapshot {@code health} reads (E5), or null. */
+	private volatile Watchdog watchdog;
 	/**
 	 * The life cycle of the projects: a state machine per project path (E3c, BP8). The two maps
 	 * below stay as the read indexes of the open projects.
@@ -122,6 +124,14 @@ final class Session {
 		// its own from a class it owns)
 		Advertised.capability("errorNext", 1);
 		Advertised.capability("identity", 1);
+		// E5: health answers on the reader thread from the watchdog's snapshot (3.4); the figures
+		// of other packages join through Health.contribute (the governor, workers: E7, E9)
+		Advertised.capability("health", 1);
+		Health.contribute("waits", WaitStats::describe);
+		Health.contribute("leakedWorkers",
+			() -> new com.google.gson.JsonPrimitive(ScriptCommands.leakedWorkers()));
+		Health.contribute("leaked", ScriptCommands::leakedList);
+		Health.contribute("repairs", Health::repairs);
 		// E3b: a cancel reaches a request in a lock wait (3.5); the dead-client release is bounded
 		Advertised.capability("cancelWait", 1);
 		// a value that is not an integer is a usage error at start-up, not a failure of the first
@@ -446,9 +456,33 @@ final class Session {
 
 	// ---- dispatch --------------------------------------------------------------------------
 
+	/** Epoch ms at which this session started (the base of {@code health.uptimeMs}). */
+	long startedAtMs() {
+		return startedAt;
+	}
+
+	/** Starts the watchdog (once): the first tick is published before this returns (3.4). */
+	synchronized void startWatchdog() {
+		if (watchdog == null) {
+			Watchdog w = new Watchdog(this);
+			watchdog = w;
+			w.start();
+		}
+	}
+
+	/** The test hook behind {@code debug_stall what:"watchdog"}. */
+	void watchdogStall(long ms) {
+		Watchdog w = watchdog;
+		if (w == null) {
+			throw new SessionException(SessionException.FAILED, "the watchdog is not running");
+		}
+		w.stall(ms);
+	}
+
 	/** Commands answered on the connection's reader thread, even while another runs. */
 	static boolean isInline(String cmd) {
-		return cmd.equals("ping") || cmd.equals("cancel") || cmd.equals("status");
+		return cmd.equals("ping") || cmd.equals("cancel") || cmd.equals("status") ||
+			cmd.equals("health");
 	}
 
 	JsonElement execute(Client c, String cmd, JsonObject req, RequestMonitor m) {
@@ -462,6 +496,13 @@ final class Session {
 				return hello(c, req);
 			case "status":
 				return status(c);
+			case "health": // inline: from the watchdog's snapshot, takes no lock (3.4)
+				return Health.reply(startedAt, c);
+			case "debug_stall": // registered only with -Dghidra.session.testHooks=true (D22)
+				if (Health.testHooks()) {
+					return Health.debugStall(this, req);
+				}
+				break; // otherwise it is an unknown command, below
 			case "cancel":
 				return cancel(c, req);
 			case "shutdown":
