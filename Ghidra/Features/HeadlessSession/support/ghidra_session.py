@@ -1406,6 +1406,12 @@ def _pe32_class():
                             ("th32ParentProcessID", wt.DWORD), ("pcPriClassBase", wt.LONG),
                             ("dwFlags", wt.DWORD), ("szExeFile", wt.WCHAR * 260)]
 
+            # the signatures of the shared kernel32 are set here, once, under the lock: a
+            # per-call assignment of ``argtypes`` is what two threads raced on
+            k = _kernel32()
+            k.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
+            k.Process32FirstW.argtypes = k.Process32NextW.argtypes = [ctypes.c_void_p,
+                                                                      ctypes.POINTER(PE32)]
             _PE32 = PE32
         return _PE32
 
@@ -1416,9 +1422,6 @@ def _children_of(pid: int) -> list[tuple[int, str]]:
 
     PE32 = _pe32_class()
     k = _kernel32()
-    k.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
-    k.Process32FirstW.argtypes = k.Process32NextW.argtypes = [ctypes.c_void_p,
-                                                              ctypes.POINTER(PE32)]
     snap = k.CreateToolhelp32Snapshot(0x2, 0)
     out = []
     try:
