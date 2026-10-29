@@ -976,6 +976,10 @@ class Soak:
     def setup(self):
         if self.work.exists() and any(self.work.iterdir()) and not self.a.reuse_work:
             raise SystemExit(f"{self.work} is not empty; pass an empty --work (fresh state roots are the rule)")
+        if self.a.master_root and self.tree_root.exists() and any(self.tree_root.iterdir()) and not self.a.reuse_work:
+            # the end of the run removes <master-root>/masters and <master-root>/agents: never in a folder that has content
+            raise SystemExit(f"{self.tree_root} (--master-root) is not empty; pass an empty folder: the run deletes "
+                             "its masters and agents folders at the end")
         for d in (self.state, self.tmpdir, self.scripts_dir, self.agents_dir, self.masters_dir):
             d.mkdir(parents=True, exist_ok=True)
         (self.state / "config.json").write_text(json.dumps({"tmpdir": str(self.tmpdir),
@@ -1236,6 +1240,13 @@ class Soak:
                     if p is None or p.poll() is not None:
                         return False        # the agent went away on its own: nothing was killed (the monitor judges its exit)
                     r = chaos.kill_client_proc(p)
+                    if not (r or {}).get("terminated"):
+                        # not killed: the process is still the agent. Popping and respawning it would put two
+                        # processes on one ledger. Leave it where it is and count nothing.
+                        self.fault_log.append({"t": round(self.t(), 1), "fault": "kill_client", "agent": i, "kill": r,
+                                               "counted": False})
+                        r = {}
+                        return False
                     self.rc_log.append({"agent": i, "rc": "killed", "t": round(self.t(), 1)})
                     self.procs.pop(i, None)
                 ok = self.k10(label, phase=f"kill_client a{i:02d}")
@@ -2116,6 +2127,8 @@ def selftest(work: pathlib.Path | None = None, verbose: bool = True) -> int:
     check("a failed save with an IOException in a handle-holder window is tolerated", not viol, viol)
     viol, _ = classify_rows(rows + [dict(frow, message="IOException: x", op="read_decompile")], [dict(wall, cls="handle_holder")])
     check("a handle holder does not excuse a failed read", bool(viol), viol)
+    viol, _ = classify_rows(rows + [dict(frow, message="boom", op="save")], [dict(wall, cls="handle_holder")])
+    check("a handle holder does not excuse a failed save whose message is not a file error", bool(viol), viol)
     sh = window_share([{"t0": 10, "t1": 20, "scope": "all"}, {"t0": 15, "t1": 30, "scope": "all"},
                        {"t0": 50, "t1": 60, "scope": 3}], 0.0, (0, 100))
     check("window share: union of the all-scope windows over the run (the scope-agent window excluded)",
@@ -2231,6 +2244,122 @@ def selftest(work: pathlib.Path | None = None, verbose: bool = True) -> int:
     stop_flag.set()
     th.join(2)
     check("live_agents iterates a snapshot (no 'dict changed size' while another thread mutates procs)", live_ok)
+
+    # ---- f_kill_client: a kill that did not terminate the process leaves the agent alone (no second process on its ledger)
+    import chaos_lib as _chaos  # noqa: PLC0415
+
+    class _Alive:
+        pid = 0
+
+        def poll(self):
+            return None
+    saved_kill = _chaos.kill_client_proc
+    try:
+        for answer, label, want_spawn in (({"terminated": False}, "not terminated", []),
+                                          ({"terminated": True}, "terminated", [1])):
+            _chaos.kill_client_proc = lambda _p, _a=answer: dict(_a)
+            sk = stub_soak()
+            p_alive = _Alive()
+            sk.procs = {1: p_alive}
+            sk.fault_log, sk.tolerated = [], []
+            sk.pick_agent = lambda: 1
+            sk.k10 = lambda *a, **k: True
+            sk.file_round = lambda *a, **k: None
+            sk.recovery_read = lambda *a, **k: None
+            got = sk.f_kill_client()
+            if label == "not terminated":
+                check("a kill_client that did not terminate the process: not counted, the agent is neither popped nor respawned",
+                      got is False and sk.procs.get(1) is p_alive and sk.spawned == [], (got, sk.procs, sk.spawned))
+            else:
+                check("control: a kill_client that terminated the process is counted and the agent respawned",
+                      got is True and sk.spawned == want_spawn, (got, sk.spawned))
+    finally:
+        _chaos.kill_client_proc = saved_kill
+
+    # ---- --master-root: the run removes <root>/masters and <root>/agents at its end, so a folder with content is refused
+    import argparse as _ap  # noqa: PLC0415
+    mr = base / "master-root-full"
+    (mr / "masters").mkdir(parents=True, exist_ok=True)
+    (mr / "masters" / "keep.txt").write_text("x")
+    emp = base / "work-empty"
+    emp.mkdir(exist_ok=True)
+    sk = Soak.__new__(Soak)
+    sk.work, sk.tree_root, sk.a = emp, mr, _ap.Namespace(master_root=str(mr), reuse_work=False)
+    try:
+        sk.setup()
+        refused = False
+    except SystemExit as e:
+        refused = "--master-root" in str(e)
+    check("a --master-root with content is refused before anything is written, and nothing in it is touched",
+          refused and (mr / "masters" / "keep.txt").exists())
+
+    # ---- agent_main and the generation it saves (found live: a respawned agent saved an edit it never made)
+    global load_gs
+    real_load_gs = load_gs
+
+    class _FakeErr(Exception):
+        def __init__(self, code, message="", details=None):
+            super().__init__(code)
+            self.code, self.message, self.details = code, message, details or {}
+
+    class _FakeSession:
+        def __init__(self, log):
+            self.log = log
+
+        def call(self, cmd, **f):
+            self.log.append((cmd, f))
+            return {"open_project": {"id": "m1"}, "fork_project": {"project": "p1"}, "open_program": {"key": "k1"},
+                    "functions": {"functions": [], "truncated": False}}.get(cmd, {})
+
+        def close(self):
+            pass
+
+    class _FakeDaemon:
+        log: list = []
+
+        def __init__(self, *a, **k):
+            pass
+
+        def connect(self, *a, **k):
+            return _FakeSession(_FakeDaemon.log)
+
+    class _FakeGs:
+        SessionError = _FakeErr
+        Daemon = _FakeDaemon
+    load_gs = lambda _g: _FakeGs  # noqa: E731
+
+    def run_agent(tag, ledger_rows, ops, seconds, seed):
+        ad = base / f"agent-{tag}"
+        if ad.exists():
+            rmtree(ad)
+        ad.mkdir(parents=True)
+        (ad / "meta.json").write_text(json.dumps({"addrs": ["0x1000", "0x1010"], "prefix": tag_prefix(0), "functions": 2}))
+        led_ = oracle.Ledger(ad / "ledger.jsonl")
+        for kind, g, ph in ledger_rows:
+            (led_.sent if ph == "sent" else led_.ack)(f"0:{g}", kind=kind, gen=g)
+        led_.close()
+        _FakeDaemon.log = []
+        spec = {"ghidra": "-", "state": "-", "instance": "-", "index": 0, "dir": str(ad), "seed": seed, "label": "soak-a00",
+                "program": "/p.exe", "stop_file": str(ad / "stop"), "deadline": time.time() + seconds, "caps": {}, "scripts": {},
+                "master": "m", "ops": ops, "agents": 1, "edit_m": 2}
+        (ad / "spec.json").write_text(json.dumps(spec))
+        rc = agent_main(str(ad / "spec.json"))
+        return rc, oracle.Ledger.read(ad / "ledger.jsonl"), list(_FakeDaemon.log)
+    try:
+        # a respawned agent: gens 1-3 were edited, 1-2 saved, the 3rd edit died with the killed client
+        prior = [("edit", 1, "ack"), ("save", 1, "ack"), ("edit", 2, "ack"), ("save", 2, "ack"), ("edit", 3, "ack")]
+        rc, recs, cmds = run_agent("respawn-fork", prior, ["fork"], 0.6, 1)
+        saves = [r for r in recs if r.get("kind") == "save" and r.get("gen") == 3]
+        check("a respawned agent that forks does not save the edit its dead incarnation made (no false K4/K5)",
+              rc == 0 and not saves and not any(c == "save" for c, _f in cmds) and any(c == "fork_project" for c, _f in cmds),
+              (rc, saves, [c for c, _f in cmds][:12]))
+        rc, recs, cmds = run_agent("respawn-edit", prior, ["edit_save", "fork"], 1.5, 2)
+        edited = {r["gen"] for r in recs if r.get("kind") == "edit" and r.get("phase") == "ack"} - {1, 2, 3}
+        saved = {r["gen"] for r in recs if r.get("kind") == "save" and r.get("phase") == "ack"}
+        check("every generation this incarnation saves is one it edited itself (control: it edited and saved some)",
+              rc == 0 and bool(edited) and bool(saved - {1, 2}) and (saved - {1, 2}) <= edited, (rc, edited, saved))
+    finally:
+        load_gs = real_load_gs
 
     # ---- the oracle plumbing the runner uses, on a synthetic tree (clean, then planted)
     root = base / "tree"

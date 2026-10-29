@@ -19,7 +19,6 @@ usage: run_ef.py e KIND PROJ FS N SEED      KIND reader|owner|forker|importer|sh
        run_ef.py f - PROJ FS N SEED
 """
 import json
-import os
 import pathlib
 import subprocess
 import sys
@@ -29,8 +28,6 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from c_lib import *  # noqa
 from run_c import Run, compact, compact_insp, _tree_rows  # noqa
-
-OPEN_BUSY_RETRIES = int(os.environ.get("HYDRA_E6_OPEN_BUSY_RETRIES", "0") or 0)
 
 PY = sys.executable
 WORKER = str(pathlib.Path(__file__).parent / "c_worker.py")
@@ -370,19 +367,7 @@ class RunEF(Run):
         def worker(k):
             try:
                 ck = s.rig.daemon.connect("agent-%d" % k, HARNESSES[k % 4])
-                # eight clients open one project at once and the daemon can answer `busy` beyond its waiter cap.
-                # By default that answer ends the worker (as before this edit). HYDRA_E6_OPEN_BUSY_RETRIES=N (set
-                # by chaos_tests.py for the daemon8 batch, an E6 edit outside E6's rows: see its report) retries
-                # up to N times; every busy answer is COUNTED in the iteration record (open_busy_answers), not hidden.
-                for _try in range(1 + OPEN_BUSY_RETRIES):
-                    try:
-                        o = ck.call("open_project", path=str(s.canon_gpr(d)))
-                        break
-                    except SessionError as e:
-                        if e.code != "busy" or _try >= OPEN_BUSY_RETRIES:
-                            raise
-                        st[k]["busy"] = st[k].get("busy", 0) + 1
-                        time.sleep(0.1)
+                o = ck.call("open_project", path=str(s.canon_gpr(d)))
                 st[k]["phase"] = "fork"
                 t = now()
                 f = ck.call("fork_project", project=o["id"], path=str(d / ("fork%d" % k)), mode=s.fork_mode)
@@ -424,7 +409,6 @@ class RunEF(Run):
         kr = s.rig.kill()
         rec["kill"] = kr
         rec["phases_at_kill"] = phases
-        rec["open_busy_answers"] = sum(x.get("busy", 0) for x in st)
         stop.set()
         [t.join(30) for t in ths]
         s.rig.cancel_watchdog()

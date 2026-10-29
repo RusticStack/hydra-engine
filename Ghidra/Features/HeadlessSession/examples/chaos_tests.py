@@ -90,6 +90,8 @@ COUNTS = {
     "gate": dict(save_ntfs=200, save_refs=200, fork=300, promote=200, daemon8=50, control=20),
     "smoke": dict(save_ntfs=2, fork=2, promote=1, daemon8=1, control=1),
 }
+#: how often the daemon8 wrapper retries an open_project answered `busy` (see ef_busy_main)
+DAEMON8_OPEN_BUSY_RETRIES = 200
 #: what the engine-level batches cannot cover and the check that does. A gate profile with any entry here is
 #: INCOMPLETE, never PASS: PASS is unreachable until the VF integration check lifts these (it edits these constants
 #: when it has run the checks they name; the selftest clears them to prove that a complete clean run would be PASS).
@@ -181,14 +183,14 @@ def judge_rows(rows: list, family: str) -> dict:
             "trigger_hits": sum(1 for r in rec if r.get("trigger_hit")),
             "anomaly_classes": classes, "failing_iterations": failing_iterations,
             "unopenable": unopenable, "rep_without_gpr": rep_no_gpr, "blocked_retries": blocked,
-            "open_busy_answers": sum(int(r.get("open_busy_answers") or 0) for r in rec),
             "leftovers_after_sweep": leftovers, "orphans_before_sweep": orphans_before_sweep, "lost_acknowledged": loss, "harness_errors": len(errs),
             "harness_error_samples": [str(e.get("harness_error"))[-300:] for e in errs[:3]]}
 
 
 def judge_batch(name: str, spec: dict, want: int, rows: list, footer: dict | None, exit_code, post_rep: oracle.Report,
-                gate: bool) -> dict:
+                gate: bool, busy_answers: int = 0) -> dict:
     j = judge_rows(rows, spec["family"])
+    j["open_busy_answers"] = int(busy_answers)
     viol = []
     if j["failing_iterations"]:
         viol.append(f"{j['failing_iterations']} iteration(s) with anomalies: {j['anomaly_classes']}")
@@ -207,11 +209,23 @@ def judge_batch(name: str, spec: dict, want: int, rows: list, footer: dict | Non
     if footer is None:
         inc.append("no footer.json: the batch did not finish")
     verdict = "FAIL" if viol else ("INCOMPLETE" if inc else ("PASS" if gate else "SMOKE-OK"))
-    return {"batch": name, "verdict": verdict, "wanted": want, **j, "violations": viol, "incomplete": inc}
+    out = {"batch": name, "verdict": verdict, "wanted": want, **j, "violations": viol, "incomplete": inc}
+    if busy_answers:
+        # gate 9.17 wants "no unexplained busy". The retries make the batch run on, they do not explain the answer:
+        # while the count is non-zero a gate profile cannot be PASS (a soft gap), and the count is in the evidence
+        out["busy_gap"] = (f"{busy_answers} open_project answer(s) `busy` were retried ({DAEMON8_OPEN_BUSY_RETRIES} at most per "
+                           "client): 9.17 wants no unexplained busy, so each needs an explanation (waiter cap or holder) before PASS")
+    return out
 
 
 #: the "below 0.75% at 95%" wording needs this many counted save kills on each file system (9.15)
 WORDING_MIN_SAVE_KILLS_PER_FS = 200
+
+
+def attempt_margin(profile: str, family: str, n: int) -> int:
+    """Spare attempts handed to a harness process on top of its share of the wanted kills (gate profile; the control
+    and the daemon batch have no trigger to miss): 10%, at least 2."""
+    return max(2, -(-n // 10)) if profile == "gate" and family not in ("control", "daemon8") else 0
 
 
 def count_overrides(profile: str, counts: dict, only=()) -> list:
@@ -231,6 +245,7 @@ def overall(batches: dict, profile: str, missing: dict, overrides=()) -> dict:
     # a batch of the profile that neither ran nor was named as missing (a harness bug or a bare --only)
     gaps += [f"{b}: not run" for b, n in COUNTS[profile].items() if n > 0 and b not in batches and b not in missing]
     soft = [f"{k}: {v}" for k, v in SOFT_GAPS.items()]
+    soft += [f"{b}: {r['busy_gap']}" for b, r in batches.items() if r.get("busy_gap")]
     save_b = {b: r for b, r in batches.items() if BATCHES[b]["family"] == "save"}
     save_kills = sum(r["kills"] for r in save_b.values())
     save_fail = sum(r["failing_iterations"] for r in save_b.values())
@@ -344,11 +359,15 @@ class Chaos:
     def k7_orphans(self, name: str, post: oracle.Report, before: set) -> dict:
         """K7 over the batch: no decompiler started during it is left with its parent gone (the daemon was killed
         or stopped). Decompilers that existed before the batch, or whose parent is alive (another run's daemon on
-        this machine), are not ours and are not judged. It is vacuous when the batch ran no decompiler."""
+        this machine), are not ours and are not judged. It is vacuous when the batch ran no decompiler. Known limit: the process
+        list has no command line, so a decompiler orphaned in the batch window by ANOTHER run's daemon kill on the same
+        machine cannot be told apart and would be judged here; the release runs are on a quiet machine, and the evidence
+        field `scope` says so."""
         new = [o for o in oracle.find_orphan_decompilers() if o["pid"] not in before]
         mine = {o["pid"] for o in new if not o["parent_alive"]}
         oracle.check_k7_processes([], settle_s=8.0, only_pids=mine, rep=post)
-        self.k7_seen[name] = {"new_decompilers_present": len(new), "orphaned": len(mine)}
+        self.k7_seen[name] = {"new_decompilers_present": len(new), "orphaned": len(mine),
+                                "scope": "every new decompiler of the machine whose parent is gone (no command line to narrow it)"}
         return self.k7_seen[name]
 
     def run_batch(self, name: str) -> dict:
@@ -359,14 +378,27 @@ class Chaos:
         results = []
         outdirs = []
 
+        busy_logs = []
+
         def one(tag, n, seed):
             argv = [a.replace("{proj}", self.a.proj) for a in spec["argv"]]
-            cmd = py + [str(CONC / spec["script"])] + argv + [str(n), str(seed)] + self.common()
-            env = dict(os.environ, TRIG="1", RUN_TAG=f"{self.a.tag}{tag}")
+            # the harness stops at n unanswered kills, trigger-less ones included, but the runner counts only the
+            # trigger-hit ones: on a gate profile a few spare attempts keep one trigger miss (a 120 s fallback) from
+            # leaving the batch short of the wanted count. More counted kills than wanted is harmless.
+            n_run = n + attempt_margin(self.a.profile, spec["family"], n)
+            script = str(CONC / spec["script"])
+            lead = [script]
             if spec["family"] == "daemon8":
-                # eight clients open one project at once; a `busy` answer is retried by the harness and counted
-                # (open_busy_answers). The harness default (no retry) is unchanged for every other caller.
-                env["HYDRA_E6_OPEN_BUSY_RETRIES"] = "200"
+                # eight clients open one project at once and the daemon may answer `busy` past its waiter cap. The
+                # harness (conc/run_ef.py, not E6's file, left untouched) ends a worker on that answer. This runner
+                # starts it through ef_busy_main below, which retries an open_project answered `busy` and COUNTS
+                # every such answer in a file the runner reads back (open_busy_answers): retried, never hidden.
+                blog = self.logs / f"busy-{name}-{tag}.jsonl"
+                busy_logs.append(blog)
+                lead = [str(pathlib.Path(__file__).resolve()), "_ef-busy", str(DAEMON8_OPEN_BUSY_RETRIES), str(blog), script]
+            cmd = py + lead + argv + [str(n_run), str(seed)] + self.common()
+            # no ambient value reaches a harness: the retry count is an argument of the wrapper, not an environment variable
+            env = dict(os.environ, TRIG="1", RUN_TAG=f"{self.a.tag}{tag}")
             t0 = time.time()
             rc = self.run_proc(cmd, self.logs / f"{name}-{tag}.log", env, self.a.batch_timeout_s)
             results.append((tag, rc, round(time.time() - t0, 1)))
@@ -402,7 +434,8 @@ class Chaos:
             (plant / "db.1.gbf").write_bytes(oracle.MAGIC + bytes(32))
             (plant / "db.2.gbf").write_bytes(bytes(40))        # X1: the newest version file has a zero header
             oracle.check_k2(outdirs[0] / "planted", post)
-        r = judge_batch(name, spec, want, rows, footer, exit_code, post, self.a.profile == "gate")
+        busy = sum(len(read_rows(b)) for b in busy_logs)
+        r = judge_batch(name, spec, want, rows, footer, exit_code, post, self.a.profile == "gate", busy_answers=busy)
         r["shards"] = [{"tag": t, "exit": rc, "seconds": s} for t, rc, s in results]
         r["what"] = spec["what"]
         r["k7_orphan_check"] = self.k7_seen.get(name)
@@ -611,11 +644,65 @@ def selftest(verbose: bool = True) -> int:
               overall(full2, "gate", {})["verdict"] == "PASS", overall(full2, "gate", {}))
         o = overall(full2, "gate", {}, ["--n save_ntfs=2"])
         check("planted: a gate run with an overridden count is capped at SMOKE-OK, never PASS", o["verdict"] == "SMOKE-OK", o)
+        d8 = judge_batch("daemon8", BATCHES["daemon8"], 50, rows(50, extra={"anomalies": []}), {"base_unchanged": True}, 0, clean,
+                         True, busy_answers=3)
+        o = overall({**full2, "daemon8": d8}, "gate", {})
+        check("busy answers of daemon8 are counted, named in the batch and keep a gate run from PASS",
+              d8["open_busy_answers"] == 3 and "busy_gap" in d8 and o["verdict"] == "INCOMPLETE"
+              and any("daemon8" in g and "busy" in g for g in o["soft_gaps"]), (d8, o))
+        d8_0 = judge_batch("daemon8", BATCHES["daemon8"], 50, rows(50), {"base_unchanged": True}, 0, clean, True)
+        check("no busy answer: no busy gap", "busy_gap" not in d8_0 and d8_0["open_busy_answers"] == 0, d8_0)
         o = overall({b: r for b, r in full2.items() if b != "daemon8"}, "gate", {})
         check("a gate batch that neither ran nor was named as missing is a gap", o["verdict"] == "INCOMPLETE"
               and any("daemon8: not run" in g for g in o["gaps"]), o)
     finally:
         SOFT_GAPS.update(saved_soft)
+    # the daemon8 busy retry (the wrapper around conc/run_ef.py, which is not E6's file)
+    class _Err(Exception):
+        def __init__(self, code):
+            super().__init__(code)
+            self.code = code
+
+    import tempfile as _tf  # noqa: PLC0415
+    blog = pathlib.Path(_tf.mkdtemp(prefix="chaos-busy-")) / "busy.jsonl"
+
+    def make_orig(script):
+        seq = list(script)
+
+        def orig(self, cmd, deadline=None, **f):
+            x = seq.pop(0) if seq else "ok"
+            if x != "ok":
+                raise _Err(x)
+            return {"cmd": cmd}
+        return orig
+    w = retry_open_busy(make_orig(["busy", "busy", "ok"]), _Err, 5, blog, sleep=lambda _s: None)
+    check("open_project answered busy twice is retried and counted", w(None, "open_project", path="x") == {"cmd": "open_project"}
+          and len(read_rows(blog)) == 2, read_rows(blog))
+    w = retry_open_busy(make_orig(["busy"] * 9), _Err, 3, blog, sleep=lambda _s: None)
+    try:
+        w(None, "open_project")
+        raised = None
+    except _Err as e:
+        raised = e.code
+    check("busy after the last retry is raised as busy (not hidden)", raised == "busy" and len(read_rows(blog)) == 5, read_rows(blog))
+    w = retry_open_busy(make_orig(["busy"]), _Err, 3, blog, sleep=lambda _s: None)
+    try:
+        w(None, "fork_project")
+        raised = None
+    except _Err as e:
+        raised = e.code
+    check("busy on any other command is raised at once", raised == "busy" and len(read_rows(blog)) == 5)
+    w = retry_open_busy(make_orig(["failed"]), _Err, 3, blog, sleep=lambda _s: None)
+    try:
+        w(None, "open_project")
+        raised = None
+    except _Err as e:
+        raised = e.code
+    check("another error of open_project is raised at once", raised == "failed" and len(read_rows(blog)) == 5)
+    check("spare attempts: gate save/fork/promote get 10% (at least 2), smoke, control and daemon8 get none",
+          attempt_margin("gate", "save", 200) == 20 and attempt_margin("gate", "fork", 3) == 2
+          and attempt_margin("smoke", "save", 2) == 0 and attempt_margin("gate", "control", 20) == 0
+          and attempt_margin("gate", "daemon8", 50) == 0)
     check("gate counts: 400 save kills, 300 fork, 200 promote, 50 daemon",
           COUNTS["gate"]["save_ntfs"] + COUNTS["gate"]["save_refs"] == 400 and COUNTS["gate"]["fork"] == 300
           and COUNTS["gate"]["promote"] == 200 and COUNTS["gate"]["daemon8"] == 50)
@@ -625,7 +712,45 @@ def selftest(verbose: bool = True) -> int:
 
 # ------------------------------------------------------------------------------ command line
 
+def retry_open_busy(orig, error_cls, retries: int, logp, sleep=time.sleep):
+    """Wraps a client ``call(self, cmd, deadline=None, **fields)``: an ``open_project`` answered ``busy`` is retried up to
+    ``retries`` times, each such answer appended to ``logp``; any other error, and the answer after the last retry, is
+    raised as it was."""
+    lock = threading.Lock()
+
+    def call(self, cmd, deadline=None, **fields):
+        for attempt in range(1 + retries):
+            try:
+                return orig(self, cmd, deadline, **fields)
+            except error_cls as e:
+                if cmd != "open_project" or getattr(e, "code", None) != "busy" or attempt >= retries:
+                    raise
+                with lock, open(logp, "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"t": round(time.time(), 3), "attempt": attempt + 1}) + "\n")
+                sleep(0.1)
+    return call
+
+
+def ef_busy_main(argv) -> int:
+    """``chaos_tests.py _ef-busy RETRIES BUSYLOG RUN_EF.PY <run_ef arguments>``: runs the daemon8 harness (conc/run_ef.py,
+    which this package does not own and does not edit) with one change made from outside: an ``open_project`` the daemon
+    answers ``busy`` is retried up to RETRIES times and every such answer is appended to BUSYLOG. Nothing else in the
+    client changes. It applies to every open_project the harness process makes, not only the eight workers'; the
+    other opens run one at a time, so a busy answer there is as unexpected as before and is counted the same way."""
+    import runpy  # noqa: PLC0415
+    retries, logp, script, rest = int(argv[0]), pathlib.Path(argv[1]), argv[2], argv[3:]
+    sys.argv = [script] + rest
+    sys.path.insert(0, str(CONC))
+    import c_lib  # noqa: PLC0415,F401  (parses and strips --ghidra --work ... from sys.argv, loads ghidra_session)
+    gs = c_lib.gs
+    gs._Base.call = retry_open_busy(gs._Base.call, gs.SessionError, retries, logp)
+    runpy.run_path(script, run_name="__main__")
+    return 0
+
+
 def main(argv=None) -> int:
+    if (sys.argv[1:] if argv is None else argv)[:1] == ["_ef-busy"]:
+        return ef_busy_main((sys.argv[1:] if argv is None else argv)[1:])
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("selftest")
