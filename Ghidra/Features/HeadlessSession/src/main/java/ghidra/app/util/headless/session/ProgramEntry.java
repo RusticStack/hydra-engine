@@ -43,7 +43,7 @@ import ghidra.program.model.listing.Program;
  * saves and mode changes hold it exclusively. A request that cannot get it within its
  * {@code wait} fails with {@code busy} and the current holder, instead of queueing forever.
  */
-final class ProgramEntry implements Decompilers {
+final class ProgramEntry implements Decompilers, DecompilerGate.Pool {
 
 	/**
 	 * How the program is open: read-only; writable with one {@link #owner}; or writable and
@@ -180,13 +180,18 @@ final class ProgramEntry implements Decompilers {
 		return l != null ? l : o == null ? "nobody" : o.label();
 	}
 
+	/** A pooled decompiler and when it was put back (E9: idle ones are disposed). */
+	private record Pooled(DecompInterface d, long atNanos) {
+	}
+
 	/** Decompilers bound to {@link #program}, reused across requests. Guarded by itself. */
-	private final Deque<DecompInterface> decompilers = new ArrayDeque<>();
+	private final Deque<Pooled> decompilers = new ArrayDeque<>();
 
 	ProgramEntry(ProjectEntry project, String path) {
 		this.project = project;
 		this.path = path;
 		this.key = project.id + ":" + path;
+		DecompilerGate.track(this);
 	}
 
 	// ---- who holds the lock now, abandoned holders and unfinished leaves (3.5, E3b) -----------
@@ -538,15 +543,31 @@ final class ProgramEntry implements Decompilers {
 		return o == null ? null : o.holder("open_program writable", ownedSince, ownerWho);
 	}
 
+	/**
+	 * A decompiler for the program, after a permit of the decompiler gate (E9): the permit is held
+	 * until {@link #returnDecompiler}. It waits at most {@code decompilerWaitS}, then {@code busy}.
+	 */
 	@Override
 	public DecompInterface borrowDecompiler() {
-		synchronized (decompilers) {
-			DecompInterface d = decompilers.poll();
-			if (d != null) {
-				return d;
+		DecompilerGate.Permit permit = DecompilerGate.enter();
+		try {
+			DecompInterface d = null;
+			synchronized (decompilers) {
+				Pooled p = decompilers.poll();
+				if (p != null) {
+					d = p.d();
+				}
 			}
+			if (d == null) {
+				d = newDecompiler(program, path);
+			}
+			DecompilerGate.attach(d, permit);
+			return d;
 		}
-		return newDecompiler(program, path);
+		catch (Throwable t) {
+			permit.release();
+			throw t;
+		}
 	}
 
 	/** A decompiler opened on {@code program}, set up the way every session decompile runs. */
@@ -564,25 +585,54 @@ final class ProgramEntry implements Decompilers {
 			throw new SessionException(SessionException.FAILED,
 				"the decompiler would not open " + path + ": " + msg);
 		}
+		DecompilerGate.created();
 		return d;
 	}
 
 	@Override
 	public void returnDecompiler(DecompInterface d, boolean healthy) {
-		if (!healthy || d.getProgram() != program) {
-			d.dispose();
-			return;
+		try {
+			if (!healthy || d.getProgram() != program) {
+				DecompilerGate.dispose(d);
+				return;
+			}
+			synchronized (decompilers) {
+				decompilers.push(new Pooled(d, System.nanoTime()));
+			}
 		}
+		finally {
+			DecompilerGate.leave(d);
+		}
+	}
+
+	@Override
+	public int disposeIdle(long cutoffNanos) {
+		List<DecompInterface> gone = new ArrayList<>();
 		synchronized (decompilers) {
-			decompilers.push(d);
+			decompilers.removeIf(p -> {
+				if (p.atNanos() - cutoffNanos < 0) {
+					gone.add(p.d());
+					return true;
+				}
+				return false;
+			});
+		}
+		gone.forEach(DecompilerGate::dispose);
+		return gone.size();
+	}
+
+	@Override
+	public int idle() {
+		synchronized (decompilers) {
+			return decompilers.size();
 		}
 	}
 
 	/** Called with the exclusive lock held, before {@link #program} is released or swapped. */
 	void disposeDecompilers() {
 		synchronized (decompilers) {
-			for (DecompInterface d : decompilers) {
-				d.dispose();
+			for (Pooled p : decompilers) {
+				DecompilerGate.dispose(p.d());
 			}
 			decompilers.clear();
 		}
