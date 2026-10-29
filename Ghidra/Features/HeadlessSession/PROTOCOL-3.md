@@ -3899,6 +3899,23 @@ cannot run here); 9.16; 9.17 (no lane run; its ReFS run cannot run here); 9.18; 
 power-loss claim (E12 acceptance); the Hydralysis real-engine runs of Y4a, Y4b and Y4d; the Z14 dry run; the hosted-runner
 confirmations of R-V3 and Z4b; the A28 sentences.
 
+
+### 8.11 Revision 8.7: four fixes before the release-gate runs (`w2/FIX4`)
+
+Branch `w2/FIX4` from Hydra `integration/w3` at `b2a8422b09`. FIX4 is not one of the 52 package ids; like SPEED4 (8.10 (1),
+items that are not rows) its edits are recorded here as facts, not as matrix rows, and the matrix is unchanged
+(`check_ownership.py`: 138 rows, 52 packages, 0 violations). Where this section differs from an earlier one, it governs.
+
+| Item | Files (their owner) | What changed | Evidence |
+|---|---|---|---|
+| F1 | `S/ScriptWorker.java`, `S/ScriptCommands.java` (E7); `examples/dt_e7.py` (E7) | the worker sends its own JVM's process CPU time (`OperatingSystemMXBean.getProcessCpuTime`, else `ProcessHandle`) with its `start` event; the daemon reports it as `startCpuMs` in the reply's `worker` object and in `health.scriptWorkers.last` (the daemon reads `ProcessHandle.info().totalCpuDuration()` of the worker when the event lacks it). `e7_cost` judges the start-up by `startCpuMs` against `BUDGET_START_CPU_MS` 23,000 (twice the calm median 11,125 ms measured on this machine, `D:/Projects/Hydra/_logs/fix4/e7_cost_calm2.log`) and records wall time without judging it; the wall budget of 12,000 ms is gone, not raised | 9.14's E7 start-up item is a CPU-time budget from this revision |
+| F2 | `examples/daemon_tests.py` (E0; SPEED5's cache), `examples/run_parallel.py` (no row, 8.10 (1) (a)), `examples/dt_e3c.py` (E3c), `examples/dt_e2.py` (E2), `examples/dt_e2a.py` (E2a), `examples/test-map.json` (A41) | the setup projects of `Ctx.cached_project` are registered (`PREBUILT`: tag, users, maker) and `run_parallel.py` makes those the tasks to run need in its seed phase, one `--prebuild TAG` process each, before the queue starts; tests then always copy. No lock and no timer in a test. `run_parallel.py --selftest` checks that every function that makes a cached project is registered and every test calling a maker is a user | before: three `multi_writer` shards and `two_projects` each built a project on a fresh seed (4 builds, 77 s; `D:/Projects/Hydra/_logs/fix4/old1`); after: 2 builds (38 s) in the prebuild, every test copies (`.../pre1`; warm seed `.../pre2`: 0 builds) |
+| F3 | `examples/soak_tests.py` (E6) | the script-worker probe reads `scriptIsolation` >= 2 or `health.scriptWorkers` (the names E7 advertises) instead of `scriptWorker`, `scriptWorkers`, `killableScripts` as capabilities; three selftest checks. Closes 8.10 (3) item 31 for the probe | `soak_tests.py selftest` 74 of 74 |
+| F4 | `S/UpgradeCache.java` (E1, E2); `examples/dt_e12.py` (E12) | `build` forces the copy and what the upgrade wrote (`ProjectFork.forceTree`, E12's helper) before the rename of `gN.tmp` and syncs the cache folder after it; `writeEntry` forces `entry.json.tmp` (`ProjectFork.forceFile`) before the atomic move (the commit point) and syncs the folder. `copyProject` itself still forces nothing (a fork forces at publish). New `e12_upgrade_publish` and its control `e12_upgrade_publish_finding`; `e12_source_guards` pins the order | the build before F4 is red in the simulator (J: silent_corrupt 19, unopenable 1; U: silent_corrupt 39, unopenable 14), the current one green under J and U (`D:/Projects/Hydra/_logs/fix4/e12.log`) |
+
+Not changed: `run_parallel.py --make-test-map` follows a test's helpers one level, so `multi_writer` (whose setup import is now
+in `proj_mw`, two levels down) is no longer listed under the import classes; its setup is made by the prebuild.
+
 ### W0
 
 **X0 (Hydra, L): the oracle, the regression suites and the red table.**
