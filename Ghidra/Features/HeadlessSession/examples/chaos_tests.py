@@ -25,6 +25,10 @@ the Wilson bound and writes the evidence. It has no kill logic of its own.
     python chaos_tests.py run --ghidra <install> --work <dir> --fixtures <dir with fx-x64-flow> \\
         --fixture-exe <small PE> --profile smoke|gate [--refs-root <folder on a ReFS volume>] [--shards 3]
     python chaos_tests.py plan --profile gate        # the batches and their counts, no run
+
+The program the harness opens in the fixture project is ``X0_FIXTURE_PROGRAM`` (environment, default
+``/flow_fixture.exe``; read by ``conc/c_lib.py``). With another ``--fixture-exe`` set it to that program's
+path, or ``c_sample`` fails with ``not_found`` (the runner then prints ``c_sample_exit`` and its log).
     python chaos_tests.py selftest                   # offline: verdict logic, Wilson bound, planted violations
 
 Batches of the ``gate`` profile (9.15; counts are unanswered kills): ``save_ntfs`` 200 and ``save_refs`` 200
@@ -277,6 +281,27 @@ def overall(batches: dict, profile: str, missing: dict, overrides=()) -> dict:
 
 # ------------------------------------------------------------------------------ running
 
+def daemon_state_roots(work) -> list:
+    """The daemon state roots under a run folder, in both harness layouts (see ``Chaos.stop_daemons``)."""
+    work = pathlib.Path(work)
+    seen, out = set(), []
+    cands = []
+    st = work / "state"
+    if st.is_dir():
+        for d in st.iterdir():
+            cands += [d, d / "state"]
+    run = work / "run"
+    if run.is_dir():
+        for scen in run.iterdir():
+            if scen.is_dir():
+                cands += [scen / "state"] + [rig / "state" for rig in scen.iterdir() if rig.is_dir()]
+    for c in cands:
+        if c.is_dir() and c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out
+
+
 class Chaos:
     def __init__(self, a):
         self.a = a
@@ -317,23 +342,30 @@ class Chaos:
                 chaos.terminate(p.pid, 30)
                 return "timeout"
 
-    def stop_daemons(self):
-        sys.path.insert(0, self.support)
-        import ghidra_session as gs  # noqa: PLC0415
-        st = self.work / "state"
-        if not st.is_dir():
-            return
-        for d in st.iterdir():
-            for root in (d, d / "state"):
-                if not root.is_dir():
+    def stop_daemons(self, make_daemon=None) -> list:
+        """Stop every daemon the harness left under ``--work``; returns the state roots where one was alive.
+
+        The harness keeps a daemon's state in two layouts: ``<work>/run/<scenario>/<rig>/state`` (``c_lib.Rig``:
+        ``run_c``, ``run_ef``, ``c_sample``) and ``<work>/state/<name>[/state]`` (``xc.fresh``, ``mkbase``). Both
+        are scanned. A harness that crashed or ran past ``--batch-timeout-s`` is killed by ``run_proc`` as a
+        python process only, so its JVM is found and stopped here, before K7 looks and before the run ends."""
+        if make_daemon is None:
+            sys.path.insert(0, self.support)
+            import ghidra_session as gs  # noqa: PLC0415
+
+            def make_daemon(root, instance):
+                return gs.Daemon(None, str(root), instance)
+        stopped = []
+        for root in daemon_state_roots(self.work):
+            for ep in sorted(root.glob("*.json")):
+                if ep.name == "config.json":
                     continue
-                for ep in root.glob("*.json"):
-                    if ep.name == "config.json":
-                        continue
-                    with contextlib.suppress(Exception):
-                        dm = gs.Daemon(None, str(root), ep.stem)
-                        if dm.jvm_alive():
-                            dm.stop(force=True, timeout=60)
+                with contextlib.suppress(Exception):
+                    dm = make_daemon(root, ep.stem)
+                    if dm.jvm_alive():
+                        dm.stop(force=True, timeout=60)
+                        stopped.append(str(root))
+        return stopped
 
     def prepare(self):
         self.logs.mkdir(parents=True, exist_ok=True)
@@ -581,6 +613,38 @@ def selftest(verbose: bool = True) -> int:
         check("K7 per batch: nothing new, nothing judged", seen_args["only"] == set() and rp.ok, rp.codes())
     finally:
         oracle.find_orphan_decompilers, oracle.check_k7_processes = saved_find, saved_k7
+    # the daemons a harness leaves are found where the harness really keeps them (c_lib.Rig and xc.fresh layouts)
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="chaos-stop-"))
+    try:
+        layout = {"run/sample-fixture/rig/state": "sample", "run/d-fixture-ntfs-s1/rig/state": "c",
+                  "state/mk/state": "mk", "state/raw": "raw"}
+        for rel, inst in layout.items():
+            (tmp / rel).mkdir(parents=True)
+            (tmp / rel / "config.json").write_text("{}")
+            (tmp / rel / (inst + ".json")).write_text('{"pid": 1}')
+        (tmp / "run" / "d-fixture-ntfs-s1" / "it-0000" / "x.rep").mkdir(parents=True)   # not a state root
+        calls = []
+
+        class _FakeDaemon:
+            def __init__(self, root, inst):
+                self.root, self.inst = pathlib.Path(root), inst
+
+            def jvm_alive(self):
+                return True
+
+            def stop(self, force=False, timeout=None):
+                calls.append((self.root.relative_to(tmp).as_posix(), self.inst, force))
+        ch = Chaos.__new__(Chaos)
+        ch.work = tmp
+        ch.stop_daemons(make_daemon=_FakeDaemon)
+        got = {(r, i) for r, i, f in calls if f}
+        check("stop_daemons finds and force-stops a daemon under <work>/run/<scenario>/rig/state (the harness layout)",
+              ("run/sample-fixture/rig/state", "sample") in got and ("run/d-fixture-ntfs-s1/rig/state", "c") in got, calls)
+        check("stop_daemons still stops the xc.fresh layouts and never a config.json or a non-state folder",
+              ("state/mk/state", "mk") in got and ("state/raw", "raw") in got and len(calls) == 4
+              and not any(i == "config" for _r, i, _f in calls), calls)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
     # the totals
     full = {b: judge_batch(b, BATCHES[b], COUNTS["gate"][b], rows(COUNTS["gate"][b], kills=BATCHES[b]["family"] != "control"),
                            {"base_unchanged": True}, 0, clean, True) for b in COUNTS["gate"]}
@@ -806,6 +870,9 @@ def main(argv=None) -> int:
     for b, r_ in out["batches"].items():
         print(f"  {b}: {r_['verdict']} kills={r_['kills']}/{r_['wanted']} iterations={r_['iterations']} "
               f"failing={r_['failing_iterations']} harness_errors={r_['harness_errors']}")
+    if out.get("c_sample_exit") not in (0, None):
+        print(f"c_sample exited {out['c_sample_exit']}: see {ch.logs / 'c_sample.log'} "
+              f"(is X0_FIXTURE_PROGRAM={os.environ.get('X0_FIXTURE_PROGRAM', '/flow_fixture.exe')} in the fixture?)")
     print("evidence:", ch.evidence.folder)
     if a.plant:
         return 0 if out["verdict"] == "FAIL" and any("oracle K2" in v for v in out["violations"]) else 1
