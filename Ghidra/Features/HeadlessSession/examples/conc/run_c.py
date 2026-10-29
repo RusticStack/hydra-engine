@@ -689,7 +689,16 @@ def main():
     hdr = {"scenario": scen, "proj": proj, "fs": fs, "n": n, "seed": seed, "start": time.strftime("%Y-%m-%d %H:%M:%S"),
            "engine": INSTALL, "base_tree": s.base_tree, "data_root": str(s.data)}
     (s.out / "header.json").write_text(json.dumps(hdr, indent=1))
-    if scen in ("a", "ctl"):
+    # CALIB_IN (scenarios a and b): take the window and the baselines from the calibration another run of the same
+    # scenario wrote (red_table.py's shards share the one calibration of their first shard instead of each measuring
+    # its own under a different load); CALIB_OUT: also write this run's calibration there.
+    cal_in = os.environ.get("CALIB_IN") if scen in ("a", "ctl", "b") else None
+    if cal_in:
+        cal = json.loads(pathlib.Path(cal_in).read_text(encoding="utf-8"))
+        s.bases = cal["bases"]
+        cal["shared_from"] = cal_in
+        f = (lambda i, dl: s.scen_b(i, dl)) if scen == "b" else (lambda i, dl: s.scen_a(i, dl))
+    elif scen in ("a", "ctl"):
         cal = s.calib_a()
         f = lambda i, dl: s.scen_a(i, dl)
     elif scen == "b":
@@ -713,7 +722,12 @@ def main():
     else:
         raise SystemExit("unknown scenario")
     (s.out / "calibration.json").write_text(json.dumps(cal, indent=1, default=str))
-    print("calibrated", s.name, "window_s=%.3f" % cal.get("window_s", -1), flush=True)
+    if os.environ.get("CALIB_OUT") and not cal_in and scen in ("a", "ctl", "b"):
+        out = pathlib.Path(os.environ["CALIB_OUT"])
+        tmp = out.with_suffix(".tmp")
+        tmp.write_text(json.dumps(dict(cal, bases=s.bases), indent=1, default=str), encoding="utf-8")
+        os.replace(tmp, out)            # a reader sees the whole calibration or none
+    print("calibrated" if not cal_in else "calibration shared", s.name, "window_s=%.3f" % cal.get("window_s", -1), flush=True)
     window = cal["window_s"]
     if os.environ.get("WINDOW_S"):
         window = float(os.environ["WINDOW_S"])

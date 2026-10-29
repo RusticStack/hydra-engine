@@ -43,12 +43,15 @@ class Fake:
 
     def __init__(self):
         self.calls = []
+        self.detail = []
 
-    def __call__(self, cmd, log, env=None, timeout=3600):
+    def __call__(self, cmd, log, env=None, timeout=3600, mask=None):
         script = pathlib.Path(cmd[2]).name
         work = pathlib.Path(arg(cmd, "--work"))
         tag = arg(cmd, "--tag", "")
         self.calls.append((script, tag, arg(cmd, "--parts")))
+        self.detail.append({"script": script, "tag": tag, "mask": mask, "scen": cmd[3] if script == "run_c.py" else None,
+                            "calib_in": (env or {}).get("CALIB_IN"), "calib_out": (env or {}).get("CALIB_OUT")})
         pathlib.Path(log).parent.mkdir(parents=True, exist_ok=True)
         if script == "mkbase.py":
             (work / "proj" / "base").mkdir(parents=True, exist_ok=True)
@@ -74,6 +77,8 @@ class Fake:
             recs += [{"i": n + i, "seed": seed, "acked_before_kill": True, "anomalies": []} for i in range(seed % 3)]
             (d / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
             (d / "calibration.json").write_text(json.dumps({"window_s": 0.1}))
+            if env.get("CALIB_OUT"):
+                pathlib.Path(env["CALIB_OUT"]).write_text(json.dumps({"window_s": 0.1, "bases": {}}))
         return {"exit": 0, "seconds": 0.0}
 
 
@@ -103,7 +108,7 @@ class RedTableParallel(unittest.TestCase):
 
     def test_same_rows_serial_and_parallel(self):
         ser, work = self.table("S", "--serial")
-        par, _ = self.table("P", "--crash-shards", "8")
+        par, _ = self.table("P", "--crash-shards", "8", "--fork-shards", "8")
         rows = lambda r: [(x["row"], x["verdict"]) for x in r["results"]]   # noqa: E731
         self.assertEqual(rows(ser), rows(par))
         self.assertEqual(len(ser["results"]), len(rt.LOCKMAP) + 1 + 2 + 1 + len(rt.REGRESSION_ONLY))
@@ -134,6 +139,54 @@ class RedTableParallel(unittest.TestCase):
         third, _ = self.table("P3", "--no-cache")
         self.assertNotIn("cached", third["runs"]["s6_import.py"])
         self.assertEqual([x["row"] for x in second["results"]], [x["row"] for x in third["results"]])
+
+    def test_shared_calibration(self):
+        self.table("C", "--crash-shards", "4", "--fork-shards", "3")
+        for scen, k in (("a", 4), ("b", 3)):
+            sh = [d for d in self.fake.detail if d["scen"] == scen]
+            self.assertEqual(len(sh), k)
+            outs = [d["calib_out"] for d in sh if d["calib_out"]]
+            ins = [d["calib_in"] for d in sh if d["calib_in"]]
+            self.assertEqual(len(outs), 1)                     # one shard calibrates ...
+            self.assertEqual(ins, outs * (k - 1))              # ... the others take its window
+        self.fake.detail.clear()
+        self.table("O", "--crash-shards", "4", "--own-calibration")
+        self.assertFalse(any(d["calib_in"] or d["calib_out"] for d in self.fake.detail))
+
+    def test_pinning(self):
+        cores = __import__("os").cpu_count() or 1
+        r, _ = self.table("Q", "--crash-shards", "3", "--fork-shards", "2", "--shard-cores", "2")
+        masks = [d["mask"] for d in self.fake.detail if d["script"] == "run_c.py"]
+        pinned = [m for m in masks if m]
+        self.assertEqual(len(pinned), min(5, cores // 2))
+        for i, m in enumerate(pinned):
+            self.assertEqual(bin(m).count("1"), 2)
+            self.assertTrue(all(m & o == 0 for o in pinned[i + 1:]))   # disjoint
+        self.assertTrue(all(d["mask"] is None for d in self.fake.detail if d["script"].startswith("s")))  # not overlapped: unpinned
+        self.fake.detail.clear()
+        self.table("R", "--crash-shards", "3", "--fork-shards", "2", "--shard-cores", "2", "--crash-overlap")
+        lock = {d["mask"] for d in self.fake.detail if d["script"].startswith("s1_")}
+        crash = [d["mask"] for d in self.fake.detail if d["script"] == "run_c.py" and d["mask"]]
+        if cores > 10:
+            self.assertEqual(len(lock), 1)
+            lm = lock.pop()
+            self.assertTrue(lm and all(lm & m == 0 for m in crash))
+        self.fake.detail.clear()
+        self.table("U", "--shard-cores", "0")
+        self.assertTrue(all(d["mask"] is None for d in self.fake.detail))
+
+    def test_fast(self):
+        r, _ = self.table("F", "--fast")
+        self.assertFalse(any(s == "run_c.py" for s, t, p in self.fake.calls if t == "F"))
+        rows = {x["row"]: x["verdict"] for x in r["results"]}
+        self.assertEqual((rows["C-poison"], rows["C-fork"]), ("NOT RUN", "NOT RUN"))
+
+    def test_cpu_masks(self):
+        m, rest = rt.cpu_masks(24, 2, 3)
+        self.assertEqual(m, [0b11 << 22, 0b11 << 20, 0b11 << 18])
+        self.assertEqual(rest, (1 << 18) - 1)
+        m, rest = rt.cpu_masks(4, 2, 5)
+        self.assertEqual((len(m), rest), (2, 0))
 
     def test_split(self):
         for n in (0, 1, 7, 30, 40):
