@@ -1608,6 +1608,24 @@ def _spawn_task(args_after_cmd: str, cwd: str, timeout: float = 60.0) -> str:
     return name
 
 
+#: the states of a scheduled task whose command may still write the daemon's endpoint
+_TASK_ALIVE = ("Running", "Queued", "unknown")
+
+
+def _task_state(name: str) -> str:
+    """The task's ``State`` (``Running``, ``Queued``, ``Ready`` once its command ended, ...), or
+    ``unknown`` when PowerShell does not answer (a loaded machine: asked again next time)."""
+    try:
+        r = _run_ps(f"Get-ScheduledTask -TaskName '{name}' -ErrorAction SilentlyContinue | "
+                    "ForEach-Object { [string]$_.State }; 'end'", dict(os.environ), 60, "task state")
+    except SpawnError:
+        return "unknown"
+    s = [x.strip() for x in r.stdout.strip().splitlines() if x.strip()]
+    if r.returncode != 0 or not s or s[-1] != "end":
+        return "unknown"
+    return s[-2] if len(s) >= 2 else "gone"   # no task by that name: removed, so it ended
+
+
 def _unregister_task(name: str, stop: bool = False):
     """Removes the task entry. ``stop`` also ends what it started (the failure path only: it
     would end a healthy daemon too)."""
@@ -1621,7 +1639,7 @@ def _unregister_task(name: str, stop: bool = False):
 
 
 def spawn_daemon(argv, env, log_path, cwd, *, argv_envfree=None, set_env=None, routes=None,
-                 wait_endpoint=None, task_wait: float = 30.0):
+                 wait_endpoint=None, task_wait: float = 600.0):
     """D65 launch sequence. Returns ``(proc, outcome)``.
 
     ``argv``/``env``: the JVM command line and environment for the direct routes. ``argv_envfree``
@@ -1704,17 +1722,30 @@ def spawn_daemon(argv, env, log_path, cwd, *, argv_envfree=None, set_env=None, r
             if tn:
                 jvm = None
                 if wait_endpoint is not None:
-                    end = time.monotonic() + task_wait
-                    while jvm is None and time.monotonic() < end:
+                    # The route has failed when the task's command has ended without an endpoint,
+                    # not after a fixed time: a JVM that starts slowly (a loaded machine) is still
+                    # the task's, and giving up on it left that daemon running while the "stayed"
+                    # route below opened the log the task's cmd.exe still held (PermissionError).
+                    # task_wait only ends a task that runs on and never shows an endpoint.
+                    t0 = time.monotonic()
+                    state = "Running"
+                    while True:
                         jvm = wait_endpoint()
-                        if jvm is None:
-                            time.sleep(0.1)
+                        if jvm is not None or state not in _TASK_ALIVE:
+                            break
+                        if time.monotonic() - t0 >= task_wait:
+                            state = "no endpoint"
+                            break
+                        time.sleep(0.1)
+                        state = _task_state(tn)
+                    if jvm is None:
+                        jvm = wait_endpoint()   # written just as the task ended
                     if jvm is None:
                         _unregister_task(tn, stop=True)
                         out["attempts"].append({"route": "task", "ok": False,
-                                                "ms": round(task_wait * 1000),
-                                                "error": f"no endpoint within {task_wait:.0f} s; "
-                                                         "task stopped and removed"})
+                                                "ms": round((time.monotonic() - t0) * 1000),
+                                                "error": f"the task ended ({state}) without an "
+                                                         "endpoint; task stopped and removed"})
                         tn = None
                 if tn:
                     out.update(spawn="task", survival="independent", task_name=tn)

@@ -103,12 +103,31 @@ public class E3cDeaf extends GhidraScript {
 }
 """
 
+#: deaf like E3cDeaf, and it runs until the file named by its argument exists: the test ends it
+DEAF_GATE = """// @category HeadlessSession.Test
+import ghidra.app.script.GhidraScript;
+public class E3cDeafGate extends GhidraScript {
+    @Override protected void run() throws Exception {
+        java.io.File gate = new java.io.File(getScriptArgs()[0]);
+        while (!gate.exists()) {
+            try {
+                Thread.sleep(20);
+            }
+            catch (InterruptedException e) {
+                // a script that does not look at cancel and swallows the interrupt
+            }
+        }
+    }
+}
+"""
+
 
 # ---- helpers --------------------------------------------------------------------------------
 
 def prepare(c):
     exe = bl.prepare(c)
     (c.scripts / "E3cDeaf.java").write_text(DEAF)
+    (c.scripts / "E3cDeafGate.java").write_text(DEAF_GATE)
     return exe
 
 
@@ -370,6 +389,7 @@ def t_last_user_leave_disposes(c):
 # ---- deferred_leave_closes_project ----------------------------------------------------------
 
 REAP_TICK_S = 15  # HeadlessSession: the reaper runs every min(15 s, max(1 s, keepWarm / 4))
+KEEP_WARM_S = 600  # the keep-warm expiry, which is not what may close the project here
 
 
 def _deferred_close(c, how):
@@ -381,11 +401,16 @@ def _deferred_close(c, how):
     ``reader``: a plain reader leaves at once (D63b), but the close of the project cannot have the
     project to itself while the request runs (``ProjectEntry.closePending``); the reap closes it once
     the request has ended. ``keepWarm`` is 600 s in both, so the keep-warm expiry is not what closes it.
+
+    The deaf request runs until the test opens its gate (a file), not for a fixed time: "the
+    project is still open while the request runs" is then checked while it surely runs, however
+    slow the machine, and "closed once it ended" is waited for after the gate opened.
     """
     exe = prepare(c)
     gpr = c.copy_fixture(f"e3cDl{how}")
-    deaf_ms = 7000
-    d = c.daemon(f"e3c-dl-{how}", keepWarm=600, engine={"cleanupGraceS": 1, "abandonWaitS": 1})
+    gate = c.work / f"e3cDl{how}.gate"
+    gate.unlink(missing_ok=True)
+    d = c.daemon(f"e3c-dl-{how}", keepWarm=KEEP_WARM_S, engine={"cleanupGraceS": 1, "abandonWaitS": 1})
     obs = B = again = None
     try:
         obs = c.connect(d, "obs", "e3c", 3)          # joins no project: it does not keep one open
@@ -395,44 +420,44 @@ def _deferred_close(c, how):
             B.call("open_program", path=exe, writable=True)
         else:
             B.call("open_program", path=exe)
-        warm(c, B, "E3cDeaf.java")
+        # compiled once, with a gate that is already open
+        B.call("script", script=c.script("E3cDeafGate.java"), program=None, args=[str(gpr)],
+               wait=120000)
 
         def listed():
             return any(p["id"] == pid for p in obs.call("status")["projects"])
         dt.check(listed(), "the project is not listed after the open")
-        B.send("script", script=c.script("E3cDeaf.java"), args=[str(deaf_ms)], parallel=True,
-               wait=deaf_ms + 60000)
-        dt.wait_for(lambda: running(obs, "B"), "B's deaf request to run", 30)
+        B.send("script", script=c.script("E3cDeafGate.java"), args=[str(gate)], parallel=True,
+               wait=3600000)
+        dt.wait_for(lambda: running(obs, "B"), "B's deaf request to run", 120)
         t0 = time.perf_counter()
         B.close()                                    # a FIN while the deaf request runs
         B = None
-        dt.wait_for(lambda: "(B, e3c) disconnected" in log_text(d), "B's release to end", 15, 0.1)
+        dt.wait_for(lambda: "(B, e3c) disconnected" in log_text(d), "B's release to end", 120, 0.1)
         released_s = time.perf_counter() - t0
-        dt.check(released_s < deaf_ms / 1000.0 - 1.0,
-                 f"{how}: B's release ended only after {released_s:.1f} s (abandonWaitS is 1 s)")
         log = log_text(d)
         if how == "owner":
             dt.check("is gone and could not leave" in log,
                      "owner: the leave was not left pending (the scenario did not exercise completeLeaves)")
+        # the release ended while the request runs (its gate is shut, so it cannot have ended)
         dt.check(listed(), f"{how}: the project closed while the deaf request still ran")
-        bound = deaf_ms / 1000.0 + (5 if how == "owner" else REAP_TICK_S + 5)
+        gate.write_text("go")                         # the deaf request ends now
+        t_end = time.perf_counter()
+        # closed by completeLeaves or the reap, not by the keep-warm expiry (600 s)
         dt.wait_for(lambda: not listed(), f"{how}: the project to be closed once the deaf request ended",
-                    bound + 10, 0.2)
-        closed_s = time.perf_counter() - t0
-        dt.check(closed_s >= deaf_ms / 1000.0 - 1.5,
-                 f"{how}: the project closed after {closed_s:.1f} s, before the deaf request ended")
-        dt.check(closed_s <= bound, f"{how}: the project closed {closed_s:.1f} s after the FIN (bound "
-                                    f"{bound:.0f} s)")
+                    KEEP_WARM_S / 2, 0.2)
+        closed_s = time.perf_counter() - t_end
         if how == "owner":
             dt.check("that was waiting for its lock is done" in log_text(d),
                      "owner: the log does not show the pending leave being finished")
         # the next client opens it writable again and reads
         again = c.connect(d, "again", "e3c", 3)
-        r = bl.timed(c, again, "open_project", path=str(gpr), writable=True, wait=10000)
+        r = bl.timed(c, again, "open_project", path=str(gpr), writable=True, wait=60000)
         dt.check(r["ok"], f"{how}: a writable open after the close: {r}")
-        return (f"{how}: released in {released_s:.1f} s, project closed {closed_s:.1f} s after the FIN "
-                f"(deaf request {deaf_ms // 1000} s, keepWarm 600 s)")
+        return (f"{how}: released in {released_s:.1f} s with the deaf request running, project "
+                f"closed {closed_s:.1f} s after it ended (keepWarm {KEEP_WARM_S} s)")
     finally:
+        gate.write_text("go")
         close_all(obs, B, again)
         d.stop(force=True)
 
@@ -558,7 +583,7 @@ def t_refcount_leak(c):
             with contextlib.suppress(c.gs.SessionError):
                 x.call("close_program")
         dt.wait_for(lambda: not any(cl["name"] in cut for cl in obs.call("status")["clients"]),
-                    "the cut clients to be released", 60)
+                    "the cut clients to be released", 600)
 
         def settled():
             st = obs.call("status")
@@ -568,7 +593,7 @@ def t_refcount_leak(c):
         # deferred work (a pending reopen, disposal or leave) finishes at the next release or reap
         dt.wait_for(lambda: all(pg.get("reopenPendingMs") is None and not pg.get("disposePending") and
                                 not pg.get("pendingLeaves") for pg in settled()[1]),
-                    "the deferred work of the program to finish", 30)
+                    "the deferred work of the program to finish", 600)
         st, pgs, slot = settled()
         pg = program(obs, exe)
         dt.check(pg is not None, "the warm program is gone")
@@ -577,11 +602,15 @@ def t_refcount_leak(c):
         dt.check(not pg.get("abandonedRequests"), f"abandoned requests stay listed: {pg}")
         # the current view: 1 reference for being current and 1 per program opened from it; a pin
         # of a cancelled or cut command that was never released, or a program left on a retired
-        # view, shows as a different count
-        end = time.time() + 20   # a cut client's cancelled request may still be ending
-        while time.time() < end and not (len(slot) == 1 and slot[0].get("viewRefs") == 1 + len(pgs)):
-            time.sleep(0.5)
-            st, pgs, slot = settled()
+        # view, shows as a different count. It is read once no request of any client runs and no
+        # abandoned request is listed (a cut client's cancelled request may still be ending; how
+        # long that takes is the machine's business, not a deadline of the test).
+        def quiet():
+            st = obs.call("status")
+            return (not any(cl["requests"] for cl in st["clients"] if cl["name"] != "obs") and
+                    not any(pg.get("abandonedRequests") for pg in st["programs"]))
+        dt.wait_for(quiet, "every request to have ended", 600, 0.2)
+        st, pgs, slot = settled()
         dt.check(len(slot) == 1 and slot[0].get("viewRefs") == 1 + len(pgs),
                  f"view references did not return to 1 + {len(pgs)} program(s): {slot}")
         dt.check(bl.timed(c, obs, "status")["ok"], "status")

@@ -926,11 +926,16 @@ def run_survival_case(c, key):
             with contextlib.suppress(Exception):
                 d.kill()
         if cs["spawn"] == "task":
+            # only the tasks of THIS case (their command names its state dir): the task of
+            # another run on the machine (another agent's suite) is not this test's leak
             left = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive",
                                    "-Command",
                                    "(Get-ScheduledTask -TaskName 'HydraDaemon-*' "
-                                   "-ErrorAction SilentlyContinue | Measure-Object).Count"],
-                                  capture_output=True, text=True, timeout=120)
+                                   "-ErrorAction SilentlyContinue | Where-Object { "
+                                   "($_.Actions | ForEach-Object { $_.Arguments }) -join ' ' "
+                                   "-like ('*' + $env:P1B_STATE + '*') } | Measure-Object).Count"],
+                                  capture_output=True, text=True, timeout=120,
+                                  env=dict(os.environ, P1B_STATE=str(st)))
             r["tasks_left"] = left.stdout.strip()
 
 
@@ -1224,7 +1229,73 @@ def isolated(fn):
     return run
 
 
+def t_task_route_waits_for_task(c):
+    """The scheduled-task route of ``spawn_daemon`` decides on the task, not on a clock. A JVM that
+    starts slowly (a loaded machine) is the task's while the task runs: the launcher keeps waiting
+    for its endpoint. Before the fix it gave up after a fixed 30 s, removed the task, left that
+    daemon running and fell to the "stayed" route, whose open of the log failed with
+    PermissionError while the task's cmd.exe still held it (``p1b_daemon_survives_launcher_exit``
+    under load). And a task whose command ended without an endpoint fails the route at once.
+
+    No task and no JVM: ``caller_job``, ``cmd_line``, ``_spawn_task``, ``_task_state`` and
+    ``_unregister_task`` are replaced; the endpoint shows up only after the launcher has asked
+    for the task's state, and a launcher that polls the endpoint 50 times without asking is the
+    clock-driven one."""
+    gs = c.gs
+    base = fresh_dir(c, "taskroute")
+    names = ("caller_job", "cmd_line", "_spawn_task", "_task_state", "_unregister_task")
+    saved = {n: getattr(gs, n) for n in names}
+    seen = {"state": 0, "removed": [], "blind": 0}
+
+    def endpoint(after_state):
+        def look():
+            if seen["state"] >= after_state:
+                return 4242
+            seen["blind"] += 1
+            if seen["blind"] >= 50:
+                raise Fail("the task route polled the endpoint 50 times without asking whether "
+                           "the task still runs (a clock decides, not the task)")
+            return None
+        return look
+
+    def run(state, after_state):
+        seen.update(state=0, removed=[], blind=0)
+
+        def task_state(name):
+            seen["state"] += 1
+            return state
+        gs._task_state = task_state
+        argv = [sys.executable, "-c", "pass"]     # the "stayed" fallback runs this, harmless
+        p, out = gs.spawn_daemon(argv, dict(os.environ), base / "d.log", str(base),
+                                 routes=("task",), wait_endpoint=endpoint(after_state))
+        if isinstance(p, subprocess.Popen):    # the harmless fallback process, not a pid
+            with contextlib.suppress(Exception):
+                p.wait(60)
+        return p, out
+    try:
+        gs.caller_job = lambda: {"in_job": True, "kill_on_close": True, "limit_flags": "0x2000"}
+        gs.cmd_line = lambda argv, env, log: "cmd.exe /c rem"
+        gs._spawn_task = lambda args, cwd, timeout=60.0: "HydraDaemon-unit"
+        gs._unregister_task = lambda name, stop=False: seen["removed"].append((name, stop))
+        # (1) the task runs, its JVM is slow: the route waits for it and succeeds
+        p, out = run("Running", 1)
+        check(out["spawn"] == "task" and getattr(p, "pid", None) == 4242,
+              f"a running task's late endpoint: spawn {out['spawn']}, attempts {out['attempts']}")
+        check(not seen["removed"], f"a running task was removed: {seen['removed']}")
+        # (2) the task's command ended with no endpoint: the route fails at once and moves on
+        p, out = run("Ready", 10 ** 9)
+        att = [a for a in out["attempts"] if a["route"] == "task" and not a["ok"]]
+        check(out["spawn"] == "stayed" and att and "ended (Ready)" in att[0]["error"],
+              f"an ended task: spawn {out['spawn']}, attempts {out['attempts']}")
+        check(seen["removed"] == [("HydraDaemon-unit", True)], f"removed {seen['removed']}")
+    finally:
+        for n, v in saved.items():
+            setattr(gs, n, v)
+    return "the task route waits while the task runs and fails as soon as it ends"
+
+
 TESTS = {
+    "p1b_task_route_waits_for_task": isolated(t_task_route_waits_for_task),
     "p1b_launch_errors": isolated(t_launch_errors),
     "p1b_duplicate_daemon": isolated(t_duplicate_daemon),
     "p1b_call_deadline": isolated(t_call_deadline),

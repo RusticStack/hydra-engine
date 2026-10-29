@@ -626,10 +626,16 @@ def t_backup_fault(c):
         names = sorted(os.listdir(dest)) if dest.exists() else []
         has_gpr = "B.gpr" in names
         problems = manifest_problems(dest, hash_files=True) if "backup.json" in names else None
-        if "backup.json" in names:
-            check(has_gpr and not problems,
-                  f"kill {i} ({mode}): a backup.json without a verifying backup: gpr={has_gpr} "
-                  f"{problems}")
+        if "backup.json" in names and not has_gpr:
+            # killed after the manifest moved in and before the .gpr (the commit point): an
+            # uncommitted publish, as a .rep without a .gpr is. The manifest names a project that
+            # is not there, so it must not verify, and the next fork's sweep removes it with the
+            # .rep (ForkSweeper: "with no .gpr they belong to the half fork that is going")
+            check(problems, f"kill {i} ({mode}): a manifest without its .gpr verifies: {names}")
+            states.append("manifest-no-gpr")
+        elif "backup.json" in names:
+            check(not problems,
+                  f"kill {i} ({mode}): a backup.json without a verifying backup: {problems}")
             states.append("complete")
         else:
             check(not has_gpr or "B.fork.json" in names, f"kill {i} ({mode}): {names}")
@@ -638,7 +644,7 @@ def t_backup_fault(c):
         # the retry on a fresh daemon succeeds (or the backup was complete: the ordinary conflict)
         d2 = c.daemon(f"e2-bk-retry{i}", keepWarm=0)
         with v3(c, d2, "retry") as s2:
-            if "backup.json" in names:
+            if "backup.json" in names and has_gpr:
                 expect_error("conflict", s2.call, "fork_project", project=str(src),
                              path=str(dest), name="B", purpose="backup", open=False, mode="full")
             else:
