@@ -205,6 +205,8 @@ class Runner:
         w = self.scratch / f"t{Runner.N:03d}"          # short: Ghidra projects nest deep under it
         stem = safe(self.prefix + task) + tag
         log, rep = self.logs / f"{stem}.log", self.logs / f"{stem}.json"
+        with open(self.logs / "workdirs.txt", "a", encoding="utf-8") as f:     # which test a daemon's paths belong to
+            f.write(f"{w.name} {stem}\n")
         env = dict(os.environ)
         if getattr(self.a, "isolate_settings", False):
             # Ghidra's per-user settings dir (preferences, the OSGi felixcache and compiled script bundles) is
