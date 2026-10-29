@@ -1317,7 +1317,6 @@ class SpawnError(Exception):
 
 _K32 = None
 _K32_LOCK = threading.RLock()  # the signatures are set on a shared DLL object: once, never raced
-_PE32 = None
 
 
 def _kernel32():
@@ -1391,38 +1390,44 @@ class _PidProc:
         return self.returncode
 
 
-def _toolhelp():
-    """``(kernel32, PE32)`` with the Toolhelp signatures set once. The PE32 class is one object
-    for the whole process: a class made per call gave each concurrent caller a distinct type, and
-    the ``argtypes`` of the shared function objects then rejected the other callers' instances
-    ("expected LP_PE32 instance instead of pointer to PE32")."""
+_PE32 = None
+_PE32_LOCK = threading.Lock()
+
+
+def _pe32_class():
+    """The PROCESSENTRY32W structure class, created once. ``_kernel32()`` is shared, and ctypes
+    checks ``argtypes`` by class identity, so a class made per call made two threads in
+    ``_children_of`` overwrite each other's ``argtypes`` ("expected LP_PE32 instance instead of
+    pointer to PE32")."""
     global _PE32
-    import ctypes
-    import ctypes.wintypes as wt
-    with _K32_LOCK:
-        k = _kernel32_locked()
+    with _PE32_LOCK:
         if _PE32 is None:
+            import ctypes
+            import ctypes.wintypes as wt
+
             class PE32(ctypes.Structure):
                 _fields_ = [("dwSize", wt.DWORD), ("cntUsage", wt.DWORD),
-                            ("th32ProcessID", wt.DWORD),
-                            ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wt.DWORD),
-                            ("cntThreads", wt.DWORD), ("th32ParentProcessID", wt.DWORD),
-                            ("pcPriClassBase", wt.LONG), ("dwFlags", wt.DWORD),
-                            ("szExeFile", wt.WCHAR * 260)]
+                            ("th32ProcessID", wt.DWORD), ("th32DefaultHeapID", ctypes.c_size_t),
+                            ("th32ModuleID", wt.DWORD), ("cntThreads", wt.DWORD),
+                            ("th32ParentProcessID", wt.DWORD), ("pcPriClassBase", wt.LONG),
+                            ("dwFlags", wt.DWORD), ("szExeFile", wt.WCHAR * 260)]
 
+            # the signatures of the shared kernel32 are set here, once, under the lock: a
+            # per-call assignment of ``argtypes`` is what two threads raced on
+            k = _kernel32()
             k.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
-            k.CreateToolhelp32Snapshot.argtypes = [wt.DWORD, wt.DWORD]
             k.Process32FirstW.argtypes = k.Process32NextW.argtypes = [ctypes.c_void_p,
                                                                       ctypes.POINTER(PE32)]
             _PE32 = PE32
-        return k, _PE32
+        return _PE32
 
 
 def _children_of(pid: int) -> list[tuple[int, str]]:
     """``[(pid, image name)]`` of the direct children of ``pid`` (Toolhelp snapshot)."""
     import ctypes
 
-    k, PE32 = _toolhelp()
+    PE32 = _pe32_class()
+    k = _kernel32()
     snap = k.CreateToolhelp32Snapshot(0x2, 0)
     out = []
     try:

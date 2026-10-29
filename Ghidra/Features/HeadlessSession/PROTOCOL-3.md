@@ -3113,7 +3113,7 @@ Paths are relative to `Ghidra/Features/HeadlessSession` unless they begin with `
 
 | File | W0 | W1 | W2 | W3 | W4 | W5 | W8 |
 |---|---|---|---|---|---|---|---|
-| `S/Session.java` | | E1 (hello, `info`, `admit` call with the request, the call sites of `ProjectEntry.info(client)` at `:265`, `:333`, `:427`, the admission and `Guarded` seam call sites, `isInline` stays) | E2 (A13: the `seal_project` and `prepare_upgrade` dispatch) | E3b (`disconnect`, `reap`) | E3c (the join of a program under analysis, the registry as a state machine, refcount disposal in `reap`) | E5 (`isInline`, `case health`, watchdog start) | |
+| `S/Session.java` | | E1 (hello, `info`, `admit` call with the request, the call sites of `ProjectEntry.info(client)` at `:265`, `:333`, `:427`, the admission and `Guarded` seam call sites, `isInline` stays) | E2 (A13: the `seal_project` and `prepare_upgrade` dispatch) | E3b (`disconnect`, `reap`) | E3c (the join of a program under analysis, the registry as a state machine, refcount disposal in `reap`; A32: `completeLeaves` closes the idle project through `registry.closeIdle`) | E5 (`isInline`, `case health`, watchdog start) | |
 | `S/Scheduler.java` | | E1 (`laneOf(cmd, req, v3)`, `admit(c, cmd, req, m, waitMs)`, `describe(boolean)`, all behaviour-free) | E3a (maint lane, fair key, cap, queue info, ETA, `Preflight` call, `Ticket.yieldSlot`) | | | E5 (`describe` `tryLock`, lane stats) | |
 | `S/ImportCommands.java` | | E1 (the `admit` call at `:112` only) | E3a (remaining wait; the `ImportGate.enter` call at `:100` passes the client) | | | | |
 | **`S/ImportGate.java`** | | | E3a (`enter` takes the `Client`, `Entry` keeps it, `queueInfo` adds `estimateScope` for v3) | | | | |
@@ -3150,9 +3150,10 @@ Paths are relative to `Ghidra/Features/HeadlessSession` unless they begin with `
 | `/Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/db/VersionedDatabase.java`, **`/Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/db/VersionFileCheck.java`** | | E8 | | | | | |
 | `/Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/local/LocalDatabaseItem.java` | | E8 (the private-database open path, so that repair-on-open reaches forks, A3; revision 8.2, A14, the follow-up recorded after the W2 land: the versioned branch uses the read-only constructor and read-only items never repair, no header read at construction; and the reopen when another opener quarantined the newest version first, commit `862f134874`, found by the R-V1 verification) | | | | | |
 | `/NOTICE-HYDRA` | | E8 (the three patched core files and the one added class, A3) | | | | R1 | |
-| `support/ghidra_session.py` | | P1a (range, `engine` pass-through) | | | P1b **then** E3c (P1b: deadline, `LaunchError`, registry; the caller-job detection and the breakaway-then-WMI spawn of D65; the JVM flag `--enable-native-access` of D60; the `maxLong` comment `:425-426`; no Job Object; E3c, A25: the module-level PE32 class and the lock around the Toolhelp `argtypes`) | | |
-| `examples/daemon_tests.py` | E0 | | | E3b (A24: `t_shared_stress` connects at protocol 2 through `c.connect`, because the waiter cap of 3.5 refuses eight protocol 3 writers) | | | |
+| `support/ghidra_session.py` | | P1a (range, `engine` pass-through) | | | P1b **then** E3c (P1b: deadline, `LaunchError`, registry; the caller-job detection and the breakaway-then-WMI spawn of D65; the JVM flag `--enable-native-access` of D60; the `maxLong` comment `:425-426`; no Job Object; E3c, A25: the module-level PE32 class and the lock around the Toolhelp `argtypes`; note, A29: the fix package R-V3 sets the Toolhelp signatures once inside the locked `_pe32_class()`, after P1b and E3c) | | |
+| `examples/daemon_tests.py` | E0 | | | E3b (A24: `t_shared_stress` connects at protocol 2 through `c.connect`, because the waiter cap of 3.5 refuses eight protocol 3 writers; note, A30: the fix package R-V3 adds the `Skipped` status, the SKIP tally and `Ctx.release()`) | | | |
 | `examples/characterization_tests.py`, **`examples/dt_baseline.py`**, `examples/characterization/v3/` (created by E0 as an empty directory with the loader) | E0 | | | | | | |
+| **`examples/characterization/v3/e3a-busy.json`** (E3a's golden; A31) | | | E3a (recorded) | | E4 (re-recorded in `48d3da27b9`: the reply keys `isolation`, `lane`, `attemptedChanges`, `attemptedChangesCount`) | | |
 | `examples/characterization/clients.json`, `examples/characterization/edits.json`, `examples/characterization/fork_refresh.json`, `examples/characterization/import_script.json`, `examples/characterization/overlays.json`, `examples/characterization/readonly.json`, `examples/characterization/session.json` | E0 (the seven v2 goldens; `fork_refresh.json` and `overlays.json` were re-recorded once, in `f47ff15934`, to mask the copied project's total size, E0; **amendment A1, revision 7, D62: six goldens are re-recorded once more to mask the scheduler `slots`**; no later package edits them, E3a included) | | | | | | |
 | **`examples/oracle.py`**, **`examples/chaos_lib.py`** | X0 | | | | | | |
 | **`examples/conc/`** | X0 | | E2 (A14: the red-table base script only, `mkbase.py`: the red-table base is built as a disposable fork because the E2 upgrade gate refuses a canonical copy; commit `683fd092ca`) | | | | |
@@ -3678,6 +3679,115 @@ R-V1, Z2, Z3, Z4, Z5, Z6, Z8, Z9, Y2 and Y3 keep their 8.6 (3) rows.
 **Gates.** No gate of section 9 is weakened, none is flipped to passing by this revision, and no sentence of the engine or
 Hydralysis documents is strengthened by it. Gates and rows that still need work: 9.1 and the BP9 row (E3b, E3c, E5), gate 9.20
 (quiet machine), the power-loss claim (E12), and the Hydralysis real-engine run (the Y5 regression).
+
+### 8.8 Revision 8.4: stage A3 (the non-blocking core landed, the release path)
+
+Revision 8.4 records stage A3: E3b, R-V3 and E4 were merged into `integration/w3` of Hydra (merge commits `8c9df389a8`,
+`67cd6fe8d4`, `164204446b`; `integration/w3` is `d6f3281307`, the stage A2 land, plus those three merges and the E3b/E4/R-V3
+commits), E3c was merged with `integration/w3` but not landed, and Z4b and Y6 were finished on branches of Hydralysis
+(`w2/Z4b` at `903e080`, `w2/Y6` at `2a4d007`, both on `1e6ae67`, which is the head of `integration/w3` there). It changes no
+design decision and weakens no gate. Sections 8.6 and 8.7 are not rewritten: where a status or a sentence of either is
+superseded, this section says so and governs. The facts come from the package reports of the stage; **the reports of R-V3,
+Z4b, E4, Y6 and E3c reached this revision clipped** (the tail of the report is missing), so a field that a clipped report did
+not show is not recorded, and each such report is marked "clipped" below. A fact that no report stated is not recorded;
+the commit lists were read from `git log` on `integration/w3`. Nothing is pushed. `prove_disjoint_rev8.py` (Hydra inventory
+`c55c5e3568`, Hydralysis `c059a46`, the site repository at `D:/Projects/hydra-engine-site`, the core inventory the Hydra
+repository at `b6df709e1e`) and `examples/check_ownership.py` both exit 0 on this file after the 8.1 edits listed in part (1):
+133 matrix rows (one row is new: the E3a golden `e3a-busy.json`, A31), 52 packages. The proof needed the site repository
+path as an argument: the `F:` drive no longer exists and the proof's default site path (`F:/Projects/hydra-engine-site`) does
+not resolve.
+
+**(1) Ownership amendments.** Continues 8.7 after A28. "Where" names the 8.1 row that changed. R-V3 is a fix package of this
+stage that is not among the 52 package ids; like F1 in 8.7, its amendments are a note in the owner's cell, so that the id
+list of the proof stays at 52. E3b, Z4b and Y6 reported no amendment. E4 repeated one (A31); E3c reported A25 again (already
+recorded) and one new one (A32).
+
+| Amendment | File | Package, wave | Reason | Where in this file |
+|---|---|---|---|---|
+| A29 | `support/ghidra_session.py` (owned by P1b then E3c): the Toolhelp signatures (`CreateToolhelp32Snapshot.restype`, `Process32FirstW` and `Process32NextW` `argtypes`) are set once inside the locked `_pe32_class()` instead of on every `_children_of` call; this builds on the earlier R-V3 commit `0f9104db01` | R-V3 (fix package), landed `67cd6fe8d4` (commit `225b23cce5`) | the integration check V3 found `e2a_kill_fork` failing: the structure class was made on every call and the signatures were set on the shared kernel32 functions from several threads. A25 recorded the same defect for E3c; the final code names the function `_pe32_class()`, not `_toolhelp()` (part 4, item 20) | 8.1 (`ghidra_session.py` W4 cell, a note naming R-V3) |
+| A30 | `examples/daemon_tests.py` (E0's file, with the E3b cell of A24): a `Skipped` exception and a `skipped` status (also for notes that start with "skipped"), printed `SKIP`, counted apart in the tally (`N/M passed, k SKIPPED (names)`) and not failing the run; a new `Ctx.release()` that runs before the daemons of a failed test are stopped (the report is clipped after "runs befo", so the rest of this item is not recorded) | R-V3 (fix package), landed `67cd6fe8d4` (commits `436414ea1c`, `44cfdb7c3f`) | the three failure groups of the hosted runner run 40831873385: a skipped test counted as ok, daemons of a failed test left running, and the P1b cases D and N that need a breakaway the hosted job object does not give | 8.1 (`daemon_tests.py` row, W3 cell, a note naming R-V3) |
+| A31 | `examples/characterization/v3/e3a-busy.json` (E3a's golden, recorded in W2): re-recorded in `48d3da27b9`; the only difference is the four new reply keys `isolation`, `lane`, `attemptedChanges` and `attemptedChangesCount` of a protocol 3 `script` reply | E4, W4 (landed `164204446b`) | E4 adds those keys to the reply (3.4); a golden recorded at the E3a base cannot be `identical` without them | 8.1 (new row after `characterization_tests.py`: E3a in W2, E4 in W4) |
+| A32 | `S/Session.java`: `completeLeaves` closes the idle project through `registry.closeIdle(...)` instead of the hunk of `integration/w3` (`synchronized (registry)` plus `closeProjectEntry`); a semantic resolution of an auto-merged hunk | E3c, W4 (not landed, inside merge commit `3eaea8840c`) | no monitor over a project close (BP8) | 8.1 (`S/Session.java` row, W4 cell) |
+
+Items that are **not** rows: (a) the `ProjectCommands.java` conflict that blocked E5 (8.7 (1) item a) was resolved by E3c in
+the `leaveProject` hunk of merge `3eaea8840c`; the report is clipped before it describes the resolution, so the choice made is
+**not recorded here** and the reviewers must read the merge. It is inside E3c's row and changes no ownership. (b) R-V3's commits
+also changed `examples/dt_e2.py`, `examples/cc_e2.py`, `examples/char_e2.py` (E2's test files) and `examples/dt_p1b.py`
+(P1b's), and `integration/w3` carries `6d9cf93c89` (`dt_e2.py`: the ReFS scratch directory comes from `HYDRA_REFS_SCRATCH`).
+None of the reports lists them as amendments, the checker names no violation for them, and no matrix row exists for a `dt_`
+file; they are recorded as a fact only. (c) The wording amendment A28 (3.4 and 6.2, the overlay `script` sentences) is still
+**not applied** to those sections: E4 is landed now, but this revision edits only section 8 (part 4, item 15).
+
+**(2) Spike outcomes.** No spike was run in stage A3. The figures below are those of 8.6 (2) and 8.7 (2), repeated with the
+decision each took and where it stands. All stay load-affected: gate 9.20's "quiet machine" part is still **not met** by any
+of them. One fact changed: the `F:` ReFS volume was ejected on 2026-10-29, so "ReFS untested" (SP1) is now also "no ReFS
+volume on this machine"; tests that need one are skipped when `HYDRA_REFS_SCRATCH` is unset.
+
+| Spike | Numbers | Go or no-go | Decision taken, and where it stands |
+|---|---|---|---|
+| SP1 read-replica opens (E11) | 8 runs, 1,720 saves, 60 kills of the saving daemon: 0 corrupt reads, 0 saver failures, 0 unexpected exceptions, 0 unopenable newest versions; 1.5 to 4% of fresh opens refused at about 2.5 saves/s, each a clean "file not found" that one `refresh` and retry cleared (76 of 76 on the second attempt); NTFS on D: only, ReFS and power loss untested | GO with conditions | E11 is built with refresh-and-retry in the open path and never claims "never refused". E11 is not started |
+| SP2 overlay views against fork views (E10) | KotOR copy, 8,966 functions, 122 MB: about 6 MB per view against 170 to 190 MB; first edit about 1.5 to 2x faster at N=4 and N=12; heap a tie within noise; the 1.5 GB case not run | NO-GO for E10 now (go only if both measures win) | E10 does not start; a conditional GO needs the owner to relax heap to "not worse" |
+| SP3 D60 job object and D65 spawn sequence | real `hydra-integ` daemon, every variant passed in two full passes at 23 to 100% total CPU; negative controls gave the opposite result | GO for D60 and D65 | P1b (landed) and E9 keep the sequence as written. The P1b task-route reading of D65 is still the owner's decision (8.6 (4) item 7). R-V3 shows a second environment where the breakaway route does not work (a restricted job object): cases D and N of `p1b_daemon_survives_launcher_exit` now SKIP there (A30) |
+| SP4 in-process decompiler recreate (E9) | 6 runs, about 1,100 cycles with `decompile.exe` killed by `TerminateProcess`: 0 poisoned decompiles, 0 hung threads, no linear handle growth up to 450 cycles; the "other client" was a thread; no calm machine | GO for the in-process part of E9 | E9 builds the in-process recreate; daemon-level isolation needs its own test. E9 is not started |
+| SP8 separate read-only instances (E11) | KotOR copy, `hydra-integ`: DB-bound reads scale about 2.4 to 3.5x at K=4 to 8 (4.6x best, 2.3 to 3.0x worst); one shared instance stays at about 1.0 to 1.2x; at K=8 separate against shared is a median 3.0 to 6.3x; the earlier 4.1x is not reproduced in the median; decompile gains nothing | GO for E11, conditional and load-sensitive | E11 uses separate instances of the one stored file. E11 is not started |
+| SP10 worker JVM start (E7) | median about 4.3 s calm and 6.4 s under heavy foreign load to a trivial script; 350 to 450 MB resident per worker; 12 concurrent workers all succeeded (13.6 to 26.8 s each); `TerminateProcess` ends a deaf worker in about 50 ms (1) or 0.1 to 2.0 s (12 at once); AOT and class-data sharing give no usable gain; cold start NOT measured | GO for E7 on `hydra-integ` | E7 builds the worker route with no AOT or CDS. E7 is not started |
+
+**(3) Per-package status.** "Landed" means merged into `integration/w3` of its repository; the merge commit is given. Where a
+row differs from the same package in 8.6 (3) or 8.7 (3), this row governs. A count is the report's. A report that was clipped
+is marked.
+
+| Package | Landed | What its tests showed | What remains open |
+|---|---|---|---|
+| E3b (Hydra) | yes, `8c9df389a8` | accepted by the independent review of stage A2 (round 2: accept, 0 blocking). Two landing attempts failed only because the Gradle daemon died with "device not ready" on the removed `F:` drive; the report states no test count for the landing | nothing stated by the report. **BP9 is still open** at this revision because the E3c waiter caps are not landed (item 24); the ownership-bits decision and review findings 2 and 3 of 8.7 (1) item b are not shown to be recorded in 3.5 |
+| R-V3 (fix package) | yes, `67cd6fe8d4` | all three failure groups of the hosted runner run 40831873385 fixed in tests and test tooling, no Java changed. The full `daemon_tests` run on NTFS (E:) gave 86 of 88 passed, 1 SKIPPED (`legacy_overlay`), 1 FAIL (`e2a_handle_holder` under foreign load) that passed on its one allowed rerun. The merge of `integration/w3` was clean (it changed only `examples/dt_e2.py`); `baseSha` `e0bcee7716`. Report clipped | the hosted runner was not re-run (no push): the fixture owner is simulated with a copy owned by `runneradmin` and the restricted job with a job object, so the hosted run must show SKIP for `p1b_daemon_survives_launcher_exit` (D and N); `sidecar_unfinished` is still probabilistic (it needs the polling holder in a window of a few milliseconds within 5 attempts) and on a much slower runner can fail with "the premise never held", an honest failure, never a pass; more is clipped |
+| E4 | yes, `164204446b` | merged with `integration/w3` without conflict; the package suites pass on the rebuilt install; no new E4 code and no commit beyond the merge in this stage. In the dedicated `dt_e4` run `runaway_bounds` failed once at `dt_e4.py` line 802 ("the owner is still limited after the deaf script ended"): the reply was `cancelled` with "wall budget scriptMaxS (6 s) exceeded" after 9.98 s, and a `TestSleep` script asked to sleep 10 ms printed "start" and did not finish for about 10 s. Report clipped | the cause of that stall is **not found** (most likely a stall of the script thread or the JVM under foreign load; the report is cut off at the load figures); the test was not loosened; the wording amendment A28 (item 15); the E4 report of stage A2 listed `e2a_kill_fork` as environmental, and it was a defect (A25, A29) |
+| E3c | **no** (merge `3eaea8840c`, status partial) | `integration/w3` (`8c9df389a8`) merged into `w2/E3c` and rebuilt; the package tests and the suites re-run; the full daemon suite is **109 of 112**. Report clipped | the three failures are timing tests under heavy foreign load (other agents' `java.exe` processes and a shared Gradle daemon since 08:30): `legacy_overlay` (a comparison of two small numbers; 455 ms against 143 ms on the rerun; passes alone), `sidecar_unfinished` (12.85 s and then 5.91 s against 1.6 s expected in the full run and the 3-test rerun; 3.40 s alone on `h-E3c`; passes on `h-E4` with the same test code; cause not found), and a third that the report does not show. **The red-table rows BP4, BP5 and BP6 are still RED**; the E3c waiter caps are therefore not shown to close BP9. The `leaveProject` resolution (part 1 item a) and A32 need review |
+| E5 | **no** | no report this stage; 8.7 (3) stands (blocked at setup; the `ProjectCommands.java` conflict is now resolved in E3c's merge, but E3c is not landed, so E5 still cannot start from `integration/w3`) | everything in 8.7 (3) |
+| Z4b (Hydralysis) | **no** (`w2/Z4b`, `903e080`; commit "audit_harness: end the audited server's whole process tree before removing its private root") | cause: `tools/audit_harness.py` `launch()` ran the audited server with its cwd set to the private temp root and ended it with `terminate()` only; on Windows a cwd pins the directory and a helper the server started kept it, so the cleanup raised `WinError 32`, the tool died without JSON and two tests failed. Fix: the server no longer gets the root as its cwd; `stop_tree()` ends the whole tree (`taskkill /T /F` on Windows, `killpg` elsewhere) before stdin is closed. The `WinError 32` was reproduced with a deterministic test on Python 3.15; the full suite had 4 failures on the first run (two `test_durable` cross-process tests, `test_evidence` `test_concurrent_writers_all_land` with `LockBusy` timeouts, `test_exporting` `test_job_json_is_not_rewritten_for_every_row` with 4 writes against a limit of 3) and all 4 passed on one rerun; the first run took 3,541 s with a dozen other agents active. Report clipped | the original CI failure was on Python 3.11.9 and **was not reproduced**: Python 3.11 is not installed here (oldest used 3.12.14), only the equivalent mechanism was; hosted CI on 3.11 must confirm; the four load-sensitive tests are not shown to be deterministic fixes |
+| Y6 (Hydralysis) | **no** (`w2/Y6`, `2a4d007`) | the 8.7 HVF error `EngineCommit.test_commit_round_trip_archival_and_revert_chain` ("no pending record to commit") was a **test** defect, not a Y5 regression: since Y5 (D43, D59) a call with neither `view` nor `as` runs in the caller's own per-agent view; `edit()` goes through `runner.query` and lands in the agent view while `commit()` called `commits.run_commit` on the shared view `""`, which holds no records. The product path (`QueryRunner._commit`, `type_edit kind=commit`) uses the caller's own view as D43 requires. The fix is test-only (`tests/test_engine_integration.py`; commit message: the test names the shared view and adds an own-view commit guard). Report clipped | the unit suite is **not green** in this session: `test_exporting.ExportTests.test_job_json_is_not_rewritten_for_every_row` (8 job-json writes against a bound of 3 in the full run, 7 on the rerun) and `test_runtime_capture.CaptureWindow.test_state_is_published_at_a_bounded_rate_not_per_message` (128 != 300 in the full run, 10 not less than 6 on the rerun) fail again on isolated reruns. Both assert a rate bound and look load-sensitive, and the Y6 diff touches only a file neither imports, but the report did **not** confirm this on the base commit `1e6ae67` (clipped there). The same `test_exporting` test failed once in Z4b |
+
+Packages and fix packages that this stage did not touch keep their 8.6 (3) and 8.7 (3) rows. Whether Y4a is closed is still
+not stated by any report.
+
+**(4) Statements of this file that the implementations proved wrong.** Numbering continues from 8.7 (4) item 17.
+18. 8.7 (3) lists E3b and E4 as not landed. Superseded: both are landed on `integration/w3` (part 3). E3c is not, and 8.7 (1)
+    item a (the `ProjectCommands.java` conflict) is resolved in E3c's merge, not in a landing.
+19. 8.7 (3) HVF row and 8.7 (4) item 17 call the `EngineCommit` error "a suspected Y5 regression". Wrong: the test was wrong and
+    the product was right (D43, D59); Y6 fixes the test (part 3). 8.7 (3) Y5 row says "Suspected regression: see the HVF row";
+    that suspicion is withdrawn. The sentence of 8.7 (3) HVF row that the Y5 landing "is therefore not clean against a real
+    engine" no longer stands for this error; the real-engine claims of Y5 that no test ran (eviction, `close_project` discard,
+    `status.projects`, the real busy refusal) stay unverified.
+20. A25 (8.7 (1)) says E3c adds a `_toolhelp()` function. The code on `integration/w3` has no `_toolhelp`: the one structure class
+    and the one-time signatures live in `_pe32_class()` (`_PE32`, the lock `_K32_LOCK`). Both R-V3 and A29 name `_pe32_class()`.
+21. 8.7 (3) E3c and E4 rows call `p1b_daemon_survives_launcher_exit` "environmental" (`WinError 5` on the breakaway route) and
+    `e2a_kill_fork` "environmental" (E4). Part of that was wrong: `e2a_kill_fork` was a product-side race (A25, A29). The breakaway
+    failure is an environment property and the test now SKIPs it (A30), which is a test-tooling decision, not a fix of the
+    route; it does not close the P1b task-route question of 8.6 (4) item 7.
+22. Section 8.6 (3) Z4 row names the Z4 flake as "`PermissionError [WinError 5]` on the rename of the unpacked directory, once".
+    The hosted-runner failure of `audit_harness.py` was `WinError 32` on the cleanup of the private temp root, a different
+    mechanism; Z4b fixes it (part 3) and does not claim to have reproduced the 3.11.9 failure.
+23. `F:` is gone. Lines of this file that name it are out of date and are **not edited here** (this revision appends only):
+    the site repository path `F:/Projects/hydra-engine-site` (the Site table heading in 8.1, and the S1 and S2 notes) is now
+    `D:/Projects/hydra-engine-site`; OD3 names two daemons at `F:\dev-cache\...` that no longer exist; the history row of
+    OD14 names the same path; and `prove_disjoint_rev8.py` has the old path as its default `--site-root`, so it must be run with
+    the argument shown in the introduction of this section. Gate wording about a ReFS volume stays; a ReFS test is skipped, not
+    passed, when `HYDRA_REFS_SCRATCH` is unset.
+24. 8.7 (4) item 12 ("BP9 is open") stands. The E3b waiter caps are landed; the E3c caps are not; BP4, BP5 and BP6 are still
+    RED in the E3c report. No sentence of this file may say BP9 is closed, and gate 9.1 and the full `conc/red_table.py` were not
+    rerun in stage A3 by any report.
+25. 8.7 (4) item 13 and A28 (the 3.4 and 6.2 sentences on an overlay `script`) were to be written "when E4 lands". E4 is landed
+    and the text of 3.4 and 6.2 is **still unchanged**; this revision does not edit them (docs append only). The sentences listed
+    in item 13 are therefore a debt, not text. One more fact for them, from the E4 stage report: the E3a golden `e3a-busy.json`
+    now carries `isolation`, `lane`, `attemptedChanges` and `attemptedChangesCount` on a protocol 3 `script` reply (A31).
+26. The 8.7 (3) E3c and E4 rows say `p1b_daemon_survives_launcher_exit` fails for environmental reasons. Superseded for the
+    hosted runner: with A30, cases D and N SKIP and the tally shows them as SKIPPED. A skipped case proves nothing; the survival of
+    a daemon after its launcher exits is **not demonstrated** on a runner whose job object forbids breakaway.
+
+**Gates.** No gate of section 9 is weakened, none is flipped to passing by this revision, and no sentence of the engine or
+Hydralysis documents is strengthened by it. Gates and rows that still need work: 9.1 and the BP9, BP4, BP5 and BP6 rows (E3c,
+E5), gate 9.20 (quiet machine), the power-loss claim (E12, 8.7 (4) item 15), the hosted-runner confirmation of R-V3 and Z4b, the
+load-sensitive Hydralysis tests named in the Y6 and Z4b rows, the A28 sentences, and the Hydralysis real-engine run of Y5/Y6
+(none ran in this stage).
 
 ### W0
 

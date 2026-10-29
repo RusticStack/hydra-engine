@@ -60,6 +60,7 @@ def legacy_copy(c, tag):
     src = src.parent if src.suffix == ".gpr" else src
     dst = c.work / tag
     cc.dt.clone_tree(src, dst)
+    cc.dt.own_project(dst)  # the fixture names its maker as owner: another user could not open it
     return next(dst.glob("*.gpr"))
 
 
