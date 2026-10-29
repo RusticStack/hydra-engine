@@ -360,7 +360,7 @@ def _cancel_while_waiting(c, protocol, races, first=0):
 
 
 CW_RACES = 200      # races per protocol
-CW_SHARDS = 2       # shards per protocol when run as shards (each also runs part (a))
+CW_SHARDS = 4       # shards per protocol when run as shards (each also runs part (a))
 
 
 def t_cancel_while_waiting(c):

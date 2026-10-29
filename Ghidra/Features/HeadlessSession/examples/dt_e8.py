@@ -576,7 +576,7 @@ def t_sp5_idempotent(c):
 
 # ---- the kill loop ------------------------------------------------------------------------
 
-KILL_SHARDS = 4     # processes e8_kill_loop is split into by run_parallel.py (the kills add up)
+KILL_SHARDS = 8     # processes e8_kill_loop is split into by run_parallel.py (the kills add up)
 
 
 def t_kill_loop(c):

@@ -60,7 +60,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 COSTS = HERE / "suite-costs.json"
 DEFAULT_COST_S = 25.0
-DEFAULT_WORKERS = 16
+DEFAULT_WORKERS = 22
 #: processes on the machine above which no new test is started. Measured on the 24-thread, 64 GB Windows 11 machine
 #: this was written on: 1,100 small JVMs at once (1,419 processes on the machine) all started, so the process count
 #: itself is not what failed earlier runs with 0xC0000142 (STATUS_DLL_INIT_FAILED); this is only a guard.
@@ -70,7 +70,15 @@ DEFAULT_MAX_PROCS = 1200
 #: 0xC0000142: the commit limit (RAM + page file, 72 GB here) is the resource the earlier failures ran out of when
 #: two suites of 8 groups ran next to each other.
 DEFAULT_MIN_COMMIT_GB = 10.0
-DEFAULT_HEAVY_SLOTS = 4
+DEFAULT_HEAVY_SLOTS = 8
+#: JVM options of the test daemons (not of a user's daemon): GC and JIT threads sized for one test instead of for
+#: all the machine's processors, and C1 only. Measured on a daemon start + open project/program + 3 decompiles:
+#: 7.3-8.1 CPU-s with the defaults, 4.1-4.7 with the thread counts, 2.5-2.8 with C1 only, the latency the same
+#: (2.1-2.4 s, 2.1-2.3 s, 1.8-1.9 s). Runtime.availableProcessors() is left alone: the engine sizes its lanes by it.
+LEAN_THREADS = "-XX:ParallelGCThreads=2 -XX:ConcGCThreads=1 -XX:CICompilerCount=2"
+LEAN_JIT = "-XX:TieredStopAtLevel=1"     # not for the heavy tests: imports and analysis ran about 2x slower on C1 only
+DEFAULT_CORES = 22.0     # core demand of the tests running at once (light 1, heavy 2; measured: 11 tests kept 13 of 24 logical processors busy on average), 2 left over
+SEED_KEEP = 3           # seeds kept in --seed-cache (one per engine build)
 GOOD = ("pass", "skipped")
 
 
@@ -192,12 +200,22 @@ class Runner:
             c += ["--seed-dir", str(self.seed)] if self.seed and only else []
         return c + list(more) + self.extra
 
-    def start(self, task: str, tag: str = ""):
+    def start(self, task: str, tag: str = "", heavy: bool = False):
         Runner.N += 1
         w = self.scratch / f"t{Runner.N:03d}"          # short: Ghidra projects nest deep under it
         stem = safe(self.prefix + task) + tag
         log, rep = self.logs / f"{stem}.log", self.logs / f"{stem}.json"
-        p = subprocess.Popen(self.cmd(w / "w", w / "t", rep, task), cwd=HERE, stdin=subprocess.DEVNULL,
+        env = dict(os.environ)
+        if getattr(self.a, "isolate_settings", False):
+            # Ghidra's per-user settings dir (preferences, the OSGi felixcache and compiled script bundles) is
+            # shared by every JVM of a user: give each test process its own, so concurrent daemons do not share it
+            env["XDG_CONFIG_HOME"] = str(w / "xdg")
+        if not getattr(self.a, "full_jvm", True):
+            # the launcher's own path for extra JVM options (ghidra_session.load_config): every daemon this test
+            # starts gets them, unless the test sets its own vmargs
+            lean = LEAN_THREADS if heavy else LEAN_THREADS + " " + LEAN_JIT     # heavy tests keep C2: they analyse
+            env["GHIDRA_SESSION_VMARGS"] = " ".join(x for x in (env.get("GHIDRA_SESSION_VMARGS", ""), lean) if x)
+        p = subprocess.Popen(self.cmd(w / "w", w / "t", rep, task), cwd=HERE, stdin=subprocess.DEVNULL, env=env,
                              stdout=open(log, "w", encoding="utf-8", errors="replace"), stderr=subprocess.STDOUT)
         return {"runner": self, "task": task, "key": self.prefix + task, "proc": p, "work": w, "log": log, "report": rep,
                 "t0": time.time()}
@@ -258,6 +276,10 @@ class Runner:
                 seed = entry
             except OSError:
                 seed = entry if (entry / "ok").is_file() else seed
+            # a seed holds a copy of the install (about 650 MB): keep the newest SEED_KEEP, older engines' go
+            old = sorted((p for p in entry.parent.glob("seed-*") if p.is_dir() and p != entry), key=lambda p: p.stat().st_mtime)
+            for p in old[:max(0, len(old) - (SEED_KEEP - 1))]:
+                shutil.rmtree(p, ignore_errors=True)
         self.seed = seed
         return f"seed made in {time.time() - t:.0f} s: {seed}"
 
@@ -266,33 +288,83 @@ def is_heavy(r: Runner, task: str, heavy: set) -> bool:
     return any((r.prefix + n.partition("@")[0]) in heavy for n in task.split(","))
 
 
+class CpuSampler:
+    """Busy logical processors of the whole machine, from GetSystemTimes deltas (Windows; None elsewhere)."""
+
+    def __init__(self):
+        self.n = os.cpu_count() or 1
+        self.last = self._times()
+
+    @staticmethod
+    def _times():
+        if os.name != "nt":
+            return None
+        idle, kern, user = (ctypes.c_ulonglong(), ctypes.c_ulonglong(), ctypes.c_ulonglong())
+        if not ctypes.windll.kernel32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kern), ctypes.byref(user)):
+            return None
+        return idle.value, kern.value + user.value          # kernel time includes the idle time
+
+    def busy(self) -> float | None:
+        now = self._times()
+        if not now or not self.last:
+            return None
+        di, dt = now[0] - self.last[0], now[1] - self.last[1]
+        self.last = now
+        return round(self.n * (1 - di / dt), 1) if dt > 0 else None
+
+
 def run_queue(items: list[tuple[Runner, str]], workers: int, max_procs: int, min_commit: float, timeout: float,
-              results: dict, problems: list, started: float, heavy: set = frozenset(), heavy_slots: int = 0) -> dict:
+              results: dict, problems: list, started: float, heavy: set = frozenset(), heavy_slots: int = 0,
+              cores: float = 0, light_cores: float = 2, heavy_cores: float = 4, stagger: float = 0.0,
+              sample: Path | None = None) -> dict:
     """Runs the ``(runner, task)`` items (in order) with at most ``workers`` at once, and a new one only while the
     machine has fewer than ``max_procs`` processes and at least ``min_commit`` GB of commit left; fills ``results``
     {runner prefix + task: result}. Returns what was seen of the machine: peak processes, least free commit, seconds
-    held back."""
+    held back. ``cores``: the core demands of the running tasks (``heavy_cores`` for a heavy one, else
+    ``light_cores``) stay within it; ``stagger``: seconds between two starts; ``sample``: a CSV of the machine every
+    2 s (busy logical processors, running tasks, their core demand, processes, free commit)."""
     queue = list(items)
     running: list[dict] = []
     held_since = None
-    seen = {"peak_procs": 0, "min_free_commit_gb": None, "held_s": 0.0}
+    seen = {"peak_procs": 0, "min_free_commit_gb": None, "held_s": 0.0, "mean_busy_cores": None, "peak_busy_cores": None}
     last = 0.0
+    last_start = 0.0
+    cpu = CpuSampler()
+    busy_log: list[float] = []
+    csv = open(sample, "w", encoding="utf-8") if sample else None
+    if csv:
+        csv.write("t_s,busy_cores,running,demand_cores,processes,free_commit_gb,running_tasks\n")
+
+    def demand(r, task):
+        return heavy_cores if (heavy and is_heavy(r, task, heavy)) else light_cores
+
     while queue or running:
-        if time.time() - last > 1.0:                  # sample the machine once a second
+        if time.time() - last > 2.0:                  # sample the machine every 2 s
             last = time.time()
-            n, fc = machine_procs(), free_commit_gb()
+            n, fc, b = machine_procs(), free_commit_gb(), cpu.busy()
             if n is not None:
                 seen["peak_procs"] = max(seen["peak_procs"], n)
             if fc is not None:
                 seen["min_free_commit_gb"] = round(min(fc, seen["min_free_commit_gb"] or fc), 1)
+            if b is not None:
+                busy_log.append(b)
+            if csv:
+                csv.write(f"{time.time() - started:.1f},{b},{len(running)},{sum(j['demand'] for j in running)},{n},"
+                          f"{fc and round(fc, 1)},{' '.join(j['key'] for j in running)}\n")
+                csv.flush()
         while queue and len(running) < workers:
+            if stagger and time.time() - last_start < stagger:
+                break
             n, fc = machine_procs(), free_commit_gb()
             full = (max_procs and n is not None and n >= max_procs) or (min_commit and fc is not None and fc < min_commit)
             if full and running:
                 held_since = held_since or time.time()
                 break
             busy = sum(1 for j in running if j["heavy"])
-            pick = next((k for k, (r, t) in enumerate(queue) if not (heavy and is_heavy(r, t, heavy) and busy >= heavy_slots)), None)
+            used = sum(j["demand"] for j in running)
+            pick = next((k for k, (r, t) in enumerate(queue)
+                         if not (heavy and is_heavy(r, t, heavy) and busy >= heavy_slots)
+                         and (not cores or not running or used + demand(r, t) <= cores)), None)
             if pick is None:
                 break
             if pick:
@@ -302,7 +374,9 @@ def run_queue(items: list[tuple[Runner, str]], workers: int, max_procs: int, min
                 print(f"   (held {time.time() - held_since:.1f} s: {n} processes, {fc:.1f} GB commit free)", flush=True)
                 held_since = None
             r, task = queue.pop(0)
-            running.append(dict(r.start(task), heavy=bool(heavy and is_heavy(r, task, heavy))))
+            hv = bool(heavy and is_heavy(r, task, heavy))
+            running.append(dict(r.start(task, heavy=hv), heavy=hv, demand=demand(r, task)))
+            last_start = time.time()
         time.sleep(0.2)
         for j in [j for j in running if j["proc"].poll() is not None or time.time() - j["t0"] > timeout]:
             running.remove(j)
@@ -324,7 +398,156 @@ def run_queue(items: list[tuple[Runner, str]], workers: int, max_procs: int, min
                     else next(x["status"] for x in got.values() if x["status"] not in GOOD))
             print(f"{word:7s} {j['key']:40s} {secs:6.1f} s  (at {time.time() - started:4.0f} s, {len(queue)} queued, {len(running)} running)", flush=True)
     seen["held_s"] = round(seen["held_s"], 1)
+    if busy_log:
+        seen["mean_busy_cores"] = round(sum(busy_log) / len(busy_log), 1)
+        seen["peak_busy_cores"] = max(busy_log)
+    if csv:
+        csv.close()
     return seen
+
+
+# ---- affected tests --------------------------------------------------------------------------
+
+REPO = HERE.parents[3]
+SRC = HERE.parent / "src" / "main" / "java" / "ghidra" / "app" / "util" / "headless" / "session"
+TEST_MAP = HERE / "test-map.json"
+#: always run with --affected: cheap tests (3-12 s each) that go through hello, open project/program, a read, an
+#: edit and save, a script, a fork, a cancel, a kill and a restart
+SMOKE = ["caller_labels", "cancel_queued", "client_kill", "daemon_restart", "fork", "keep_warm", "idle_shutdown",
+         "revisions", "edit", "script_reply"]
+#: a change to one of these runs the whole suite: every request goes through them
+CORE = ["Ghidra/Features/HeadlessSession/src/main/java/ghidra/app/util/headless/session/" + f for f in (
+    "Session.java", "Scheduler.java", "Access.java", "Connection.java", "Requests.java", "RequestMonitor.java", "Json.java",
+    "SessionMain.java", "HeadlessSession.java", "SessionProject.java", "ProjectEntry.java", "ProjectLocks.java", "Waits.java",
+    "Caller.java", "Client.java", "Identity.java", "Settings.java", "DeferredInit.java", "SessionApplicationConfiguration.java",
+    "SessionException.java", "Operations.java")] + [
+    "Ghidra/Features/HeadlessSession/support/ghidra_session.py", "Ghidra/Features/HeadlessSession/examples/daemon_tests.py",
+    "Ghidra/Features/HeadlessSession/examples/run_parallel.py", "Ghidra/Features/HeadlessSession/build.gradle"]
+#: changes that cannot affect the daemon suite (documents, the red table's scripts, other suites' own files)
+IGNORE = ["*.md", "*.txt", "Ghidra/Features/HeadlessSession/examples/conc/*", "Ghidra/Features/HeadlessSession/examples/cc_*.py",
+          "Ghidra/Features/HeadlessSession/examples/char_*.py", "Ghidra/Features/HeadlessSession/examples/characterization/*",
+          "Ghidra/Features/HeadlessSession/examples/client_compat_tests.py", "Ghidra/Features/HeadlessSession/examples/session_smoke.py",
+          "Ghidra/Features/HeadlessSession/examples/contract_tests.py", "Ghidra/Features/HeadlessSession/examples/characterization_tests.py",
+          "Ghidra/Features/HeadlessSession/examples/suite-costs.json", "Ghidra/Features/HeadlessSession/examples/test-map.json",
+          "Ghidra/Features/HeadlessSession/examples/run_all.py", "Ghidra/Features/HeadlessSession/certification.manifest"]
+#: engine files outside HeadlessSession that the suite tests directly (by the test that names them)
+EXTRA = {"Ghidra/Framework/DB/src/main/java/db/buffers/LocalManagedBufferFile.java": "dt_e8.py",
+         "Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/data/LocalDatabaseItem.java": "dt_e8.py",
+         "Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/local/LocalDatabaseItem.java": "dt_e8.py"}
+#: commands nearly every test sends: they say nothing about which tests a file affects
+UBIQUITOUS = {"hello", "ping", "status", "open_project", "open_program", "close_project", "close_program", "list",
+              "functions", "info", "shutdown", "switch", "projects", "programs"}
+
+
+def _functions(src: str) -> dict[str, str]:
+    """Top-level ``def name`` -> its source, of a Python file."""
+    out, parts = {}, re.split(r"\n(?=def \w+\()", src)
+    for p in parts:
+        m = re.match(r"def (\w+)\(", p)
+        if m:
+            out[m.group(1)] = p
+    return out
+
+
+def _test_sources(dt) -> dict[str, str]:
+    """Test name -> the source of its function and of the module helpers it calls (one level)."""
+    out = {}
+    files = {"daemon_tests.py": HERE / "daemon_tests.py"} | {f: HERE / f for f in dt.LOADED}
+    funcs = {f: _functions(p.read_text(encoding="utf-8")) for f, p in files.items()}
+    owner = {n: "daemon_tests.py" for n in dt.TESTS} | {n: f for f, ns in dt.LOADED.items() for n in ns}
+    for n, fn in dt.REGISTRY.items():
+        f = owner.get(n, "daemon_tests.py")
+        fs = funcs[f]
+        name = getattr(fn, "__name__", "")
+        body = fs.get(name, "")
+        called = set(re.findall(r"\b(_?\w+)\(", body))
+        out[n] = body + "".join(fs[c] for c in called if c in fs and c != name)
+    return out
+
+
+def make_test_map(dt) -> dict:
+    """The map from engine files to the tests that exercise them, by static analysis: the commands each Java class
+    serves (Session.java's dispatch, and the classes the command classes use), and the commands and class names
+    each test's source names."""
+    session = (SRC / "Session.java").read_text(encoding="utf-8")
+    fields = dict((v, t) for t, v in re.findall(r"final (\w+) (\w+) = new \w+\(", session))
+    cmd_classes: dict[str, set] = {}
+    for m in re.finditer(r'case ((?:"\w+"(?:, )?)+) ->(.*?)(?=\n\s*case |\n\s*default)', session, re.S):
+        cmds = re.findall(r'"(\w+)"', m.group(1))
+        refs = {fields.get(i, i) for i in re.findall(r"\b(\w+)\.\w+\(", m.group(2))}
+        for c in cmds:
+            cmd_classes.setdefault(c, set()).update(r for r in refs if r[:1].isupper())
+    java = {p.stem: p.read_text(encoding="utf-8") for p in SRC.glob("*.java")}
+    serves = {cls: {c for c, cs in cmd_classes.items() if cls in cs} for cls in java}
+    # a class no dispatch names serves the commands of the classes that use it (one level)
+    for cls in java:
+        if not serves[cls]:
+            users = [u for u, s in java.items() if u != cls and re.search(rf"\b{cls}\b", s) and serves.get(u)]
+            serves[cls] = set().union(*(serves[u] for u in users)) if users else set()
+    srcs = _test_sources(dt)
+    rel = "Ghidra/Features/HeadlessSession/src/main/java/ghidra/app/util/headless/session/"
+    files: dict[str, list] = {}
+    for cls, cmds in sorted(serves.items()):
+        path = rel + cls + ".java"
+        if path in CORE:
+            continue
+        specific = cmds - UBIQUITOUS
+        if not cmds:
+            continue                     # used only by core classes: unmapped, a change runs the whole suite
+        if not specific:
+            files[path] = ["*"]          # serves only the commands every test sends
+            continue
+        tests = sorted(n for n, s in srcs.items()
+                       if any(re.search(rf"""["']{c}["']""", s) for c in specific) or re.search(rf"\b{cls}\b", s))
+        files[path] = tests or ["*"]
+    for path, mod in EXTRA.items():
+        files[path] = sorted(dt.LOADED.get(mod, []))
+    modules = {"Ghidra/Features/HeadlessSession/examples/" + f: sorted(ns) for f, ns in dt.LOADED.items()}
+    builtin = sorted(dt.TESTS)
+    return {"comment": "generated by run_parallel.py --make-test-map (static analysis); test lists of engine files, of "
+                       "dt_*.py modules, the smoke set, and the files whose change runs the whole suite",
+            "smoke": SMOKE, "core": CORE, "ignore": IGNORE, "files": files, "modules": modules, "builtin": builtin}
+
+
+def load_dt():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("daemon_tests", HERE / "daemon_tests.py")
+    dt = importlib.util.module_from_spec(spec)
+    sys.modules["daemon_tests"] = dt
+    spec.loader.exec_module(dt)
+    for n in dt.TESTS:
+        dt.REGISTRY[n] = getattr(dt, "t_" + n)
+    dt.load_dt(HERE)
+    return dt
+
+
+def affected(changed: list[str], tmap: dict, names: list[str]) -> tuple[list[str] | None, list[str]]:
+    """(the tests to run, or None for the whole suite; why), for the repo-relative ``changed`` files."""
+    import fnmatch
+    why, pick = [], set(tmap["smoke"])
+    for f in changed:
+        f = f.replace("\\", "/")
+        if any(fnmatch.fnmatch(f, g) for g in tmap["ignore"]):
+            why.append(f"{f}: cannot affect the daemon suite")
+        elif f in tmap["core"]:
+            return None, why + [f"{f}: a core file: the whole suite"]
+        elif f in tmap["files"] or f in tmap["modules"]:
+            ts = tmap["files"].get(f) or tmap["modules"].get(f)
+            if "*" in ts:
+                return None, why + [f"{f}: serves the commands every test sends: the whole suite"]
+            pick |= set(ts)
+            why.append(f"{f}: {len(ts)} tests")
+        else:
+            return None, why + [f"{f}: not in test-map.json: the whole suite"]
+    return [n for n in names if n in pick], why
+
+
+def changed_files(base: str) -> list[str]:
+    out = subprocess.run(["git", "diff", "--name-only", f"{base}...HEAD"], cwd=REPO, capture_output=True, text=True)
+    if out.returncode != 0:
+        sys.exit(f"git diff {base}...HEAD failed: {out.stderr.strip()}")
+    wt = subprocess.run(["git", "diff", "--name-only", "HEAD"], cwd=REPO, capture_output=True, text=True).stdout
+    return sorted({l.strip() for l in (out.stdout + wt).splitlines() if l.strip()})
 
 
 def selftest() -> int:
@@ -356,15 +579,28 @@ def selftest() -> int:
     m = merge("b", ["b@x"], {"b@x": dict(ok, status="skipped")})
     check("merge: all shards skipped -> skipped", m["status"] == "skipped")
     # the shards of the real suite: loaded the way daemon_tests.py loads them
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("daemon_tests", HERE / "daemon_tests.py")
-    dt = importlib.util.module_from_spec(spec)
-    sys.modules["daemon_tests"] = dt
-    spec.loader.exec_module(dt)
-    for n in dt.TESTS:
-        dt.REGISTRY[n] = getattr(dt, "t_" + n)
-    errors = dt.load_dt(HERE)
+    dt = load_dt()
+    errors = [f for f in sorted(p.name for p in HERE.glob("dt_*.py")) if f not in dt.LOADED]
     check(f"daemon_tests: every dt_*.py loads ({errors or 'none failed'})", not errors)
+    # test-map.json: no orphan test, and --affected picks what it should for three synthetic diffs
+    tmap = json.loads(TEST_MAP.read_text(encoding="utf-8"))
+    names = list(dt.REGISTRY)
+    covered = set(tmap["smoke"]) | set(tmap["builtin"]) | {n for ts in list(tmap["files"].values()) + list(tmap["modules"].values()) for n in ts}
+    check(f"test-map.json: every registered test is mapped ({sorted(set(names) - covered) or 'no orphan'})", set(names) <= covered)
+    check("test-map.json: every dt_*.py module is mapped to its tests",
+          all(sorted(ns) == tmap["modules"].get("Ghidra/Features/HeadlessSession/examples/" + f) for f, ns in dt.LOADED.items()))
+    check("test-map.json: is what --make-test-map makes now (regenerate it after adding tests)", make_test_map(dt) == tmap)
+    rel = "Ghidra/Features/HeadlessSession/"
+    sel, why = affected([rel + "examples/dt_e8.py", rel + "README.md"], tmap, names)
+    check("affected: a dt_e8.py change runs the e8 tests and the smoke set, a README change nothing",
+          sel is not None and set(sel) == set(dt.LOADED["dt_e8.py"]) | set(SMOKE))
+    fork = tmap["files"].get(rel + "src/main/java/ghidra/app/util/headless/session/ForkCommands.java", [])
+    sel, why = affected([rel + "src/main/java/ghidra/app/util/headless/session/ForkCommands.java"], tmap, names)
+    check(f"affected: a ForkCommands.java change runs its {len(fork)} fork tests and the smoke set, not the suite",
+          sel is not None and "fork" in sel and set(sel) == set(fork) | set(SMOKE) and len(sel) < len(names))
+    sel1, _ = affected([rel + "src/main/java/ghidra/app/util/headless/session/Session.java"], tmap, names)
+    sel2, why2 = affected([rel + "src/main/java/ghidra/app/util/headless/session/Brand_New.java"], tmap, names)
+    check("affected: a core file (Session.java) or an unmapped file runs the whole suite", sel1 is None and sel2 is None and "not in" in why2[-1])
     check("daemon_tests: shards belong to registered tests and add no test name",
           set(dt.SHARDS) <= set(dt.REGISTRY) and not any("@" in n for n in dt.REGISTRY))
     for n0, k in ((0, 4), (1, 4), (8, 4), (200, 2), (7, 3)):
@@ -390,6 +626,10 @@ def selftest() -> int:
 def main() -> int:
     if sys.argv[1:] == ["--selftest"]:
         return selftest()
+    if sys.argv[1:] == ["--make-test-map"]:
+        TEST_MAP.write_text(json.dumps(make_test_map(load_dt()), indent=1) + "\n", encoding="utf-8")
+        print(f"wrote {TEST_MAP}")
+        return 0
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--ghidra", required=True, help="the engine install")
     ap.add_argument("--scratch", required=True, help="parent of the --work/--tmpdir directories (a fast local disk)")
@@ -403,15 +643,32 @@ def main() -> int:
     ap.add_argument("--heavy-slots", dest="heavy_slots", type=int, default=DEFAULT_HEAVY_SLOTS,
                     help=f"at most this many of the CPU- and disk-heavy tests (suite-costs.json '<script>#heavy') at once "
                          f"(default {DEFAULT_HEAVY_SLOTS}; 0: no limit)")
+    ap.add_argument("--cores", type=float, default=DEFAULT_CORES,
+                    help=f"core budget of the running tests (default {DEFAULT_CORES:g}; a test counts --light-cores, a heavy "
+                         "one --heavy-cores; 0: no budget, only --workers)")
+    ap.add_argument("--light-cores", dest="light_cores", type=float, default=1.0)
+    ap.add_argument("--heavy-cores", dest="heavy_cores", type=float, default=2.0)
+    ap.add_argument("--stagger", type=float, default=0.0, help="seconds between two test starts (default 0)")
+    ap.add_argument("--sample", help="write a CSV of the machine every 2 s here (default <logs>/machine.csv)")
+    ap.add_argument("--full-jvm", dest="full_jvm", action="store_true",
+                    help="the test daemons run with the JVM's default threading and JIT (default: LEAN_THREADS, and LEAN_JIT for the light ones)")
+    ap.add_argument("--shared-settings", dest="isolate_settings", action="store_false",
+                    help="the test daemons use the user's Ghidra settings dir (default: each test process has its own, "
+                         "XDG_CONFIG_HOME under its scratch; shared, every daemon of the user contends for its OSGi "
+                         "bundle cache and a 40 ms script request took 2-3 s with 14 tests at once instead of ~50 ms)")
     ap.add_argument("--task-timeout", dest="task_timeout", type=float, default=1200,
                     help="seconds a test process may run before it is killed (a PROBLEM; default 1200)")
     ap.add_argument("--names", default="", help="comma-separated tests instead of asking the script for --list")
+    ap.add_argument("--affected", action="store_true",
+                    help="only the tests test-map.json maps the changed files to (git diff --name-only <base>...HEAD and the "
+                         "working tree), plus the smoke set; the whole suite when a changed file is core or unmapped")
+    ap.add_argument("--base", default="integration/w3", help="--affected: the branch the changes are measured from")
     ap.add_argument("--no-shards", dest="no_shards", action="store_true", help="run sharded tests whole")
     ap.add_argument("--no-seed", dest="no_seed", action="store_true", help="no --prepare/--seed-dir")
     ap.add_argument("--seed-aot", dest="seed_aot", action="store_true",
                     help="the seed also has the daemon's AOT cache (about 30 s more to make, little faster)")
     ap.add_argument("--seed-cache", dest="seed_cache", default=None,
-                    help="keep the seed here between runs (default: <scratch>-seed-cache; 'none': do not)")
+                    help="keep the seed here between runs (default: seed-cache next to --scratch; 'none': do not)")
     ap.add_argument("--rerun-alone", type=int, default=1)
     ap.add_argument("--strict", action="store_true")
     ap.add_argument("--record", action="store_true", help="refresh suite-costs.json from this run")
@@ -421,7 +678,7 @@ def main() -> int:
     extra = [x for x in a.rest if x != "--"]
     scratch, logs = Path(a.scratch), Path(a.logs)
     if a.seed_cache is None:
-        a.seed_cache = str(scratch.parent / (scratch.name + "-seed-cache"))
+        a.seed_cache = str(scratch.parent / "seed-cache")
     elif a.seed_cache.lower() == "none":
         a.seed_cache = None
     shutil.rmtree(scratch, ignore_errors=True)
@@ -439,6 +696,16 @@ def main() -> int:
         code, names, text = r.listing("--list")
         if code != 0:
             sys.exit("--list failed:\n" + text[-1500:])
+    if a.affected:
+        sel, why = affected(changed_files(a.base), json.loads(TEST_MAP.read_text(encoding="utf-8")), names)
+        for line in why:
+            print("affected:", line)
+        if sel is None:
+            print(f"affected: running the whole suite ({len(names)} tests)")
+        else:
+            print(f"affected: {len(sel)} of {len(names)} tests ({len(SMOKE)} of them the smoke set); skipped "
+                  f"{len(names) - len(sel)}: {', '.join(n for n in names if n not in sel)}")
+            names = sel
     shards: dict[str, list[str]] = {}
     if not a.no_shards:
         code, lines, _ = r.listing("--list-shards")
@@ -457,14 +724,15 @@ def main() -> int:
     q0 = time.time()
     heavy = set(allcosts.get(a.script + "#heavy", [])) if a.heavy_slots else set()
     machine = run_queue([(r, t) for t in tasks], a.workers, a.max_procs, a.min_commit, a.task_timeout, results, problems, started,
-                        heavy, a.heavy_slots)
+                        heavy, a.heavy_slots, a.cores, a.light_cores, a.heavy_cores, a.stagger,
+                        Path(a.sample) if a.sample else logs / "machine.csv")
     queue_s = time.time() - q0
 
     verdict: dict[str, str] = {}           # task -> "load" | "real"
     for t in sorted(t for t, x in results.items() if x["status"] not in GOOD):
         verdict[t] = "real"
         for i in range(a.rerun_alone):
-            j = r.start(t, f"-alone{i}")
+            j = r.start(t, f"-alone{i}", heavy=is_heavy(r, t, heavy))
             j["proc"].wait()
             again = results_of(j["report"]).get(t)
             print(f"alone   {t:40s} {again['status'] if again else 'NO RESULT'}", flush=True)

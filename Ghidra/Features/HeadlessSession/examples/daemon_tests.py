@@ -2807,6 +2807,13 @@ def rep_state(gpr: pathlib.Path):
 
 
 def t_import_write_kill(c: Ctx):
+    return _import_write_kill(c, WRITE_KILL_FRACS)
+
+
+WRITE_KILL_FRACS = (0.0, 0.3, 0.7)   # when the daemon is killed: at the first sight of the database, then part-way
+
+
+def _import_write_kill(c: Ctx, fracs, tag=""):
     """The daemon killed while an import writes its program into the project (Ghidra's final
     createFile, after the load): at the first sight of the new database folder, and part-way
     through the write. Each time the next daemon opens the project clean, and the program is
@@ -2815,10 +2822,10 @@ def t_import_write_kill(c: Ctx):
     mb = c.a.raw_mb * 4
     f1 = raw_file(c, "wkill.bin", mb)
     size = os.path.getsize(f1)
-    folder = c.work / "projWriteKill"
+    folder = c.work / ("projWriteKill" + tag)
     if folder.exists():
         shutil.rmtree(folder)
-    d = c.daemon("wkill", maxImports=1)
+    d = c.daemon("wkill" + tag, maxImports=1)
     with d.connect("calib", "tests") as s:
         gpr = c.make_project(s, folder, "WriteKill")
         s.call("open_project", path=str(gpr), writable=True)
@@ -2837,8 +2844,8 @@ def t_import_write_kill(c: Ctx):
     kept = {"/calib"}
     teardown, restart = [], []
     (c.scripts / "TestMemSize.java").write_text(MEM_SIZE)
-    for i, frac in enumerate((0.0, 0.3, 0.7)):
-        name = f"k{i}"
+    for frac in fracs:
+        name = f"k{WRITE_KILL_FRACS.index(frac)}"
         with d.connect("doomed", "tests") as s:
             s.call("open_project", path=str(gpr), writable=True)
             dbs0 = rep_state(gpr)[1]
@@ -2904,7 +2911,11 @@ LOADED = {}     # dt_*.py file name -> its test names, in order
 # halves) may also be run as shards, ``name@shard``, each in its own process (run_parallel.py runs
 # them at once and reports them under ``name``). The shards together do everything the whole test
 # does (the same counts, the same checks per iteration); ``--only name`` still runs the whole test.
-SHARDS = {}
+SHARDS = {
+    # each kill point in its own process (each with its own calibration import and the re-import after it)
+    "import_write_kill": {f"k{i}": (lambda f: lambda c: _import_write_kill(c, (f,), f"-{WRITE_KILL_FRACS.index(f)}"))(f)
+                          for i, f in enumerate(WRITE_KILL_FRACS)},
+}
 
 
 def split_n(n, k):
