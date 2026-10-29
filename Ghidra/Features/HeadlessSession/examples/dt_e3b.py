@@ -721,14 +721,35 @@ def t_lock_queue_full(c):
 
 # ---- applied_flag ---------------------------------------------------------------------------
 
+RENAMER = """// @category HeadlessSession.Test
+import ghidra.app.script.GhidraScript;
+import ghidra.program.model.listing.Function;
+import ghidra.program.model.symbol.SourceType;
+public class E3bRenamer extends GhidraScript {
+    @Override protected void run() throws Exception {
+        // args: [hold ms, the name to give]; every run must really change the program, so a
+        // second run with another name is a change too (a rename to the same name is a no-op)
+        Function f = currentProgram.getFunctionManager().getFunctions(true).next();
+        f.setName(getScriptArgs()[1], SourceType.USER_DEFINED);
+        long end = System.currentTimeMillis() + Long.parseLong(getScriptArgs()[0]);
+        while (System.currentTimeMillis() < end) {
+            monitor.checkCancelled();
+            Thread.sleep(20);
+        }
+    }
+}
+"""
+
+
 def t_applied_flag(c):
     exe = prepare(c)
+    (c.scripts / "E3bRenamer.java").write_text(RENAMER)
     gpr = c.copy_fixture("e3bAp")
     d = c.daemon("e3b-ap", maxQuick=2)
     H = X = None
     try:
         H = owner(c, d, gpr, exe)
-        H.call("script", script=c.script("BaselineTransient.java"), args=["10"], wait=120000)
+        H.call("script", script=c.script("E3bRenamer.java"), args=["10", "e3b_warm"], wait=120000)
         X = reader(c, d, gpr, exe, "x")
         fn = bl.first_function(H)
         seen = {}
@@ -767,7 +788,9 @@ def t_applied_flag(c):
                  f"rename queued for a slot: {code} {det}")
         finish(H, *occ)
         # an owner script: applied is the script's `changed`
-        for name, args in (("TestSleep.java", ["60000"]), ("BaselineTransient.java", ["60000"])):
+        for n, (name, args) in enumerate((("TestSleep.java", ["60000"]),
+                                          ("E3bRenamer.java", ["60000", "e3b_owner_a"]),
+                                          ("E3bRenamer.java", ["60000", "e3b_owner_b"]))):
             rid = H.send("script", script=c.script(name), args=args, parallel=True, wait=120000)
             time.sleep(2.5)
             H.call("cancel", target=rid)
@@ -777,9 +800,11 @@ def t_applied_flag(c):
             dt.check(isinstance(det.get("applied"), bool) and det["applied"] == det.get("changed"),
                      f"{name}: applied {det.get('applied')} must be the script's changed "
                      f"{det.get('changed')}")
-            seen[name] = (det["applied"], det.get("changed"))
-        dt.check(seen["TestSleep.java"][0] is False, "a script that changes nothing: applied true")
-        return f"applied false for rename/comment/save in a lock wait and a slot wait, absent for decompile; owner scripts {seen['TestSleep.java']} / {seen['BaselineTransient.java']}"
+            seen[n] = (det["applied"], det.get("changed"))
+        dt.check(seen[0][0] is False, f"a script that changes nothing: applied {seen[0]}")
+        dt.check(seen[1][0] is True and seen[2][0] is True,
+                 f"a script that renames a function must report applied true each run: {seen}")
+        return f"applied false for rename/comment/save in a lock wait and a slot wait, absent for decompile; owner scripts (applied, changed): no-op {seen[0]}, renamers {seen[1]} / {seen[2]}"
     finally:
         close_all(H, X)
         d.stop(force=True)

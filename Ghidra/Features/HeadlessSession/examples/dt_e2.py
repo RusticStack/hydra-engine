@@ -853,7 +853,10 @@ def t_fork_report(c):
     notes.append("v2: reply unchanged, purpose/open ignored, sidecar gains purpose+disposable")
 
     # ReFS: on the Dev Drive a fork is a clone and a fresh candidate has its source's revision
-    scratch = pathlib.Path("F:/dev-cache/hydra-reftest") / f"E2-{uuid.uuid4().hex[:8]}"
+    refs_root = os.environ.get("HYDRA_REFS_SCRATCH")
+    if not refs_root:
+        return "; ".join(notes) + "; ReFS part skipped: HYDRA_REFS_SCRATCH (a directory on a ReFS volume) is not set"
+    scratch = pathlib.Path(refs_root) / f"E2-{uuid.uuid4().hex[:8]}"
     try:
         scratch.mkdir(parents=True, exist_ok=False)
     except OSError as e:
