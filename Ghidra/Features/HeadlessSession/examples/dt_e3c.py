@@ -42,6 +42,11 @@
 * ``foreign_blocked_counter`` (D49, K13): ``status.waits.foreignBlocked`` is 0 over reads, joins,
   leaves and a refresh of a read-only view, and is not 0 when a reader waits behind an owner's script
   (the counter can fail).
+* ``project_waiter_caps`` (D39, BP4/BP9): the cap on the lock queues. In the engine's own ``-selfTest`` the
+  plain locks E3c added waits on (the project's slot transition and structure change) answer the
+  third protocol 3 waiter ``QUEUE_FULL`` at once and never cap protocol 2; in a daemon, a program
+  held by a long exclusive request answers the third waiter ``busy{lock_queue_full}`` at once, the
+  two that queued are served, and a protocol 2 waiter is not capped.
 * ``yield_slots_stress`` (SP9): with ``yieldSlots`` on, a lock queue does not hold the lane and
   nothing deadlocks. The setting stays off by default; this is the evidence it needs.
 """
@@ -728,14 +733,25 @@ def t_registry_state_machine(c):
         clients = [c.connect(d, f"o{i}", "e3c", 3) for i in range(n)]
         out = [None] * n
 
+        refused = []
+
         def open_(i):
-            out[i] = bl.timed(c, clients[i], "open_project", path=str(g1), wait=60000)
+            # beyond the waiter cap (D39: max(2, slots / 4) = 6 on a quick lane) a request is told
+            # busy{lock_queue_full} at once and retries, as 3.5 says a client does
+            while True:
+                out[i] = bl.timed(c, clients[i], "open_project", path=str(g1), wait=60000)
+                if out[i]["ok"] or (out[i].get("details") or {}).get("reason") != "lock_queue_full":
+                    return
+                refused.append(out[i])
+                time.sleep(0.3)
         ths = [threading.Thread(target=open_, args=(i,), daemon=True) for i in range(n)]
         for th in ths:
             th.start()
         for th in ths:
             th.join(60)
         dt.check(all(o and o["ok"] for o in out), f"an open failed: {[o for o in out if not o or not o['ok']]}")
+        dt.check(all((r.get("details") or {}).get("waitersMax") for r in refused),
+                 f"a refusal without the cap in its details: {refused[:1]}")
         ids = {o["result"]["id"] for o in out}
         dt.check(len(ids) == 1, f"one project opened under {len(ids)} ids: {ids}")
         dt.check(sum(1 for o in out if o["result"]["opened"]) == 1,
@@ -789,11 +805,70 @@ def t_registry_state_machine(c):
         sl = {x["project"]: x["state"] for x in st["projectStates"]}
         dt.check(set(sl) == set(by_id) and set(sl.values()) <= {"open"},
                  f"slots {sl} against projects {list(by_id)}")
-        return (f"8 concurrent first opens: one project, one opener; a failed open left no slot; "
+        return (f"8 concurrent first opens ({len(refused)} told lock_queue_full once, then joined): "
+                f"one project, one opener; a failed open left no slot; "
                 f"{unrelated_ms} ms for an unrelated open during open/close churn of another; "
                 f"final states {sorted(sl.values())}")
     finally:
         close_all(*clients)
+        d.stop(force=True)
+
+
+# ---- project_waiter_caps ----------------------------------------------------------------------------
+
+def t_project_waiter_caps(c):
+    import contract_tests as ct
+    code, lines, err = ct.self_test(c)
+    bad = [ln for ln in lines if ln.startswith("FAIL")]
+    dt.check(code == 0 and not bad, f"-selfTest exit {code}: {bad} {err[-800:]}")
+    want = ("ok   two protocol 3 requests queue for a held lock",
+            "ok   the third protocol 3 waiter is answered QUEUE_FULL at once",
+            "ok   a protocol 2 waiter is never capped",
+            "ok   the two waiters that queued get the lock when it is released")
+    for w in want:
+        dt.check(any(ln.startswith(w) for ln in lines), f"the self-test check did not run or failed: {w}")
+    exe = prepare(c)
+    gpr = c.copy_fixture("e3cQf")
+    d = c.daemon("e3c-qf", maxQuick=4)       # max(2, 4 / 4) = 2 waiters
+    H = None
+    rs = []
+    try:
+        H = c.connect(d, "owner", "e3c", 3)
+        warm(c, H)
+        H.call("open_project", path=str(gpr), writable=True)
+        H.call("open_program", path=exe, writable=True)
+        rs = [reader(c, d, gpr, exe, f"w{i}") for i in range(4)]
+        old = reader(c, d, gpr, exe, "old", protocol=2)
+        rs.append(old)
+        fn = bl.first_function(H)
+        hold = H.send("script", script=c.script("TestSleep.java"), args=["25000"], parallel=True,
+                      wait=145000)
+        dt.wait_for(lambda: holds(rs[0], exe), "the owner's script to hold the program", 30)
+        waiting = [rs[i].send("decompile", address=fn, wait=40000, parallel=True) for i in range(2)]
+        time.sleep(1.0)
+        t = time.perf_counter()
+        r3 = bl.timed(c, rs[2], "decompile", address=fn, wait=40000)
+        ms = (time.perf_counter() - t) * 1000
+        dt.check(not r3["ok"] and r3["code"] == "busy" and
+                 (r3["details"] or {}).get("reason") == "lock_queue_full",
+                 f"third waiter: {r3.get('code')} {r3.get('details')}")
+        dt.check(ms < 800, f"it was told after {ms:.0f} ms")
+        dt.check((r3["details"] or {}).get("waitersMax") == 2, f"details: {r3['details']}")
+        # the open_program of a client joining the held program is a lock wait too: also capped
+        r4 = bl.timed(c, rs[3], "decompile", address=fn, wait=600)
+        dt.check(not r4["ok"] and (r4["details"] or {}).get("reason") == "lock_queue_full",
+                 f"a fourth waiter: {r4.get('code')} {r4.get('details')}")
+        # protocol 2: no cap, it waits its own time and ends busy as before
+        r5 = bl.timed(c, old, "decompile", address=fn, wait=1200)
+        dt.check(not r5["ok"] and r5["code"] == "busy" and r5["ms"] >= 1000 and
+                 "reason" not in (r5["details"] or {}), f"protocol 2 waiter: {r5}")
+        finish(H, hold)
+        out = [attempt(c, rs[i], waiting[i])[0] for i in range(2)]
+        dt.check(out == ["ok", "ok"], f"the two waiters ended with {out}")
+        return ("selftest: the plain-lock cap holds; daemon: 2 waiters wait, the 3rd and 4th get "
+                "busy{lock_queue_full} in %.0f ms, a protocol 2 waiter is not capped" % ms)
+    finally:
+        close_all(H, *rs)
         d.stop(force=True)
 
 
@@ -1052,6 +1127,7 @@ TESTS = {
     "foreign_blocked_counter": t_foreign_blocked_counter,
     "yield_slots_stress": t_yield_slots_stress,
     "chaos_oracle": t_chaos_oracle,
+    "project_waiter_caps": t_project_waiter_caps,
 }
 
 BASELINE = {}

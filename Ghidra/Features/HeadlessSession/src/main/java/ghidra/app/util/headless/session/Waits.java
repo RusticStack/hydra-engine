@@ -21,6 +21,7 @@ import java.util.WeakHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.ToIntFunction;
 
@@ -105,7 +106,8 @@ final class Waits {
 	 */
 	static Outcome lock(ReentrantReadWriteLock rw, boolean exclusive, long waitMs,
 			AtomicInteger waiters) {
-		return lock(exclusive ? rw.writeLock() : rw.readLock(), rw, exclusive, waitMs, waiters, null);
+		return lock(exclusive ? rw.writeLock() : rw.readLock(), rw, null, exclusive, waitMs,
+			waiters, null);
 	}
 
 	/** What {@link WaitStats} is told about a wait: nobody else holds the lock. */
@@ -122,7 +124,7 @@ final class Waits {
 	 */
 	static Outcome lock(ReentrantReadWriteLock rw, boolean exclusive, long waitMs,
 			AtomicInteger waiters, ToIntFunction<Client> holder) {
-		return lock(exclusive ? rw.writeLock() : rw.readLock(), rw, exclusive, waitMs, waiters,
+		return lock(exclusive ? rw.writeLock() : rw.readLock(), rw, null, exclusive, waitMs, waiters,
 			holder);
 	}
 
@@ -131,11 +133,24 @@ final class Waits {
 	 * plain lock is never "contended" for the cap).
 	 */
 	static Outcome lock(Lock l, long waitMs) {
-		return lock(l, null, true, waitMs, null, null);
+		return lock(l, null, null, true, waitMs, null, null);
 	}
 
-	private static Outcome lock(Lock l, ReentrantReadWriteLock rw, boolean exclusive, long waitMs,
-			AtomicInteger waiters, ToIntFunction<Client> holder) {
+	/**
+	 * The same wait on a plain {@link ReentrantLock} with the waiter cap of protocol 3 (D39): the
+	 * project's slot transition and structure locks. At most {@link #cap} requests of a v3 client
+	 * queue for the lock; the next one is answered {@link Outcome#QUEUE_FULL} at once instead of
+	 * holding a lane slot until {@code waitMs} runs out.
+	 *
+	 * @param waiters the requests waiting on this lock now; null: no cap
+	 */
+	static Outcome lock(ReentrantLock l, long waitMs, AtomicInteger waiters) {
+		return lock(l, null, l, true, waitMs, waiters, null);
+	}
+
+	private static Outcome lock(Lock l, ReentrantReadWriteLock rw, ReentrantLock plain,
+			boolean exclusive, long waitMs, AtomicInteger waiters,
+			ToIntFunction<Client> holder) {
 		RequestMonitor m = Caller.monitor();
 		Client c = Caller.client();
 		if (m == null) {
@@ -168,7 +183,8 @@ final class Waits {
 				// made before any of them was counted
 				int n = waiters.incrementAndGet();
 				counted = true;
-				if (rw != null && c != null && c.v3() && n > cap(m) && contended(rw, exclusive)) {
+				if ((rw != null || plain != null) && c != null && c.v3() && n > cap(m) &&
+					(rw != null ? contended(rw, exclusive) : contended(plain))) {
 					return Outcome.QUEUE_FULL;
 				}
 			}
@@ -227,6 +243,11 @@ final class Waits {
 		}
 		return rw.isWriteLocked() || rw.hasQueuedThreads() ||
 			(exclusive && rw.getReadLockCount() > 0);
+	}
+
+	/** True when this plain lock would make the caller queue. */
+	private static boolean contended(ReentrantLock l) {
+		return !l.isHeldByCurrentThread() && (l.isLocked() || l.hasQueuedThreads());
 	}
 
 	/** The {@code cancelled} of a request that was cancelled during (or before) a lock wait. */

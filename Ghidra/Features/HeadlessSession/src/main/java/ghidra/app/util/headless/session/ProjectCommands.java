@@ -86,8 +86,9 @@ final class ProjectCommands {
 			// of a path opens it under that slot's own lock, followers wait for that lock (bounded and
 			// cancel-aware) and find it OPEN. Only requests for this very project meet here.
 			ProjectRegistry.Slot slot = s.registry.slot(canonical);
-			if (Waits.lock(slot.transition, wait) != Waits.Outcome.GOT) {
-				throw slotBusy(c, r);
+			Waits.Outcome slotGot = Waits.lock(slot.transition, wait, Waits.counter(slot));
+			if (slotGot != Waits.Outcome.GOT) {
+				throw slotBusy(c, r, slotGot == Waits.Outcome.QUEUE_FULL, Waits.counter(slot).get());
 			}
 			boolean reopen = false;
 			try {
@@ -146,13 +147,37 @@ final class ProjectCommands {
 		return info;
 	}
 
-	/** The {@code busy} of a request that waited for another request's open or close of its project. */
-	private static SessionException slotBusy(Client c, ProjectResolver.Resolved r) {
-		JsonObject d = Json.of("gpr", r.gpr().getPath(), "name", r.name(), "suggest", "retry");
-		d = SessionException.busyDetails(c.v3(), d, "lock_wait", null, null);
+	/** The {@code busy} of a structure change (refresh, reopen writable) that could not start. */
+	private static SessionException structureBusy(Client c, ProjectEntry p, boolean full,
+			String what) {
+		JsonObject d = p.identity();
+		if (full && c.v3()) {
+			Json.put(d, "waiters", Waits.counter(p.structure).get());
+			Json.put(d, "waitersMax", Waits.cap(Caller.monitor()));
+		}
+		d = SessionException.busyDetails(c.v3(), d, full ? "lock_queue_full" : "lock_wait", null,
+			null);
 		SessionException ex = new SessionException(SessionException.BUSY,
-			"project " + r.name() + " is being opened or closed by another request; retry, or pass " +
-				"a longer \"wait\"",
+			full ? "too many requests already wait to change project " + p.id + "; retry"
+					: "project " + p.id + " " + what + "; retry",
+			d);
+		return c.v3() ? ex.withRetryAfterMs(1000) : ex;
+	}
+
+	/** The {@code busy} of a request that waited for another request's open or close of its project. */
+	private static SessionException slotBusy(Client c, ProjectResolver.Resolved r, boolean full,
+			int waiters) {
+		JsonObject d = Json.of("gpr", r.gpr().getPath(), "name", r.name(), "suggest", "retry");
+		if (full && c.v3()) {
+			Json.put(d, "waiters", waiters);
+			Json.put(d, "waitersMax", Waits.cap(Caller.monitor()));
+		}
+		d = SessionException.busyDetails(c.v3(), d, full ? "lock_queue_full" : "lock_wait", null,
+			null);
+		SessionException ex = new SessionException(SessionException.BUSY,
+			full ? "too many requests already wait to open project " + r.name() + "; retry"
+					: "project " + r.name() + " is being opened or closed by another request; " +
+						"retry, or pass a longer \"wait\"",
 			d);
 		return c.v3() ? ex.withRetryAfterMs(1000) : ex;
 	}
@@ -183,10 +208,10 @@ final class ProjectCommands {
 	 */
 	private void makeWritable(Client c, ProjectEntry p, long wait) {
 		// one structure change per project at a time; a second opener that waited here finds it done
-		if (Waits.lock(p.structure, wait) != Waits.Outcome.GOT) {
-			throw new SessionException(SessionException.BUSY,
-				"project " + p.id + " is being reopened writable by another request; retry",
-				p.identity());
+		Waits.Outcome got = Waits.lock(p.structure, wait, Waits.counter(p.structure));
+		if (got != Waits.Outcome.GOT) {
+			throw structureBusy(c, p, got == Waits.Outcome.QUEUE_FULL,
+				"is being reopened writable by another request");
 		}
 		try {
 			if (p.writable() || p.closed) {
@@ -500,11 +525,11 @@ final class ProjectCommands {
 		// behind running requests and refuse every later request of the project. One structure change
 		// of a project at a time.
 		JsonArray progs;
-		if (Waits.lock(p.structure, waitMs(req)) != Waits.Outcome.GOT) {
+		Waits.Outcome got = Waits.lock(p.structure, waitMs(req), Waits.counter(p.structure));
+		if (got != Waits.Outcome.GOT) {
 			nv.close();
-			throw new SessionException(SessionException.BUSY,
-				"project " + p.id + " is being refreshed or reopened by another request; retry",
-				p.identity());
+			throw structureBusy(c, p, got == Waits.Outcome.QUEUE_FULL,
+				"is being refreshed or reopened by another request");
 		}
 		try {
 			if (p.closed) {

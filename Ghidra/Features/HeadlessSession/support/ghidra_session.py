@@ -1316,10 +1316,17 @@ class SpawnError(Exception):
 
 
 _K32 = None
+_K32_LOCK = threading.RLock()  # the signatures are set on a shared DLL object: once, never raced
+_PE32 = None
 
 
 def _kernel32():
     """kernel32 with the signatures this file uses (Windows only), made once."""
+    with _K32_LOCK:
+        return _kernel32_locked()
+
+
+def _kernel32_locked():
     global _K32
     if _K32 is None:
         import ctypes
@@ -1384,22 +1391,38 @@ class _PidProc:
         return self.returncode
 
 
+def _toolhelp():
+    """``(kernel32, PE32)`` with the Toolhelp signatures set once. The PE32 class is one object
+    for the whole process: a class made per call gave each concurrent caller a distinct type, and
+    the ``argtypes`` of the shared function objects then rejected the other callers' instances
+    ("expected LP_PE32 instance instead of pointer to PE32")."""
+    global _PE32
+    import ctypes
+    import ctypes.wintypes as wt
+    with _K32_LOCK:
+        k = _kernel32_locked()
+        if _PE32 is None:
+            class PE32(ctypes.Structure):
+                _fields_ = [("dwSize", wt.DWORD), ("cntUsage", wt.DWORD),
+                            ("th32ProcessID", wt.DWORD),
+                            ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wt.DWORD),
+                            ("cntThreads", wt.DWORD), ("th32ParentProcessID", wt.DWORD),
+                            ("pcPriClassBase", wt.LONG), ("dwFlags", wt.DWORD),
+                            ("szExeFile", wt.WCHAR * 260)]
+
+            k.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
+            k.CreateToolhelp32Snapshot.argtypes = [wt.DWORD, wt.DWORD]
+            k.Process32FirstW.argtypes = k.Process32NextW.argtypes = [ctypes.c_void_p,
+                                                                      ctypes.POINTER(PE32)]
+            _PE32 = PE32
+        return k, _PE32
+
+
 def _children_of(pid: int) -> list[tuple[int, str]]:
     """``[(pid, image name)]`` of the direct children of ``pid`` (Toolhelp snapshot)."""
     import ctypes
-    import ctypes.wintypes as wt
 
-    class PE32(ctypes.Structure):
-        _fields_ = [("dwSize", wt.DWORD), ("cntUsage", wt.DWORD), ("th32ProcessID", wt.DWORD),
-                    ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wt.DWORD),
-                    ("cntThreads", wt.DWORD), ("th32ParentProcessID", wt.DWORD),
-                    ("pcPriClassBase", wt.LONG), ("dwFlags", wt.DWORD),
-                    ("szExeFile", wt.WCHAR * 260)]
-
-    k = _kernel32()
-    k.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
-    k.Process32FirstW.argtypes = k.Process32NextW.argtypes = [ctypes.c_void_p,
-                                                              ctypes.POINTER(PE32)]
+    k, PE32 = _toolhelp()
     snap = k.CreateToolhelp32Snapshot(0x2, 0)
     out = []
     try:
