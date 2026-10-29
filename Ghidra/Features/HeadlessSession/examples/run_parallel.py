@@ -621,6 +621,11 @@ def selftest() -> int:
         kills = int(os.environ.get("E8_KILLS", "8"))
         check(f"e8_kill_loop: {e8.KILL_SHARDS} shards whose kills add up to E8_KILLS ({kills})",
               len(dt.SHARDS.get("e8_kill_loop", {})) == e8.KILL_SHARDS and sum(c for _, c in dt.split_n(kills, e8.KILL_SHARDS)) == kills)
+    e3c = sys.modules.get("dt_e3c")
+    if e3c:
+        check("reader_leave_no_freeze: one shard per leave scenario, all six (protocol 3 and 2 x close, fin, abandoned)",
+              set(dt.SHARDS.get("reader_leave_no_freeze", {})) == {f"p{p}{h}" for p, h in e3c.LEAVE_SCENARIOS}
+              and len(e3c.LEAVE_SCENARIOS) == 6)
     check(f"import_isolation: {dt.ISO_SHARDS} shards whose rounds add up to {dt.ISO_ROUNDS}",
           len(dt.SHARDS.get("import_isolation", {})) == dt.ISO_SHARDS
           and sum(c for _, c in dt.split_n(dt.ISO_ROUNDS, dt.ISO_SHARDS)) == dt.ISO_ROUNDS)

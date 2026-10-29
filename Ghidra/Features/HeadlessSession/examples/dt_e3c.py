@@ -64,6 +64,7 @@
 """
 import contextlib
 import json
+import os
 import pathlib
 import random
 import shutil
@@ -287,12 +288,11 @@ def _leave_scenario(c, protocol, how):
         d.stop(force=True)
 
 
+LEAVE_SCENARIOS = [(protocol, how) for protocol in (3, 2) for how in ("close", "fin", "abandoned")]
+
+
 def t_reader_leave_no_freeze(c):
-    out = []
-    for protocol in (3, 2):
-        for how in ("close", "fin", "abandoned"):
-            out.append(_leave_scenario(c, protocol, how))
-    return "; ".join(out)
+    return "; ".join(_leave_scenario(c, protocol, how) for protocol, how in LEAVE_SCENARIOS)
 
 
 # ---- last_user_leave_disposes ---------------------------------------------------------------
@@ -755,8 +755,25 @@ def t_analyzing_join(c):
 # ---- refresh_no_blackout --------------------------------------------------------------------
 
 def _two_program_project(c, name):
-    """The fixture with a second program (the dll) imported."""
+    """The fixture with a second program (the dll) imported.
+
+    With a ``--seed-dir`` (run_parallel.py) the two-program project is made once per run and cached there:
+    the first test that needs it imports the dll into a private copy and renames it into the seed dir
+    (atomic; a racing test that lost the rename drops its copy), every later one copies the cached project.
+    The three tests that use it (refresh_no_blackout, foreign_blocked_counter, yield_slots_stress) never
+    imported anything else, so the copy is the same project the import made."""
     exe = prepare(c)
+    cached = None
+    if c.seed:
+        st = pathlib.Path(c.a.dll).stat()
+        cached = c.seed / f"e3c-two-program-{pathlib.Path(c.a.dll).name}-{st.st_size}-{int(st.st_mtime)}"
+        if (cached / "Fixture.gpr").is_file():
+            dst = c.work / name
+            if dst.exists():
+                shutil.rmtree(dst)
+            shutil.copytree(cached, dst)
+            c.timings["two-program project copied from the --seed-dir cache"] = True
+            return dst / "Fixture.gpr", exe, pathlib.Path(c.a.dll).name
     gpr = c.copy_fixture(name)
     d = c.daemon(name.lower() + "-mk")
     w = c.connect(d, "mk", "e3c", 3)
@@ -767,6 +784,14 @@ def _two_program_project(c, name):
     finally:
         close_all(w)
         d.stop(force=True)
+    if cached is not None:
+        tmp = cached.parent / f"{cached.name}.{os.getpid()}.tmp"
+        with contextlib.suppress(OSError):
+            if tmp.exists():
+                shutil.rmtree(tmp)
+            shutil.copytree(gpr.parent, tmp)
+            os.rename(tmp, cached)      # fails if another test cached it first: theirs is the same
+        shutil.rmtree(tmp, ignore_errors=True)
     return gpr, exe, pathlib.Path(c.a.dll).name
 
 
@@ -817,10 +842,14 @@ def t_refresh_no_blackout(c):
                  f"the program under the read should be pending, not {acts}")
         code, det, _ = attempt(c, S, hold)
         dt.check(code == "ok", f"the read that ran under the refresh ended with {code} {det}")
-        # the pending reopen happens at the release of the read, nobody waited for it
-        time.sleep(1.5)
-        dt.check("refresh: " + f"{pid}:/{exe}" + " reopened" in log_text(d),
-                 "the pending reopen was not completed after the read ended")
+        # the pending reopen happens at the release of the read, nobody waited for it (the same 1.5 s
+        # bound as before, but the check ends as soon as the log shows the reopen)
+        reopened = "refresh: " + f"{pid}:/{exe}" + " reopened"
+        try:
+            dt.wait_for(lambda: reopened in log_text(d), "the pending reopen", 1.5, 0.02)
+        except dt.Fail:
+            pass
+        dt.check(reopened in log_text(d), "the pending reopen was not completed after the read ended")
         a_note = f"refresh {r['ms']} ms, {len(probes)} probes none refused (slowest {max(p['ms'] for _, p in probes)} ms)"
         # (b) a writable open_project of the read-only view behind a long read (the s13 shape)
         close_all(Q)
@@ -1370,3 +1399,10 @@ TESTS = {
 }
 
 BASELINE = {}
+
+#: run_parallel.py shards: reader_leave_no_freeze's six scenarios (each already has its own fixture copy and
+#: daemon) as one process each, ``p3close`` .. ``p2abandoned``; together they are the whole test
+SHARDS = {
+    "reader_leave_no_freeze": {f"p{p}{how}": (lambda p, how: lambda c: _leave_scenario(c, p, how))(p, how)
+                               for p, how in LEAVE_SCENARIOS},
+}
