@@ -1224,6 +1224,19 @@ python examples/contract_tests.py --ghidra <install> --work <empty dir> [--lines
 
 Both use their own state dir and daemon instance, so they never touch the user's daemon.
 
+`daemon_tests.py` run serially takes 25 minutes or more, and the machine is idle most of that time (the tests wait
+on timers, kills and restarts). `examples/run_parallel.py` splits the tests into balanced groups and runs each group
+as its own `daemon_tests.py --only ...` process with its own work and state directories:
+
+```
+python examples/run_parallel.py --ghidra <install> --scratch <dir on an NVMe disk> --logs <log dir> --groups 8 daemon_tests.py -- --exe A.exe --dll B.dll [--legacy-project <older project>]
+```
+
+A test that fails under that load is run again alone; it fails the run only if it fails alone too (`--strict` fails on
+both). A group that dies, or a test with no result, fails the run. Costs for the balancing are in
+`examples/suite-costs.json` (`--record` refreshes them). Put `--scratch` on a fast local disk: the suites write and
+fsync a lot, and on a hard disk they are slower and more timing-sensitive.
+
 ## Why each part lives where it does
 
 | Part | Where | Why |

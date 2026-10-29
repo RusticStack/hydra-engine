@@ -181,6 +181,8 @@ def legacy_copy(c, tag):
     if dst.exists():
         shutil.rmtree(dst)
     shutil.copytree(LEGACY, dst)
+    import daemon_tests as dt
+    dt.own_project(dst)  # the fixture names its maker as owner: another user could not open it
     return dst / "legacy.gpr"
 
 

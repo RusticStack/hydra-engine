@@ -17,6 +17,9 @@ examples/characterization/v3/e2-gate.json||GHIDRA||||END|
 examples/characterization/v3/e2-seal.json||GHIDRA||||END|
 examples/characterization/v3/e3a-busy.json||GHIDRA||||END|
 examples/characterization/v3/e3a-lanes.json||GHIDRA||||END|
+examples/characterization/v3/e3c-analyzing.json||GHIDRA||||END|
+examples/characterization/v3/e3c-waits.json||GHIDRA||||END|
+examples/characterization/v3/e4-script.json||GHIDRA||||END|
 examples/fixtures/legacy-12.1.4/.gitattributes||GHIDRA||||END|
 examples/fixtures/legacy-12.1.4/legacy.gpr||GHIDRA||||END|
 examples/fixtures/legacy-12.1.4/legacy.rep/idata/00/00000000.prp||GHIDRA||||END|
@@ -29,9 +32,11 @@ examples/fixtures/legacy-12.1.4/legacy.rep/user/~index.dat||GHIDRA||||END|
 examples/fixtures/legacy-12.1.4/legacy.rep/versioned/~index.bak||GHIDRA||||END|
 examples/fixtures/legacy-12.1.4/legacy.rep/versioned/~index.dat||GHIDRA||||END|
 examples/fixtures/legacy-12.1.4/README.txt||GHIDRA||||END|
+examples/lock_matrix.json||GHIDRA||||END|
 examples/vectors/canonical-manifest.json||GHIDRA||||END|
 format-matrix.json||GHIDRA||||END|
 Module.manifest||GHIDRA||||END|
 PROTOCOL-3.md||GHIDRA||||END|
 README.md||GHIDRA||||END|
 src/main/resources/hydra.properties||GHIDRA||||END|
+examples/suite-costs.json||GHIDRA||||END|

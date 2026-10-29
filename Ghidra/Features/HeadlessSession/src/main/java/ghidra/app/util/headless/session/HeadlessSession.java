@@ -594,6 +594,8 @@ public class HeadlessSession implements GhidraLaunchable {
 			errors();
 			preflight();
 			cancelHooks();
+			waiterCaps();
+			closeVsViewChange();
 			dbVersions();
 			System.out.println(
 				bad == 0 ? "all self-test checks held" : bad + " self-test check(s) FAILED");
@@ -887,7 +889,9 @@ public class HeadlessSession implements GhidraLaunchable {
 			Client c = new Client(40, "selftest", false, null);
 			Client other = new Client(41, "selftest", false, null);
 			Scheduler.Ticket t = s.admit(c, "decompile", new JsonObject(), null, 100);
+			int[] before = s.recorded(Scheduler.Lane.QUICK);
 			t.yieldSlot();
+			int[] yielded = s.recorded(Scheduler.Lane.QUICK);
 			Scheduler.Ticket o = s.admit(other, "decompile", new JsonObject(), null, 100);
 			boolean busy = false;
 			try {
@@ -900,10 +904,16 @@ public class HeadlessSession implements GhidraLaunchable {
 			t.reacquire(null, 1000);
 			boolean held = s.describe(false).getAsJsonObject("quick").get("inUse").getAsInt() == 1;
 			t.close();
+			int[] closed = s.recorded(Scheduler.Lane.QUICK);
 			check("yieldSlot gives the slot to another key, reacquire waits for one again " +
 				"(busy while it is taken) and close releases it once",
 				busy && held &&
 					s.describe(false).getAsJsonObject("quick").get("inUse").getAsInt() == 0);
+			// E3c (the E3a review nit): a yield is not a completion and records no hold time; only the
+			// end of the request does (the other key's close above is the one completion before it)
+			check("yieldSlot records neither a hold time nor a completion; the final close records one",
+				yielded[0] == before[0] && yielded[1] == before[1] && closed[0] == yielded[0] + 2 &&
+					closed[1] == yielded[1] + 2);
 		}
 
 		private static void negotiation() {
@@ -1048,6 +1058,174 @@ public class HeadlessSession implements GhidraLaunchable {
 			}
 			check("under concurrent cancels and a hook added meanwhile, every hook ran exactly " +
 				"once (" + rounds + " rounds)", twice.get() == 0);
+		}
+
+		/**
+		 * The waiter cap (D39) on the plain locks of a project (slot transition, structure change):
+		 * with the lock held, a protocol 3 caller beyond {@code max(2, slots / 4)} waiters is
+		 * answered QUEUE_FULL at once, the waiters keep their place and get the lock, a protocol 2
+		 * caller is never capped, and the counter returns to 0.
+		 */
+		private static void waiterCaps() {
+			java.util.concurrent.locks.ReentrantLock lock = new java.util.concurrent.locks.ReentrantLock();
+			java.util.concurrent.atomic.AtomicInteger waiters = new java.util.concurrent.atomic.AtomicInteger();
+			Client v3 = new Client(60, "selftest", false, null);
+			v3.negotiate(obj("{\"protocol\":3}"));
+			Client v2 = new Client(61, "selftest", false, null);
+			java.util.concurrent.CountDownLatch held = new java.util.concurrent.CountDownLatch(1);
+			java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+			Thread holder = new Thread(() -> {
+				lock.lock();
+				held.countDown();
+				try {
+					release.await();
+				}
+				catch (InterruptedException e) {
+					Thread.currentThread().interrupt();
+				}
+				finally {
+					lock.unlock();
+				}
+			});
+			holder.start();
+			Waits.Outcome[] got = new Waits.Outcome[2];
+			Thread[] ws = new Thread[2];
+			try {
+				held.await();
+				for (int i = 0; i < ws.length; i++) {
+					final int k = i;
+					ws[i] = new Thread(() -> {
+						Caller.enter(v3, new Caller.Identity("w" + k, "h", true),
+							new RequestMonitor(null, null));
+						try {
+							got[k] = Waits.lock(lock, 20000, waiters);
+							if (got[k] == Waits.Outcome.GOT) {
+								lock.unlock();
+							}
+						}
+						finally {
+							Caller.leave();
+						}
+					});
+					ws[i].start();
+				}
+				long end = System.currentTimeMillis() + 10000;
+				while (lock.getQueueLength() < 2 && System.currentTimeMillis() < end) {
+					sleepMs(10);
+				}
+				check("two protocol 3 requests queue for a held lock (the cap is 2)",
+					lock.getQueueLength() == 2 && waiters.get() == 2);
+				Caller.enter(v3, new Caller.Identity("w2", "h", true), new RequestMonitor(null, null));
+				long t0 = System.nanoTime();
+				Waits.Outcome third;
+				try {
+					third = Waits.lock(lock, 20000, waiters);
+				}
+				finally {
+					Caller.leave();
+				}
+				long ms = (System.nanoTime() - t0) / 1_000_000L;
+				check("the third protocol 3 waiter is answered QUEUE_FULL at once (" + ms + " ms) " +
+					"and is not left counted", third == Waits.Outcome.QUEUE_FULL && ms < 1000 &&
+						waiters.get() == 2 && lock.getQueueLength() == 2);
+				Caller.enter(v2, new Caller.Identity("w3", "h", true), new RequestMonitor(null, null));
+				Waits.Outcome old;
+				try {
+					old = Waits.lock(lock, 150, waiters);
+				}
+				finally {
+					Caller.leave();
+				}
+				check("a protocol 2 waiter is never capped: it waits its time and times out",
+					old == Waits.Outcome.TIMED_OUT);
+				release.countDown();
+				for (Thread t : ws) {
+					t.join(20000);
+				}
+				holder.join(20000);
+				check("the two waiters that queued get the lock when it is released, and the " +
+					"counter returns to 0", got[0] == Waits.Outcome.GOT && got[1] == Waits.Outcome.GOT &&
+						waiters.get() == 0 && !lock.isLocked());
+			}
+			catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				check("the waiter cap check was interrupted", false);
+			}
+			finally {
+				release.countDown();
+			}
+		}
+
+		/**
+		 * The close of an idle project and a view change of it (a {@code refresh}, the reopening of a
+		 * read-only view as writable) exclude each other (E3c). A thread plays the view change the way
+		 * {@code ProjectCommands.makeWritable} and {@code refresh} run it: it holds the project's
+		 * {@code structure} lock, checks {@code closed}, and then (held by a latch, the slow
+		 * {@code SessionProject.open}) would install its new view. Meanwhile the reap's
+		 * {@code closeIdle} runs. Before the fix the close ran in that window and the new view was
+		 * installed on a closed project: nothing ever closed it and the daemon kept the project's OS
+		 * lock.
+		 */
+		private static void closeVsViewChange() {
+			ProjectRegistry reg = new ProjectRegistry();
+			ProjectRegistry.Slot sl = reg.slot("selftest:close-vs-view-change");
+			ProjectEntry p = new ProjectEntry("p1", null, sl.canonical, null, 0);
+			sl.entry = p;
+			sl.state = ProjectRegistry.State.OPEN;
+			java.util.concurrent.CountDownLatch checked = new java.util.concurrent.CountDownLatch(1);
+			java.util.concurrent.CountDownLatch go = new java.util.concurrent.CountDownLatch(1);
+			java.util.concurrent.atomic.AtomicBoolean onClosed =
+				new java.util.concurrent.atomic.AtomicBoolean();
+			java.util.concurrent.atomic.AtomicInteger closes =
+				new java.util.concurrent.atomic.AtomicInteger();
+			java.util.function.Consumer<ProjectEntry> closer = x -> {
+				closes.incrementAndGet();
+				x.closed = true;
+			};
+			Thread change = new Thread(() -> {
+				p.structure.lock();
+				try {
+					if (p.closed) {
+						return;
+					}
+					checked.countDown();
+					go.await(10, java.util.concurrent.TimeUnit.SECONDS);
+					onClosed.set(p.closed); // the repoint would install its view now
+				}
+				catch (InterruptedException e) {
+					Thread.currentThread().interrupt();
+				}
+				finally {
+					p.structure.unlock();
+				}
+			});
+			change.start();
+			try {
+				boolean ready = checked.await(10, java.util.concurrent.TimeUnit.SECONDS);
+				boolean during = reg.closeIdle(p, closer);
+				go.countDown();
+				change.join(10000);
+				p.structure.lock();
+				boolean ownThread;
+				try {
+					ownThread = reg.closeIdle(p, closer); // a view change of this very thread
+				}
+				finally {
+					p.structure.unlock();
+				}
+				boolean after = reg.closeIdle(p, closer);
+				check("a close of an idle project does not run while a view change of it (refresh, " +
+					"writable reopen) holds its structure lock, and runs once after it",
+					ready && !during && !onClosed.get() && !ownThread && after && closes.get() == 1 &&
+						reg.current(sl.canonical) == null);
+			}
+			catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				check("the close versus view change check was interrupted", false);
+			}
+			finally {
+				go.countDown();
+			}
 		}
 
 		private static void dbVersions() {

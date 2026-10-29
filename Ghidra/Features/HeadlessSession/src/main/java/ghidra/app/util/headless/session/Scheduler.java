@@ -295,6 +295,24 @@ final class Scheduler {
 		}
 	}
 
+	/** The ticket of the request this thread executes (set by {@link Session#execute}), or null. */
+	private static final ThreadLocal<Ticket> BOUND = new ThreadLocal<>();
+
+	/** Binds (or, with null, unbinds) the ticket of the request this thread executes. */
+	static void bind(Ticket t) {
+		if (t == null) {
+			BOUND.remove();
+		}
+		else {
+			BOUND.set(t);
+		}
+	}
+
+	/** The ticket of the request this thread executes, or null. */
+	static Ticket bound() {
+		return BOUND.get();
+	}
+
 	/** The fair key of a request of {@code c}: its connection id, plus the label for protocol 3. */
 	private static String keyOf(Client c) {
 		if (!c.v3()) {
@@ -541,7 +559,7 @@ final class Scheduler {
 				return; // yielded and never reacquired: it holds no slot
 			}
 			State s = lanes.get(t.lane);
-			free(s, t);
+			free(s, t, true);
 			handOver(s);
 			changed.signalAll();
 		}
@@ -550,12 +568,20 @@ final class Scheduler {
 		}
 	}
 
-	/** Called with the lock held: {@code t} stops holding its slot. */
-	private void free(State s, Ticket t) {
+	/**
+	* Called with the lock held: {@code t} stops holding its slot. {@code completed} is false for a
+	* yield (PROTOCOL-3.md D39): the request is not finished, so neither its hold time nor a
+	* completion is recorded (they feed the median behind the queue estimates); the final release
+	* records the last stretch.
+	*/
+	private void free(State s, Ticket t, boolean completed) {
 		t.granted = false;
 		s.inUse--;
 		s.running.remove(t);
 		s.runningByKey.computeIfPresent(t.key, (k, n) -> n <= 1 ? null : n - 1);
+		if (!completed) {
+			return;
+		}
 		long held = Math.max(0, System.currentTimeMillis() - t.startedAt);
 		s.holds.addLast(held);
 		while (s.holds.size() > HISTORY) {
@@ -601,7 +627,7 @@ final class Scheduler {
 				return;
 			}
 			State s = lanes.get(t.lane);
-			free(s, t);
+			free(s, t, false); // a yield records no hold time and no completion (E3a review)
 			handOver(s);
 			changed.signalAll();
 		}
@@ -699,6 +725,21 @@ final class Scheduler {
 				: new com.google.gson.JsonPrimitive(eta));
 		o.addProperty("estimate", true);
 		return o;
+	}
+
+	/**
+	* How many requests of {@code lane} have completed and how many hold times it has recorded (the
+	* two are equal): a yielded ticket adds neither (self-test and tests).
+	*/
+	int[] recorded(Lane lane) {
+		lock.lock();
+		try {
+			State s = lanes.get(lane);
+			return new int[] { (int) s.completions, s.holds.size() };
+		}
+		finally {
+			lock.unlock();
+		}
 	}
 
 	/** {@code error.retryAfterMs} of a slot-wait {@code busy}: the lane's median hold time. */
