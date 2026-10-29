@@ -110,7 +110,9 @@ final class Connection {
 			try {
 				if (exiting) {
 					// the process is going down on this connection's own thread (shutdown): that
-					// thread must not be interrupted, it is the one closing the session
+					// thread must not be interrupted, it is the one closing the session. Only
+					// the process-ending shutdown request gets here and its own thread then
+					// ends the process, so the long bound is never reached in practice.
 					awaitBoth(3_600_000L);
 				}
 				else if (!awaitBoth(Session.cleanupGraceMs())) {

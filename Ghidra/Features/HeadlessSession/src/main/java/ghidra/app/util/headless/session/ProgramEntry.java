@@ -219,8 +219,9 @@ final class ProgramEntry implements Decompilers {
 	/**
 	 * Clients that left (or died) but whose leave could not take the exclusive lock in time: the
 	 * leave is finished later, without waiting, when the lock is free ({@link Session#reap} or the
-	 * release of the lock that stood in the way). Their ownership bits stay until then (the
-	 * decision of E3b's review, recorded in 3.5).
+	 * release of the lock that stood in the way). Their ownership bits stay until then: this is
+	 * the fallback 3.5 names for the ownership-bits question (E3b's choice; the coordinator
+	 * records it as the decision in 3.5, it is not yet recorded there).
 	 */
 	final Set<Client> pendingLeaves = java.util.concurrent.ConcurrentHashMap.newKeySet();
 	/** Run, off the releasing thread, after a release while {@link #pendingLeaves} is not empty. */
@@ -328,7 +329,9 @@ final class ProgramEntry implements Decompilers {
 	/** Lock acquisition, bounded and cancel-aware ({@link Waits}); records the holder. */
 	Lock acquire(boolean exclusive, long waitMs, Client c, String cmd) {
 		// a dead client's request still holds the lock and ignores cancel: tell at once (3.5)
-		Hold ab = firstAbandoned(!exclusive);
+		// (not for a thread that already holds this program: a re-entrant acquire by the abandoned
+		// holder's own script goes through its own hold)
+		Hold ab = holds.containsKey(Thread.currentThread()) ? null : firstAbandoned(!exclusive);
 		if (ab != null) {
 			throw abandonedBusy(ab, exclusive);
 		}

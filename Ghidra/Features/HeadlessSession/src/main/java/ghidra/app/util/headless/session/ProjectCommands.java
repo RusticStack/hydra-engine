@@ -408,6 +408,7 @@ final class ProjectCommands {
 		// (Session.disconnect passes abandonWaitS): what cannot be had in time is flagged abandoned
 		// and finished later without waiting (ProgramEntry.pendingLeaves), never waited for 600 s.
 		boolean dying = c.leaving;
+		List<ProgramEntry> deferred = new ArrayList<>();
 		long end = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(wait);
 		for (String key : mine) {
 			ProgramEntry e = p.programs.get(key.substring(p.id.length() + 1));
@@ -423,6 +424,7 @@ final class ProjectCommands {
 			catch (SessionException ex) {
 				if (dying && SessionException.BUSY.equals(ex.code())) {
 					deferLeave(c, e, ex);
+					deferred.add(e);
 					continue;
 				}
 				throw ex;
@@ -435,6 +437,7 @@ final class ProjectCommands {
 				catch (SessionException ex) {
 					if (dying && SessionException.BUSY.equals(ex.code())) {
 						deferLeave(c, e, ex);
+						deferred.add(e);
 						continue;
 					}
 					throw ex;
@@ -447,6 +450,11 @@ final class ProjectCommands {
 			finally {
 				pl.unlock();
 			}
+		}
+		// the blocking holder may have released between the failed attempt and the registration
+		// of the pending leave (then no release saw it): try once more, without waiting
+		for (ProgramEntry e : deferred) {
+			s.completeLeaves(e);
 		}
 		synchronized (p.users) {
 			p.users.remove(c);

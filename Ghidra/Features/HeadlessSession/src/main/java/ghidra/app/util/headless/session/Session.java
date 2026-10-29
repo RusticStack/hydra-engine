@@ -279,6 +279,27 @@ final class Session {
 	 * now, the next release or the next reap tries again.
 	 */
 	void completeLeaves(ProgramEntry e) {
+		tryCompleteLeaves(e);
+		// the leave that was waiting is done: a writable project that nobody uses any more closes
+		// now, as leaveProject would have done (its Ghidra project lock is released)
+		ProjectEntry p = e.project;
+		if (e.pendingLeaves.isEmpty() && !p.closed && p.userCount() == 0 &&
+			(p.writable() || keepWarmMs == 0)) {
+			if (p.programs.values().stream().noneMatch(ProgramEntry::holdsOrphanedWork) &&
+				p.programs.values().stream().allMatch(x -> x.pendingLeaves.isEmpty())) {
+				try {
+					// the slot's state machine decides (a join in flight keeps the project open); no
+					// monitor is held across the close (BP8)
+					registry.closeIdle(p, x -> projectCmds.closeProjectEntry(x, 0, true));
+				}
+				catch (SessionException ex) {
+					// in use after all; the next reap tries again
+				}
+			}
+		}
+	}
+
+	private void tryCompleteLeaves(ProgramEntry e) {
 		ProjectEntry p = e.project;
 		if (e.disposePending) {
 			programCmds.tryDisposeNow(e); // the last plain reader left while a request held the lock

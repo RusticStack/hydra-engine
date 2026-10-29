@@ -1844,9 +1844,12 @@ class Daemon:
         daemon runs in the job of the harness that started it and ends with it;
         ``duplicate_daemon``: a live daemon of the same install runs under another state dir).
 
-        ``timeout`` bounds the whole call, up to 0.5 s of overrun (the floor of the last hello
-        deadline, see ``_hello_left``). A daemon that is alive but does not answer ``hello`` ends
-        as ``no_answer``, not as a hang."""
+        ``timeout`` is a budget per phase, not for the whole call. The hello dials share one
+        ``timeout`` (up to 0.5 s of overrun, the floor of the last hello deadline, see
+        ``_hello_left``); the wait for the start lock takes up to ``timeout`` on its own, and
+        the wait for a spawned daemon to answer takes up to ``timeout`` again. The worst case
+        is therefore about 2 x ``timeout`` plus the spawn time. A daemon that is alive but
+        does not answer ``hello`` ends as ``no_answer``, not as a hang."""
         install = Install.locate(self.ghidra)
         t_end = time.monotonic() + timeout
         # A daemon that is alive but wedged accepts the TCP connection and never answers hello:
@@ -1872,8 +1875,9 @@ class Daemon:
         ensure_state(self.state)
         with FileLock(self.start_lock_file) as lk:
             if not lk.acquire(timeout):
-                raise LaunchError(f"another process has been starting the daemon for "
-                                  f"{timeout:.0f} s ({self.start_lock_file})", "lock_held",
+                raise LaunchError(f"another process held the start lock for the "
+                                  f"{timeout:.0f} s this wait was allowed "
+                                  f"({self.start_lock_file})", "lock_held",
                                   {"lock": str(self.start_lock_file), "waitedS": timeout,
                                    "holder": None,
                                    "suggest": "wait for the other launcher, or find the process "
@@ -2070,8 +2074,9 @@ class Daemon:
 
     def _wait_ready(self, proc, client, harness, timeout, since: int = 0,
                     asked: float | None = None) -> SocketSession:
-        """``timeout`` is the time left for this wait; ``asked`` is the caller's whole timeout,
-        which the error reports (default: ``timeout``)."""
+        """``timeout`` is the time this wait may take; ``asked`` is the ``timeout`` the caller
+        passed, which the error reports (default: ``timeout``). It is not a budget for the whole
+        ``connect`` call (see its docstring)."""
         asked = timeout if asked is None else asked
         end = time.monotonic() + timeout
         while time.monotonic() < end:
@@ -2092,7 +2097,8 @@ class Daemon:
                     return s
             time.sleep(0.05)
         ep = self.read_endpoint()
-        raise LaunchError(f"the daemon did not answer within {asked:.0f} s; see {self.log_file}",
+        raise LaunchError(f"the daemon did not answer within {asked:.0f} s (the allowance of this wait); see "
+                                  f"{self.log_file}",
                           "no_answer", {"timeoutS": asked, "log": str(self.log_file),
                                         "logTail": self._log_tail(since),
                                         "holder": {"pid": ep.get("pid")} if ep else None,
