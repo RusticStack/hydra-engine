@@ -395,7 +395,7 @@
      "revision": "<rev4>",
      "projectRevision": "<rev5>",
      "savedSeq": 0,
-     "upgradeStamp": "Hydra 12.3-hydra.dev upgrade from 32; backup 6 | headless session"
+     "upgradeStamp": "Hydra <hydraVersion> upgrade from 32; backup 6 | headless session"
     },
     "ms": "<masked>"
    },

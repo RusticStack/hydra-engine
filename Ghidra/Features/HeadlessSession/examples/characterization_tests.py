@@ -235,6 +235,10 @@ PROJECT_TOTAL = ("bytes", "mode")
 # position and the lane shape stay. The number itself is asserted by ``cc_e3a`` ``v2_lane_defaults``.
 CAPACITY_KEYS = ("slots", "cap", "perKeyCap")
 REV = re.compile(r"^[0-9a-f]{16}$")
+# The engine's release inside a text (the comment a save after an upgrade stamps, 3.4: "Hydra <release> upgrade from
+# ..."): the same value as ``hydraVersion``, which is masked, so a golden does not depend on the build's stamp (a tree
+# build says ``12.3-hydra.dev``, the release install ``12.3-hydra.4``). The words around it stay.
+HYDRA_RELEASE = re.compile(r"\b\d+\.\d+(?:\.\d+)?-hydra\.[0-9A-Za-z]+\b")
 ISO_TIME = re.compile(r"^\d{4}-\d\d-\d\dT[\d:.]+Z$")
 
 
@@ -251,6 +255,7 @@ class Masker:
                     if "\\" in s:
                         s = re.sub(re.escape(token) + r"[^\s'\",)]*",
                                    lambda m: m.group(0).replace("\\", "/"), s)
+        s = HYDRA_RELEASE.sub("<hydraVersion>", s)
         s = re.sub(r"(\d+(?:\.\d+)?) ?ms\b", "<n>ms", s)
         s = re.sub(r"\b\d{10,}\b", "<n>", s)
         return s
@@ -1011,6 +1016,11 @@ def selftest():
           list(m(sch())["scheduler"]["quick"]) == ["slots", "inUse"]
           and m(sch(inUse=1)) != m(sch()) and m(sch(admitted=3)) != m(sch()))
     check("slots outside a scheduler lane stay", m({"x": {"slots": 5}}) == {"x": {"slots": 5}})
+    stamp = "Hydra %s upgrade from 32; backup 6 | headless session"
+    check("the release inside an upgrade stamp is masked, the rest of the text stays",
+          m({"upgradeStamp": stamp % "12.3-hydra.dev"}) == m({"upgradeStamp": stamp % "12.3-hydra.4"})
+          == {"upgradeStamp": stamp % "<hydraVersion>"}
+          and m({"upgradeStamp": "Hydra 12.3-hydra.4 upgrade from 31"}) != m({"upgradeStamp": stamp % "12.3-hydra.4"}))
 
     def slots_raises(v):
         try:
