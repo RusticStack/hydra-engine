@@ -25,7 +25,6 @@ import static ghidra.app.util.headless.session.ProjectCommands.findFile;
 import static ghidra.app.util.headless.session.Requests.cancelled;
 import static ghidra.app.util.headless.session.Requests.waitMs;
 import static ghidra.app.util.headless.session.Requests.waitsForCache;
-import static ghidra.app.util.headless.session.Session.CLEANUP_WAIT_MS;
 
 import java.io.*;
 import java.util.*;
@@ -585,99 +584,114 @@ final class ProgramCommands {
 	 * {@link #keepWarmMs}. Returns true when changes were discarded. Held: the project's lock.
 	 */
 	boolean releaseUse(Client c, ProgramEntry e, boolean discard, long wait) {
+		if (c.leaving && e.holdsBy(c)) {
+			// its own request ignored cancel and interrupt and still holds the lock: nothing to wait
+			// for (3.5); the leave is finished when that request ends
+			throw new SessionException(SessionException.BUSY,
+				e.path + " is still held by a request of " + c.label() + ", which is gone");
+		}
 		Lock l = e.acquire(true, wait, c, "close_program");
 		try {
-			s.overlayCmds.dropOverlays(c, e);
-			boolean discarded = false;
-			boolean others;
-			synchronized (e.users) {
-				others = e.users.stream().anyMatch(u -> u != c);
-			}
-			boolean downgrade = false;
-			if (e.program != null && e.mode == ProgramEntry.Mode.SHARED && e.isWriter(c)) {
-				boolean last;
-				synchronized (e.users) {
-					e.writers.remove(c);
-					last = e.writers.isEmpty();
-				}
-				if (last && e.program.isChanged()) {
-					if (c.leaving && !s.shuttingDown) {
-						// a writer that died: the others' committed work is kept, unsaved,
-						// until a client joins and saves or discards it
-						e.orphanedSince = System.currentTimeMillis();
-						Msg.warn(s, c.label() + " left " + e.key + " as its last shared " +
-							"writer; its " + (e.journal.seq() - e.savedSeq) + " unsaved change(s) " +
-							"are kept until a client saves or discards them");
-					}
-					else if (!discard) {
-						synchronized (e.users) {
-							e.writers.add(c);
-						}
-						throw new SessionException(SessionException.UNSAVED_CHANGES,
-							e.path + " has unsaved changes and you are its last writer; send " +
-								"save, or close with \"discard\":true (discards every writer's " +
-								"unsaved changes)",
-							Json.of("program", e.key, "unsavedEdits",
-								e.journal.seq() - e.savedSeq));
-					}
-					else {
-						discarded = true;
-						downgrade = true;
-					}
-				}
-				else if (last) {
-					downgrade = true;
-				}
-			}
-			if (e.program != null && e.mode == ProgramEntry.Mode.WRITABLE && e.owner == c) {
-				if (e.program.isChanged()) {
-					if (!discard) {
-						throw new SessionException(SessionException.UNSAVED_CHANGES,
-							e.path + " has unsaved changes; send save, or close with " +
-								"\"discard\":true",
-							Json.of("program", e.key));
-					}
-					discarded = true;
-				}
-				downgrade = true;
-			}
-			if (downgrade) {
-				e.disposeDecompilers();
-				releaseProgramObject(e); // releasing a changed program discards its changes
-				e.setOwner(null);
-				e.mode = null;
-				if (others) {
-					try {
-						e.program = openReadOnly(e, e.file, new RequestMonitor(null, null));
-						e.mode = ProgramEntry.Mode.READ_ONLY;
-						e.stampRevision();
-					}
-					catch (RuntimeException ex) {
-						Msg.error(s, "could not reopen " + e.key + " read-only for its " +
-							"other users; closing it for everyone", ex);
-						closeEntry(e);
-						c.programs.remove(e.key);
-						return discarded;
-					}
-				}
-			}
-			synchronized (e.users) {
-				e.users.remove(c);
-				others = !e.users.isEmpty();
-			}
-			if (!others && !e.holdsOrphanedWork() && (e.program == null ||
-				e.mode != ProgramEntry.Mode.READ_ONLY || s.keepWarmMs == 0 || e.project.closed)) {
-				disposeProgram(e);
-			}
-			c.programs.remove(e.key);
-			if (e.key.equals(c.active)) {
-				c.active = firstOf(c.programs);
-			}
-			return discarded;
+			return releaseUseHeld(c, e, discard);
 		}
 		finally {
 			e.release(l);
 		}
+	}
+
+	/**
+	 * The body of {@link #releaseUse}. Held: the project's lock (shared) and the program's
+	 * exclusive lock, taken by the caller (the leave of a dead client that could not wait for them
+	 * finishes here, {@link Session#completeLeaves}).
+	 */
+	boolean releaseUseHeld(Client c, ProgramEntry e, boolean discard) {
+		s.overlayCmds.dropOverlays(c, e);
+		boolean discarded = false;
+		boolean others;
+		synchronized (e.users) {
+			others = e.users.stream().anyMatch(u -> u != c);
+		}
+		boolean downgrade = false;
+		if (e.program != null && e.mode == ProgramEntry.Mode.SHARED && e.isWriter(c)) {
+			boolean last;
+			synchronized (e.users) {
+				e.writers.remove(c);
+				last = e.writers.isEmpty();
+			}
+			if (last && e.program.isChanged()) {
+				if (c.leaving && !s.shuttingDown) {
+					// a writer that died: the others' committed work is kept, unsaved,
+					// until a client joins and saves or discards it
+					e.orphanedSince = System.currentTimeMillis();
+					Msg.warn(s, c.label() + " left " + e.key + " as its last shared " +
+						"writer; its " + (e.journal.seq() - e.savedSeq) + " unsaved change(s) " +
+						"are kept until a client saves or discards them");
+				}
+				else if (!discard) {
+					synchronized (e.users) {
+						e.writers.add(c);
+					}
+					throw new SessionException(SessionException.UNSAVED_CHANGES,
+						e.path + " has unsaved changes and you are its last writer; send " +
+							"save, or close with \"discard\":true (discards every writer's " +
+							"unsaved changes)",
+						Json.of("program", e.key, "unsavedEdits",
+							e.journal.seq() - e.savedSeq));
+				}
+				else {
+					discarded = true;
+					downgrade = true;
+				}
+			}
+			else if (last) {
+				downgrade = true;
+			}
+		}
+		if (e.program != null && e.mode == ProgramEntry.Mode.WRITABLE && e.owner == c) {
+			if (e.program.isChanged()) {
+				if (!discard) {
+					throw new SessionException(SessionException.UNSAVED_CHANGES,
+						e.path + " has unsaved changes; send save, or close with " +
+							"\"discard\":true",
+						Json.of("program", e.key));
+				}
+				discarded = true;
+			}
+			downgrade = true;
+		}
+		if (downgrade) {
+			e.disposeDecompilers();
+			releaseProgramObject(e); // releasing a changed program discards its changes
+			e.setOwner(null);
+			e.mode = null;
+			if (others) {
+				try {
+					e.program = openReadOnly(e, e.file, new RequestMonitor(null, null));
+					e.mode = ProgramEntry.Mode.READ_ONLY;
+					e.stampRevision();
+				}
+				catch (RuntimeException ex) {
+					Msg.error(s, "could not reopen " + e.key + " read-only for its " +
+						"other users; closing it for everyone", ex);
+					closeEntry(e);
+					c.programs.remove(e.key);
+					return discarded;
+				}
+			}
+		}
+		synchronized (e.users) {
+			e.users.remove(c);
+			others = !e.users.isEmpty();
+		}
+		if (!others && !e.holdsOrphanedWork() && (e.program == null ||
+			e.mode != ProgramEntry.Mode.READ_ONLY || s.keepWarmMs == 0 || e.project.closed)) {
+			disposeProgram(e);
+		}
+		c.programs.remove(e.key);
+		if (e.key.equals(c.active)) {
+			c.active = firstOf(c.programs);
+		}
+		return discarded;
 	}
 
 	/** Releases a program nobody uses. Held: its exclusive lock. */
@@ -726,7 +740,7 @@ final class ProgramCommands {
 	void closeEntry(ProgramEntry e) {
 		boolean got = false;
 		try {
-			got = e.lock.writeLock().tryLock(CLEANUP_WAIT_MS, TimeUnit.MILLISECONDS);
+			got = e.lock.writeLock().tryLock(Session.abandonWaitMs(), TimeUnit.MILLISECONDS);
 		}
 		catch (InterruptedException ex) {
 			Thread.currentThread().interrupt();

@@ -48,7 +48,26 @@ import ghidra.util.Msg;
  */
 final class Session {
 
-	static final long CLEANUP_WAIT_MS = 600_000;
+	/** The default of {@code cleanupGraceS}: how long a dead client's requests may keep running (3.5). */
+	static final int DEFAULT_CLEANUP_GRACE_S = 15;
+	/** The default of {@code abandonWaitS}: the wait of every cleanup lock wait after that (3.5). */
+	static final int DEFAULT_ABANDON_WAIT_S = 5;
+
+	/**
+	 * How long a dead client's running requests get to end after their cancel before they are
+	 * interrupted ({@code cleanupGraceS}).
+	 */
+	static long cleanupGraceMs() {
+		return Math.max(0, Settings.integer("cleanupGraceS", DEFAULT_CLEANUP_GRACE_S)) * 1000L;
+	}
+
+	/**
+	 * The longest any wait on behalf of a dead client takes: after the interrupt, and for each lock
+	 * its release needs ({@code abandonWaitS}). It replaces the 600 s waits of hydra.3.
+	 */
+	static long abandonWaitMs() {
+		return Math.max(0, Settings.integer("abandonWaitS", DEFAULT_ABANDON_WAIT_S)) * 1000L;
+	}
 
 	private final long startedAt = System.currentTimeMillis();
 	/** Guards opening, upgrading and closing projects, and the two project maps. */
@@ -95,7 +114,30 @@ final class Session {
 		// its own from a class it owns)
 		Advertised.capability("errorNext", 1);
 		Advertised.capability("identity", 1);
+		// E3b: a cancel reaches a request in a lock wait (3.5); the dead-client release is bounded
+		Advertised.capability("cancelWait", 1);
+		// a value that is not an integer is a usage error at start-up, not a failure of the first
+		// dead client (Settings.integer names the key)
+		cleanupGraceMs();
+		abandonWaitMs();
+		Settings.integer("orphanKeepS", 0);
+		Settings.integer("writeStallMs", 5000);
+		Advertised.limit("cleanupGraceS", () -> cleanupGraceMs() / 1000);
+		Advertised.limit("abandonWaitS", () -> abandonWaitMs() / 1000);
+		Waits.slots(lane -> scheduler.slots(lane.equals("long") ? Scheduler.Lane.LONG
+				: lane.equals("maint") ? Scheduler.Lane.MAINT : Scheduler.Lane.QUICK));
+		// a lock whose release finished a request that stood in the way of a dead client's leave
+		// lets that leave finish at once, off the releasing request's thread
+		ProgramEntry.afterRelease = e -> completer.execute(() -> completeLeaves(e));
 	}
+
+	/** Finishes pending leaves without ever waiting (one thread, so a burst never piles up). */
+	private final java.util.concurrent.ExecutorService completer =
+		java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+			Thread t = new Thread(r, "session-leave-completer");
+			t.setDaemon(true);
+			return t;
+		});
 
 	// ---- clients ---------------------------------------------------------------------------
 
@@ -115,13 +157,17 @@ final class Session {
 		synchronized (c.projects) {
 			joined = new ArrayList<>(c.projects);
 		}
+		// the whole release is bounded by abandonWaitS (3.5): what cannot be had in time is flagged
+		// abandoned or left pending (ProgramEntry.pendingLeaves), never waited for 10 minutes
+		long end = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(abandonWaitMs());
 		for (String id : joined) {
 			ProjectEntry p = projectsById.get(id);
 			if (p == null) {
 				continue;
 			}
 			try {
-				projectCmds.leaveProject(c, p, true, CLEANUP_WAIT_MS);
+				long left = Math.max(0, (end - System.nanoTime()) / 1_000_000L);
+				projectCmds.leaveProject(c, p, true, left);
 			}
 			catch (RuntimeException ex) {
 				Msg.error(this, c.label() + " disconnect: could not leave project " + id, ex);
@@ -169,8 +215,16 @@ final class Session {
 	 */
 	void reap() {
 		long now = System.currentTimeMillis();
+		long orphanKeepMs = Math.max(0, Settings.integer("orphanKeepS", 0)) * 1000L;
 		for (ProjectEntry p : projectsById.values()) {
 			for (ProgramEntry e : p.programs.values()) {
+				if (!e.pendingLeaves.isEmpty()) {
+					completeLeaves(e); // never waits
+				}
+				if (orphanKeepMs > 0 && e.orphanedSince > 0 && now - e.orphanedSince >= orphanKeepMs &&
+					e.holdsOrphanedWork()) {
+					expireOrphan(p, e);
+				}
 				if (e.userCount() == 0 && !e.holdsOrphanedWork() &&
 					(now - e.lastUsed >= keepWarmMs || programCmds.swappable(e))) {
 					closeIdleProgram(p, e);
@@ -189,6 +243,129 @@ final class Session {
 					}
 				}
 			}
+		}
+	}
+
+	/**
+	 * Finishes the leaves of dead clients that could not take the program's exclusive lock in time
+	 * (3.5). It only ever tries: the project's shared lock and then the program's exclusive lock
+	 * without queueing, so it can neither wait nor make later readers wait; if either is not free
+	 * now, the next release or the next reap tries again.
+	 */
+	void completeLeaves(ProgramEntry e) {
+		tryCompleteLeaves(e);
+		// the leave that was waiting is done: a writable project that nobody uses any more closes
+		// now, as leaveProject would have done (its Ghidra project lock is released)
+		ProjectEntry p = e.project;
+		if (e.pendingLeaves.isEmpty() && !p.closed && p.userCount() == 0 &&
+			(p.writable() || keepWarmMs == 0)) {
+			synchronized (registry) {
+				if (!p.closed && p.userCount() == 0 &&
+					p.programs.values().stream().noneMatch(ProgramEntry::holdsOrphanedWork) &&
+					p.programs.values().stream().allMatch(x -> x.pendingLeaves.isEmpty())) {
+					try {
+						projectCmds.closeProjectEntry(p, 0, true);
+					}
+					catch (SessionException ex) {
+						// in use after all; the next reap tries again
+					}
+				}
+			}
+		}
+	}
+
+	private void tryCompleteLeaves(ProgramEntry e) {
+		ProjectEntry p = e.project;
+		for (Client c : new ArrayList<>(e.pendingLeaves)) {
+			Lock pl = p.lock.readLock();
+			if (p.closed || !pl.tryLock()) {
+				return;
+			}
+			try {
+				Lock wl = e.lock.writeLock();
+				if (!wl.tryLock()) {
+					return;
+				}
+				try {
+					if (!e.pendingLeaves.remove(c)) {
+						continue;
+					}
+					if (p.programs.get(e.path) == e && e.program != null) {
+						programCmds.releaseUseHeld(c, e, true);
+						Msg.info(this, c.label() + ": the leave of " + e.key +
+							" that was waiting for its lock is done");
+					}
+				}
+				catch (RuntimeException ex) {
+					Msg.error(this, c.label() + ": could not finish leaving " + e.key, ex);
+				}
+				finally {
+					wl.unlock();
+				}
+			}
+			finally {
+				pl.unlock();
+			}
+		}
+	}
+
+	/**
+	 * {@code orphanKeepS > 0}: the unsaved edits of a shared program whose last writer died are
+	 * written to {@code <stateDir>/recovery/} and then discarded (3.5). Never waits.
+	 */
+	private void expireOrphan(ProjectEntry p, ProgramEntry e) {
+		String state = Json.str(Identity.paths(), "stateDir", null);
+		if (state == null) {
+			return; // no state directory: the edits are kept
+		}
+		Lock pl = p.lock.readLock();
+		if (!pl.tryLock()) {
+			return;
+		}
+		try {
+			if (!e.lock.writeLock().tryLock()) {
+				return;
+			}
+			try {
+				if (!e.holdsOrphanedWork() || p.programs.get(e.path) != e) {
+					return;
+				}
+				JsonObject dump = Json.of("program", e.key, "path", e.path, "project", p.id, "revision",
+					e.revision, "sha256", e.program.getExecutableSHA256(), "orphanedSince",
+					e.orphanedSince, "savedSeq", e.savedSeq, "journalSeq", e.journal.seq());
+				dump.add("entries", e.journal.since(e.savedSeq, null, Integer.MAX_VALUE));
+				java.nio.file.Path dir = java.nio.file.Path.of(state, "recovery");
+				java.nio.file.Files.createDirectories(dir);
+				String name = (p.id + e.path).replaceAll("[^A-Za-z0-9._-]", "_") + "-" +
+					System.currentTimeMillis() + ".journal.json";
+				java.nio.file.Files.writeString(dir.resolve(name), Json.GSON.toJson(dump));
+				Msg.warn(this, e.key + ": the unsaved edits of its dead writer were kept for " +
+					(System.currentTimeMillis() - e.orphanedSince) / 1000 + " s; written to " +
+					dir.resolve(name) + " and discarded (orphanKeepS)");
+				e.orphanedSince = 0;
+				e.disposeDecompilers();
+				programCmds.releaseProgramObject(e);
+				e.savedSeq = e.journal.seq(); // nothing unsaved any more: it was written and discarded
+				e.mode = null;
+				if (e.userCount() == 0) {
+					programCmds.disposeProgram(e);
+				}
+				else {
+					// readers remain: they get the saved program, read-only, as when a writer leaves
+					e.program = programCmds.openReadOnly(e, e.file, new RequestMonitor(null, null));
+					e.mode = ProgramEntry.Mode.READ_ONLY;
+					e.stampRevision();
+				}
+			}
+			catch (java.io.IOException | RuntimeException ex) {
+				Msg.error(this, e.key + ": could not write the orphan journal; keeping the edits", ex);
+			}
+			finally {
+				e.lock.writeLock().unlock();
+			}
+		}
+		finally {
+			pl.unlock();
 		}
 	}
 
@@ -248,7 +425,16 @@ final class Session {
 		// An import queues for the import gate (maxImports) first and takes its long slot only
 		// when it is its turn (importProgram), so that queued imports do not occupy the slots
 		// that analysis and scripts need.
-		Scheduler.Ticket slot = cmd.equals("import") ? null : scheduler.admit(c, cmd, req, m, waitMs(req));
+		Scheduler.Ticket slot;
+		try {
+			slot = cmd.equals("import") ? null : scheduler.admit(c, cmd, req, m, waitMs(req));
+		}
+		catch (SessionException ex) {
+			if (SessionException.CANCELLED.equals(ex.code())) {
+				m.cancelPhase("queued"); // cancelled.details.phase of a slot wait (3.3)
+			}
+			throw ex;
+		}
 		try {
 			if (cmd.equals("script") || cmd.equals("import") || cmd.equals("analyze")) {
 				DeferredInit.await(); // the TLS context and the script framework
@@ -365,7 +551,7 @@ final class Session {
 		JsonArray ps = new JsonArray();
 		for (ProjectEntry p : projectsById.values()) {
 			for (ProgramEntry e : p.programs.values()) {
-				ps.add(e.describeUse(upgradeCache));
+				ps.add(e.describeUse(upgradeCache, c.v3()));
 			}
 		}
 		o.add("programs", ps);

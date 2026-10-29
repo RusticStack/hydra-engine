@@ -16,10 +16,11 @@
 package ghidra.app.util.headless.session;
 
 import java.util.*;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
 import ghidra.app.decompiler.DecompInterface;
@@ -188,38 +189,111 @@ final class ProgramEntry implements Decompilers {
 		this.key = project.id + ":" + path;
 	}
 
+	// ---- who holds the lock now, abandoned holders and unfinished leaves (3.5, E3b) -----------
+
+	/** Requests waiting for this program's lock: the cap of 3.5 counts them (protocol 3). */
+	final AtomicInteger waiters = new AtomicInteger();
+
+	/** One request thread that holds this program's lock (shared or exclusive). */
+	static final class Hold {
+		final Client client;
+		final String cmd;
+		final long since = System.currentTimeMillis();
+		final boolean exclusive;
+		final Caller.Identity who;
+		final String thread = Thread.currentThread().getName();
+		int depth = 1;
+		/** Set by the leave of its client when the lock could not be had: the hold is abandoned. */
+		volatile long abandonedSince;
+
+		Hold(Client client, String cmd, boolean exclusive, Caller.Identity who) {
+			this.client = client;
+			this.cmd = cmd;
+			this.exclusive = exclusive;
+			this.who = who;
+		}
+	}
+
+	/** The holders by thread. */
+	private final Map<Thread, Hold> holds = new java.util.concurrent.ConcurrentHashMap<>();
+	/**
+	 * Clients that left (or died) but whose leave could not take the exclusive lock in time: the
+	 * leave is finished later, without waiting, when the lock is free ({@link Session#reap} or the
+	 * release of the lock that stood in the way). Their ownership bits stay until then: this is
+	 * the fallback 3.5 names for the ownership-bits question (E3b's choice; the coordinator
+	 * records it as the decision in 3.5, it is not yet recorded there).
+	 */
+	final Set<Client> pendingLeaves = java.util.concurrent.ConcurrentHashMap.newKeySet();
+	/** Run, off the releasing thread, after a release while {@link #pendingLeaves} is not empty. */
+	static volatile java.util.function.Consumer<ProgramEntry> afterRelease;
+
+	/** Flags every hold of {@code dead} as abandoned (its client is gone and the leave gave up). */
+	void markAbandoned(Client dead) {
+		long now = System.currentTimeMillis();
+		for (Hold h : holds.values()) {
+			if (h.client == dead && h.abandonedSince == 0) {
+				h.abandonedSince = now;
+			}
+		}
+	}
+
+	/** True while a request of {@code c} still holds this program's lock. */
+	boolean holdsBy(Client c) {
+		for (Hold h : holds.values()) {
+			if (h.client == c) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private Hold firstAbandoned(boolean exclusiveOnly) {
+		Hold best = null;
+		for (Hold h : holds.values()) {
+			if (h.abandonedSince > 0 && (!exclusiveOnly || h.exclusive) &&
+				(best == null || h.abandonedSince < best.abandonedSince)) {
+				best = h;
+			}
+		}
+		return best;
+	}
+
+	/** The abandoned holds, for {@code status.programs[].abandonedRequests[]} (v3). */
+	JsonArray abandonedRequests() {
+		JsonArray a = new JsonArray();
+		long now = System.currentTimeMillis();
+		for (Hold h : holds.values()) {
+			if (h.abandonedSince > 0) {
+				a.add(Json.of("cmd", h.cmd, "client", h.client.id, "label", h.client.label(),
+					"mode", h.exclusive ? "exclusive" : "shared", "since", h.since, "runningMs",
+					now - h.since, "abandonedMs", now - h.abandonedSince, "thread", h.thread));
+			}
+		}
+		return a;
+	}
+
+	/** Lock acquisition, bounded and cancel-aware ({@link Waits}); records the holder. */
 	Lock acquire(boolean exclusive, long waitMs, Client c, String cmd) {
+		// a dead client's request still holds the lock and ignores cancel: tell at once (3.5)
+		// (not for a thread that already holds this program: a re-entrant acquire by the abandoned
+		// holder's own script goes through its own hold)
+		Hold ab = holds.containsKey(Thread.currentThread()) ? null : firstAbandoned(!exclusive);
+		if (ab != null) {
+			throw abandonedBusy(ab, exclusive);
+		}
+		Waits.Outcome got = Waits.lock(lock, exclusive, waitMs, waiters);
 		Lock l = exclusive ? lock.writeLock() : lock.readLock();
-		boolean got;
-		try {
-			got = l.tryLock(waitMs, TimeUnit.MILLISECONDS);
+		if (got != Waits.Outcome.GOT) {
+			throw busy(exclusive, waitMs, got == Waits.Outcome.QUEUE_FULL);
 		}
-		catch (InterruptedException e) {
-			Thread.currentThread().interrupt();
-			got = false;
-		}
-		if (!got) {
-			JsonObject d = identity();
-			Json.put(d, "wanted", exclusive ? "exclusive" : "shared");
-			Json.put(d, "waitedMs", waitMs);
-			String holder = exclusiveHolder;
-			Client hc = exclusiveClient;
-			if (holder != null) {
-				Json.put(d, "holder", holder);
-				Json.put(d, "holderInfo",
-					hc != null ? hc.holder(exclusiveCmd, exclusiveSince, exclusiveWho)
-							: Json.of("label", holder));
-				Json.put(d, "heldMs", System.currentTimeMillis() - exclusiveSince);
+		Caller.Identity who = Caller.current(c);
+		holds.compute(Thread.currentThread(), (t, h) -> {
+			if (h != null) {
+				h.depth++;
+				return h;
 			}
-			else {
-				Json.put(d, "readers", lock.getReadLockCount());
-			}
-			Json.put(d, "suggest", "retry");
-			throw new SessionException(SessionException.BUSY,
-				path + " is busy" + (holder != null ? " (" + holder + ")" : "") +
-					"; retry, or pass a longer \"wait\"",
-				d);
-		}
+			return new Hold(c, cmd, exclusive, who);
+		});
 		if (exclusive) {
 			exclusiveHolder = Caller.label(c) + " " + cmd;
 			exclusiveClient = c;
@@ -228,6 +302,61 @@ final class ProgramEntry implements Decompilers {
 			exclusiveSince = System.currentTimeMillis();
 		}
 		return l;
+	}
+
+	/** The {@code busy} of a lock that could not be had (or that too many requests already wait for). */
+	private SessionException busy(boolean exclusive, long waitMs, boolean full) {
+		boolean v3 = Waits.v3();
+		JsonObject d = identity();
+		Json.put(d, "wanted", exclusive ? "exclusive" : "shared");
+		Json.put(d, "waitedMs", full ? 0 : waitMs);
+		String holder = exclusiveHolder;
+		Client hc = exclusiveClient;
+		if (holder != null) {
+			Json.put(d, "holder", holder);
+			Json.put(d, "holderInfo",
+				hc != null ? hc.holder(exclusiveCmd, exclusiveSince, exclusiveWho)
+						: Json.of("label", holder));
+			Json.put(d, "heldMs", System.currentTimeMillis() - exclusiveSince);
+		}
+		else {
+			Json.put(d, "readers", lock.getReadLockCount());
+		}
+		Json.put(d, "suggest", "retry");
+		if (full) {
+			Json.put(d, "waiters", waiters.get());
+			Json.put(d, "waitersMax", Waits.cap(Caller.monitor()));
+		}
+		d = SessionException.busyDetails(v3, d, full ? "lock_queue_full" : "lock_wait", null, null);
+		SessionException ex = new SessionException(SessionException.BUSY,
+			path + (full ? " already has " + waiters.get() + " requests waiting for it; retry later"
+					: " is busy" + (holder != null ? " (" + holder + ")" : "") +
+						"; retry, or pass a longer \"wait\""),
+			d);
+		if (v3) {
+			ex.withRetryAfterMs(1000);
+		}
+		return ex;
+	}
+
+	/** The {@code busy} for a lock whose holder is a request of a client that is gone. */
+	private SessionException abandonedBusy(Hold h, boolean exclusive) {
+		boolean v3 = Waits.v3();
+		long running = (System.currentTimeMillis() - h.since) / 1000;
+		String text = "abandoned request " + h.cmd + ", client gone, running " + running + " s";
+		JsonObject d = identity();
+		Json.put(d, "wanted", exclusive ? "exclusive" : "shared");
+		Json.put(d, "holder", text);
+		Json.put(d, "holderInfo", h.client.holder(h.cmd, h.since, h.who));
+		Json.put(d, "heldMs", System.currentTimeMillis() - h.since);
+		Json.put(d, "suggest", "retry");
+		d = SessionException.busyDetails(v3, d, "abandoned", null, true);
+		SessionException ex = new SessionException(SessionException.BUSY,
+			path + " is busy (" + text + "); retry later", d);
+		if (v3) {
+			ex.withRetryAfterMs(5000);
+		}
+		return ex;
 	}
 
 	/** Records the revision of {@link #file} as stored now. */
@@ -247,6 +376,7 @@ final class ProgramEntry implements Decompilers {
 	}
 
 	void release(Lock l) {
+		holds.computeIfPresent(Thread.currentThread(), (t, h) -> --h.depth > 0 ? h : null);
 		if (l == lock.writeLock()) {
 			exclusiveHolder = null;
 			exclusiveClient = null;
@@ -255,6 +385,12 @@ final class ProgramEntry implements Decompilers {
 		}
 		lastUsed = System.currentTimeMillis();
 		l.unlock();
+		if (!pendingLeaves.isEmpty()) {
+			java.util.function.Consumer<ProgramEntry> after = afterRelease;
+			if (after != null) {
+				after.accept(this);
+			}
+		}
 	}
 
 	/**
@@ -366,6 +502,14 @@ final class ProgramEntry implements Decompilers {
 		}
 		UpgradeCache.Build b = uc.build(plan);
 		return b == null ? null : b.describe();
+	}
+
+	JsonObject describeUse(UpgradeCache uc, boolean v3) {
+		JsonObject o = describeUse(uc);
+		if (v3) {
+			o.add("abandonedRequests", abandonedRequests());
+		}
+		return o;
 	}
 
 	JsonObject describeUse(UpgradeCache uc) {
