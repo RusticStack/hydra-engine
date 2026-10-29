@@ -47,6 +47,10 @@ Tests:
 * ``p1b_stop_shutdown_deadline``  a fake engine answers ``hello`` and never ``shutdown``:
   ``stop()`` does not block on the call (it ends in ``LaunchError`` after the deadline and the
   wait for the exit).
+* ``p1b_children_of_threads``  ``_children_of`` (the WMI route's lookup of the JVM under ``cmd.exe``)
+  called from several threads at once never fails with ``expected LP_PE32 instance instead of
+  pointer to PE32`` (the structure class is made once, not per call; integration check V3,
+  ``e2a_kill_fork``: two workers restart daemons at the same time).
 * ``p1b_native_access_flag``  the JVM command line carries ``--enable-native-access=ALL-UNNAMED``
   once, also when launch.properties or ``vmargs`` already carry it, and not for
   ``--enable-native-access=java.base``.
@@ -1032,6 +1036,34 @@ def t_stop_shutdown_deadline(c):
         fe.close()
 
 
+def t_children_of_threads(c):
+    """Four threads call ``_children_of`` on this process 200 times each: ctypes checks ``argtypes``
+    by class identity and ``_kernel32()`` is shared, so a structure class made per call made the
+    threads overwrite each other's ``argtypes`` (an ``ArgumentError``)."""
+    if not IS_WINDOWS:
+        return "skipped: Windows only (Toolhelp)"
+    gs = c.gs
+    errs = []
+    gate = threading.Barrier(4)
+
+    def work():
+        try:
+            gate.wait(30)
+            for _ in range(200):
+                gs._children_of(os.getpid())
+        except Exception as e:  # noqa: BLE001 - the failure is the finding
+            errs.append(f"{type(e).__name__}: {e}")
+
+    ths = [threading.Thread(target=work, daemon=True) for _ in range(4)]
+    for t in ths:
+        t.start()
+    for t in ths:
+        t.join(120)
+    check(not any(t.is_alive() for t in ths), "a _children_of thread did not end")
+    check(not errs, f"_children_of failed under threads: {errs[:2]}")
+    return "4 threads x 200 calls of _children_of, no error"
+
+
 def isolated(fn):
     """Runs a test with its own user state root (GHIDRA_SESSION_HOME, inherited by every child
     process): the registry of the real user, and the daemons of other agents, never take part."""
@@ -1047,6 +1079,7 @@ TESTS = {
     "p1b_duplicate_daemon": isolated(t_duplicate_daemon),
     "p1b_call_deadline": isolated(t_call_deadline),
     "p1b_concurrent_launchers": isolated(t_concurrent_launchers),
+    "p1b_children_of_threads": isolated(t_children_of_threads),
     "p1b_native_access_flag": isolated(t_native_access_flag),
     "p1b_wedged_connect": isolated(t_wedged_connect),
     "p1b_stop_shutdown_deadline": isolated(t_stop_shutdown_deadline),
