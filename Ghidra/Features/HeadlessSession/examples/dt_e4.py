@@ -382,10 +382,10 @@ def t_script_reply(c):
         r = X.call("script", script=c.script("BaselineQuick.java"), lane="fast", timeout=30)
         dt.check(r["lane"] == "long" and r["laneNote"], f"unknown lane: {r}")
         # the validation: bad_request with details.field and allowed[]
-        for bad in ("bogus", "Private", 5, ["private"], "worker"):
+        for bad in ("bogus", "Private", 5, ["private"], "Worker", "workers"):
             e = _error(c, X, script=c.script("BaselineQuick.java"), isolation=bad)
             dt.check(e.code == "bad_request" and e.details.get("field") == "isolation" and
-                     e.details.get("allowed") == ["shared", "exclusive", "private"],
+                     e.details.get("allowed") == ["shared", "exclusive", "private", "worker"],
                      f"isolation {bad!r}: {e.code} {e.details}")
         e = _error(c, X, script=c.script("BaselineQuick.java"), scriptSha256="not-a-digest")
         dt.check(e.code == "bad_request" and e.details.get("field") == "scriptSha256",
