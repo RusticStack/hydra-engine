@@ -831,7 +831,15 @@ def run_survival_case(c, key):
     harness_out = open(base / "harness.out", "wb")
     kw = dict(stdin=subprocess.DEVNULL, stdout=harness_out,
               stderr=subprocess.STDOUT, creationflags=0x08000000)  # CREATE_NO_WINDOW
-    hp = spawn_in_job(cmd, job, **kw) if job else subprocess.Popen(cmd, **kw)
+    if job:
+        hp = spawn_in_job(cmd, job, **kw)
+    else:
+        # D and N want a launcher that is in NO job. This process may itself run in one (a harness,
+        # an agent session) that allows breakaway: without the flag the launcher would inherit it,
+        # see a job and take the breakaway route instead of "detached". Not in a job: the flag does nothing.
+        if key in NEEDS_BREAKAWAY and breakaway_blocked() is False:
+            kw["creationflags"] |= 0x01000000   # CREATE_BREAKAWAY_FROM_JOB
+        hp = subprocess.Popen(cmd, **kw)
     harness_out.close()  # the child has its own handle
     r = {"case": cs["name"]}
     dp = None
