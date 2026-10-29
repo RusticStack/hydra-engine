@@ -621,6 +621,9 @@ def selftest() -> int:
         kills = int(os.environ.get("E8_KILLS", "8"))
         check(f"e8_kill_loop: {e8.KILL_SHARDS} shards whose kills add up to E8_KILLS ({kills})",
               len(dt.SHARDS.get("e8_kill_loop", {})) == e8.KILL_SHARDS and sum(c for _, c in dt.split_n(kills, e8.KILL_SHARDS)) == kills)
+    check(f"import_isolation: {dt.ISO_SHARDS} shards whose rounds add up to {dt.ISO_ROUNDS}",
+          len(dt.SHARDS.get("import_isolation", {})) == dt.ISO_SHARDS
+          and sum(c for _, c in dt.split_n(dt.ISO_ROUNDS, dt.ISO_SHARDS)) == dt.ISO_ROUNDS)
     print(f"{'FAILED: ' + str(len(bad)) + ' check(s)' if bad else 'all run_parallel checks ok'}")
     return 1 if bad else 0
 
@@ -716,7 +719,8 @@ def main() -> int:
             if t in names and s:
                 shards.setdefault(t, []).append(s)
     tasks = plan(names, shards, costs)
-    est = lpt_estimate([task_cost(t, costs, shards) for t in tasks], a.workers)
+    est = lpt_estimate([task_cost(t, costs, shards) for t in tasks],
+                       min(a.workers, int(a.cores / a.light_cores)) if a.cores and a.light_cores else a.workers)
     print(f"{len(names)} tests as {len(tasks)} processes ({sum(len(v) for v in shards.values())} shards of {len(shards)} tests), "
           f"{a.workers} at once (while under {a.max_procs or 'any'} processes and over {a.min_commit:g} GB commit free); estimated {est:.0f} s; scratch {scratch}", flush=True)
     print(r.prepare_seed() + f" ({time.time() - started:.0f} s)", flush=True)
