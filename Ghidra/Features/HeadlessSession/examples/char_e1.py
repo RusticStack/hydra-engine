@@ -68,7 +68,8 @@ def structure(res):
         raise Fail(f"e1: analysisIdentity keys {list(ai)}")
     dbv = ai["dbVersions"]
     if (list(dbv) != ["program", "dataTypes"] or not isinstance(dbv["program"], int) or
-            dbv["program"] < 1 or dbv["dataTypes"] is not None):
+            dbv["program"] < 1 or not (dbv["dataTypes"] is None or
+                                       isinstance(dbv["dataTypes"], int) and dbv["dataTypes"] > 0)):
         raise Fail(f"e1: dbVersions {dbv}")
     if list(ai["decompiler"]) != ["path", "sizeBytes", "sha256"]:
         raise Fail(f"e1: decompiler {ai['decompiler']}")
@@ -100,6 +101,15 @@ def head(R, who, s, cmd, policy, note=None, **f):
     res["policy"] = subset("policy", res["policy"], policy)
     for k in ("paths", "platform", "analysisIdentity"):
         res[k] = "<masked>"
+    # E3a (amendment): the scheduler block of the status step keeps the shape of the protocol-3
+    # base. What E3a added to it is cut: the maint lane, and the keys of a lane that are new
+    # (the E3a characterization, char_e3a.py, records them).
+    sched = res.get("scheduler")
+    if isinstance(sched, dict):
+        sched.pop("maint", None)
+        for lane in ("quick", "long"):
+            for k in ("oldestWaitMs", "longestRunningMs", "starving", "perKeyCap", "perKey"):
+                sched.get(lane, {}).pop(k, None)
     step = {"step": len(R.steps) + 1, "who": who, "cmd": cmd, "request": R.m.value(f),
             "response": R.m.value(resp)}
     if note:

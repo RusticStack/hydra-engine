@@ -32,6 +32,7 @@ Command line::
 
     python ghidra_session.py ensure            start the daemon if absent; print its endpoint
     python ghidra_session.py status            the running daemon: projects, programs, clients
+    python ghidra_session.py health            does it answer, and how was it started
     python ghidra_session.py call CMD k=v...   one request through the daemon (JSON values ok)
     python ghidra_session.py stop [--force]    stop the daemon
     python ghidra_session.py serve             run the daemon in the foreground
@@ -44,6 +45,22 @@ Configuration, lowest to highest precedence: built-in defaults, ``<state dir>/co
 environment (``GHIDRA_SESSION_*``), command-line options. The state dir is
 ``GHIDRA_SESSION_HOME`` or a per-user default (``%LOCALAPPDATA%\\GhidraSession`` on Windows,
 ``$XDG_STATE_HOME/ghidra-session`` or ``~/.local/state/ghidra-session`` elsewhere).
+
+Starting and failing. ``Daemon.connect`` starts the daemon outside the caller's Windows Job Object
+when the caller runs in one (breakaway, then WMI, then a one-shot scheduled task; PROTOCOL-3.md
+D65), so that, when a route other than ``stayed`` works (``survival: "independent"``), the daemon
+is not ended with the harness that started it. The session carries ``launch`` (how
+it was started), ``started`` and ``warnings``; ``daemon_dies_with_harness`` means that every route
+failed and the daemon ends with its harness. A start that fails raises ``LaunchError`` with a
+``code`` (``LAUNCH_CODES``) and ``details``. ``Daemon.health()`` and ``Daemon.attach()`` are for the
+doctor. ``singleton: "per-install"`` (config) refuses a second daemon of the same install under
+another state dir with ``DuplicateDaemonError`` (best effort: the registry entry is written once the
+daemon answers, so two launchers that start at the same moment can both pass); the default only
+warns. ``GHIDRA_SESSION_SINGLETON`` overrides the policy; ``GHIDRA_SESSION_HEAP_CHECK=0`` (or
+``heapCheck: false``) turns off the explicit-``maxHeap`` check, which compares ``-Xmx`` (a
+reservation) with the free physical memory at that moment and can refuse a legitimate value on a
+loaded machine. ``call(cmd, deadline=s)``
+cancels a request that does not answer in time and raises ``SessionError("deadline_exceeded")``.
 
 Compatibility: this file is a versioned client (``CLIENT_VERSION``) that speaks protocols
 ``PROTOCOL_MIN`` to ``PROTOCOL`` (2 to 3). Its ``hello`` asks for ``PROTOCOL``; the session answers
@@ -65,12 +82,15 @@ import json
 import os
 import platform
 import re
+import select
 import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 
 #: The newest protocol this client speaks: the value its ``hello`` asks for.
@@ -95,12 +115,44 @@ IS_MAC = sys.platform == "darwin"
 
 # ---- install --------------------------------------------------------------------------------
 
+#: The ``code`` values of a ``LaunchError`` that says why a start failed (PROTOCOL-3.md, 3.8).
+#: ``IncompatibleError`` keeps its own code, ``incompatible``.
+LAUNCH_CODES = ("no_jdk", "jdk_too_old", "bad_install", "lock_held", "heap_too_large",
+                "exited_early", "no_answer", "duplicate_daemon",
+                "not_running")  # not_running: attach()/start=False and no daemon runs; a JVM that is
+                # alive but does not answer (wedged, or not listening yet) is no_answer
+
+
 class LaunchError(RuntimeError):
-    """The session could not be started: no JDK, a bad install, a daemon that does not answer."""
+    """The session could not be started: no JDK, a bad install, a daemon that does not answer.
+
+    ``str(e)`` is the message (unchanged by the structure). ``code`` is one of ``LAUNCH_CODES``
+    (``None`` for an error that has no code yet) and ``details`` a dict with what a caller or the
+    doctor needs: ``javaMin``, ``tried[]``, ``logTail``, ``holder``, ``suggest``, depending on the
+    code."""
+
+    def __init__(self, message, code=None, details=None):
+        super().__init__(message)
+        self.code = code
+        self.details = dict(details or {})
 
 
 class IncompatibleError(LaunchError):
     """The session speaks another protocol, or requires a newer client than this file."""
+
+    def __init__(self, message, code="incompatible", details=None):
+        super().__init__(message, code, details)
+
+
+class DuplicateDaemonError(LaunchError):
+    """``singleton: "per-install"`` and a live daemon of the same install runs under another state
+    dir. ``holder`` is ``{pid, stateDir, instance, install, ...}``; ``ways_out`` the three ways
+    out (also in ``details["suggest"]``)."""
+
+    def __init__(self, message, holder, ways_out):
+        super().__init__(message, "duplicate_daemon", {"holder": holder, "suggest": list(ways_out)})
+        self.holder = holder
+        self.ways_out = list(ways_out)
 
 
 def parse_version(text) -> tuple[int, ...]:
@@ -203,7 +255,8 @@ class Install:
         props_file = self.app_root / "application.properties"
         if not props_file.is_file():
             raise LaunchError(f"not a Ghidra installation (no Ghidra/application.properties): "
-                              f"{self.dir}")
+                              f"{self.dir}", "bad_install",
+                              {"path": str(self.dir), "missing": "Ghidra/application.properties"})
         self.props = dict(_read_properties(props_file))
         self.version = self.props.get("application.version", "?")
         self.release = self.props.get("application.release.name", "")
@@ -215,10 +268,13 @@ class Install:
         self.utility_jar = self.app_root / "Framework" / "Utility" / "lib" / "Utility.jar"
         if not self.utility_jar.is_file():
             raise LaunchError(f"{self.utility_jar} is missing: only built (release) installs "
-                              "can be launched")
+                              "can be launched", "bad_install",
+                              {"path": str(self.dir), "missing": str(self.utility_jar)})
         self.module_dir = self.app_root / "Features" / "HeadlessSession"
         if not (self.module_dir / "lib" / "HeadlessSession.jar").is_file():
-            raise LaunchError(f"this install has no HeadlessSession module: {self.module_dir}")
+            raise LaunchError(f"this install has no HeadlessSession module: {self.module_dir}",
+                              "bad_install", {"path": str(self.dir),
+                                              "missing": str(self.module_dir / "lib" / "HeadlessSession.jar")})
 
     @staticmethod
     def locate(explicit: str | None = None) -> "Install":
@@ -233,7 +289,8 @@ class Install:
                 return Install(parent)
         if os.environ.get("GHIDRA_INSTALL_DIR"):
             return Install(os.environ["GHIDRA_INSTALL_DIR"])
-        raise LaunchError("no Ghidra install: pass --ghidra <dir> or set GHIDRA_INSTALL_DIR")
+        raise LaunchError("no Ghidra install: pass --ghidra <dir> or set GHIDRA_INSTALL_DIR",
+                          "bad_install", {"suggest": "pass --ghidra <dir> or set GHIDRA_INSTALL_DIR"})
 
     # launch.properties: VMARGS, VMARGS_<OS>, ENVVARS, ENVVARS_<OS>, JAVA_HOME_OVERRIDE
     def launch_properties(self) -> dict:
@@ -370,6 +427,7 @@ def find_jdk(install: Install, explicit: str | None, launch_props: dict) -> tupl
     ``GHIDRA_SESSION_JAVA_HOME``, launch.properties ``JAVA_HOME_OVERRIDE``, ``JAVA_HOME``, the
     JDK Ghidra's own launcher saved for this version, then ``java`` on PATH."""
     tried = []
+    wrong_version = []  # real JDKs that the install's Java range excludes
 
     def candidates():
         yield "explicit", explicit
@@ -397,13 +455,19 @@ def find_jdk(install: Install, explicit: str | None, launch_props: dict) -> tupl
         if major < install.java_min or (install.java_max and major > install.java_max):
             tried.append(f"{src}={cand} (Java {full}; Ghidra {install.version} needs "
                          f"{install.java_min}{'-' + str(install.java_max) if install.java_max else '+'})")
+            wrong_version.append({"source": src, "home": str(home), "version": full})
             continue
         if not (home / "bin" / ("javac.exe" if IS_WINDOWS else "javac")).is_file():
             tried.append(f"{src}={cand} (a JRE; Ghidra needs a JDK)")
             continue
         return home, full
+    details = {"javaMin": install.java_min, "javaMax": install.java_max, "tried": tried,
+               "suggest": "set GHIDRA_SESSION_JAVA_HOME or pass --java"}
+    if wrong_version:
+        details["found"] = wrong_version
     raise LaunchError("no suitable JDK found; set GHIDRA_SESSION_JAVA_HOME or pass --java. Tried: "
-                      + ("; ".join(tried) or "nothing (no JAVA_HOME, no java on PATH)"))
+                      + ("; ".join(tried) or "nothing (no JAVA_HOME, no java on PATH)"),
+                      "jdk_too_old" if wrong_version else "no_jdk", details)
 
 
 # ---- state dir and configuration ------------------------------------------------------------
@@ -457,6 +521,48 @@ def physical_memory_bytes() -> int | None:
         return None
 
 
+def available_memory_bytes() -> int | None:
+    """Physical memory that is free right now (what a JVM could commit without paging), or None."""
+    try:
+        if IS_WINDOWS:
+            import ctypes
+
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong),
+                            ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong),
+                            ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong),
+                            ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("sullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+            st = MEMORYSTATUSEX()
+            st.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
+                return int(st.ullAvailPhys)
+            return None
+        try:
+            for line in Path("/proc/meminfo").read_text().splitlines():
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) * 1024
+        except (OSError, ValueError, IndexError):
+            pass
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_AVPHYS_PAGES")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def heap_bytes(text) -> int | None:
+    """``-Xmx`` text (``16g``, ``512m``, ``2048k``, a plain byte count) in bytes; None if unreadable."""
+    t = str(text).strip().lower()
+    units = {"k": 1 << 10, "m": 1 << 20, "g": 1 << 30, "t": 1 << 40}
+    try:
+        return int(t[:-1]) * units[t[-1]] if t and t[-1] in units else int(t)
+    except ValueError:
+        return None
+
+
 def default_max_heap() -> str:
     """A quarter of physical memory, between 2 GiB and 32 GiB (compressed-oops limit)."""
     mem = physical_memory_bytes()
@@ -479,7 +585,8 @@ DEFAULTS = {
     "idleTimeout": 0,        # seconds without clients before the daemon exits; 0: stay up
     "keepWarm": 3600,        # seconds an unused read-only program stays open; 0: close at once
     "maxQuick": 0,           # concurrent quick requests (decompile, ...); 0: CPU count
-    "maxLong": 0,            # concurrent long requests (analyze, import, script); 0: CPU/4
+    "maxLong": 0,            # concurrent long requests (analyze, import, script); 0: max(8, CPUs)
+                             # (E3a, D40; an engine before hydra.4 still uses CPUs/4, at least 2)
     "maxImports": 0,         # concurrent imports (each also takes a long slot); 0: CPU/4, 1..4
     "scriptPath": [],        # extra GhidraScript directories
     "log": None,             # daemon log; None: <state>/<instance>.log
@@ -487,6 +594,9 @@ DEFAULTS = {
     "upgradeCacheDir": None,  # where those copies live; None: <state>/upgrade-cache
     "forkCopyLimitMb": 2048,  # fork_project mode auto: refuse a full (not cloned) copy over this
     "engine": {},            # engine settings: each key=value goes to the JVM as ``-set key=value``
+    "singleton": "warn",     # warn | per-install: a live daemon of this install under another state
+                             # dir is reported (warn) or refused (DuplicateDaemonError)
+    "heapCheck": True,       # refuse an explicit maxHeap that is larger than the free physical memory
 }
 
 ENV_MAP = {
@@ -502,6 +612,9 @@ ENV_MAP = {
                                      ("0", "false", "off", "no")),
     "GHIDRA_SESSION_UPGRADE_CACHE_DIR": ("upgradeCacheDir", str),
     "GHIDRA_SESSION_FORK_COPY_LIMIT_MB": ("forkCopyLimitMb", int),
+    "GHIDRA_SESSION_SINGLETON": ("singleton", str),
+    "GHIDRA_SESSION_HEAP_CHECK": ("heapCheck", lambda v: v.strip().lower() not in
+                                  ("0", "false", "off", "no")),
 }
 
 
@@ -570,6 +683,8 @@ def load_config(state: Path, overrides: dict | None = None) -> dict:
         raise LaunchError(f"mode must be fast or standard, not {cfg['mode']!r}")
     if cfg["gc"] not in ("g1", "zgc", "parallel", "default"):
         raise LaunchError(f"gc must be g1, zgc, parallel or default, not {cfg['gc']!r}")
+    if cfg["singleton"] not in ("warn", "per-install"):
+        raise LaunchError(f"singleton must be warn or per-install, not {cfg['singleton']!r}")
     return cfg
 
 
@@ -617,6 +732,37 @@ class Launch:
 
     def heap(self) -> str:
         return self.cfg.get("maxHeap") or default_max_heap()
+
+    def check_heap(self):
+        """An explicit ``maxHeap`` above the physical memory that is free now is refused with
+        ``heap_too_large`` (the JVM would start and then be paged to death or killed). The default
+        heap (a quarter of the memory) is never checked, and ``heapCheck: false`` turns it off."""
+        if not self.cfg.get("maxHeap") or not self.cfg.get("heapCheck", True):
+            return
+        want = heap_bytes(self.cfg["maxHeap"])
+        free = available_memory_bytes()
+        total = physical_memory_bytes()
+        if want is not None and free is not None and want > free:
+            raise LaunchError(
+                f"maxHeap {self.cfg['maxHeap']} ({want >> 20} MiB) is more than the free physical "
+                f"memory ({free >> 20} MiB of {(total or 0) >> 20} MiB); lower maxHeap, free memory, "
+                f"or set heapCheck to false", "heap_too_large",
+                {"maxHeap": self.cfg["maxHeap"], "heapBytes": want, "freeBytes": free,
+                 "totalBytes": total,
+                 "suggest": f"use maxHeap up to {max(1, free >> 30)}g, or set heapCheck false"})
+
+    @staticmethod
+    def grants_native_access(args: list[str]) -> bool:
+        """True when ``args`` already carry ``--enable-native-access`` for unnamed code (any
+        spelling: ``=ALL-UNNAMED``, a list containing it, or the two-token form)."""
+        for i, a in enumerate(args):
+            if a.startswith("--enable-native-access="):
+                if "ALL-UNNAMED" in a.split("=", 1)[1].split(","):
+                    return True
+            elif a == "--enable-native-access" and i + 1 < len(args):
+                if "ALL-UNNAMED" in args[i + 1].split(","):
+                    return True
+        return False
 
     def aot_flavor(self, base_vm: list[str]) -> str:
         """The JVM options an AOT cache must have been recorded with: the JVM refuses a cache made
@@ -677,6 +823,11 @@ class Launch:
             head = ["-cp", str(self.install.utility_jar)]
             main = ["ghidra.Ghidra", MAIN_CLASS]
             info["aot"] = None
+        # D60: the daemon's own Job Object (E9) calls the FFM API, which needs this on the JVM
+        # command line itself (not JAVA_TOOL_OPTIONS, which the WMI route would lose). Ghidra's
+        # launch.properties may already carry it (for FlatLaf): then nothing is added.
+        if not self.grants_native_access(vm + list(self.cfg.get("vmargs") or [])):
+            vm.append("--enable-native-access=ALL-UNNAMED")
         heap = self.heap()
         vm += [f"-Xmx{heap}", f"-Xms{self.cfg.get('minHeap') or '512m'}"]
         vm += self.gc_args()
@@ -787,31 +938,53 @@ class _Base:
         self.last_ms = 0
         self.last_response = None  # the last whole response (with stale/refreshed markers)
         self._raw = {}
+        self._abandoned = set()  # ids whose answer nobody waits for any more (deadline expired)
+
+    #: True when ``_recv(timeout)`` can give up after ``timeout`` seconds (a ``deadline``).
+    supports_deadline = False
 
     def _send(self, line: str):
         raise NotImplementedError
 
-    def _recv(self) -> str:
+    def _recv(self, timeout: float | None = None) -> str | None:
+        """One line; ``""`` at the end of the stream; ``None`` when ``timeout`` passed first
+        (only when ``supports_deadline``)."""
         raise NotImplementedError
 
-    def call(self, cmd: str, **fields):
+    def call(self, cmd: str, deadline: float | None = None, **fields):
         """Sends one request and waits for its response. Raises SessionError on ok:false.
+
+        ``deadline`` (seconds, client side only: it is not sent) limits the wait: when it passes
+        the request is cancelled (``cancel target=<id>`` is sent), the late answer is dropped, and
+        ``SessionError("deadline_exceeded")`` is raised. The connection stays usable. Needs a
+        socket session (the pipe of a stdio session cannot be timed). This exists from library
+        1.1.0; an engine install before hydra.4 ships 1.0.0, whose ``call`` waits without a limit.
 
         ``client=`` and ``harness=`` are labels of this one request: they replace the
         connection's name for it in ``busy``/``conflict`` holders, ``status``, the import queue
         and ``cancel`` scoping (README, "Who is asking"). For a caller that makes many requests
         use :meth:`labelled`."""
-        return self.wait(self.send(cmd, **fields))
+        self._check_deadline(deadline)
+        return self.wait(self.send(cmd, **fields), deadline)
 
-    def call_raw(self, cmd: str, **fields) -> dict:
+    def _check_deadline(self, deadline):
+        if deadline is not None:
+            if not self.supports_deadline:
+                raise SessionError("unsupported", "a deadline needs a socket session")
+            if not isinstance(deadline, (int, float)) or isinstance(deadline, bool) \
+                    or not deadline > 0:
+                raise ValueError(f"deadline must be a positive number of seconds, not {deadline!r}")
+
+    def call_raw(self, cmd: str, deadline: float | None = None, **fields) -> dict:
         """Like ``call``, but returns the whole response: ``result`` plus the markers next to it
         (``stale``: read-only views whose project changed on disk, send ``refresh``;
         ``refreshed``: projects another client refreshed since this one last heard)."""
+        self._check_deadline(deadline)
         rid = self.send(cmd, **fields)
         with self._done:
             self._raw[rid] = None
         try:
-            self.wait(rid)
+            self.wait(rid, deadline)
             with self._done:
                 return self._raw[rid]
         finally:
@@ -830,13 +1003,39 @@ class _Base:
 
     def send(self, cmd: str, **fields) -> int:
         """Sends a request without waiting; returns its id (for ``cancel`` or a later wait)."""
+        return self._send_request(cmd, fields)
+
+    def _send_request(self, cmd: str, fields: dict, abandon: bool = False) -> int:
         with self._lock:
             self._id += 1
             rid = self._id
+            if abandon:  # before the line leaves: its answer may be the next thing read
+                with self._done:
+                    self._abandoned.add(rid)
             self._send(json.dumps({"id": rid, "cmd": cmd, **fields}) + "\n")
         return rid
 
-    def wait(self, rid: int):
+    def _expire(self, rid: int, deadline: float):
+        """The deadline of ``rid`` passed: cancel it, drop its answer, raise."""
+        with self._done:
+            if rid in self._pending or self._closed:
+                return  # answered (or ended) at the last moment: the wait loop takes it
+            self._abandoned.add(rid)
+        cancel_id = None
+        try:
+            # parallel: on a connection that runs its requests in order, a plain cancel would
+            # queue behind the very request it is meant to end
+            cancel_id = self._send_request("cancel", {"target": rid, "parallel": True},
+                                           abandon=True)
+        except (OSError, ValueError):
+            pass  # the connection is gone: nothing to cancel
+        raise SessionError("deadline_exceeded",
+                           f"no answer to request {rid} within {deadline:g} s; cancel sent",
+                           {"deadlineS": deadline, "target": rid, "cancelId": cancel_id})
+
+    def wait(self, rid: int, deadline: float | None = None):
+        self._check_deadline(deadline)
+        end = None if deadline is None else time.monotonic() + deadline
         while True:
             with self._done:
                 if rid in self._pending:
@@ -844,12 +1043,21 @@ class _Base:
                     break
                 if self._closed:
                     raise SessionError("closed", "the session connection ended")
+            if end is not None and time.monotonic() >= end:
+                self._expire(rid, deadline)
+                continue
             if self._read_lock.acquire(timeout=0.05):
                 try:
                     with self._done:
                         if rid in self._pending:
                             continue
-                    line = self._recv()
+                    if end is None:
+                        line = self._recv()
+                    else:
+                        # a slice, so that the deadline is looked at even when nothing arrives
+                        line = self._recv(max(0.0, min(0.25, end - time.monotonic())))
+                        if line is None:
+                            continue
                     with self._done:
                         if not line:
                             self._closed = True
@@ -861,6 +1069,8 @@ class _Base:
                                 self.events.append(m)
                                 if self.on_event:
                                     self.on_event(m)
+                            elif m.get("id") in self._abandoned:
+                                self._abandoned.discard(m.get("id"))  # a late answer: dropped
                             else:
                                 self._pending[m.get("id")] = m
                         self._done.notify_all()
@@ -909,14 +1119,14 @@ class Labelled:
             out.setdefault("parallel", True)
         return out
 
-    def call(self, cmd: str, **fields):
-        return self.base.call(cmd, **self._fields(fields))
+    def call(self, cmd: str, deadline: float | None = None, **fields):
+        return self.base.call(cmd, deadline, **self._fields(fields))
 
     def send(self, cmd: str, **fields) -> int:
         return self.base.send(cmd, **self._fields(fields))
 
-    def wait(self, rid: int):
-        return self.base.wait(rid)
+    def wait(self, rid: int, deadline: float | None = None):
+        return self.base.wait(rid, deadline)
 
     def cancel(self, target: int):
         """Cancels one of this view's requests by id."""
@@ -930,12 +1140,33 @@ class Labelled:
         return getattr(self.base, name)
 
 
+HELLO_DEADLINE_S = 5.0
+
+
+def _hello_left(end: float) -> float:
+    """The deadline for one ``hello``: at most HELLO_DEADLINE_S, at least 0.5 s, and no more
+    than what is left until the monotonic time ``end``. The 0.5 s floor is deliberate (a hello
+    needs a moment even when the budget is spent), so a call that dials last can overrun its
+    ``timeout`` by up to 0.5 s."""
+    return max(0.5, min(HELLO_DEADLINE_S, end - time.monotonic()))
+
+
 class SocketSession(_Base):
     """A client of a session that serves a loopback socket (the daemon)."""
 
+    supports_deadline = True
+
     def __init__(self, endpoint: dict | str | os.PathLike, client: str = "", harness: str = "",
-                 timeout: float | None = None, check: bool = True):
+                 timeout: float | None = None, check: bool = True,
+                 hello_deadline: float | None = None):
         super().__init__()
+        #: How the daemon was started (``spawn_daemon``'s outcome: ``caller_in_job``, ``spawn``,
+        #: ``survival``, ``warnings``), and whether this connect started it. Set by
+        #: ``Daemon.connect``; ``None``/``False`` on a session made directly.
+        self.launch = None
+        self.started = False
+        #: Structured warnings of the connect (``daemon_dies_with_harness``, ``duplicate_daemon``).
+        self.warnings = []
         if not isinstance(endpoint, dict):
             endpoint = json.loads(Path(endpoint).read_text(encoding="utf-8"))
         self.endpoint = endpoint
@@ -943,8 +1174,9 @@ class SocketSession(_Base):
                                              timeout=timeout)
         self.sock.settimeout(None)
         self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        self._r = self.sock.makefile("r", encoding="utf-8", newline="\n")
-        self._w = self.sock.makefile("w", encoding="utf-8", newline="\n")
+        # The library owns its reader: lines are cut from a byte buffer here, and a wait can be
+        # timed (select) without a timeout on the socket, which a concurrent send would share.
+        self._buf = bytearray()
         #: The protocol this connection runs at: the ``protocol`` of the engine's ``hello``
         #: answer (2 against a hydra.2 or hydra.3 engine, up to ``PROTOCOL`` against a newer
         #: one). ``None`` until the answer is in, and when an unchecked answer carries none.
@@ -952,7 +1184,7 @@ class SocketSession(_Base):
         try:
             self.hello = self.call("hello", token=endpoint["token"], client=client,
                                    harness=harness, clientVersion=CLIENT_VERSION,
-                                   protocol=PROTOCOL)
+                                   protocol=PROTOCOL, deadline=hello_deadline)
             if check:
                 check_compatible(self.hello)
             if _is_protocol(self.hello.get("protocol")):
@@ -962,18 +1194,38 @@ class SocketSession(_Base):
             raise
 
     def _send(self, line):
-        self._w.write(line)
-        self._w.flush()
+        self.sock.sendall(line.encode("utf-8"))
 
-    def _recv(self):
-        return self._r.readline()
+    def _recv(self, timeout=None):
+        end = None if timeout is None else time.monotonic() + timeout
+        while True:
+            i = self._buf.find(b"\n")
+            if i >= 0:
+                line = bytes(self._buf[:i + 1])
+                del self._buf[:i + 1]
+                return line.decode("utf-8")
+            if end is not None:
+                left = end - time.monotonic()
+                if left <= 0:
+                    return None
+                try:
+                    if not select.select([self.sock], [], [], left)[0]:
+                        return None
+                except (OSError, ValueError):
+                    return ""  # closed by another thread meanwhile: the stream ended
+            try:
+                chunk = self.sock.recv(65536)
+            except OSError:
+                chunk = b""  # reset or closed: the stream ended
+            if not chunk:
+                rest = bytes(self._buf)
+                self._buf.clear()
+                return rest.decode("utf-8", "replace")  # the unterminated tail, then ""
+            self._buf += chunk
 
     def close(self):
-        # makefile() objects keep the socket open: close them, then shut the socket down, so the
-        # session sees the disconnect (and releases what this client held) at once.
-        for f in (self._w, self._r):
-            with contextlib.suppress(OSError):
-                f.close()
+        # Shut the socket down first, so the session sees the disconnect (and releases what this
+        # client held) at once, and a thread blocked in recv returns.
         with contextlib.suppress(OSError):
             self.sock.shutdown(socket.SHUT_RDWR)
         self.sock.close()
@@ -1029,7 +1281,7 @@ class StdioSession(_Base):
         self.proc.stdin.write(line)
         self.proc.stdin.flush()
 
-    def _recv(self):
+    def _recv(self, timeout=None):
         return self.proc.stdout.readline()
 
     def close(self):
@@ -1042,6 +1294,445 @@ class StdioSession(_Base):
                 self.proc.kill()
         if self._stderr is not subprocess.DEVNULL:
             self._stderr.close()
+
+
+# ---- spawning the daemon outside the caller's job (D65) --------------------------------------
+
+#: The routes after the plain spawn, in order, that may be tried when the caller is in a job:
+#: ``breakaway`` (CREATE_BREAKAWAY_FROM_JOB), ``wmi`` (Win32_Process.Create, the WMI provider host
+#: creates the process), ``task`` (a one-shot scheduled task of the current user). A test removes
+#: routes here to prove that the job, not luck, decides (SP3); production leaves all three.
+SPAWN_ROUTES = ("breakaway", "wmi", "task")
+
+_DETACHED_PROCESS = 0x00000008
+_CREATE_NEW_PROCESS_GROUP = 0x00000200
+_CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+_CREATE_NO_WINDOW = 0x08000000
+_JOB_KILL_ON_CLOSE = 0x2000
+
+
+class SpawnError(Exception):
+    """One spawn route failed (the reason is the message); the sequence goes on to the next."""
+
+
+_K32 = None
+
+
+def _kernel32():
+    """kernel32 with the signatures this file uses (Windows only), made once."""
+    global _K32
+    if _K32 is None:
+        import ctypes
+        import ctypes.wintypes as wt
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        k.GetCurrentProcess.restype = ctypes.c_void_p
+        k.IsProcessInJob.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(wt.BOOL)]
+        k.QueryInformationJobObject.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p,
+                                                wt.DWORD, ctypes.c_void_p]
+        k.OpenProcess.restype = ctypes.c_void_p
+        k.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
+        k.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(wt.DWORD)]
+        k.CloseHandle.argtypes = [ctypes.c_void_p]
+        _K32 = k
+    return _K32
+
+
+def caller_job() -> dict:
+    """D65 (1): the job THIS process is in. ``{"in_job", "kill_on_close", "limit_flags"}``;
+    ``kill_on_close`` and ``limit_flags`` are None when not in a job or when the job cannot be
+    queried. (``QueryInformationJobObject`` with a NULL handle reads the calling process's job.)"""
+    if not IS_WINDOWS:
+        return {"in_job": False, "kill_on_close": None, "limit_flags": None}
+    import ctypes
+    import ctypes.wintypes as wt
+    k = _kernel32()
+    b = wt.BOOL()
+    if not k.IsProcessInJob(k.GetCurrentProcess(), None, ctypes.byref(b)) or not b.value:
+        return {"in_job": False, "kill_on_close": None, "limit_flags": None}
+    buf = (ctypes.c_ubyte * 64)()  # JOBOBJECT_BASIC_LIMIT_INFORMATION
+    if not k.QueryInformationJobObject(None, 2, buf, 64, None):
+        return {"in_job": True, "kill_on_close": None, "limit_flags": None}
+    flags = ctypes.c_uint32.from_buffer(buf, 16).value
+    return {"in_job": True, "kill_on_close": bool(flags & _JOB_KILL_ON_CLOSE),
+            "limit_flags": hex(flags)}
+
+
+class _PidProc:
+    """The part of ``subprocess.Popen`` that ``Daemon._wait_ready`` uses (``pid``, ``poll``,
+    ``returncode``) for a process that this one did not create (WMI, scheduled task)."""
+
+    def __init__(self, pid):
+        self.pid = pid
+        self.returncode = None
+
+    def poll(self):
+        if self.returncode is not None:
+            return self.returncode
+        import ctypes
+        import ctypes.wintypes as wt
+        k = _kernel32()
+        h = k.OpenProcess(0x1000, False, self.pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            self.returncode = -1  # gone (or not ours to see)
+            return self.returncode
+        try:
+            code = wt.DWORD()
+            if k.GetExitCodeProcess(h, ctypes.byref(code)) and code.value != 259:  # STILL_ACTIVE
+                self.returncode = code.value
+        finally:
+            k.CloseHandle(h)
+        return self.returncode
+
+
+def _children_of(pid: int) -> list[tuple[int, str]]:
+    """``[(pid, image name)]`` of the direct children of ``pid`` (Toolhelp snapshot)."""
+    import ctypes
+    import ctypes.wintypes as wt
+
+    class PE32(ctypes.Structure):
+        _fields_ = [("dwSize", wt.DWORD), ("cntUsage", wt.DWORD), ("th32ProcessID", wt.DWORD),
+                    ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wt.DWORD),
+                    ("cntThreads", wt.DWORD), ("th32ParentProcessID", wt.DWORD),
+                    ("pcPriClassBase", wt.LONG), ("dwFlags", wt.DWORD),
+                    ("szExeFile", wt.WCHAR * 260)]
+
+    k = _kernel32()
+    k.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
+    k.Process32FirstW.argtypes = k.Process32NextW.argtypes = [ctypes.c_void_p,
+                                                              ctypes.POINTER(PE32)]
+    snap = k.CreateToolhelp32Snapshot(0x2, 0)
+    out = []
+    try:
+        pe = PE32()
+        pe.dwSize = ctypes.sizeof(pe)
+        ok = k.Process32FirstW(snap, ctypes.byref(pe))
+        while ok:
+            if pe.th32ParentProcessID == pid:
+                out.append((pe.th32ProcessID, pe.szExeFile))
+            ok = k.Process32NextW(snap, ctypes.byref(pe))
+    finally:
+        k.CloseHandle(snap)
+    return out
+
+
+class _WrappedProc(_PidProc):
+    """The WMI route creates ``cmd.exe``, whose child is the JVM. ``Daemon._wait_ready`` compares
+    the endpoint's pid with ``proc.pid``, so ``pid`` answers with the JVM's pid as soon as the
+    wrapper has one, and ``poll()`` follows the wrapper (it lives as long as the JVM)."""
+
+    def __init__(self, wrapper_pid):
+        super().__init__(wrapper_pid)
+        self.wrapper_pid = wrapper_pid
+        self._jvm = None
+
+    @property
+    def pid(self):
+        if self._jvm is None:
+            for p, name in _children_of(self.wrapper_pid):
+                if name.lower() == "java.exe":
+                    self._jvm = p
+        return self._jvm or self.wrapper_pid
+
+    @pid.setter
+    def pid(self, v):
+        pass
+
+
+_CMD_FORBIDDEN = re.compile(r'[%"\r\n\x00]')
+
+
+def _cmd_quote(a: str) -> str:
+    """Always-quoted argument, CreateProcess/MSVCRT rules (backslashes before the closing quote
+    are doubled). Quoting every argument keeps the cmd.exe metacharacters & | < > ^ ( ) literal.
+    ``%`` (cmd expands it even inside quotes) and ``"``, CR, LF are refused."""
+    if _CMD_FORBIDDEN.search(a):
+        raise SpawnError(f"argument not representable on a cmd.exe line: {a!r}")
+    return '"' + re.sub(r"(\\+)$", r"\1\1", a) + '"'
+
+
+def cmd_line(argv: list[str], set_env: dict | None, log_path) -> str:
+    """``cmd.exe /d /v:off /s /c "set "K=V"&& "java" "arg" ... >> "log" 2>&1"``: for the routes
+    that carry no environment and no handles (WMI, scheduled task) the whole configuration is on
+    the command line. ``cmd.exe`` is the process such a route creates; java is its child."""
+    sets = "".join(f'set {_cmd_quote(k + "=" + v)}&& ' for k, v in (set_env or {}).items())
+    return (f'cmd.exe /d /v:off /s /c "{sets}{" ".join(_cmd_quote(a) for a in argv)} '
+            f'>> {_cmd_quote(str(log_path))} 2>&1"')
+
+
+def env_to_carry(launch_env: dict, props_envvars: dict | None) -> dict:
+    """The variables worth putting on the command line of an environment-free route (measured:
+    the WMI and task environment is the user's registry environment, none of the caller's):
+    launch.properties ``ENVVARS`` and the JVM option variables (``JAVA_TOOL_OPTIONS``,
+    ``JDK_JAVA_OPTIONS``, ``_JAVA_OPTIONS``). TEMP and TMP travel as ``-Djava.io.tmpdir``."""
+    out = dict(props_envvars or {})
+    for k in ("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS"):
+        if launch_env.get(k):
+            out[k] = launch_env[k]
+    return out
+
+
+# PowerShell under the machine's own execution policy (the cmdlets used here need no bypass).
+_PS = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command"]
+
+
+def _run_ps(script: str, env: dict, timeout: float, what: str):
+    try:
+        return subprocess.run(_PS + [script], env=env, capture_output=True, text=True,
+                              timeout=timeout, creationflags=_CREATE_NO_WINDOW)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise SpawnError(f"{what}: {e}") from e
+
+
+def _spawn_wmi(command_line: str, cwd: str, timeout: float = 30.0) -> _PidProc:
+    """``Win32_Process.Create`` through ``Invoke-CimMethod``. The command line travels in an
+    environment variable of the helper process only, never through the process it creates."""
+    script = ("$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create "
+              "-Arguments @{CommandLine=$env:HYDRA_WMI_CMD; CurrentDirectory=$env:HYDRA_WMI_CWD}; "
+              "[pscustomobject]@{pid=$r.ProcessId; rv=$r.ReturnValue} | ConvertTo-Json -Compress")
+    r = _run_ps(script, dict(os.environ, HYDRA_WMI_CMD=command_line, HYDRA_WMI_CWD=cwd),
+                timeout, "powershell")
+    try:
+        j = json.loads(r.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        raise SpawnError(f"wmi: no result (rc {r.returncode}): "
+                         f"{(r.stderr or r.stdout).strip()[:300]}")
+    if j.get("rv") != 0 or not j.get("pid"):
+        raise SpawnError(f"wmi: Win32_Process.Create ReturnValue {j.get('rv')}")
+    return _PidProc(int(j["pid"]))
+
+
+def _spawn_task(args_after_cmd: str, cwd: str, timeout: float = 60.0) -> str:
+    """Registers a one-shot, no-trigger, per-user task (current user, interactive logon, limited,
+    no time limit, runs on battery), starts it and returns its name. ``args_after_cmd`` is the
+    part of the command line after ``cmd.exe``. ``_unregister_task`` removes it."""
+    name = "HydraDaemon-" + uuid.uuid4().hex[:10]
+    script = ("$a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument $env:HYDRA_TASK_ARGS "
+              "-WorkingDirectory $env:HYDRA_TASK_CWD; "
+              "$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries "
+              "-DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) "
+              "-MultipleInstances Parallel; "
+              "$p = New-ScheduledTaskPrincipal -UserId "
+              "([Security.Principal.WindowsIdentity]::GetCurrent().Name) "
+              "-LogonType Interactive -RunLevel Limited; "
+              f"Register-ScheduledTask -TaskName '{name}' -Action $a -Settings $s -Principal $p "
+              f"-Force | Out-Null; Start-ScheduledTask -TaskName '{name}'; 'ok'")
+    r = _run_ps(script, dict(os.environ, HYDRA_TASK_ARGS=args_after_cmd, HYDRA_TASK_CWD=cwd),
+                timeout, "task")
+    if r.returncode != 0 or "ok" not in r.stdout:
+        with contextlib.suppress(Exception):
+            _unregister_task(name)
+        raise SpawnError(f"task: rc {r.returncode}: {(r.stderr or r.stdout).strip()[:300]}")
+    return name
+
+
+def _unregister_task(name: str, stop: bool = False):
+    """Removes the task entry. ``stop`` also ends what it started (the failure path only: it
+    would end a healthy daemon too)."""
+    script = ((f"Stop-ScheduledTask -TaskName '{name}' -ErrorAction SilentlyContinue; "
+               if stop else "")
+              + f"Unregister-ScheduledTask -TaskName '{name}' -Confirm:$false "
+                "-ErrorAction SilentlyContinue")
+    with contextlib.suppress(Exception):
+        subprocess.run(_PS + [script], capture_output=True, text=True, timeout=60,
+                       creationflags=_CREATE_NO_WINDOW)
+
+
+def spawn_daemon(argv, env, log_path, cwd, *, argv_envfree=None, set_env=None, routes=None,
+                 wait_endpoint=None, task_wait: float = 30.0):
+    """D65 launch sequence. Returns ``(proc, outcome)``.
+
+    ``argv``/``env``: the JVM command line and environment for the direct routes. ``argv_envfree``
+    and ``set_env`` (``env_to_carry``): the same for the routes that carry no environment.
+    ``wait_endpoint()`` returns the daemon's pid once its endpoint file shows up, else None (only
+    the task route needs it: it has no process to hand back). ``routes`` defaults to
+    ``SPAWN_ROUTES``.
+
+    (2) not in a job: the detached spawn, ``spawn:"detached"``. (3) in a job: try
+    ``CREATE_BREAKAWAY_FROM_JOB``, ``spawn:"breakaway"``. (4) breakaway denied (WinError 5): outside
+    the job through WMI, ``spawn:"wmi"``; then a scheduled task, ``spawn:"task"``. (5) all failed:
+    stay in the job, ``spawn:"stayed"``, ``survival:"bound_to_harness"`` and the warning
+    ``daemon_dies_with_harness``. ``outcome`` also has ``caller_in_job``, ``caller_kill_on_close``,
+    ``caller_limit_flags``, ``warnings[]`` and ``attempts[{route, ok, ms, error?}]``; a task route
+    adds ``task_name`` and ``_unregister`` (a callable: call it once the daemon answered)."""
+    routes = SPAWN_ROUTES if routes is None else routes
+    cj = caller_job()
+    out = {"caller_in_job": cj["in_job"], "caller_kill_on_close": cj["kill_on_close"],
+           "caller_limit_flags": cj["limit_flags"], "spawn": None, "survival": None,
+           "warnings": [], "attempts": []}
+    log_path = Path(log_path)
+
+    def direct(flags):
+        # The parent's handle on the log is closed again before any other route runs: a log that
+        # this process still holds open makes the redirect of the cmd.exe wrapper fail.
+        with open(log_path, "ab") as lf:
+            if not IS_WINDOWS:
+                return subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=lf, stderr=lf,
+                                        env=env, close_fds=True, start_new_session=True)
+            return subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=lf, stderr=lf, env=env,
+                                    creationflags=flags, close_fds=True)
+
+    def attempt(route, fn):
+        t0 = time.perf_counter()
+        try:
+            res = fn()
+        except (OSError, SpawnError) as e:
+            out["attempts"].append({"route": route, "ok": False,
+                                    "ms": round((time.perf_counter() - t0) * 1000),
+                                    "error": f"{type(e).__name__}: {e}"})
+            return None
+        out["attempts"].append({"route": route, "ok": True,
+                                "ms": round((time.perf_counter() - t0) * 1000)})
+        return res
+
+    base = _DETACHED_PROCESS | _CREATE_NEW_PROCESS_GROUP
+    if not cj["in_job"]:
+        p = attempt("detached", lambda: direct(base))
+        if p:
+            out.update(spawn="detached", survival="independent")
+            return p, out
+    else:
+        if "breakaway" in routes:
+            p = attempt("breakaway", lambda: direct(base | _CREATE_BREAKAWAY_FROM_JOB))
+            if p:
+                out.update(spawn="breakaway", survival="independent")
+                return p, out
+        free = argv_envfree or argv
+        if "wmi" in routes:
+            try:
+                cl = cmd_line(free, set_env, log_path)
+            except SpawnError as e:
+                cl = None
+                out["attempts"].append({"route": "wmi", "ok": False, "ms": 0, "error": str(e)})
+            if cl:
+                p = attempt("wmi", lambda: _spawn_wmi(cl, cwd))
+                if p:
+                    out.update(spawn="wmi", survival="independent")
+                    return _WrappedProc(p.pid), out
+        if "task" in routes:
+            # No pid to give back and no error channel when the command cannot start: the route
+            # counts only once the JVM's endpoint shows up within task_wait; else the task is
+            # stopped and removed and the sequence goes on.
+            tn = None
+            try:
+                cl = cmd_line(free, set_env, log_path)
+                tn = attempt("task", lambda: _spawn_task(cl[len("cmd.exe "):], cwd))
+            except SpawnError as e:
+                out["attempts"].append({"route": "task", "ok": False, "ms": 0, "error": str(e)})
+            if tn:
+                jvm = None
+                if wait_endpoint is not None:
+                    end = time.monotonic() + task_wait
+                    while jvm is None and time.monotonic() < end:
+                        jvm = wait_endpoint()
+                        if jvm is None:
+                            time.sleep(0.1)
+                    if jvm is None:
+                        _unregister_task(tn, stop=True)
+                        out["attempts"].append({"route": "task", "ok": False,
+                                                "ms": round(task_wait * 1000),
+                                                "error": f"no endpoint within {task_wait:.0f} s; "
+                                                         "task stopped and removed"})
+                        tn = None
+                if tn:
+                    out.update(spawn="task", survival="independent", task_name=tn)
+                    out["_unregister"] = lambda tn=tn: _unregister_task(tn)
+                    return (_PidProc(jvm) if jvm else None), out
+    # (5) stay in the job (or: not in a job but the detached spawn failed)
+    p = direct(base)
+    out.update(spawn="stayed", survival="bound_to_harness")
+    if cj["in_job"]:
+        out["warnings"].append({
+            "code": "daemon_dies_with_harness",
+            "message": "the daemon runs in the job of the harness that started it (breakaway "
+                       "denied, WMI and scheduled task unavailable) and ends with it"})
+    return p, out
+
+
+# ---- the registry of daemons (PROTOCOL-3.md, 3.8) ---------------------------------------------
+
+def user_state_root() -> Path:
+    """The launcher's default state root, independent of ``-stateDir`` (``GHIDRA_SESSION_HOME``
+    relocates it): where the registry lives, so that daemons started with different roots see
+    each other."""
+    return state_dir(None)
+
+
+def _norm(p) -> str:
+    return os.path.normcase(str(p))
+
+
+def registry_key(install, state, instance) -> str:
+    return hashlib.sha256(f"{_norm(install)}|{_norm(state)}|{instance}".encode()).hexdigest()
+
+
+def registry_write(install: "Install", state: Path, instance: str, pid,
+                   version: str = "") -> Path | None:
+    """Writes ``<userStateRoot>/registry/<sha256(install|stateDir|instance)>.json`` atomically.
+    A registry that cannot be written never fails a launch (returns None)."""
+    try:
+        d = user_state_root() / "registry"
+        d.mkdir(parents=True, exist_ok=True)
+        f = d / f"{registry_key(install.dir, state, instance)}.json"
+        for old in d.glob("*.json"):  # prune entries of daemons that are gone (lock free or missing)
+            if old == f:
+                continue
+            try:
+                e = json.loads(old.read_text(encoding="utf-8"))
+                gone = not _lock_is_held(Path(e["stateDir"]) / f"{e['instance']}.lock")
+            except (OSError, ValueError, KeyError, TypeError):
+                gone = True
+            if gone:
+                with contextlib.suppress(OSError):
+                    old.unlink()
+        entry = {"pid": pid, "stateDir": str(state), "instance": instance,
+                 "install": str(install.dir), "hydraVersion": version or install.version,
+                 "startedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+        tmp = f.with_name(f.name + f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(entry, indent=1), encoding="utf-8")
+        os.replace(tmp, f)
+        return f
+    except OSError:
+        return None
+
+
+def _lock_is_held(lock_file: Path) -> bool:
+    if not lock_file.is_file():
+        return False
+    lk = FileLock(lock_file)
+    try:
+        if lk.try_acquire():
+            return False
+        return True
+    finally:
+        lk.close()
+
+
+def registry_live() -> list[dict]:
+    """The registry's live entries: those whose instance lock is held (``Daemon.jvm_alive``)."""
+    out = []
+    d = user_state_root() / "registry"
+    try:
+        files = sorted(d.glob("*.json"))
+    except OSError:
+        return out
+    for f in files:
+        try:
+            e = json.loads(f.read_text(encoding="utf-8"))
+            lock = Path(e["stateDir"]) / f"{e['instance']}.lock"
+            if _lock_is_held(lock):
+                out.append(e)
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    return out
+
+
+def find_duplicate(install: "Install", state: Path, instance: str) -> dict | None:
+    """A live daemon of the same install under another state dir, or None."""
+    for e in registry_live():
+        if _norm(e.get("install", "")) == _norm(install.dir) \
+                and _norm(e.get("stateDir", "")) != _norm(state):
+            return e
+    return None
 
 
 # ---- the shared daemon ----------------------------------------------------------------------
@@ -1062,6 +1753,10 @@ class Daemon:
         self.endpoint_file = self.state / f"{instance}.json"
         self.lock_file = self.state / f"{instance}.lock"
         self.start_lock_file = self.state / f"{instance}.start.lock"
+        self.launch_file = self.state / f"{instance}.launch.json"
+        #: The outcome of the last ``_spawn`` of this object (``spawn_daemon``'s dict).
+        self.last_launch = None
+        self._log_offset = 0
 
     @property
     def log_file(self) -> Path:
@@ -1086,7 +1781,8 @@ class Daemon:
         finally:
             lk.close()
 
-    def _try_connect(self, client, harness, timeout=5.0, check=True) -> SocketSession | None:
+    def _try_connect(self, client, harness, timeout=5.0, check=True,
+                     hello_deadline=None) -> SocketSession | None:
         ep = self.read_endpoint()
         if not ep:
             return None
@@ -1096,7 +1792,7 @@ class Daemon:
             return None
         try:
             return SocketSession(ep, client=client, harness=harness, timeout=timeout,
-                                 check=check)
+                                 check=check, hello_deadline=hello_deadline)
         except (OSError, SessionError, KeyError, ValueError):
             return None
 
@@ -1118,36 +1814,207 @@ class Daemon:
 
     def connect(self, client: str = "", harness: str = "", start: bool = True,
                 timeout: float = ENDPOINT_WAIT_S) -> SocketSession:
-        """Joins the running daemon, starting it first if there is none (and ``start``)."""
+        """Joins the running daemon, starting it first if there is none (and ``start``).
+
+        The session carries ``launch`` (how that daemon was started, see ``spawn_daemon``),
+        ``started`` (this call started it) and ``warnings`` (``daemon_dies_with_harness``: the
+        daemon runs in the job of the harness that started it and ends with it;
+        ``duplicate_daemon``: a live daemon of the same install runs under another state dir).
+
+        ``timeout`` is a budget per phase, not for the whole call. The hello dials share one
+        ``timeout`` (up to 0.5 s of overrun, the floor of the last hello deadline, see
+        ``_hello_left``); the wait for the start lock takes up to ``timeout`` on its own, and
+        the wait for a spawned daemon to answer takes up to ``timeout`` again. The worst case
+        is therefore about 2 x ``timeout`` plus the spawn time. A daemon that is alive but
+        does not answer ``hello`` ends as ``no_answer``, not as a hang."""
         install = Install.locate(self.ghidra)
-        s = self._try_connect(client, harness)
+        t_end = time.monotonic() + timeout
+        # A daemon that is alive but wedged accepts the TCP connection and never answers hello:
+        # every dial gets a deadline taken from the time that is left.
+        s = self._try_connect(client, harness, hello_deadline=_hello_left(t_end))
         if s:
             self._check_install(s.endpoint, install)
-            return s
+            return self._annotate(s)
+        if not start and self.jvm_alive():
+            # a daemon runs but did not answer hello within the deadline: wedged, not absent
+            ep = self.read_endpoint()
+            raise LaunchError(f"the {self.instance!r} daemon is running but did not answer; "
+                              f"see {self.log_file}", "no_answer",
+                              {"timeoutS": timeout, "log": str(self.log_file),
+                               "logTail": self._log_tail(0),
+                               "holder": {"pid": ep.get("pid")} if ep else None,
+                               "suggest": "the daemon may be wedged: health() tells "
+                                          "whether it answers; stop(force) or kill() it"})
         if not start:
-            raise LaunchError(f"no {self.instance!r} daemon is running (state {self.state})")
+            raise LaunchError(f"no {self.instance!r} daemon is running (state {self.state})",
+                              "not_running", {"stateDir": str(self.state),
+                                              "instance": self.instance})
         ensure_state(self.state)
         with FileLock(self.start_lock_file) as lk:
             if not lk.acquire(timeout):
-                raise LaunchError(f"another process has been starting the daemon for "
-                                  f"{timeout:.0f} s ({self.start_lock_file})")
-            s = self._try_connect(client, harness)  # someone else started it meanwhile
+                raise LaunchError(f"another process held the start lock for the "
+                                  f"{timeout:.0f} s this wait was allowed "
+                                  f"({self.start_lock_file})", "lock_held",
+                                  {"lock": str(self.start_lock_file), "waitedS": timeout,
+                                   "holder": None,
+                                   "suggest": "wait for the other launcher, or find the process "
+                                              "that holds the lock"})
+            s = self._try_connect(client, harness,  # someone else started it meanwhile
+                                  hello_deadline=_hello_left(t_end))
             if s:
                 self._check_install(s.endpoint, install)
-                return s
+                return self._annotate(s)
             if self.jvm_alive():
                 # starting up, or wedged: wait for its endpoint
-                s = self._wait_ready(None, client, harness, timeout)
+                s = self._wait_ready(None, client, harness, max(0.0, t_end - time.monotonic()), 0,  # since=0: logTail has the last lines
+                                     asked=timeout)
                 self._check_install(s.endpoint, install)
-                return s
+                return self._annotate(s)
             with contextlib.suppress(OSError):
                 self.endpoint_file.unlink()  # stale: its JVM is gone
+            warnings = self._singleton_check(install)
             proc = self._spawn(install)
-            return self._wait_ready(proc, client, harness, timeout)
+            outcome = self.last_launch
+            try:
+                s = self._wait_ready(proc, client, harness, timeout, self._log_offset,
+                                     asked=timeout)
+            except BaseException:
+                if outcome.get("task_name"):
+                    _unregister_task(outcome["task_name"], stop=True)
+                raise
+            if outcome.get("task_name"):
+                _unregister_task(outcome["task_name"])  # the daemon is up: the entry has done its job
+            public = {k: v for k, v in outcome.items() if not k.startswith("_")}
+            self._after_start(install, s, public)
+            s.launch, s.started = public, True
+            s.warnings = list(public.get("warnings") or []) + warnings
+            return s
+
+    def attach(self, client: str = "", harness: str = "") -> SocketSession:
+        """Joins the running daemon and never starts one (``connect(start=False)``): for the
+        doctor. Raises ``LaunchError`` with code ``not_running`` when there is no daemon, and
+        ``no_answer`` when a JVM holds the instance lock but does not answer ``hello`` within the
+        deadline (wedged, or still starting and not yet listening: the caller decides which)."""
+        return self.connect(client, harness, start=False)
+
+    def _singleton_check(self, install: Install) -> list[dict]:
+        """Before spawning: a live daemon of the same install under another state dir. Policy
+        ``warn`` (default) returns a structured warning; ``per-install`` raises
+        ``DuplicateDaemonError``."""
+        cfg = load_config(self.state, self.cfg_overrides)
+        holder = find_duplicate(install, self.state, self.instance)
+        if not holder:
+            return []
+        ways = [f"connect to it: ghidra_session.connect(state={holder['stateDir']!r}, "
+                f"instance={holder['instance']!r})",
+                f"stop it first: python ghidra_session.py --state {holder['stateDir']} "
+                f"--instance {holder['instance']} stop",
+                "allow a second daemon: leave singleton at \"warn\" (config.json "
+                "\"singleton\" or GHIDRA_SESSION_SINGLETON)"]
+        msg = (f"a daemon of this install already runs (pid {holder.get('pid')}, state "
+               f"{holder['stateDir']}, instance {holder['instance']!r})")
+        if cfg["singleton"] == "per-install":
+            raise DuplicateDaemonError(msg + "; singleton is per-install", holder, ways)
+        return [{"code": "duplicate_daemon", "message": msg, "holder": holder, "suggest": ways}]
+
+    def _after_start(self, install: Install, s: SocketSession, public: dict):
+        """The daemon answers: write the registry entry and the launch record."""
+        pid = s.endpoint.get("pid")
+        registry_write(install, self.state, self.instance, pid,
+                       str(s.endpoint.get("hydraVersion") or s.endpoint.get("ghidra") or ""))
+        try:
+            tmp = self.launch_file.with_name(self.launch_file.name + f".{os.getpid()}.tmp")
+            tmp.write_text(json.dumps({"pid": pid, "launch": public}, indent=1), encoding="utf-8")
+            os.replace(tmp, self.launch_file)
+        except OSError:
+            pass
+
+    def _read_launch(self) -> dict | None:
+        """The launch record of the daemon that is running now (None if it has none, e.g. it was
+        started by an older launcher)."""
+        try:
+            rec = json.loads(self.launch_file.read_text(encoding="utf-8"))
+            ep = self.read_endpoint()
+            if ep and rec.get("pid") == ep.get("pid"):
+                return rec.get("launch")
+        except (OSError, ValueError, AttributeError):
+            pass
+        return None
+
+    def _annotate(self, s: SocketSession) -> SocketSession:
+        """A session that joined a running daemon: carry how that daemon was started."""
+        launch = self._read_launch()
+        if launch:
+            s.launch = launch
+            s.warnings = list(launch.get("warnings") or [])
+        return s
+
+    def health(self, client: str = "ghidra_session", harness: str = "cli",
+               deadline: float = 10.0) -> dict:
+        """What the launcher can say about this instance's daemon, without starting one::
+
+            {"instance", "stateDir", "alive" (the instance lock is held), "pid", "answers",
+             "source" ("health" | "ping" | None), "engine" (the engine's own health answer, when
+             it has one), "launch" (how it was started), "warnings" [], "reason" (when it does
+             not answer)}
+
+        ``deadline`` limits each wait, so that a daemon that is alive but wedged (suspended)
+        answers ``answers: false`` instead of hanging this call. An engine before hydra.4 has no
+        ``health`` command: ``ping`` then proves that it answers."""
+        ep = self.read_endpoint()
+        out = {"instance": self.instance, "stateDir": str(self.state), "alive": self.jvm_alive(),
+               "pid": ep.get("pid") if ep else None, "answers": False, "source": None,
+               "launch": None, "warnings": []}
+        launch = self._read_launch()
+        if launch:
+            out["launch"] = launch
+            out["warnings"] = list(launch.get("warnings") or [])
+        if not out["alive"]:
+            out["reason"] = "no daemon holds the instance lock"
+            return out
+        s = self._try_connect(client, harness, check=False, hello_deadline=deadline)
+        if s is None:
+            out["reason"] = "the daemon did not answer hello within the deadline"
+            return out
+        with s:
+            try:
+                out["engine"] = s.call("health", deadline=deadline)
+                out.update(answers=True, source="health")
+            except SessionError as e:
+                if e.code == "deadline_exceeded":
+                    out["reason"] = f"no answer to health within {deadline:g} s"
+                    return out
+                try:
+                    s.call("ping", deadline=deadline)
+                    out.update(answers=True, source="ping")
+                except SessionError as e2:
+                    out["reason"] = str(e2)
+        return out
+
+    def _log_size(self) -> int:
+        try:
+            return self.log_file.stat().st_size
+        except OSError:
+            return 0
+
+    def _log_tail(self, since: int = 0, lines: int = 40) -> list[str]:
+        """The last ``lines`` lines the daemon log got since byte ``since`` (at most 64 KiB)."""
+        try:
+            with open(self.log_file, "rb") as f:
+                size = f.seek(0, os.SEEK_END)
+                start = max(since if since <= size else 0, size - (64 << 10))
+                f.seek(start)
+                text = f.read().decode("utf-8", "replace")
+        except OSError:
+            return []
+        return text.splitlines()[-lines:]
 
     def _spawn(self, install: Install) -> subprocess.Popen:
+        """Starts the JVM (D65: outside the caller's job when there is one) and returns its
+        process object. How it was started is ``self.last_launch``."""
         cfg = load_config(self.state, self.cfg_overrides)
         launch = Launch(install, cfg, self.state)
+        launch.check_heap()
         args = ["-daemon", "-stateDir", str(self.state), "-instance", self.instance,
                 "-idleTimeout", str(cfg["idleTimeout"]), "-keepWarm", str(cfg["keepWarm"]),
                 "-maxQuick", str(cfg["maxQuick"]), "-maxLong", str(cfg["maxLong"])]
@@ -1161,63 +2028,87 @@ class Daemon:
         with contextlib.suppress(OSError):
             if log.exists() and log.stat().st_size > 32 << 20:
                 os.replace(log, log.with_suffix(log.suffix + ".1"))
-        lf = open(log, "ab")
-        lf.write(f"\n==== ghidra_session {time.strftime('%Y-%m-%d %H:%M:%S')} {info}\n"
-                 .encode())
-        lf.flush()
-        kw = {}
-        if IS_WINDOWS:
-            # Outlive the harness that started it: no console, its own process group, and out of
-            # the caller's job object when the job allows it (agent harnesses often run inside
-            # one that is killed with them).
-            flags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-            try:
-                return subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=lf, stderr=lf,
-                                        env=launch.env, creationflags=flags | 0x01000000,
-                                        close_fds=True)  # | CREATE_BREAKAWAY_FROM_JOB
-            except OSError:
-                kw["creationflags"] = flags
-        else:
-            kw["start_new_session"] = True
-        try:
-            return subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=lf, stderr=lf,
-                                    env=launch.env, close_fds=True, **kw)
-        finally:
-            lf.close()
+        self._log_offset = self._log_size()
+        with open(log, "ab") as lf:
+            lf.write(f"\n==== ghidra_session {time.strftime('%Y-%m-%d %H:%M:%S')} {info}\n"
+                     .encode())
+        # The routes that carry no environment (WMI, task) get the few variables Ghidra reads on
+        # the command line, and the caller's temp dir as java.io.tmpdir.
+        argv_free = list(argv)
+        if not any(a.startswith("-Djava.io.tmpdir=") for a in argv_free):
+            argv_free.insert(1, f"-Djava.io.tmpdir={tempfile.gettempdir()}")
 
-    def _wait_ready(self, proc, client, harness, timeout) -> SocketSession:
+        def endpoint_pid():
+            ep = self.read_endpoint()
+            return ep.get("pid") if ep else None
+
+        proc, outcome = spawn_daemon(argv, launch.env, log, str(self.state),
+                                     argv_envfree=argv_free,
+                                     set_env=env_to_carry(launch.env, launch.props["envvars"]),
+                                     wait_endpoint=endpoint_pid)
+        self.last_launch = outcome
+        return proc
+
+    def _wait_ready(self, proc, client, harness, timeout, since: int = 0,
+                    asked: float | None = None) -> SocketSession:
+        """``timeout`` is the time this wait may take; ``asked`` is the ``timeout`` the caller
+        passed, which the error reports (default: ``timeout``). It is not a budget for the whole
+        ``connect`` call (see its docstring)."""
+        asked = timeout if asked is None else asked
         end = time.monotonic() + timeout
         while time.monotonic() < end:
             if proc is not None and proc.poll() is not None:
+                tail = self._log_tail(since)
                 raise LaunchError(f"the daemon exited with code {proc.returncode} while starting; "
-                                  f"see {self.log_file}")
+                                  f"see {self.log_file}", "exited_early",
+                                  {"exitCode": proc.returncode, "log": str(self.log_file),
+                                   "logTail": tail,
+                                   "suggest": "read the log tail; a JVM option or a Java version "
+                                              "the install does not accept ends here"})
             ep = self.read_endpoint()
             # the endpoint of the JVM we started (not a stale file a killed one left behind)
             if ep and (proc is None or ep.get("pid") == proc.pid):
-                s = self._try_connect(client, harness)
+                # a hello that times out is "not up yet": the loop goes on until the end
+                s = self._try_connect(client, harness, hello_deadline=_hello_left(end))
                 if s:
                     return s
             time.sleep(0.05)
-        raise LaunchError(f"the daemon did not answer within {timeout:.0f} s; see {self.log_file}")
+        ep = self.read_endpoint()
+        raise LaunchError(f"the daemon did not answer within {asked:.0f} s (the allowance of this wait); see "
+                                  f"{self.log_file}",
+                          "no_answer", {"timeoutS": asked, "log": str(self.log_file),
+                                        "logTail": self._log_tail(since),
+                                        "holder": {"pid": ep.get("pid")} if ep else None,
+                                        "suggest": "the daemon may be wedged: health() tells "
+                                                   "whether it answers; stop(force) or kill() it"})
 
     def status(self) -> dict | None:
-        s = self._try_connect("ghidra_session", "cli", check=False)  # also of an older release
+        """The daemon's ``status``; ``None`` when there is no daemon or it does not answer
+        ``hello`` within HELLO_DEADLINE_S. A daemon that answers ``hello`` and then not ``status``
+        within the same deadline raises ``SessionError("deadline_exceeded")``."""
+        s = self._try_connect("ghidra_session", "cli", check=False,  # also of an older release
+                              hello_deadline=HELLO_DEADLINE_S)
         if not s:
             return None
         with s:
-            return s.call("status")
+            return s.call("status", deadline=HELLO_DEADLINE_S)
 
     def stop(self, force: bool = False, timeout: float = 60.0) -> bool:
-        """Asks the daemon to shut down; returns True when its JVM is gone."""
-        s = self._try_connect("ghidra_session", "cli", check=False)  # stop what we cannot drive
+        """Asks the daemon to shut down; returns True when its JVM is gone. A daemon that does
+        not answer ``hello`` within HELLO_DEADLINE_S is wedged: ``False`` is returned (kill() it,
+        or resume it and stop(force=True)). A daemon that answers ``hello`` but not ``shutdown``
+        within the same deadline is treated like a closed connection: the wait for the JVM to
+        exit then runs for ``timeout`` and ends in ``LaunchError`` when it does not."""
+        s = self._try_connect("ghidra_session", "cli", check=False,  # stop what we cannot drive
+                              hello_deadline=HELLO_DEADLINE_S)
         if not s:
             return not self.jvm_alive()
         pid = s.endpoint.get("pid")
         try:
             with s:
-                s.call("shutdown", force=force)
+                s.call("shutdown", force=force, deadline=HELLO_DEADLINE_S)
         except SessionError as e:
-            if e.code != "closed":
+            if e.code not in ("closed", "deadline_exceeded"):
                 raise
         end = time.monotonic() + timeout
         while time.monotonic() < end:
@@ -1372,6 +2263,9 @@ def main(argv=None) -> int:
     sub = ap.add_subparsers(dest="action", required=True)
     sub.add_parser("ensure", help="start the daemon if absent; print its endpoint (no token)")
     sub.add_parser("status", help="print the running daemon's status")
+    p = sub.add_parser("health", help="print what the launcher knows of the daemon (exit 1 if it "
+                       "does not answer)")
+    p.add_argument("--deadline", type=float, default=10.0, help="seconds to wait (default 10)")
     p = sub.add_parser("call", help="send one request, print the result as JSON")
     p.add_argument("cmd")
     p.add_argument("fields", nargs="*", help="key=value; values are JSON when they parse")
@@ -1449,6 +2343,10 @@ def main(argv=None) -> int:
                 return 1
             print(json.dumps(stt, indent=1))
             return 0
+        if a.action == "health":
+            h = d.health(deadline=a.deadline)
+            print(json.dumps(h, indent=1))
+            return 0 if h["answers"] else 1
         if a.action == "stop":
             print("stopped" if d.stop(force=a.force) else "not running")
             return 0

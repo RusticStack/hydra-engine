@@ -39,6 +39,12 @@ import utilities.util.FileUtilities;
  */
 final class ProjectFork {
 
+	/**
+	 * Attempts of a move or a sidecar rewrite against a handle holder. The pauses between them are
+	 * 25 ms doubling (25, 50, 100, 200, 400, 800), none after the last attempt, so a holder is
+	 * waited for about 1.6 s (1575 ms) in all.
+	 */
+	static final int RETRIES = 7;
 	static final String SIDECAR_SUFFIX = ".fork.json";
 	static final int SIDECAR_FORMAT = 1;
 	/**
@@ -71,6 +77,133 @@ final class ProjectFork {
 		}
 		catch (IOException | JsonParseException e) {
 			return null;
+		}
+	}
+
+	/** The sidecar's {@code kind}. */
+	static final String SIDECAR_KIND = "ghidra-session-fork";
+
+	/** The purposes of {@code fork_project} (3.4); {@code fork} is the default. */
+	static final List<String> PURPOSES = List.of("fork", "backup", "generation", "view");
+	/** The sidecar state of a generation candidate: writable by its publisher until sealed (D38). */
+	static final String STATE_CANDIDATE = "candidate";
+
+	/**
+	 * D12: a project is <b>disposable</b> when its sidecar exists, parses, has the fork
+	 * {@code kind} and does not say {@code disposable:false}. A sidecar without the field (every
+	 * hydra.2/3 fork) is therefore disposable. No sidecar, an unparseable one, or any doubt:
+	 * canonical (not disposable). An accident guard, not a security boundary.
+	 */
+	static boolean disposable(ProjectResolver.Resolved r) {
+		JsonObject sc = readSidecar(r);
+		return disposable(sc);
+	}
+
+	static boolean disposable(JsonObject sc) {
+		if (sc == null || !SIDECAR_KIND.equals(Json.str(sc, "kind", null))) {
+			return false;
+		}
+		JsonElement d = sc.get("disposable");
+		return !(d != null && d.isJsonPrimitive() && d.getAsJsonPrimitive().isBoolean() &&
+			!d.getAsBoolean());
+	}
+
+	/**
+	 * The policy of {@code VersionFileCheck} for this daemon (D42, A10): a newest version file
+	 * with an invalid header is quarantined on open only in a project that is a writable
+	 * disposable fork (its sidecar says so) and is not sealed (D38). The master, a generation
+	 * candidate (non-disposable), a sealed project, a backup and anything without a sidecar are
+	 * never in that set: opening them only reads, and a bad newest version answers
+	 * {@code corrupt_newest}. {@code -Dhydra.storage.repairRoots} (the tree list the core also
+	 * reads) still declares extra disposable trees, for tests and for operators.
+	 */
+	static boolean repairable(File dbDir) {
+		File rep = dbDir.getAbsoluteFile();
+		String repExt = ProjectLocator.getProjectDirExtension();
+		while (rep != null && !rep.getName().endsWith(repExt)) {
+			rep = rep.getParentFile();
+		}
+		if (rep != null && rep.getParentFile() != null && repairableProject(rep, repExt)) {
+			return true;
+		}
+		String roots = System.getProperty(ghidra.framework.store.db.VersionFileCheck.REPAIR_ROOTS_PROPERTY);
+		if (roots == null || roots.isBlank()) {
+			return false;
+		}
+		Path dir = dbDir.toPath().toAbsolutePath().normalize();
+		for (String root : roots.split(File.pathSeparator)) {
+			if (!root.isBlank() && dir.startsWith(Path.of(root).toAbsolutePath().normalize())) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** The decision for a project's folder, kept for a moment: a project load asks once per database. */
+	private static final Map<String, long[]> REPAIRABLE = new java.util.concurrent.ConcurrentHashMap<>();
+	private static final long REPAIRABLE_TTL_MS = 1500;
+
+	private static boolean repairableProject(File rep, String repExt) {
+		String key = rep.getPath();
+		long now = System.nanoTime() / 1_000_000;
+		long[] hit = REPAIRABLE.get(key);
+		if (hit != null && now - hit[1] < REPAIRABLE_TTL_MS) {
+			return hit[0] == 1;
+		}
+		String n = rep.getName();
+		ProjectResolver.Resolved r = new ProjectResolver.Resolved(rep.getParentFile(),
+			n.substring(0, n.length() - repExt.length()));
+		boolean yes = disposable(r) && !Seals.isSealed(r).sealed();
+		if (REPAIRABLE.size() > 512) {
+			REPAIRABLE.clear();
+		}
+		REPAIRABLE.put(key, new long[] { yes ? 1 : 0, now });
+		return yes;
+	}
+
+	/** The sidecar field that a {@code promote_overlay} into the fork sets until it is acknowledged. */
+	static final String PROMOTE = "promote";
+	static final String PROMOTE_IN_PROGRESS = "in-progress";
+
+	/**
+	 * Marks the fork's sidecar {@code promote:"in-progress"} (3.12: overlays are RAM-only and a
+	 * killed {@code promote_overlay} leaves a fork that may or may not hold the edits, so a fork
+	 * with the marker is known to be unverified). No sidecar: nothing to mark. Best effort: a
+	 * failure to write is logged, never thrown.
+	 */
+	static void markPromote(ProjectResolver.Resolved r) {
+		setPromote(r, PROMOTE_IN_PROGRESS);
+	}
+
+	/** Removes the marker once the promote is acknowledged (saved). */
+	static void clearPromote(ProjectResolver.Resolved r) {
+		setPromote(r, null);
+	}
+
+	private static void setPromote(ProjectResolver.Resolved r, String value) {
+		JsonObject sc = readSidecar(r);
+		if (sc == null) {
+			return;
+		}
+		if (value == null) {
+			if (!sc.has(PROMOTE)) {
+				return;
+			}
+			sc.remove(PROMOTE);
+		}
+		else {
+			sc.addProperty(PROMOTE, value);
+		}
+		try {
+			// a reader holding the sidecar open without delete sharing (a scanner, a status
+			// poll) stops the rename over it for a moment: the marker is the record that a
+			// killed promote leaves a fork of unknown content, so it is written with the
+			// same backoff as the publish (F1: a single attempt could lose the marker)
+			writeSidecarRetrying(sidecar(r), sc);
+		}
+		catch (IOException e) {
+			ghidra.util.Msg.warn(ProjectFork.class,
+				"fork_project: could not update the promote marker of " + sidecar(r) + ": " + e);
 		}
 	}
 
@@ -111,9 +244,82 @@ final class ProjectFork {
 				StandardCopyOption.ATOMIC_MOVE);
 		}
 		catch (IOException e) {
-			Files.deleteIfExists(tmp.toPath()); // best effort: the next attempt writes it again
+			try {
+				Files.deleteIfExists(tmp.toPath()); // best effort: the next attempt writes it again
+			}
+			catch (IOException cleanup) {
+				e.addSuppressed(cleanup); // never mask the failure that matters
+			}
 			throw e;
 		}
+	}
+
+	/**
+	 * {@link #writeSidecar} against a handle holder: up to {@link #RETRIES} attempts, 25 ms doubling
+	 * between them, none after the last (1575 ms in all).
+	 *
+	 * @throws IOException the last failure when every attempt failed
+	 */
+	static void writeSidecarRetrying(File f, JsonObject o) throws IOException {
+		IOException last = null;
+		for (int i = 0; i < RETRIES; i++) {
+			try {
+				writeSidecar(f, o);
+				return;
+			}
+			catch (IOException e) {
+				last = e;
+				if (i == RETRIES - 1 || !backoff(i)) {
+					break;
+				}
+			}
+		}
+		throw last;
+	}
+
+	/** Sleeps the pause after attempt {@code i}; false when interrupted (the interrupt is kept). */
+	private static boolean backoff(int i) {
+		try {
+			Thread.sleep(25L << i);
+			return true;
+		}
+		catch (InterruptedException ie) {
+			Thread.currentThread().interrupt();
+			return false;
+		}
+	}
+
+	/**
+	 * Removes what a failed publish put at the destination (rollback), surviving a handle holder:
+	 * the file or folder is deleted again, with the backoff of the moves, until it is gone. It never
+	 * throws, so the failure that made the publish roll back is the one the caller sees; a thing that
+	 * is still there after the last attempt is logged (the next fork under the folder sweeps it).
+	 */
+	private static void removeRetrying(Path p) {
+		IOException last = null;
+		for (int i = 0; i < RETRIES; i++) {
+			try {
+				if (Files.isDirectory(p, LinkOption.NOFOLLOW_LINKS)) {
+					FileUtilities.deleteDir(p.toFile());
+				}
+				else {
+					Files.deleteIfExists(p);
+				}
+				last = null;
+			}
+			catch (IOException e) {
+				last = e;
+			}
+			if (!Files.exists(p, LinkOption.NOFOLLOW_LINKS)) {
+				return;
+			}
+			if (i == RETRIES - 1 || !backoff(i)) {
+				break;
+			}
+		}
+		ghidra.util.Msg.warn(ProjectFork.class,
+			"fork_project: could not remove " + p + " while rolling back a failed publish" +
+				(last == null ? "" : ": " + last));
 	}
 
 	/** What a fork of {@code r} into {@code destDir} costs, and how it would be made. */
@@ -251,6 +457,20 @@ final class ProjectFork {
 	 */
 	static void publish(Staged st, File destDir, String name, JsonObject sidecar,
 			String completeState) throws IOException {
+		publish(st, destDir, name, sidecar, completeState, List.of());
+	}
+
+	/**
+	 * {@link #publish(Staged, File, String, JsonObject, String)} for a fork that also carries
+	 * files staged next to the project (a backup's {@code backup.json}, the {@code SEALED.json}
+	 * marker): each is moved into {@code destDir} after the {@code .rep} and before the
+	 * {@code .gpr}, so they are in place at the commit point and are removed with the
+	 * {@code .rep} when the publish fails.
+	 *
+	 * @param extras names of files in the staging folder (not the project's own)
+	 */
+	static void publish(Staged st, File destDir, String name, JsonObject sidecar,
+			String completeState, List<String> extras) throws IOException {
 		String ext = ProjectLocator.getProjectExtension();
 		String repExt = ProjectLocator.getProjectDirExtension();
 		Path stagedRep = st.dir().toPath().resolve(st.sourceName() + repExt);
@@ -258,6 +478,15 @@ final class ProjectFork {
 		Path destRep = destDir.toPath().resolve(name + repExt);
 		Path destGpr = destDir.toPath().resolve(name + ext);
 		File sc = sidecar(new ProjectResolver.Resolved(destDir, name));
+		// a folder carries one backup manifest and one seal marker: refuse before anything of
+		// ours is moved, and never touch a file we did not move
+		for (String extra : extras) {
+			if (Files.exists(destDir.toPath().resolve(extra), LinkOption.NOFOLLOW_LINKS)) {
+				throw new IOException("the destination folder already holds " + extra +
+					" (one backup or sealed project per folder)");
+			}
+		}
+		List<String> moved = new ArrayList<>();
 		// the intent says the .rep may be ours from here on, and which one it is
 		st.intent().withPhase(ForkIntent.MOVING, ForkSweeper.creationMs(stagedRep))
 				.write(st.dir().toPath());
@@ -272,27 +501,41 @@ final class ProjectFork {
 			sidecar.addProperty("forkId", st.id());
 			sidecar.addProperty("state", STATE_PUBLISHING);
 			writeSidecar(sc, sidecar);
+			for (String extra : extras) {
+				Files.move(st.dir().toPath().resolve(extra), destDir.toPath().resolve(extra));
+				moved.add(extra);
+			}
 			moveRetrying(stagedGpr, destGpr);
 			committed = true;
 		}
 		finally {
 			if (!committed) {
-				FileUtilities.deleteDir(destRep.toFile());
-				Files.deleteIfExists(sc.toPath());
-				Files.deleteIfExists(Path.of(sc.getPath() + ".tmp"));
+				// the rollback must end with nothing of ours at the destination even when a
+				// reader holds the sidecar open (F1: one attempt could leave a sidecar alone)
+				removeRetrying(destRep);
+				removeRetrying(sc.toPath());
+				removeRetrying(Path.of(sc.getPath() + ".tmp"));
+				for (String extra : moved) {
+					removeRetrying(destDir.toPath().resolve(extra));
+				}
 			}
 		}
 		sidecar.addProperty("state", completeState);
 		IOException last = null;
-		for (int i = 0; i < 6; i++) {
+		for (int i = 0; i < RETRIES; i++) {
 			try {
 				writeSidecar(sc, sidecar);
 				return;
 			}
 			catch (IOException e) {
 				// a handle holder on the sidecar (a scanner reading it) stops the rename over
-				// it for a moment: the same backoff as the moves
+				// it for a moment: the same backoff as the moves, 25 ms doubling, and no pause
+				// after the last attempt (the waits add up to 1575 ms, which is the 1.6 s the
+				// tests and the protocol text call the retry budget)
 				last = e;
+				if (i == RETRIES - 1) {
+					break;
+				}
 				try {
 					Thread.sleep(25L << i);
 				}
@@ -317,7 +560,7 @@ final class ProjectFork {
 	 */
 	private static void moveRetrying(Path from, Path to) throws IOException {
 		IOException last = null;
-		for (int i = 0; i < 6; i++) {
+		for (int i = 0; i < RETRIES; i++) {
 			try {
 				Files.move(from, to);
 				return;
@@ -330,6 +573,9 @@ final class ProjectFork {
 					throw new FileAlreadyExistsException(to.toString());
 				}
 				last = e;
+				if (i == RETRIES - 1) {
+					break; // no pause after the last attempt
+				}
 				try {
 					Thread.sleep(25L << i);
 				}

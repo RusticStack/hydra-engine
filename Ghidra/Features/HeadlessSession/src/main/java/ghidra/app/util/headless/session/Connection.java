@@ -229,6 +229,17 @@ final class Connection {
 			}
 			resp.addProperty("ok", true);
 			resp.add("result", result);
+			if (client.v3()) {
+				// a request that waited 250 ms or more says where and for how long (C9, D49)
+				JsonObject waited = m.waited();
+				if (waited != null) {
+					JsonObject q = m.queueSeen();
+					if (q != null) {
+						resp.add("queue", q);
+					}
+					resp.add("waited", waited);
+				}
+			}
 			resp.addProperty("ms", (System.nanoTime() - t0) / 1_000_000);
 			stop = cmd.equals("shutdown");
 		}

@@ -1,0 +1,80 @@
+{
+ "about": "One fixed vector for the canonical form of a backup manifest (PROTOCOL-3.md 3.4). 'object' is a manifest without selfSha256; its canonical form is json.dumps(obj, ensure_ascii=False, separators=(',', ':'), sort_keys=True) in UTF-8; selfSha256 and filesetSha256 are the SHA-256 of the canonical form of the object and of its files array. The engine (ProjectBackup) and Hydralysis must both reproduce them. The paths hold an accented letter, a CJK name, a supplementary character (U+1F600), U+2028, U+2029, a control character, a quote, a backslash and < > & '.",
+ "object": {
+  "format": 1,
+  "kind": "ghidra-session-backup",
+  "writer": "engine",
+  "id": "20261027T143015Z-3fa9c2d1-vector",
+  "purpose": "vector",
+  "createdAt": "2026-10-27T14:30:15Z",
+  "createdBy": {
+   "client": "vector",
+   "harness": "canonical-manifest"
+  },
+  "source": {
+   "gpr": "F:\backups\\kötor\u000bec.gpr",
+   "name": "vec",
+   "revision": "3fa9c2d1aa01bb42",
+   "lineage": "L-9c1e",
+   "generation": 2
+  },
+  "engine": {
+   "hydraVersion": "12.3-hydra.4",
+   "ghidraVersion": "12.3",
+   "dbVersions": {
+    "program": 33,
+    "dataTypes": 3
+   }
+  },
+  "stored": {
+   "programDb": {
+    "min": 32,
+    "max": 32
+   },
+   "programs": 1,
+   "scanned": 1,
+   "truncated": false
+  },
+  "files": [
+   {
+    "path": "vec.gpr",
+    "size": 1234,
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+   },
+   {
+    "path": "vec.rep/idata/00/café 中文 😀.bin",
+    "size": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+   },
+   {
+    "path": "vec.rep/line sep   para <&>' .txt",
+    "size": 7,
+    "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+   },
+   {
+    "path": "vec.rep/tab\there \"quoted\" back\\slash \u0001ctl.dat",
+    "size": 1099511627776,
+    "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+   }
+  ],
+  "filesetSha256": "a725a5d5e71b28d9bc32c0dfb6a741e76d4eceffad494fa6467c6853fb99a39d",
+  "copy": {
+   "method": "clone",
+   "sameVolume": true,
+   "sourceFileSystem": "ReFS",
+   "destinationFileSystem": "ReFS",
+   "independent": false,
+   "ms": 812
+  },
+  "verify": {
+   "level": "hash",
+   "ok": true,
+   "at": "2026-10-27T14:30:17Z",
+   "sourceRevisionAfter": "3fa9c2d1aa01bb42"
+  }
+ },
+ "selfSha256": "f585d077738b218563597645d2cf27d7b055d8a5f21fde5d983e7660d80ed36e",
+ "filesetSha256": "a725a5d5e71b28d9bc32c0dfb6a741e76d4eceffad494fa6467c6853fb99a39d",
+ "canonicalBytes": 1405,
+ "canonicalLengthFiles": 541
+}

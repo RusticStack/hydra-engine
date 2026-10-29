@@ -317,6 +317,29 @@ final class ForkSweeper {
 			CLAIMS.values().stream().noneMatch(c -> c.id.equals(id));
 	}
 
+	/**
+	 * True when process {@code pid} can be the publisher that made {@code folder}: it is running
+	 * <b>and started before the folder was created</b> (within {@link ForkIntent#START_TOLERANCE_MS}).
+	 * A process id alone proves nothing, because ids are reused: a folder that is older than the
+	 * running process with that id was made by a process that is gone (the same rule
+	 * {@link ForkIntent#ownerAlive} applies to a folder with an intent, which has the creation time
+	 * recorded; here the folder's own creation time stands in for it). A start or creation time
+	 * that cannot be read falls back to the id alone, which can only err towards "alive", the safe
+	 * side for a sweeper.
+	 */
+	static boolean pidOwnsFolder(long pid, File folder) {
+		Optional<ProcessHandle> h = ProcessHandle.of(pid);
+		if (h.isEmpty() || !h.get().isAlive()) {
+			return false;
+		}
+		Optional<java.time.Instant> start = h.get().info().startInstant();
+		long created = creationMs(folder.toPath());
+		if (start.isEmpty() || created <= 0) {
+			return true;
+		}
+		return start.get().toEpochMilli() <= created + ForkIntent.START_TOLERANCE_MS;
+	}
+
 	private static boolean old(File f, long now) {
 		return now - f.lastModified() > AGE_MS;
 	}
@@ -334,7 +357,7 @@ final class ForkSweeper {
 				return;
 			}
 			long pid = ForkIntent.pidOf(folder.getName());
-			boolean dead = pid > 0 && ProcessHandle.of(pid).map(h -> !h.isAlive()).orElse(true);
+			boolean dead = pid > 0 && !pidOwnsFolder(pid, folder);
 			// a folder of this very process that no publish of this process holds: its delete
 			// failed part way (against a handle holder, SP6) and took the intent with it. Nobody
 			// is working in it, and waiting for it to grow old would block the K6 invariant
@@ -378,6 +401,10 @@ final class ForkSweeper {
 				FileUtilities.deleteDir(rep.toFile());
 				Files.deleteIfExists(sidecar.toPath());
 				Files.deleteIfExists(Path.of(sidecar.getPath() + ".tmp"));
+				// a backup moves its manifest and seal marker in before the .gpr (E2): with no
+				// .gpr they belong to the half fork that is going, if they name it
+				removeIfNamed(destDir.toPath().resolve(ProjectBackup.FILE), name, true);
+				removeIfNamed(destDir.toPath().resolve(Seals.MARKER), name, false);
 				r.removed().add(rep.getFileName().toString());
 			}
 			else {
@@ -387,6 +414,40 @@ final class ForkSweeper {
 		}
 		FileUtilities.deleteDir(folder);
 		note(folder, r, "staging folder of a dead publisher (pid " + i.pid() + ")");
+	}
+
+	/**
+	 * Removes {@code backup.json} or {@code SEALED.json} that the half fork {@code name} left. Both
+	 * names are per folder, not per project, so a file that another project of the folder wrote is
+	 * left alone: the marker must name the project, the manifest must list its files.
+	 */
+	private static void removeIfNamed(Path f, String name, boolean manifest) throws IOException {
+		if (!Files.isRegularFile(f)) {
+			return;
+		}
+		try {
+			com.google.gson.JsonObject o = com.google.gson.JsonParser.parseString(
+				Files.readString(f, java.nio.charset.StandardCharsets.UTF_8)).getAsJsonObject();
+			boolean ours;
+			if (manifest) {
+				ours = false;
+				for (com.google.gson.JsonElement e : o.getAsJsonArray("files")) {
+					String p = e.getAsJsonObject().get("path").getAsString();
+					ours = p.equals(name + ".gpr") || p.startsWith(name + ".rep/");
+					break;
+				}
+			}
+			else {
+				ours = name.equals(Json.str(o, "name", null));
+			}
+			if (ours) {
+				f.toFile().setWritable(true);
+				Files.deleteIfExists(f);
+			}
+		}
+		catch (RuntimeException e) {
+			// not ours to judge: left in place
+		}
 	}
 
 	private static void note(File folder, Report r, String what) {

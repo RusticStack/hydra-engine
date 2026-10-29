@@ -97,7 +97,7 @@ final class ImportCommands {
 		}
 		ImportGate.Entry gate;
 		try {
-			gate = ImportGate.GLOBAL.enter(ImportGate.Kind.IMPORT, Caller.label(c), c.id, p.id,
+			gate = ImportGate.GLOBAL.enter(ImportGate.Kind.IMPORT, Caller.label(c), c, p.id,
 				file.getName(), file.length(), m,
 				limited ? Math.max(0, (deadline - System.nanoTime()) / 1_000_000L) : -1);
 		}
@@ -109,9 +109,12 @@ final class ImportCommands {
 		String saved;
 		double importS;
 		try {
-			slot = s.scheduler.admit(c, "import", req, m, waitMs(req));
+			// one budget for the whole import (V2): what the gate wait left of a numeric "wait", or
+			// no limit when the request set none. Each of the two waits used to get a fresh
+			// waitMs(req), so an import that queued for an hour failed busy 10 s after its turn.
+			slot = s.scheduler.admit(c, "import", req, m, Requests.remainingMs(limited, deadline));
 			long t0 = System.nanoTime();
-			Lock pl = lockProject(p, false, waitMs(req), "import");
+			Lock pl = lockProject(p, false, Requests.remainingMs(limited, deadline), "import");
 			try {
 				if (!Json.bool(req, "duplicate", false)) {
 					List<String> same = new ArrayList<>();

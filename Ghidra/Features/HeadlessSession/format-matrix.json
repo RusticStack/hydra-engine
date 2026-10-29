@@ -1,0 +1,45 @@
+{
+  "format": 1,
+  "about": "The database format versions of this tree, and what earlier releases wrote (PROTOCOL-3.md 3.4, 9.7). examples/format_gate.py fails when a constant in the source differs from 'current', and (with --engine) when hello.analysisIdentity.dbVersions differs. A changed constant needs an entry here and a release note.",
+  "ghidra": "12.3",
+  "current": {
+    "ProgramDB.DB_VERSION": {
+      "value": 33,
+      "file": "Ghidra/Framework/SoftwareModeling/src/main/java/ghidra/program/database/ProgramDB.java"
+    },
+    "DataTypeManagerDB.DB_VERSION": {
+      "value": 3,
+      "file": "Ghidra/Framework/SoftwareModeling/src/main/java/ghidra/program/database/data/DataTypeManagerDB.java"
+    },
+    "DataTypeArchiveDB.DB_VERSION": {
+      "value": 5,
+      "file": "Ghidra/Framework/SoftwareModeling/src/main/java/ghidra/program/database/dtarchive/DataTypeArchiveDB.java"
+    },
+    "ProgramUserDataDB.DB_VERSION": {
+      "value": 1,
+      "file": "Ghidra/Framework/SoftwareModeling/src/main/java/ghidra/program/database/ProgramUserDataDB.java"
+    },
+    "SlaFormat.FORMAT_VERSION": {
+      "value": 4,
+      "file": "Ghidra/Framework/SoftwareModeling/src/main/java/ghidra/pcode/utils/SlaFormat.java"
+    }
+  },
+  "engineReports": {
+    "analysisIdentity.dbVersions.program": "ProgramDB.DB_VERSION",
+    "analysisIdentity.dbVersions.dataTypes": "DataTypeManagerDB.DB_VERSION"
+  },
+  "releases": [
+    {
+      "ghidra": "12.1.4",
+      "programDb": 32,
+      "dataTypeDb": 2,
+      "note": "both are what examples/fixtures/legacy-12.1.4 stores: ProjectFormat reads them from the database header and dt_e2 format_readonly asserts programDb 32 and dataTypeDb 2 (<= 3) against it"
+    },
+    {
+      "ghidra": "12.3",
+      "programDb": 33,
+      "dataTypeDb": 3,
+      "note": "this tree"
+    }
+  ]
+}
