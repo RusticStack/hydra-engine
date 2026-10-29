@@ -368,7 +368,10 @@ class Run:
         # complete dest must be byte-identical to canonical (data files)
         if rec["dest_has_gpr"] and rec["dest_has_rep"]:
             cth = {k: v for k, v in _tree_rows(d / "canon").items()}
-            dth = {k: v for k, v in _tree_rows(dest).items() if not k.endswith(".fork.json") and not k.endswith((".lock", ".lock~"))}
+            # the staging folder (.<name>.fork-<id>.tmp, left until the next sweep) and the test lock are not project data (K6)
+            def _scratch(k):
+                return k.endswith((".fork.json", ".lock", ".lock~", ".lock~~")) or any(q.startswith(".") and ".fork-" in q and q.endswith(".tmp") for q in k.replace("\\", "/").split("/"))
+            dth = {k: v for k, v in _tree_rows(dest).items() if not _scratch(k)}
             rec["dest_files_equal_canon"] = (cth == dth)
             rec["dest_diff_files"] = sorted(set(cth) ^ set(dth))[:10] + [k for k in cth if k in dth and cth[k] != dth[k]][:10]
         o2 = s.oracle(d, {"dest": (dest, gpr), "canon": (d / "canon", s.canon_gpr(d))}, do_w=True)
