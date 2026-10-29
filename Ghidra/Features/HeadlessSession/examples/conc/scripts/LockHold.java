@@ -25,6 +25,11 @@ public class LockHold extends GhidraScript {
 		double secs = a.length > 1 ? Double.parseDouble(a[1]) : 1;
 		long end = System.nanoTime() + (long) (secs * 1e9);
 		long t0 = System.nanoTime();
+		if (a.length > 2) {
+			// the third argument names a file to create now: the script has the lock and is running, so the
+			// caller waits for this instead of a sleep that a slow compile (a cold settings dir) outlasts
+			java.nio.file.Files.writeString(java.nio.file.Path.of(a[2]), "running");
+		}
 		switch (mode) {
 			case "coop":
 				while (System.nanoTime() < end) {

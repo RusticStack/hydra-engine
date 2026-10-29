@@ -44,11 +44,15 @@ if part("a"):
         A, B, C, D = (cl[n] for n in "ABCD")
         A.call("open_program", path=PROG, project=pid, writable=True)
         C.call("open_program", path=PROG, project=pid)
-        t0 = time.perf_counter()
-        th = threading.Thread(target=lambda: A.call("script", script="LockHold.java", args=["coop", "8"], program=prog, wait=30000)); th.start()
-        time.sleep(0.5)
+        # the probes start when the script says it is running (it holds the lock then) and stop before its 8 s
+        # end: a probe sent while the script still compiles would be answered, and say nothing about the lock
+        C.call("script", script="LockHold.java", args=["coop", "0.05"], program=prog, wait=60000)     # compiled before the timed part
+        started = ROOT / "state" / ("s3a" + TAG) / "script-running"
+        started.unlink(missing_ok=True)
+        th = threading.Thread(target=lambda: A.call("script", script="LockHold.java", args=["coop", "8", str(started)], program=prog, wait=30000)); th.start()
+        t0 = wait_file(started)
         rows = []
-        for _ in range(6):
+        while time.perf_counter() - t0 < 6.0:
             r = timed(C.call, "info", program=prog, wait=1000)
             rows.append({"t": round(time.perf_counter() - t0, 1), "ok": r[0], "ms": r[1], "code": None if r[0] else r[2]["code"], "holder": None if r[0] else r[2]["details"].get("holder")})
             time.sleep(1.0)
