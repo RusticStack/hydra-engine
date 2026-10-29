@@ -15,10 +15,12 @@
  */
 package ghidra.app.util.headless.session;
 
+import java.io.IOException;
 import java.lang.foreign.*;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.VarHandle;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.*;
@@ -32,7 +34,7 @@ import ghidra.util.Msg;
 /**
  * The daemon's own Job Object (PROTOCOL-3.md 3.11, D60, package E9).
  * <p>
- * {@link #install} is the first statement of {@code HeadlessSession.launch}: the daemon creates an
+ * {@link #start} is the first statement of {@code HeadlessSession.launch}: the daemon creates an
  * <b>anonymous</b> job with {@code JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE} and assigns itself to it
  * (through {@code java.lang.foreign}). Every process it starts afterwards (the native decompilers,
  * a script worker) inherits the job, and the operating system closes the daemon's only handle on
@@ -72,7 +74,7 @@ final class ProcessJob {
 	/** Offset of {@code BasicLimitInformation.LimitFlags}. */
 	private static final long LIMIT_FLAGS_OFF = 16;
 
-	/** What {@link #install} found and did; immutable. */
+	/** What {@link #start} found and did; immutable. */
 	record Result(String state, boolean own, boolean inCallerJob, Boolean callerKillOnClose,
 			Integer callerLimitFlags, int errCreate, int errSet, int errAssign, String error) {
 
@@ -162,18 +164,28 @@ final class ProcessJob {
 		JsonArray killed = new JsonArray();
 		int checked = 0;
 		try {
-			Path root = installDir.resolve("Ghidra").resolve("Features").resolve("Decompiler")
-					.resolve("os").toAbsolutePath().normalize();
+			Path root = canonical(installDir.resolve("Ghidra").resolve("Features")
+					.resolve("Decompiler").resolve("os"));
 			String prefix = root.toString().toLowerCase(Locale.ROOT) + java.io.File.separator;
 			for (ProcessHandle ph : (Iterable<ProcessHandle>) ProcessHandle.allProcesses()::iterator) {
 				Optional<String> cmd = ph.info().command();
 				if (cmd.isEmpty()) {
 					continue;
 				}
-				Path image = Path.of(cmd.get()).toAbsolutePath().normalize();
+				Path image;
+				try {
+					image = Path.of(cmd.get());
+				}
+				catch (InvalidPathException e) {
+					continue; // an image name this file system cannot spell is not ours
+				}
 				String name = image.getFileName() == null ? "" : image.getFileName().toString();
-				if (!name.toLowerCase(Locale.ROOT).startsWith("decompile") ||
-					!image.toString().toLowerCase(Locale.ROOT).startsWith(prefix)) {
+				if (!name.toLowerCase(Locale.ROOT).startsWith("decompile")) {
+					continue;
+				}
+				// a junction or a subst drive in the install path must not hide an orphan
+				image = canonical(image);
+				if (!image.toString().toLowerCase(Locale.ROOT).startsWith(prefix)) {
 					continue;
 				}
 				checked++;
@@ -193,6 +205,16 @@ final class ProcessJob {
 		o.add("orphans", orphans);
 		o.add("killed", killed);
 		return o;
+	}
+
+	/** The real path (links resolved) when the file exists, else the absolute normalized one. */
+	private static Path canonical(Path p) {
+		try {
+			return p.toRealPath();
+		}
+		catch (IOException | RuntimeException e) {
+			return p.toAbsolutePath().normalize();
+		}
 	}
 
 	/** The parent does not exist any more, or its pid belongs to a process started after the child. */
@@ -236,7 +258,7 @@ final class ProcessJob {
 		return o;
 	}
 
-	/** The members of the job that are not the daemon itself (test and health use). */
+	/** The pids in the job, the daemon itself included (test and health use). */
 	static List<Long> members() {
 		return result.own() ? Native.pids() : List.of();
 	}
