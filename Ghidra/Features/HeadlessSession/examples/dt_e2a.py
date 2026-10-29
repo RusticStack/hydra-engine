@@ -72,7 +72,7 @@ def make_source(c, tag="main"):
     key = (str(c.work), tag)
     if key not in _SOURCES:
         base = c.work / f"e2a-src-{tag}"
-        gpr = c.empty_project(base.name, "Src")     # made in a daemon of its own, or copied from the seed dir
+        gpr = c._empty_src(base.name)     # made in a daemon of its own, or copied from the seed dir (PREBUILT)
         ballast = base / "Src.rep" / "ballast"
         ballast.mkdir()
         blob = os.urandom(1 << 20)

@@ -42,8 +42,8 @@ JVM on a private, writable, disposable clone of the SAVED view.
 * ``e7_validation``: ``save`` with a worker, an overlay with a worker, a pinned digest, a protocol 2
   client.
 * ``e7_sweep``: a folder a dead daemon left is swept, a live process's folder is not.
-* ``e7_cost``: the start-up and RAM cost of a worker (SP10) is recorded and held to its budget; four
-  workers at once all succeed.
+* ``e7_cost``: the start-up and RAM cost of a worker (SP10) is recorded and held to its budget (start-up as
+  the worker JVM's CPU time, wall time recorded only); four workers at once all succeed.
 """
 import contextlib
 import hashlib
@@ -74,9 +74,17 @@ NO_JOB = HOOKS + ["-Dghidra.session.noProcessJob=true"]
 EDIT = "e7_edited_name"
 
 #: SP10 (D:/Projects/Hydra/_logs/spikes/SP10): single worker to script, small project, loaded 5.7 s and
-#: calm 3.2 s; KotOR loaded 6.4 s and calm 4.3 s; 350 to 450 MB resident, peak 557 MB. The budget of the
-#: gate is twice the loaded figure for the small fixture and the peak figure plus margin for RAM.
-BUDGET_START_MS = 12_000
+#: calm 3.2 s; KotOR loaded 6.4 s and calm 4.3 s; 350 to 450 MB resident, peak 557 MB. The RAM budget is
+#: the peak figure plus margin.
+#:
+#: The start-up budget is CPU time, not wall time (FIX4): the worker reports the CPU time of its own JVM
+#: (every thread: JIT, GC, class loading) when it is ready to run the script (``worker.startCpuMs``, also in
+#: ``health.scriptWorkers.last``). Wall time grows with whatever else the machine runs (14.4 s median under
+#: the full suite against 4.5 s alone, the same build); CPU time does not count the time a thread waits. Measured on this machine, the
+#: fixture alone: median 11125 ms of CPU time (singles 10875 to 11484 ms; four at once
+#: 14328 to 15234 ms each, D:/Projects/Hydra/_logs/fix4/e7_cost_calm2.log); the budget is twice the median,
+#: rounded up, the rule SP10 used for wall time. Wall time is still recorded (``singleStartMs``, ``medianStartMs``), not judged.
+BUDGET_START_CPU_MS = 23_000
 BUDGET_WORKING_SET_MB = 650
 
 NAME = """// @category HeadlessSession.Test
@@ -706,6 +714,7 @@ def t_cost(c):
                 r = run_worker(R, c, "E7Name.java")
                 runs.append(r["worker"])
             starts = [w["startMs"] for w in runs]
+            cpus = [w.get("startCpuMs") for w in runs]
             ws = [w["mem"].get("workingSetMb") for w in runs if w.get("mem")]
             marks = runs[-1]["marks"]
             # four at once, each from its own connection
@@ -731,20 +740,28 @@ def t_cost(c):
             conc_s = time.perf_counter() - t0
             dt.check(len(conc) == 4 and all(x["ok"] for x in conc), f"{label}: four at once: {conc}")
             cstarts = [x["result"]["worker"]["startMs"] for x in conc]
+            ccpus = [x["result"]["worker"].get("startCpuMs") for x in conc]
             cws = [x["result"]["worker"]["mem"].get("workingSetMb") for x in conc if x["result"]["worker"].get("mem")]
             med = statistics.median(starts)
+            dt.check(all(isinstance(x, int) and x > 0 for x in cpus + ccpus),
+                     f"{label}: a worker did not report its start-up CPU time: {cpus} {ccpus}")
+            cmed = statistics.median(cpus)
             out[label] = {"functions": nfun, "singleStartMs": starts, "medianStartMs": med,
+                          "singleStartCpuMs": cpus, "medianStartCpuMs": cmed, "concurrent4StartCpuMs": ccpus,
                           "cloneMs": [w["cloneMs"] for w in runs], "cloneBytes": runs[-1]["cloneBytes"],
                           "workingSetMb": ws, "marks": marks, "concurrent4StartMs": cstarts,
                           "concurrent4WallS": round(conc_s, 1), "concurrent4WorkingSetMb": cws}
             c.timings[f"e7_cost: {label} ({nfun} functions)"] = out[label]
             if label == "fixture":
-                dt.check(med <= BUDGET_START_MS, f"median worker start-up {med} ms over the budget {BUDGET_START_MS} ms")
+                dt.check(cmed <= BUDGET_START_CPU_MS,
+                         f"median worker start-up CPU time {cmed} ms over the budget {BUDGET_START_CPU_MS} ms "
+                         f"(wall {med} ms, recorded only)")
             if ws and None not in ws:
                 dt.check(max(ws + cws) <= BUDGET_WORKING_SET_MB,
                          f"working set {max(ws + cws)} MB over the budget {BUDGET_WORKING_SET_MB} MB")
             R.call("close_project")
-        return "; ".join(f"{k}: {v['functions']} functions, start-up median {v['medianStartMs']:.0f} ms "
+        return "; ".join(f"{k}: {v['functions']} functions, start-up median CPU {v['medianStartCpuMs']:.0f} ms "
+                         f"(budget {BUDGET_START_CPU_MS}), wall {v['medianStartMs']:.0f} ms "
                          f"(clone {v['cloneMs']} ms, {v['cloneBytes'] >> 20} MB), working set {v['workingSetMb']} MB, "
                          f"4 at once {v['concurrent4StartMs']} ms" for k, v in out.items())
     finally:

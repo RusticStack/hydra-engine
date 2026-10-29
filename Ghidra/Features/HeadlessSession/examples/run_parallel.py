@@ -35,7 +35,9 @@ Three things are optional, used when the script offers them (daemon_tests.py doe
   once per process; --seed-cache keeps them between runs
   while the install, the script and the arguments are the same (--no-seed: every process makes its own); the AOT
   cache is in the seed by default (--no-seed-aot: not). Setup projects other than the fixture (Ctx.cached_project:
-  the fixture with the dll, an empty source project, ...) are cached in the seed dir by the first test that makes one;
+  the fixture with the dll, an empty source project, ...; daemon_tests.PREBUILT) are made in the seed dir in the seed
+  phase too, those the tasks to run need, one process each, at once (--prebuild), so every test copies them and no
+  two tests that missed together make the same one;
 * a result cache (see ResultCache): every clean pass is stored under a key of the install, the test's source, the
   shared source and data and the inputs; --affected takes a stored pass instead of running an unchanged test (marked
   "cached" in the output and in report.json), a full run only with --result-cache, never with --no-result-cache.
@@ -290,6 +292,55 @@ class Runner:
         self.seed = seed
         return f"seed made in {time.time() - t:.0f} s: {seed}"
 
+    def prebuild(self, tasks: list[str], loaded: dict[str, list[str]]) -> str:
+        """Makes in the seed dir every cached setup project (daemon_tests.PREBUILT) a task to run needs, before the
+        queue starts: one ``--prebuild TAG`` process per project, all at once (each makes it in a daemon of its
+        own, or finds it there from an earlier run of the same seed). Returns what was done, for the log."""
+        if not self.seed or self.whole:
+            return "no prebuild (no seed)"
+        code, lines, out = self.listing("--list-prebuild")
+        if code != 0:
+            return f"no prebuild: --list-prebuild exited {code}"
+        need = needed_prebuilds(out, tasks, loaded)
+        if not need:
+            return "prebuild: no task needs a cached project"
+        t = time.time()
+        procs = []
+        for tag in need:
+            w = self.scratch / f"_pre-{safe(tag)}"
+            log = self.logs / f"_prebuild-{safe(tag)}.log"
+            f = open(log, "w", encoding="utf-8", errors="replace")
+            c = self.cmd(w / "w", w / "t", None, more=["--seed-dir", str(self.seed), "--prebuild", tag])
+            procs.append((tag, w, log, f, subprocess.Popen(c, cwd=HERE, stdin=subprocess.DEVNULL, stdout=f,
+                                                            stderr=subprocess.STDOUT)))
+        done = []
+        for tag, w, log, f, p in procs:
+            rc = p.wait()
+            f.close()
+            line = next((l for l in log.read_text(encoding="utf-8", errors="replace").splitlines()
+                         if l.startswith(("ok", "FAIL")) and f" {tag}:" in l), f"exit {rc}")
+            done.append(line.strip() if rc == 0 else f"{tag}: exit {rc}, see {log} (the tests make it themselves)")
+            if rc == 0:
+                shutil.rmtree(w, ignore_errors=True)
+        return f"prebuild of {len(need)} cached project(s) in {time.time() - t:.0f} s: " + "; ".join(done)
+
+
+def needed_prebuilds(listing: str, tasks: list[str], loaded: dict[str, list[str]]) -> list[str]:
+    """The tags of ``--list-prebuild`` output (``tag user,user``; a user may be a dt_*.py file: all its tests) that a
+    task of ``tasks`` (a test, a shard ``name@shard`` or a chunk ``a,b``) needs."""
+    tests = {n.split("@", 1)[0] for t in tasks for n in t.split(",")}
+    need = []
+    for line in listing.splitlines():
+        parts = line.split()
+        if len(parts) != 2 or line.startswith(("FAIL", " ")):
+            continue
+        users = set()
+        for u in parts[1].split(","):
+            users |= set(loaded.get(u, [])) if u.endswith(".py") else {u}
+        if users & tests:
+            need.append(parts[0])
+    return need
+
 
 # ---- result cache ----------------------------------------------------------------------------
 #
@@ -416,6 +467,11 @@ def test_owners() -> dict[str, str]:
     way daemon_tests.py loads them. A test missing here is never cached."""
     dt = load_dt()
     return {n: "daemon_tests.py" for n in dt.TESTS} | {n: f for f, ns in dt.LOADED.items() for n in ns}
+
+
+def test_modules() -> dict[str, list[str]]:
+    """dt_*.py file name -> its test names, loaded the way daemon_tests.py loads them."""
+    return dict(load_dt().LOADED)
 
 
 def is_heavy(r: Runner, task: str, heavy: set) -> bool:
@@ -765,6 +821,35 @@ def selftest() -> int:
     check(f"multi_writer: {dt.MW_SHARDS} shards whose edit rounds add up to {dt.MW_ITERS}",
           len(dt.SHARDS.get("multi_writer", {})) == dt.MW_SHARDS
           and sum(c for _, c in dt.split_n(dt.MW_ITERS, dt.MW_SHARDS)) == dt.MW_ITERS)
+    # the cached setup projects made in the seed phase (daemon_tests.PREBUILT)
+    import ast
+    import inspect
+    makers = {m.__name__ for _, m in dt.PREBUILT.values()}
+    callers = []
+    for f in sorted(HERE.glob("*.py")):
+        for node in ast.walk(ast.parse(f.read_text(encoding="utf-8"))):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name not in ("cached_project", "empty_project"):
+                if any(isinstance(x, ast.Attribute) and x.attr in ("cached_project", "empty_project") for x in ast.walk(node)):
+                    callers.append(f"{f.name}:{node.name}")
+    stray = [x for x in callers if x.split(":")[1] not in makers]
+    check(f"prebuild: every function that makes a cached project is in PREBUILT, so the seed phase makes it ({stray or callers})",
+          not stray and len(callers) >= 4)
+    users = {u for us, _ in dt.PREBUILT.values() for u in us}
+    unknown = sorted(u for u in users if (u not in dt.LOADED) if u.endswith(".py") or u not in dt.REGISTRY)
+    check(f"prebuild: every user is a registered test or a loaded dt_*.py ({unknown or 'all'})", not unknown)
+    missing = []
+    for tag, (us, m) in dt.PREBUILT.items():
+        listed = {n for u in us for n in (dt.LOADED.get(u, []) if u.endswith(".py") else [u])}
+        for n, fn in dt.REGISTRY.items():
+            src = inspect.getsource(fn)
+            if (m.__name__ + "(" in src or f"_empty_src(" in src and m.__name__ == "_empty_src") and n not in listed:
+                missing.append(f"{n} ({tag})")
+    check(f"prebuild: every test that calls a maker is among its users ({missing or 'all are'})", not missing)
+    lst = "empty-Src dt_e2.py,dt_e2a.py" + chr(10) + "projB-dll-analysed two_projects" + chr(10) + "fixture-dll-analysed multi_writer" + chr(10)
+    loaded = {"dt_e2.py": ["sidecar_unfinished"], "dt_e2a.py": ["e2a_sweeper"]}
+    check("prebuild: a task needs the projects of its test (a shard, a chunk, a dt file's test), no other",
+          needed_prebuilds(lst, ["multi_writer@i1", "x,e2a_sweeper"], loaded) == ["empty-Src", "fixture-dll-analysed"]
+          and needed_prebuilds(lst, ["fork"], loaded) == [])
     # the result cache: a key per task from install, inputs and the closure of the defining module
     import tempfile
     owners = test_owners()
@@ -916,6 +1001,8 @@ def main() -> int:
             print(f"result cache: {len(cached)} task(s) taken from {rc.folder}, {len(tasks)} to run", flush=True)
     if tasks:
         print(r.prepare_seed() + f" ({time.time() - started:.0f} s)", flush=True)
+        if a.script == "daemon_tests.py":
+            print(r.prebuild(tasks, test_modules()) + f" ({time.time() - started:.0f} s)", flush=True)
 
     problems: list[str] = []
     q0 = time.time()

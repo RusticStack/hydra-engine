@@ -960,7 +960,7 @@ class Soak:
         f["status.waits"] = {"present": isinstance(st.get("waits"), dict), "needed_for_gate": False}
         f["scheduler.maint"] = {"present": "maint" in (st.get("scheduler") or {}), "needed_for_gate": True,
                                 "why": "the maint lane is not reported"}
-        f["script_worker"] = {"present": any(k in caps for k in ("scriptWorker", "scriptWorkers", "killableScripts")),
+        f["script_worker"] = {"present": script_worker_present(caps, h),
                               "needed_for_gate": False,
                               "why": "E7 (killable script worker): deaf scripts are only bounded and quarantined without it"}
         f["governor"] = {"present": "maxViews" in limits or "governor" in caps, "needed_for_gate": False,
@@ -1977,6 +1977,19 @@ def oracle_decompilers(daemon_pid):
 
 # ================================================================================ self-test (offline)
 
+def script_worker_present(caps, health):
+    """Whether the engine has E7's killable script worker, from the names it actually advertises: the capability
+    ``scriptIsolation`` at version 2 or more (``isolation:"worker"``; version 1 has no worker) or the
+    ``scriptWorkers`` member of the ``health`` reply (E7's contributor). No engine advertises a capability named
+    ``scriptWorker``, ``scriptWorkers`` or ``killableScripts`` (PROTOCOL-3, revision 8.6 of E6)."""
+    caps = caps or {}
+    try:
+        iso = int(caps.get("scriptIsolation") or 0)
+    except (TypeError, ValueError):
+        iso = 0
+    return iso >= 2 or isinstance((health or {}).get("scriptWorkers"), dict)
+
+
 def selftest(work: pathlib.Path | None = None, verbose: bool = True) -> int:
     """The runner's verdict logic and the pure checks, with planted violations, no engine. Every case must
     behave as stated or the self-test fails: a runner that cannot fail is worth nothing (D48)."""
@@ -1993,6 +2006,22 @@ def selftest(work: pathlib.Path | None = None, verbose: bool = True) -> int:
             print(("ok   " if cond else "FAIL ") + name + (f"  [{detail}]" if detail and not cond else ""))
         if not cond:
             bad.append(name)
+
+    # ---- the script worker probe reads the names the engine advertises (Advertised.java, E7)
+    e7_caps = {"laneHint": 1, "scriptIsolation": 2, "health": 1}
+    e7_health = {"scriptWorkers": {"running": 0, "max": 4, "pids": []}}
+    check("script worker: present on an E7 engine (scriptIsolation 2 and health.scriptWorkers)",
+          script_worker_present(e7_caps, e7_health) and script_worker_present(e7_caps, None)
+          and script_worker_present({"scriptIsolation": 1}, e7_health))
+    check("script worker: absent before E7 (scriptIsolation 1, no health.scriptWorkers) and under names nobody advertises",
+          not script_worker_present({"scriptIsolation": 1, "health": 1}, {"lanes": {}})
+          and not script_worker_present({"scriptWorker": 1, "scriptWorkers": 1, "killableScripts": 1}, None)
+          and not script_worker_present(None, None))
+    adv = (HERE.parent / "src" / "main" / "java" / "ghidra" / "app" / "util" / "headless" / "session" / "Advertised.java")
+    if adv.is_file():
+        src = adv.read_text(encoding="utf-8")
+        check("script worker: the probe's capability name is declared in Advertised.java, the names it dropped are not",
+              '"scriptIsolation"' in src and not any(f'"{n}"' in src for n in ("scriptWorker", "killableScripts")))
 
     # ---- the pure per-agent judgement (K3, K4, K5)
     addrs = [f"0x{0x1000 + 16 * k:x}" for k in range(6)]

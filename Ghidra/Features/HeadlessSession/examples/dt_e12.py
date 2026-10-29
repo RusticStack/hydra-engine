@@ -91,6 +91,10 @@ Tests
   staged tree is forced (files, then folders), the directory is synced before and after the ``.gpr``.
 * ``e12_fork_publish_finding`` the control: the same matrix for the publish without those forces (the
   code before E12b) must find violations under both models.
+* ``e12_upgrade_publish``   the matrix for the first build of an upgrade-cache entry as ``UpgradeCache.build``
+  now does it (``upgrade_model``): the copy is forced before the rename of ``gN.tmp``, entry.json (the commit
+  point) is forced before its move; ``e12_upgrade_publish_finding``, the control: the build without them
+  (before FIX4) must find violations under both models.
 
 Environment: ``E12_BUFFERS`` (buffers of the test database, default 8), ``E12_BLOCK`` (buffer size, default
 1024: a block of 1029 bytes; Ghidra's default is 16384), ``E12_SAVES`` (saves in one
@@ -1212,9 +1216,23 @@ def t_source_guards(c):
     cp = cp[:cp.index("/** Opens the copy writable")]
     dt.check("Files.copy(src, to, StandardCopyOption.COPY_ATTRIBUTES)" in cp, "copyProject copies with Files.copy")
     dt.check(not re.search(r"force\(|getFD\(\)|sync\(", cp), "copyProject does not force the copies (the finding, pinned)")
+    # FIX4: what upgrade_model("current") assumes of UpgradeCache.build and writeEntry
+    up = up.replace("\r\n", "\n")
+    ub = up[up.index("copyProject(from, plan.resolved().name(), copyDir.toPath(), m);"):]
+    ub = ub[:ub.index("out.set(State.READY")]
+    idx = [ub.index(x) for x in ("upgradeInCopy(", "ProjectFork.forceTree(tmp[0].toPath());",
+                                 "moveDir(tmp[0].toPath(), published.toPath(), m);",
+                                 "ProjectFork.syncDirectory(dir.toPath());", "writeEntry(dir, entry);")]
+    dt.check(idx == sorted(idx), "UpgradeCache.build: upgrade, forceTree(tmp), moveDir, syncDirectory(dir), writeEntry in that order")
+    we = up[up.index("private static void writeEntry(File dir, JsonObject entry)"):]
+    we = we[:we.index("\n\t}")]
+    wi = [we.index(x) for x in ("Files.writeString(tmp", "ProjectFork.forceFile(tmp);", "Files.move(tmp",
+                                "ProjectFork.syncDirectory(dir.toPath());")]
+    dt.check(wi == sorted(wi), "UpgradeCache.writeEntry: write, forceFile, atomic move, directory sync in that order")
     return ("saveCompleted: flush, rename, directory sync, setReadOnly in that order; fork publish: forceTree, rep, "
             "sidecar, directory sync, gpr, directory sync; copyProject and ForkIntent.write force nothing; "
-            "writeSidecar forces its file")
+            "writeSidecar forces its file; upgrade cache build: forceTree, rename, directory sync, entry.json forced, "
+            "moved, synced")
 
 
 def t_trace_complete(c):
@@ -1462,6 +1480,152 @@ def t_fork_publish_finding(c):
     return " | ".join(rows)
 
 
+# ---- the upgrade cache publish (UpgradeCache.build) ----------------------------------------
+
+def upgrade_model(c, variant):
+    """The operation list of a first build of the upgrade cache (``UpgradeCache.build``) of a project
+    holding one database item, from the order of the source (pinned by ``e12_source_guards``; Java NIO,
+    not traced). Layout of the cache entry: ``g1.tmp/project/F.rep`` and ``F.gpr`` (``copyProject``:
+    ``Files.copy`` per file), the rename of ``g1.tmp`` to ``g1`` (``moveDir``), then ``entry.json``
+    naming ``g1`` (``writeEntry``: a temporary file and an atomic move), the commit point: a cache
+    without an entry.json naming the generation rebuilds it (``removeLeftovers``).
+
+    The upgrade itself (``upgradeInCopy``) rewrites the item through Ghidra's save, which the save
+    matrices cover; here the copied item is the content, so a cut can only lose copied sectors.
+
+    ``variant``: ``"current"`` forces the tree before the rename (``ProjectFork.forceTree``), syncs the
+    cache folder after it and forces entry.json before its move, then syncs the folder; ``"plain"`` is the
+    build before FIX4, which forced nothing (the control)."""
+    if variant not in ("current", "plain"):
+        raise ValueError(variant)
+    forced = variant == "current"
+    cp = Bench.get(c, "current")
+    d = c.work / "e12" / ("upgbase-" + variant)
+    if d.exists():
+        shutil.rmtree(d)
+    src = d / "src" / "F.rep"
+    mk = run_probe(cp, "make", "private", src, BUFFERS)[-1]
+    gpr = b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<PROJECT><SAVED_DATA/></PROJECT>\n"
+    entry = json.dumps({"format": 1, "generation": "g1", "upgraded": ["/F"]}).encode()
+    tree = read_tree(src)
+    stg = "g1.tmp/project"
+    ops = []
+    for p, b in sorted(tree.items()):                        # copyProject: Files.copy per file
+        ops += [("C", f"{stg}/F.rep/{p}"), ("W", f"{stg}/F.rep/{p}", 0, b)]
+    ops += [("C", f"{stg}/F.gpr"), ("W", f"{stg}/F.gpr", 0, gpr)]
+    ops.append(("M", "copied"))
+    if forced:                                               # forceTree(g1.tmp): files, then folders
+        ops += [("S", f"{stg}/F.rep/{p}") for p in sorted(tree)] + [("S", f"{stg}/F.gpr"), ("DS", "g1.tmp")]
+        ops.append(("M", "forced"))
+    for p in sorted(tree):                                   # moveDir: a directory rename
+        ops.append(("R", f"{stg}/F.rep/{p}", f"g1/project/F.rep/{p}"))
+    ops.append(("R", f"{stg}/F.gpr", "g1/project/F.gpr"))
+    if forced:
+        ops.append(("DS", "."))                              # syncDirectory(dir) after the rename
+    ops.append(("M", "renamed"))
+    ops += [("C", "entry.json.tmp"), ("W", "entry.json.tmp", 0, entry)]
+    if forced:
+        ops.append(("S", "entry.json.tmp"))                  # writeEntry: forceFile(tmp)
+    ops.append(("R", "entry.json.tmp", "entry.json"))       # the commit point
+    if forced:
+        ops.append(("DS", "."))
+    ops.append(("M", "published"))
+    return {"ops": ops, "tree": tree, "gpr": gpr, "expect": {"1": mk["expect"]}, "dir": d, "cp": cp,
+            "name": variant}
+
+
+_UPG_CACHE = {}
+
+
+def upgrade_matrix(c, um, model):
+    key = (str(um["dir"]), model)
+    if key not in _UPG_CACHE:
+        _UPG_CACHE[key] = _upgrade_matrix(c, um, model)
+    return _UPG_CACHE[key]
+
+
+def _upgrade_matrix(c, um, model):
+    dirs = {"g1.tmp", "g1.tmp/project", "g1.tmp/project/F.rep", "g1", "g1/project", "g1/project/F.rep"}
+    for p in um["tree"]:
+        parts = p.split("/")[:-1]
+        for i in range(1, len(parts) + 1):
+            dirs.add("g1.tmp/project/F.rep/" + "/".join(parts[:i]))
+            dirs.add("g1/project/F.rep/" + "/".join(parts[:i]))
+    images, rp = simulate({}, um["ops"], model)
+    root = um["dir"] / f"img-{model}"
+    ids = materialize(images, root, dirs)
+    # the oracle: no entry.json naming g1 -> the build is absent (rebuilt); named -> it must be complete
+    res = run_probe(um["cp"], "openmany", "private", root, "g1/project/F.rep", timeout=1800)
+    by = {r["id"]: r for r in res if "id" in r}
+    count, examples = {}, {}
+    exp = set(um["expect"].values())
+
+    def put(cat, rid):
+        count[cat] = count.get(cat, 0) + 1
+        examples.setdefault(cat, [])
+        if len(examples[cat]) < 4:
+            examples[cat].append((rid, ids[rid]["how"], ids[rid]["cut"]))
+    for rid, rec in ids.items():
+        files = rec["files"]
+        try:
+            named = json.loads(files["entry.json"]).get("generation") == "g1"
+        except Exception:  # noqa: BLE001  (missing or torn: readEntry gives null, the entry is rebuilt)
+            named = False
+        if not named:
+            put("absent", rid)
+            continue
+        r = by.get(rid)
+        if r is None:
+            put("no_result", rid)
+            continue
+        a1, a2 = r["a1"], r["a2"]
+        g = lambda a: f"{a['v']}:{a['h']}" if a.get("opened") else None
+        if files.get("g1/project/F.gpr") != um["gpr"]:
+            put("silent_corrupt", rid)       # a .gpr that is not what was copied (or none)
+        elif a1.get("opened") and g(a1) in exp:
+            put("complete", rid)
+        elif a1.get("opened"):
+            put("silent_corrupt", rid)
+        elif a2.get("opened") and g(a2) in exp:
+            put("retry_ok", rid)
+        else:
+            put("unopenable", rid)
+    return {"model": model, "cuts": len([o for o in um["ops"] if o[0] != "M"]) + 1, "images": len(ids),
+            "count": count, "examples": examples, "root": str(root)}
+
+
+def t_upgrade_publish(c):
+    """The upgrade-cache publish matrix for the code as it is (``upgrade_model`` "current", its order pinned
+    by ``e12_source_guards``): no cut point may leave an entry.json naming a generation whose project does
+    not open with the content copied; a cut before the commit leaves the build absent (rebuilt)."""
+    um = upgrade_model(c, "current")
+    out, bad = [], 0
+    for model in ("J", "U"):
+        m = upgrade_matrix(c, um, model)
+        out.append(summarize(m))
+        bad += violations(m)
+    dt.check(bad == 0, "upgrade publish: " + " | ".join(out) + " " +
+             json.dumps({mo: {k: v for k, v in upgrade_matrix(c, um, mo)["examples"].items() if k in VIOLATIONS}
+                         for mo in ("J", "U")}))
+    return " | ".join(out)
+
+
+def t_upgrade_publish_finding(c):
+    """The control of ``e12_upgrade_publish``: the build without the forces (before FIX4: ``Files.copy``, a
+    rename and an unforced entry.json) is red under both models, the current one green."""
+    um, uf = upgrade_model(c, "plain"), upgrade_model(c, "current")
+    rows = []
+    for model in ("J", "U"):
+        m = upgrade_matrix(c, um, model)
+        dt.check(violations(m) > 0, f"upgrade publish {model}: the simulator found no violation in the unforced build: " + summarize(m))
+        rows.append("plain " + summarize(m))
+        w = upgrade_matrix(c, uf, model)
+        dt.check(violations(w) == 0, f"upgrade publish {model}: the current build leaves violations: " + summarize(w) +
+                 json.dumps({k: v for k, v in w['examples'].items() if k in VIOLATIONS}))
+        rows.append("current " + summarize(w))
+    return " | ".join(rows)
+
+
 def t_installed_jar(c):
     """The installed jar, not the source: in ``saveCompleted`` of the ``LocalManagedBufferFile`` the
     bytecode calls ``flush``, then closes the version file, then ``renameFile``, then
@@ -1649,6 +1813,8 @@ TESTS = {
     "e12_save_versioned": t_save_versioned,
     "e12_fork_publish_finding": t_fork_publish_finding,
     "e12_fork_publish": t_fork_publish,
+    "e12_upgrade_publish_finding": t_upgrade_publish_finding,
+    "e12_upgrade_publish": t_upgrade_publish,
 }
 
 BASELINE = {}

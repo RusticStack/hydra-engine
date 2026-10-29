@@ -332,6 +332,52 @@ def prepare_seed(a, gs, aot=False):
     return 0
 
 
+#: The setup projects of ``Ctx.cached_project`` that run_parallel.py makes in its seed phase, before its
+#: queue starts (``--prebuild TAG``), so that every test that needs one copies it and none makes it: tests
+#: that missed together each made their own. ``tag -> (users, make)``: ``make(c, name)`` is the function the
+#: tests call (so the cache key, made from the builder's source, is the same), ``users`` the test names (or
+#: ``dt_*.py`` file names: all its tests) that need it. run_parallel.py --selftest checks that every function
+#: that calls ``cached_project`` is registered here and that every test calling one directly is a user.
+PREBUILT = {}
+
+
+def prebuilt(tag, users):
+    """Registers ``make(c, name)`` as the maker of the cached project ``tag`` (see PREBUILT)."""
+    def deco(make):
+        PREBUILT[tag] = (tuple(users), make)
+        return make
+    return deco
+
+
+def prebuild(a, gs, tags):
+    """``--prebuild``: makes the cached projects ``tags`` in ``--seed-dir`` (those already there are only
+    copied once more, to check them). Returns the exit code."""
+    c = Ctx(a, gs)
+    bad = 0
+    try:
+        for tag in tags:
+            if tag not in PREBUILT:
+                print(f"FAIL {tag}: no such cached project; known: {', '.join(PREBUILT)}", flush=True)
+                bad += 1
+                continue
+            t = time.perf_counter()
+            name = "pre-" + tag
+            try:
+                gpr = PREBUILT[tag][1](c, name)
+                gpr = gpr[0] if isinstance(gpr, tuple) else gpr
+                ok = pathlib.Path(gpr).is_file()
+            except Exception as e:      # reported; the tests then make it themselves
+                ok, gpr = False, f"{type(e).__name__}: {e}"
+            how = "copied" if any(k.startswith(f"project {tag} copied") for k in c.timings) else "made"
+            print(f"{'ok  ' if ok else 'FAIL'} {tag}: {how} in {time.perf_counter() - t:.1f} s ({gpr})", flush=True)
+            bad += not ok
+            shutil.rmtree(c.work / name, ignore_errors=True)
+    finally:
+        c.cleanup()
+    print("timings:", json.dumps(c.timings, indent=1))
+    return 1 if bad else 0
+
+
 class Ctx:
     def __init__(self, a, gs):
         self.a = a
@@ -401,8 +447,9 @@ class Ctx:
     def cached_project(self, name, tag, build, inputs=()):
         """A project that ``build(dst)`` makes in the fresh directory ``dst`` (``work/name``) and
         whose .gpr it returns. With a ``--seed-dir`` (run_parallel.py) it is made once per run
-        and every later test copies it (a full copy): the first test that needs it makes it in
-        its own ``dst``, copies that into the seed dir under a temporary name and renames it to
+        and every test copies it (a full copy). run_parallel.py makes the registered ones
+        (PREBUILT) in its seed phase, so tests find them; otherwise the first test that needs it
+        makes it in its own ``dst``, copies that into the seed dir under a temporary name and renames it to
         ``proj-<tag>-<key>`` (atomic; a test that lost the race drops its copy, the winner's is
         the same project). The key is the install (``install.key`` of --prepare), ``tag``, the
         source of ``build`` and of its whole file, and the bytes of every file in ``inputs``: another engine, another
@@ -441,6 +488,10 @@ class Ctx:
                 os.rename(tmp, cached)      # fails if another test cached it first: theirs is the same
             shutil.rmtree(tmp, ignore_errors=True)
         return gpr
+
+    @prebuilt("empty-Src", users=("dt_e2.py", "dt_e2a.py"))
+    def _empty_src(self, name):
+        return self.empty_project(name, "Src")
 
     def empty_project(self, name, project):
         """An empty project ``project`` in ``work/name`` (made by TestMakeProject.java in a daemon
@@ -534,11 +585,10 @@ def t_two_harnesses(c: Ctx):
     return f"one daemon (pid {pids.pop()}) for both; connect ms {[round(o['ms']) for o in outs]}"
 
 
-def t_two_projects(c: Ctx):
-    """Several projects open in one daemon at once, used by two clients concurrently."""
-    a_gpr = c.copy_fixture("projA")
-
-    def build(dst):     # project B: the dll imported and analysed (made once per run with a seed dir)
+@prebuilt("projB-dll-analysed", users=("two_projects",))
+def proj_b(c, name):
+    """Project B of two_projects: the dll imported and analysed (made once per run with a seed dir)."""
+    def build(dst):
         d0 = c.daemon("multi-mk")
         with d0.connect("y", "tests") as y:
             gpr = c.make_project(y, dst, "ProjB")
@@ -547,7 +597,13 @@ def t_two_projects(c: Ctx):
             y.call("close_project")
         d0.stop()
         return gpr
-    b_gpr = c.cached_project("projB", "projB-dll-analysed", build, inputs=(c.a.dll,))
+    return c.cached_project(name, "projB-dll-analysed", build, inputs=(c.a.dll,))
+
+
+def t_two_projects(c: Ctx):
+    """Several projects open in one daemon at once, used by two clients concurrently."""
+    a_gpr = c.copy_fixture("projA")
+    b_gpr = proj_b(c, "projB")
     d = c.daemon("multi")
     with d.connect("x", "tests") as x, d.connect("y", "tests") as y:
         y.call("open_project", path=str(b_gpr), writable=True)
@@ -2151,6 +2207,21 @@ def code_functions(s, n, program=None):
 MW_ITERS, MW_SHARDS = 300, 3     # edit rounds of each writer in multi_writer; its shards split them
 
 
+@prebuilt("fixture-dll-analysed", users=("multi_writer",))
+def proj_mw(c, name):
+    """multi_writer's project: the fixture with the dll imported and analysed (made once per run with a seed dir)."""
+    def build(dst):
+        gpr = c.copy_fixture(dst.name)
+        d0 = c.daemon("mw-setup")
+        with d0.connect("setup", "tests") as s:
+            s.call("open_project", path=str(gpr), writable=True)
+            s.call("import", file=c.a.dll, analyze=True, timeout=1800, wait=600000)
+            s.call("close_project")
+        d0.stop()
+        return gpr
+    return c.cached_project(name, "fixture-dll-analysed", build, inputs=(c.a.exe, c.a.dll))
+
+
 def t_multi_writer(c: Ctx):
     return _multi_writer(c, 0, MW_ITERS)
 
@@ -2165,16 +2236,7 @@ def _multi_writer(c: Ctx, first: int, count: int):
     s_scripts_dir = c.scripts
     exe, dll = pathlib.Path(c.a.exe).name, pathlib.Path(c.a.dll).name
 
-    def build(dst):     # the fixture with the dll imported and analysed (made once per run with a seed dir)
-        gpr = c.copy_fixture(dst.name)
-        d0 = c.daemon("mw-setup")
-        with d0.connect("setup", "tests") as s:
-            s.call("open_project", path=str(gpr), writable=True)
-            s.call("import", file=c.a.dll, analyze=True, timeout=1800, wait=600000)
-            s.call("close_project")
-        d0.stop()
-        return gpr
-    gpr = c.cached_project("projMW", "fixture-dll-analysed", build, inputs=(c.a.exe, c.a.dll))
+    gpr = proj_mw(c, "projMW")
     d = c.daemon("mw", keepWarm=0)
     notes = []
     with d.connect("reader", "tests") as r, d.connect("w1", "tests") as w1, \
@@ -3172,6 +3234,11 @@ def main():
     ap.add_argument("--prepare-aot", dest="prepare_aot", action="store_true",
                     help="with --prepare: also train the daemon's AOT cache (about 30 s; measured "
                     "0.1-0.3 s faster per daemon start than the class cache alone)")
+    ap.add_argument("--list-prebuild", dest="list_prebuild", action="store_true",
+                    help="list the cached setup projects (PREBUILT) as 'tag user,user,...' and exit")
+    ap.add_argument("--prebuild", default=None,
+                    help="comma-separated PREBUILT tags: make them in --seed-dir and exit (run_parallel.py "
+                    "does it in its seed phase, before its queue starts)")
     ap.add_argument("--seed-dir", dest="seed_dir",
                     help="a directory made by --prepare: the fixture is copied from it instead "
                     "of being imported and analysed in this process, and the daemons start "
@@ -3212,6 +3279,10 @@ def main():
         names = only or list(BASELINE)
     else:
         names = only or default
+    if a.list_prebuild:
+        for tag, (users, _) in PREBUILT.items():
+            print(tag, ",".join(users))
+        sys.exit(1 if load_errors else 0)
     if a.list:
         for n in REGISTRY:
             print(n + ("  [baseline: " + BASELINE[n] + "]" if n in BASELINE else ""))
@@ -3225,6 +3296,10 @@ def main():
     import ghidra_session as gs
     if a.prepare:
         sys.exit(prepare_seed(a, gs, aot=a.prepare_aot))
+    if a.prebuild is not None:
+        if not a.seed_dir:
+            ap.error("--prebuild needs --seed-dir")
+        sys.exit(prebuild(a, gs, [x for x in a.prebuild.split(",") if x]))
     c = Ctx(a, gs)
     secs =a.test_timeout if a.test_timeout is not None else (600 if a.baseline else 0)
     results = []
