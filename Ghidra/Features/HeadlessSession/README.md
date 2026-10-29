@@ -139,13 +139,54 @@ Lowest to highest: defaults, `<state>/config.json`, environment, command-line op
 | `idleTimeout` | `GHIDRA_SESSION_IDLE_TIMEOUT` | `0` | Seconds without clients before the daemon exits; `0`: stay up. |
 | `keepWarm` | `GHIDRA_SESSION_KEEP_WARM` | `3600` | Seconds an unused read-only program or project stays open, so the next client gets it at once with warm decompilers; `0`: close at once. |
 | `maxQuick` | | CPU count | Concurrent quick requests. |
-| `maxLong` | | CPU / 4 (at least 2) | Concurrent long requests (analyze, import, script, save). |
+| `maxLong` | | `max(8, CPUs)` | Concurrent long requests (analyze, import, script; `save`, `fork_project`, `refresh`, `reopen` and `promote_overlay` on a protocol 2 connection; protocol 3 runs those in the maint lane). Hydra Engine 12.3-hydra.3 and earlier: CPU / 4, at least 2. |
 | `maxImports` | | CPU / 4, between 1 and 4 | Concurrent imports, in any projects (see "Parallel imports"). Each running import also holds a long slot, so at most `min(maxImports, maxLong)` run at once. Each holds its whole program in memory until it is saved: budget about 0.7 GB of heap per 25 MB PE. |
 | `scriptPath` | | `[]` | Extra GhidraScript directories. |
 | `log` | | `<state>/<instance>.log` | The daemon's log (Ghidra's log and stderr). |
 | `upgradeCache` | `GHIDRA_SESSION_UPGRADE_CACHE` (`off`, `false`, `0`: off) | `true` | Serve read-only opens of programs saved in an older database format from an upgraded copy (below). |
 | `upgradeCacheDir` | `GHIDRA_SESSION_UPGRADE_CACHE_DIR` | `<state>/upgrade-cache` | Where those copies live; best on the same volume as the projects (a block clone there costs nothing). |
 | `forkCopyLimitMb` | `GHIDRA_SESSION_FORK_COPY_LIMIT_MB` | `2048` | `fork_project` in `auto` mode refuses a full copy (one the file system cannot block-clone) larger than this; `"mode": "full"` copies anyway. |
+
+#### Engine settings (protocol 3 release)
+
+Further settings are not options of the launcher: every entry of the `engine` object of `config.json`
+is passed to the daemon as a repeatable `-set key=value`, and each part of the engine reads its own keys
+(`Settings.java`). A value that does not parse as the type its reader expects stops the daemon at start-up with
+a message that names the key; an unset key reads as its default. Only keys that the engine reads today are
+listed. The design text for keys that belong to packages not yet part of the release is in
+`PROTOCOL-3.md` 3.7; they are not settings of this release until their package is.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `maintSlots` | 4 | Slots of the maint lane (protocol 3 `save`, `fork_project`, `refresh`, `reopen`, `promote_overlay`). |
+| `maxLong` | `max(8, CPUs)` | Same as the `maxLong` option above. |
+| `quickScriptMaxS` | 60 (at most 120) | Longest `timeout` for a script that asks for `lane:"quick"`. |
+| `maxRunningPerKey` (and `.quick`, `.long`, `.maint`) | quick `max(1, slots / 2)`, long `max(1, slots - 1)`, maint 1 | The work-conserving cap of running requests per connection while another connection waits. |
+| `cleanupGraceS`, `abandonWaitS` | 15, 5 | Release of a dead client: seconds its requests may keep running, then seconds to wait for the interrupt before the client is released regardless. |
+| `requireExpect` | false | An edit on a program with shared writers must carry `expect`. |
+| `requireBackupForUpgrade` | true | The upgrade gate: a writable upgrade of a canonical project needs a valid backup. |
+| `orphanKeepS` | 0 (never) | When above 0: after this many seconds the unsaved edits of a shared program whose last writer died are written to `<state>/recovery/` and discarded. |
+| `starveMs` | 30000 | A lane with a request waiting longer than this reports `starving` in `status`. |
+| `writeStallMs` | 5000 | A client that does not read its socket for this long is disconnected. |
+| `scriptMaxS`, `scriptGraceS` | 600, 5 | Wall-clock budget of a script, and the seconds a script that ignores its cancel may run on before it is quarantined. |
+
+#### Stamping a local build
+
+The build tool does not stamp a release version. The engine reports `hydraVersion` from
+`src/main/resources/hydra.properties`, which is empty in the tree, so a plain `gradle buildHeadless` or
+`gradle zipHeadless` says `<Ghidra version>-hydra.dev` and Hydralysis classifies it as a stock Ghidra. The
+release workflow writes the stamp before it builds. To get the same in a local build (in bash or
+PowerShell 7; Windows PowerShell 5.1 writes UTF-16 with `>`, which the build ignores, so use
+`Set-Content -Encoding utf8` there):
+
+```
+echo hydra.version=12.3-hydra.4 > Ghidra/Features/HeadlessSession/src/main/resources/hydra.properties
+gradle zipHeadless            # or buildHeadless
+git checkout -- Ghidra/Features/HeadlessSession/src/main/resources/hydra.properties
+```
+
+Restore the file afterwards: the tree must keep it empty (the release workflow's dry run fails when the zip it
+built does not carry the stamp it wrote, and `tools/bump_hydra.py` of Hydralysis refuses a zip without it).
 
 The state dir is `--state`, else `GHIDRA_SESSION_HOME`, else per user:
 `%LOCALAPPDATA%\GhidraSession` (Windows), `~/Library/Application Support/GhidraSession` (macOS),
@@ -542,7 +583,11 @@ Turn it off with `"upgradeCache": false`.
 
 ## Protocol (version 2)
 
-> Design for the next protocol (3, hydra.4), not implemented: see [PROTOCOL-3.md](PROTOCOL-3.md).
+> Protocol 3 (hydra.4) is served beside protocol 2 on the same port; a client that asks for nothing newer gets
+> protocol 2 exactly as described below. What a protocol 3 client may ask for, and every change a protocol 2
+> client can see, are in [PROTOCOL-3.md](PROTOCOL-3.md) (section 5.1) and in the release notes
+> (`docs/release-notes-12.3-hydra.4.md`). The design is not complete in this tree: a part that is not part of the
+> release is not described in this README.
 
 One JSON object per line, UTF-8, `\n`-terminated, at most 64 MiB per line.
 
@@ -673,22 +718,24 @@ in `error.details`:
   `"share": true`, a program has several writers at once ("Shared writing").
 - **Two lanes.** Requests take a slot in one of two lanes before any lock: **quick**
   (decompile, functions, list, open, rename; one slot per CPU) and **long** (analyze, import,
-  script, save; a quarter of the CPUs). Native commands stay in the quick lane while imports and
+  script, save; `max(8, CPUs)` slots by default; a quarter of the CPUs, at least two, up to 12.3-hydra.3). Native commands stay in the quick lane while imports and
   analyses run in the long lane. Scripts run in the long lane, so a client that asks its
   questions through scripts shares it, and a full long lane delays those questions (measured up
   to about 8 s). Readers of the program being analysed wait for its lock. When a lane is full,
-  waiting requests are admitted round-robin by connection; there was no cap on how many slots
-  one connection ran. The daemon's own background work (upgrade cache builds) takes a long slot
+  waiting requests are admitted round-robin by connection, and while another connection waits a per-connection cap limits how
+  many slots one connection runs (`maxRunningPerKey`; up to 12.3-hydra.3 there was no cap). The daemon's own background work (upgrade cache builds) takes a long slot
   only while no client waits for one. `status` shows each lane's use and queue.
 - **Cancellation is per client**, and per label when the request carries one (below). `cancel`
-  stops requests waiting for a slot and cooperative scripts; a request waiting for a program lock
-  stays until its `wait` runs out.
+  stops requests waiting for a slot or for a program lock, and cooperative scripts (before
+  12.3-hydra.4 a lock wait stayed until its `wait` ran out).
 - **Leaving.** When a client disconnects or its process dies (the OS resets its socket), its
   requests are cancelled and its uncommitted changes are rolled back (and logged) when its
-  running request ends, and its programs go back to read-only for the others. A request blocked
-  on a lock, or a script that ignores cancel, keeps its place until the lock frees or the script
-  ends. Another client that asks for the program meanwhile waits for that release within its
-  `wait`.
+  running request ends, and its programs go back to read-only for the others. A lock wait ends
+  on cancel. A request that is still running `cleanupGraceS` (15 s) after the disconnect is
+  interrupted, and `abandonWaitS` (5 s) later the client is released even if it ignores that: the
+  locks it holds are flagged abandoned and a request for such a program answers `busy` at once.
+  Only a script that does not poll for cancellation runs to its own end (Java cannot stop it).
+  Another client that asks for the program meanwhile waits within its `wait`.
 - **Opening a project writable while other clients use its read-only view reopens it writable
   in place**: same id and keys, their programs reopened from the writable project (read-only for
   them), their overlays rebuilt; they are told once with `refreshed`. A second writable open
@@ -831,8 +878,9 @@ When `maxImports` imports run, the next ones wait, and the wait is visible and u
   untouched. Cancelling a running import frees its place and the next one starts.
 - An import waits in the import queue: without limit unless the request passes a numeric `wait`,
   in which case it fails with `busy` (details: the same queue information) after that long; the
-  same `wait` also limits a wait for the same file. At the front it still needs a long slot and
-  fails `busy` after `wait` (10 s default) if none comes free.
+  same `wait` also limits a wait for the same file. At the front it still needs a long slot:
+  with a numeric `wait` it fails `busy` when that `wait` runs out; without a numeric `wait` it
+  waits for the slot without limit (V2; up to 12.3-hydra.3 it failed `busy` after 10 s).
 - Duplicates: the SHA-256 check runs when the import gets its turn, so two queued requests for
   the same file import it once and the second answers `imported: false`.
 
@@ -1225,17 +1273,42 @@ python examples/contract_tests.py --ghidra <install> --work <empty dir> [--lines
 Both use their own state dir and daemon instance, so they never touch the user's daemon.
 
 `daemon_tests.py` run serially takes 25 minutes or more, and the machine is idle most of that time (the tests wait
-on timers, kills and restarts). `examples/run_parallel.py` splits the tests into balanced groups and runs each group
-as its own `daemon_tests.py --only ...` process with its own work and state directories:
+on timers, kills and restarts). `examples/run_parallel.py` runs it as a work queue: every test (and every shard of
+the long ones, `name@shard`, reported under the test's name) is its own `daemon_tests.py --only ...` process with its
+own work, temp and state directories, longest first:
 
 ```
-python examples/run_parallel.py --ghidra <install> --scratch <dir on an NVMe disk> --logs <log dir> --groups 8 daemon_tests.py -- --exe A.exe --dll B.dll [--legacy-project <older project>]
+python examples/run_parallel.py --ghidra <install> --scratch <dir on an NVMe disk> --logs <log dir> daemon_tests.py -- --exe A.exe --dll B.dll [--legacy-project <older project>]
+python examples/run_parallel.py ... --affected [--base integration/w3] daemon_tests.py -- ...
+python examples/run_all.py --ghidra <install> --scratch <dir> --logs <dir> [--only daemon,cc,smoke,char2,char3,contract]
 ```
+
+* The fixture project, the class search cache and a copy of the install are made once (`daemon_tests.py --prepare`)
+  and kept in `seed-cache` next to `--scratch`, keyed by the install's jars and the suite's code; every test copies
+  or hard-links them instead of making its own.
+* The test daemons are lean JVMs (two GC threads, two compiler threads, and C1 only for the tests that are not in
+  `suite-costs.json`'s `daemon_tests.py#heavy` list; `--full-jvm` turns this off), and each test process has its
+  own Ghidra settings dir (`XDG_CONFIG_HOME`): with the user's one shared, every daemon contends for its OSGi bundle
+  cache and a script request took seconds instead of milliseconds.
+* The queue starts a test while the running ones' core demand stays within `--cores` (default 22; a test counts
+  `--light-cores` 1, a heavy one `--heavy-cores` 2, and at most `--heavy-slots` heavy ones run), the machine has
+  `--min-commit-gb` of commit left (Windows refuses new processes, exit 0xC0000142, when the commit runs out) and
+  fewer than `--max-procs` processes. `<logs>/machine.csv` has the busy cores, the running tests and the commit
+  every 2 s.
+* `--affected` runs only the tests `examples/test-map.json` maps the changed files to (`git diff <base>...HEAD`
+  and the working tree), plus a smoke set of 10; it prints what it skipped and why, and runs the whole suite when a
+  changed file is a core one (Session, Scheduler, Access, the protocol dispatch, the launcher, ...) or is not in the
+  map. The map is made by static analysis (`run_parallel.py --make-test-map`; `--selftest` checks it is current
+  and covers every test). Iterate with `--affected` or single tests; run the whole suite once before calling a
+  change done.
+* `run_all.py` puts the other suites (client_compat, session_smoke, characterization p2 and p3, contract) in the
+  same queue.
 
 A test that fails under that load is run again alone; it fails the run only if it fails alone too (`--strict` fails on
-both). A group that dies, or a test with no result, fails the run. Costs for the balancing are in
+both). A test process that dies, or a test with no result, fails the run. Costs for the balancing are in
 `examples/suite-costs.json` (`--record` refreshes them). Put `--scratch` on a fast local disk: the suites write and
-fsync a lot, and on a hard disk they are slower and more timing-sensitive.
+fsync a lot, and on a hard disk they are slower and more timing-sensitive. The default budget takes the whole machine:
+on a machine shared with other heavy work, run one suite at a time or lower `--cores`.
 
 ## Why each part lives where it does
 

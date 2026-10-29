@@ -18,7 +18,9 @@ Version 2.0. Release archives ship it next to NOTICE and LICENSE.
 
 Files of upstream Ghidra that Hydra Engine modified or replaced
 (every file below exists in upstream Ghidra; compared with the upstream commit named in
-CHANGELOG.md):
+CHANGELOG.md; the list was re-checked for 12.3-hydra.4 with `git diff --name-status` against
+upstream commit 1b9e58a915cf867e106495eaa2a4b18eb4971c9d, outside the HeadlessSession module,
+.github and the changelog: it shows these modified files and the added ones named further below):
 
   Ghidra/Framework/DB/src/main/java/db/buffers/LocalBufferFile.java
       A temporary buffer file is truncated to zero length before it is closed and deleted, so
@@ -67,7 +69,8 @@ What Hydra Engine adds to Ghidra (new files, none of them in upstream Ghidra):
     version file);
   - the repository's own documentation, assets and CI (NOTICE-HYDRA, CHANGELOG.md,
     README-GHIDRA.md, and the files in .github/: CONTRIBUTING.md, SECURITY.md, issue forms, the
-    pull request template, assets, scripts, and the ci.yml and release.yml workflows).
+    pull request template, assets, scripts, and the ci.yml, release.yml and upstream-sync.yml
+    workflows), and the release notes in docs/.
 
 
 Status and affiliation

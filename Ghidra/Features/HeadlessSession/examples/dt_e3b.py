@@ -273,10 +273,13 @@ def t_cancel_queued(c):
 
 # ---- cancel_while_waiting -------------------------------------------------------------------
 
-def _cancel_while_waiting(c, protocol, races):
+def _cancel_while_waiting(c, protocol, races, first=0):
+    """Part (a) and ``races`` races of part (b), numbered from ``first`` (the race number picks the
+    offset of the cancel against the release, so shards that split 0..199 cover the same offsets)."""
     exe = prepare(c)
-    gpr = c.copy_fixture(f"e3bCw{protocol}")
-    d = c.daemon(f"e3b-cw{protocol}")
+    tag = f"{protocol}-{first}" if first else f"{protocol}"
+    gpr = c.copy_fixture(f"e3bCw{tag}")
+    d = c.daemon(f"e3b-cw{tag}")
     H = R = None
     try:
         H = owner(c, d, gpr, exe, protocol=protocol)
@@ -320,7 +323,7 @@ def _cancel_while_waiting(c, protocol, races):
         dur = sorted(durs)[len(durs) // 2]
         counts = {"ok": 0, "cancelled": 0}
         phases = {}
-        for i in range(races):
+        for i in range(first, first + races):
             off = ((i % 41) - 20) / 1000.0
             t0 = time.perf_counter()
             hid = H.send("script", script=c.script("TestSleep.java"), args=["40"], parallel=True)
@@ -347,17 +350,26 @@ def _cancel_while_waiting(c, protocol, races):
         log = log_text(d)
         dt.check("ClosedByInterruptException" not in log,
                  "the daemon log has ClosedByInterruptException")
+        which = f" (#{first}-{first + races - 1})" if first or races != CW_RACES else ""
         return (f"protocol {protocol}: cancelled in {ms_cancel:.0f} ms, order behind it kept; "
-                f"{races} races: {counts['cancelled']} cancelled {phases or ''}, "
+                f"{races} races{which}: {counts['cancelled']} cancelled {phases or ''}, "
                 f"{counts['ok']} completed, no leak")
     finally:
         close_all(H, R)
         d.stop(force=True)
 
 
+CW_RACES = 200      # races per protocol
+CW_SHARDS = 4       # shards per protocol when run as shards (each also runs part (a))
+
+
 def t_cancel_while_waiting(c):
-    notes = [_cancel_while_waiting(c, 3, 200), _cancel_while_waiting(c, 2, 200)]
+    notes = [_cancel_while_waiting(c, 3, CW_RACES), _cancel_while_waiting(c, 2, CW_RACES)]
     return "; ".join(notes)
+
+
+def _cw_shard(protocol, first, count):
+    return lambda c: _cancel_while_waiting(c, protocol, count, first)
 
 
 # ---- deadline_in_lock_wait ------------------------------------------------------------------
@@ -461,6 +473,8 @@ def _steady(c, protocol, run_after_s=25.0, n_readers=8, hold_ms=50):
 
 
 def t_writer_vs_steady_readers(c):
+    # each half keeps the readers looping run_after_s = 25 s after the writer arrives (a designed
+    # wait: a wait that re-joins the queue's tail must have the time to show)
     return "; ".join([_steady(c, 3), _steady(c, 2)])
 
 
@@ -1093,3 +1107,12 @@ TESTS = {
 }
 
 BASELINE = {}
+
+#: the shards run_parallel.py runs at once: cancel_while_waiting as its two protocol halves, each with
+#: its 200 races split over CW_SHARDS processes (same race numbers, part (a) in every shard), and
+#: writer_vs_steady_readers as its two protocol halves.
+SHARDS = {
+    "cancel_while_waiting": {f"p{p}r{first}": _cw_shard(p, first, cnt)
+                             for p in (3, 2) for first, cnt in dt.split_n(CW_RACES, CW_SHARDS)},
+    "writer_vs_steady_readers": {"p3": lambda c: _steady(c, 3), "p2": lambda c: _steady(c, 2)},
+}

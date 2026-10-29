@@ -436,7 +436,10 @@ def mutant_install(c, tag, variant, pause_ms=PAUSE_MS):
     text = text.replace(anchor, anchor + "\n\t\t\t\ttry { Thread.sleep(%d); } "
                         "catch (InterruptedException e) { }" % pause_ms)
     dst = c.work / f"inst-{tag}"
-    clone_install(c.a.ghidra, dst)
+    # a hard-link clone needs the source on the same volume: --prepare (daemon_tests.py) leaves a copy of the install
+    # in the seed directory, next to --work, so the clone is links instead of a copy of the whole install per test
+    seeded = c.seed / "install" if getattr(c, "seed", None) else None
+    clone_install(seeded if seeded and (seeded / "Ghidra").is_dir() else c.a.ghidra, dst)
     srcdir = c.work / f"mut-{tag}"
     if srcdir.exists():
         shutil.rmtree(srcdir)
@@ -573,9 +576,26 @@ def t_sp5_idempotent(c):
 
 # ---- the kill loop ------------------------------------------------------------------------
 
+KILL_SHARDS = 8     # processes e8_kill_loop is split into by run_parallel.py (the kills add up)
+
+
 def t_kill_loop(c):
-    kills = int(os.environ.get("E8_KILLS", "8"))
-    rnd = random.Random(int(os.environ.get("E8_SEED", "8")))
+    return _kill_loop(c, int(os.environ.get("E8_KILLS", "8")))
+
+
+def _kill_shard(j):
+    def run(c):
+        first, kills = dt.split_n(int(os.environ.get("E8_KILLS", "8")), KILL_SHARDS)[j]
+        return _kill_loop(c, kills, first) if kills else "no kill in this shard (E8_KILLS)"
+    return run
+
+
+def _kill_loop(c, kills, first=0):
+    """``kills`` kills, numbered from ``first``: the number picks the timing (mixed mode alternates
+    trigger- and send-timed by it), so shards that split 0..E8_KILLS-1 sample what the whole loop
+    does, each on its own fixture copy, with its own calibration and the same checks."""
+    seed = int(os.environ.get("E8_SEED", "8"))
+    rnd = random.Random(seed if not first else seed * 7919 + first)
     # "trigger": kill a few ms after the new version file first appears (measurement C's method;
     # every kill is after the rename). "send": the timer starts when the save is sent, over the whole
     # save, so kills before the rename are sampled too. "mixed" (default): alternate.
@@ -594,7 +614,8 @@ def t_kill_loop(c):
               for p in ("send", "trigger")}
     calibrated = None
     base_count = None
-    for it in range(kills + 1):
+    last = first + kills
+    for it in range(first, last + 1):
         d = c.gs.Daemon(c.a.ghidra, str(c.state), "e8k%d" % it, keepWarm=0)
         c.daemons.append(d)
         try:
@@ -610,7 +631,7 @@ def t_kill_loop(c):
             gpr = c.copy_fixture("e8loop")
             dbdir = program_db_dir(gpr)
             ledger = None
-            if it == kills:
+            if it == last:
                 break
             d = c.gs.Daemon(c.a.ghidra, str(c.state), "e8k%dr" % it, keepWarm=0)
             c.daemons.append(d)
@@ -628,7 +649,7 @@ def t_kill_loop(c):
             if names.get(addr) not in (acked, inflight):
                 stats["wrong_state"] += 1
                 notes.append(f"it{it}: {addr} is {names.get(addr)}, wanted {acked} or {inflight}")
-        if it == kills:
+        if it == last:
             d.stop(force=True)
             break
         addr = dt.code_functions(s, 1)[0]
@@ -681,13 +702,14 @@ def t_kill_loop(c):
                              f"({open(p, 'rb').read(8).hex()}, {p.stat().st_size} bytes)")
     c.timings["e8_kill_loop calibration (ms from the version file to the answer)"] = \
         round(calibrated or 0, 2)
-    (c.work / "e8_kill_loop.json").write_text(json.dumps({"stats": stats, "phases": phases,
+    (c.work / ("e8_kill_loop.json" if not first else f"e8_kill_loop-{first}.json")).write_text(json.dumps({"stats": stats, "phases": phases,
                                                          "notes": notes,
                                                          "calibration_ms": calibrated}, indent=1))
     ph = "; ".join("%s-timed: %d kills (%d before, %d after the rename, %d zero headers)" % (
         k, v["kills"], v["before_rename"], v["after_rename"], v["zero_header"])
         for k, v in phases.items() if v["kills"])
-    msg = (f"{stats['kills']} kills, mode {mode} ({stats['before_rename']} before and "
+    which = f" (#{first}-{last - 1})" if first or kills != int(os.environ.get("E8_KILLS", "8")) else ""
+    msg = (f"{stats['kills']} kills{which}, mode {mode} ({stats['before_rename']} before and "
            f"{stats['after_rename']} after the rename; delay 0..{calibrated and round(calibrated, 1)} ms "
            f"after the new version file appeared, or over the save; {stats['no_trigger']} without trigger): "
            f"{stats['zero_header']} zero headers, {stats['unopenable']} unopenable, "
@@ -1058,3 +1080,8 @@ TESTS = {
 }
 
 BASELINE = {}   # e8_private_open and e8_private_readonly are enforced since LocalDatabaseItem is in E8's ownership (8.1)
+
+#: e8_kill_loop as KILL_SHARDS processes for run_parallel.py: the E8_KILLS kills split by number (the
+#: shards' kills add up to E8_KILLS; each kill is checked the same way, each shard reopens after its
+#: last kill). The window tests hold a designed 3-4 s pause inside the save and are not split.
+SHARDS = {"e8_kill_loop": {f"k{j}": _kill_shard(j) for j in range(KILL_SHARDS)}}

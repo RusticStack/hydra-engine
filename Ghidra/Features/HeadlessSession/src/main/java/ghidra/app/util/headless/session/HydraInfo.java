@@ -30,6 +30,14 @@ import ghidra.framework.Application;
  * <p>
  * The release version is stamped into {@code hydra.properties} (a resource of this module) by the
  * release workflow; a build from the tree says {@code <Ghidra version>-hydra.dev}.
+ * <p>
+ * The build tool stamps nothing by itself, and Hydralysis classifies an engine that says
+ * {@code -hydra.dev} as a stock Ghidra. A build that must be recognised as a release (a candidate
+ * that Hydralysis pins, or runs with {@code hydra_allow_unpinned}) is stamped by writing
+ * {@code hydra.version=<release>} to {@code src/main/resources/hydra.properties} before
+ * {@code gradle zipHeadless} or {@code buildHeadless}, exactly as the release workflow does, and
+ * the file is restored afterwards ({@code git checkout -- <that file>}); see "Stamping a local
+ * build" in the module README.
  */
 final class HydraInfo {
 

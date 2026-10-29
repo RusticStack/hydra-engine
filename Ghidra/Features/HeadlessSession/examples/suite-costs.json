@@ -120,5 +120,1827 @@
   "upgrade_gate": 11.0,
   "waiter_caps": 6.2,
   "writer_vs_steady_readers": 106.1
+ },
+ "daemon_tests.py#heavy": [
+  "dll_import",
+  "e8_flush_before_rename",
+  "e8_sp5_flush_idempotent",
+  "e8_window_control",
+  "import_isolation",
+  "import_kill",
+  "import_queue",
+  "import_readers",
+  "import_speed",
+  "import_write_kill",
+  "multi_writer",
+  "parallel_imports",
+  "two_projects",
+  "upgrade_cache"
+ ],
+ "characterization_tests.py#t0": {
+  "clients": {
+   "cpuS": 34.7,
+   "wallS": 22.0,
+   "peakCores": 5.7,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "edits": {
+   "cpuS": 35.8,
+   "wallS": 23.7,
+   "peakCores": 5.2,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "fork_refresh": {
+   "cpuS": 45.0,
+   "wallS": 24.6,
+   "peakCores": 5.4,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "import_script": {
+   "cpuS": 24.0,
+   "wallS": 18.8,
+   "peakCores": 2.9,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null,
+   "status": "fail"
+  },
+  "overlays": {
+   "cpuS": 34.7,
+   "wallS": 18.8,
+   "peakCores": 5.0,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "readonly": {
+   "cpuS": 30.7,
+   "wallS": 24.7,
+   "peakCores": 5.0,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "session": {
+   "cpuS": 7.3,
+   "wallS": 4.3,
+   "peakCores": 2.9,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  }
+ },
+ "characterization_tests.py@v3#t0": {
+  "e1-expect": {
+   "cpuS": 35.3,
+   "wallS": 16.7,
+   "peakCores": 5.0,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "e1-hello": {
+   "cpuS": 7.3,
+   "wallS": 4.1,
+   "peakCores": 2.3,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "e1-require-expect": {
+   "cpuS": 34.8,
+   "wallS": 15.7,
+   "peakCores": 5.2,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "e1-rk": {
+   "cpuS": 35.8,
+   "wallS": 15.8,
+   "peakCores": 5.5,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "e2-format-fork": {
+   "cpuS": 35.9,
+   "wallS": 16.6,
+   "peakCores": 5.0,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "e2-gate": {
+   "cpuS": 15.8,
+   "wallS": 6.3,
+   "peakCores": 5.4,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "e2-seal": {
+   "cpuS": 40.6,
+   "wallS": 19.2,
+   "peakCores": 4.2,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "e3a-busy": {
+   "cpuS": 17.5,
+   "wallS": 10.3,
+   "peakCores": 4.2,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "e3a-lanes": {
+   "cpuS": 8.2,
+   "wallS": 5.0,
+   "peakCores": 2.5,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "e4-script": {
+   "cpuS": 30.3,
+   "wallS": 19.0,
+   "peakCores": 4.0,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  }
+ },
+ "client_compat_tests.py#t0": {
+  "abandoned_holder": {
+   "cpuS": 15.5,
+   "wallS": 21.7,
+   "testS": 21.6,
+   "peakCores": 3.4,
+   "waitShare": 0.28,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "cancel_while_waiting": {
+   "cpuS": 13.0,
+   "wallS": 6.1,
+   "testS": 6.0,
+   "peakCores": 4.9,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "candidate_then_seal": {
+   "cpuS": 15.3,
+   "wallS": 19.0,
+   "testS": 18.7,
+   "peakCores": 2.7,
+   "waitShare": 0.19,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "capability_seal": {
+   "cpuS": 5.2,
+   "wallS": 5.9,
+   "testS": 5.2,
+   "peakCores": 1.7,
+   "waitShare": 0.11,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "check_compatible": {
+   "cpuS": 0.1,
+   "wallS": 0.1,
+   "testS": 0.0,
+   "peakCores": 0.0,
+   "waitShare": 0.23,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "dead_client_lock_wait": {
+   "cpuS": 14.6,
+   "wallS": 12.0,
+   "testS": 12.0,
+   "peakCores": 4.7,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "endpoint_overlap": {
+   "cpuS": 0.1,
+   "wallS": 0.1,
+   "testS": 0.0,
+   "peakCores": 0.0,
+   "waitShare": 0.18,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "engine_config": {
+   "cpuS": 0.1,
+   "wallS": 0.1,
+   "testS": 0.1,
+   "peakCores": 0.0,
+   "waitShare": 0.36,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "engine_setting_command": {
+   "cpuS": 0.2,
+   "wallS": 0.2,
+   "testS": 0.1,
+   "peakCores": 0.0,
+   "waitShare": 0.16,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "fake_v2_server": {
+   "cpuS": 0.1,
+   "wallS": 0.2,
+   "testS": 0.1,
+   "peakCores": 0.0,
+   "waitShare": 0.37,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "fake_v3_server": {
+   "cpuS": 0.1,
+   "wallS": 0.2,
+   "testS": 0.1,
+   "peakCores": 0.0,
+   "waitShare": 0.39,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "fork_capability": {
+   "cpuS": 5.0,
+   "wallS": 3.0,
+   "testS": 2.8,
+   "peakCores": 2.2,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "fork_race_conflict": {
+   "cpuS": 17.1,
+   "wallS": 12.1,
+   "testS": 11.8,
+   "peakCores": 3.1,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "fork_race_rk": {
+   "cpuS": 22.6,
+   "wallS": 16.7,
+   "testS": 16.4,
+   "peakCores": 3.7,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "fork_sidecar": {
+   "cpuS": 4.3,
+   "wallS": 2.5,
+   "testS": 2.4,
+   "peakCores": 2.4,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "fork_sidecar_state": {
+   "cpuS": 16.1,
+   "wallS": 11.8,
+   "testS": 11.5,
+   "peakCores": 2.6,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "g1_g7_expect_rk": {
+   "cpuS": 31.3,
+   "wallS": 20.1,
+   "testS": 19.9,
+   "peakCores": 4.4,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "import_wait": {
+   "cpuS": 15.7,
+   "wallS": 20.9,
+   "testS": 20.7,
+   "peakCores": 4.1,
+   "waitShare": 0.25,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "import_wait_explicit": {
+   "cpuS": 11.8,
+   "wallS": 8.6,
+   "testS": 8.5,
+   "peakCores": 4.2,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "loader": {
+   "cpuS": 0.1,
+   "wallS": 0.2,
+   "testS": 0.0,
+   "peakCores": 0.0,
+   "waitShare": 0.39,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "new_client_identity": {
+   "cpuS": 0.1,
+   "wallS": 0.1,
+   "testS": 0.0,
+   "peakCores": 0.0,
+   "waitShare": 0.25,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "owner_leave_bounded": {
+   "cpuS": 15.7,
+   "wallS": 16.7,
+   "testS": 16.6,
+   "peakCores": 4.9,
+   "waitShare": 0.06,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "protocol_below_range": {
+   "cpuS": 0.1,
+   "wallS": 0.2,
+   "testS": 0.2,
+   "peakCores": 0.0,
+   "waitShare": 0.68,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "purpose_open_ignored": {
+   "cpuS": 5.3,
+   "wallS": 2.6,
+   "testS": 2.5,
+   "peakCores": 2.8,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "real_engine_new_starts": {
+   "cpuS": 4.1,
+   "wallS": 2.5,
+   "testS": 2.4,
+   "peakCores": 2.0,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "real_engine_stock_starts": {
+   "cpuS": 3.8,
+   "wallS": 2.2,
+   "testS": 2.1,
+   "peakCores": 2.2,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "stock_vendored": {
+   "cpuS": 0.1,
+   "wallS": 0.1,
+   "testS": 0.0,
+   "peakCores": 0.0,
+   "waitShare": 0.11,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "upgrade_gate": {
+   "cpuS": 13.5,
+   "wallS": 10.7,
+   "testS": 10.4,
+   "peakCores": 3.9,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "v2_connection_serial": {
+   "cpuS": 13.5,
+   "wallS": 8.4,
+   "testS": 8.3,
+   "peakCores": 4.8,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "v2_lane_defaults": {
+   "cpuS": 6.1,
+   "wallS": 3.7,
+   "testS": 3.5,
+   "peakCores": 2.1,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "v2_lane_unchanged": {
+   "cpuS": 11.1,
+   "wallS": 5.1,
+   "testS": 4.9,
+   "peakCores": 3.6,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "v2_lock_busy_keys": {
+   "cpuS": 15.7,
+   "wallS": 8.3,
+   "testS": 8.2,
+   "peakCores": 4.8,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "v2_no_lock_cap": {
+   "cpuS": 14.8,
+   "wallS": 7.2,
+   "testS": 7.1,
+   "peakCores": 5.4,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "v2_no_preflight": {
+   "cpuS": 10.9,
+   "wallS": 7.4,
+   "testS": 7.3,
+   "peakCores": 2.9,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "v2_no_runaway_bounds": {
+   "cpuS": 15.8,
+   "wallS": 13.0,
+   "testS": 12.7,
+   "peakCores": 3.2,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "v2_overlay_script": {
+   "cpuS": 17.1,
+   "wallS": 8.2,
+   "testS": 8.0,
+   "peakCores": 3.7,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "v2_progress_keys": {
+   "cpuS": 12.7,
+   "wallS": 12.0,
+   "testS": 11.9,
+   "peakCores": 3.3,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "v2_queue_order": {
+   "cpuS": 11.3,
+   "wallS": 15.7,
+   "testS": 15.6,
+   "peakCores": 3.2,
+   "waitShare": 0.28,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "v2_request_fields": {
+   "cpuS": 32.8,
+   "wallS": 32.5,
+   "testS": 32.3,
+   "peakCores": 3.2,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "v2_running_cap": {
+   "cpuS": 11.2,
+   "wallS": 7.2,
+   "testS": 7.1,
+   "peakCores": 3.8,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "v2_script_fields_ignored": {
+   "cpuS": 16.0,
+   "wallS": 14.7,
+   "testS": 14.6,
+   "peakCores": 4.7,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "v2_surface": {
+   "cpuS": 7.1,
+   "wallS": 9.4,
+   "testS": 9.1,
+   "peakCores": 1.9,
+   "waitShare": 0.24,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "v6_stock_client": {
+   "cpuS": 3.6,
+   "wallS": 2.1,
+   "testS": 2.0,
+   "peakCores": 2.0,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  }
+ },
+ "contract_tests.py#t0": {
+  "compat": {
+   "cpuS": 3.4,
+   "wallS": 2.1,
+   "testS": 2.0,
+   "peakCores": 1.9,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "export": {
+   "cpuS": 16.0,
+   "wallS": 14.0,
+   "testS": 13.9,
+   "peakCores": 3.1,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "export_cancel": {
+   "cpuS": 8.2,
+   "wallS": 6.8,
+   "testS": 6.7,
+   "peakCores": 2.5,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "export_shutdown": {
+   "cpuS": 7.0,
+   "wallS": 4.8,
+   "testS": 4.7,
+   "peakCores": 2.5,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "hello": {
+   "cpuS": 6.9,
+   "wallS": 4.3,
+   "testS": 4.2,
+   "peakCores": 2.2,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "protocol": {
+   "cpuS": 7.2,
+   "wallS": 4.4,
+   "testS": 4.3,
+   "peakCores": 2.5,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "registries": {
+   "cpuS": 2.8,
+   "wallS": 1.7,
+   "testS": 1.6,
+   "peakCores": 1.8,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  }
+ },
+ "daemon_tests.py#t0": {
+  "abandoned_holder": {
+   "cpuS": 17.8,
+   "wallS": 22.5,
+   "testS": 22.2,
+   "peakCores": 3.0,
+   "waitShare": 0.21,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "applied_flag": {
+   "cpuS": 17.3,
+   "wallS": 19.3,
+   "testS": 19.1,
+   "peakCores": 3.2,
+   "waitShare": 0.1,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "backup_fault": {
+   "cpuS": 73.5,
+   "wallS": 31.4,
+   "testS": 31.2,
+   "peakCores": 5.1,
+   "waitShare": 0.0,
+   "kind": "real",
+   "minScale": null
+  },
+  "caller_labels": {
+   "cpuS": 14.7,
+   "wallS": 6.6,
+   "testS": 6.4,
+   "peakCores": 4.7,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "cancel_all": {
+   "cpuS": 10.0,
+   "wallS": 13.5,
+   "testS": 9.4,
+   "peakCores": 2.9,
+   "waitShare": 0.26,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "cancel_lock_wait": {
+   "cpuS": 13.3,
+   "wallS": 5.0,
+   "testS": 4.9,
+   "peakCores": 5.1,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "cancel_queued": {
+   "cpuS": 14.0,
+   "wallS": 6.8,
+   "testS": 6.6,
+   "peakCores": 4.0,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "cancel_while_waiting": {
+   "cpuS": 37.4,
+   "wallS": 69.9,
+   "testS": 69.8,
+   "peakCores": 4.1,
+   "waitShare": 0.46,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "candidate_then_seal": {
+   "cpuS": 15.8,
+   "wallS": 6.2,
+   "testS": 6.0,
+   "peakCores": 4.2,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "chaos_engine_injectors": {
+   "cpuS": 0.1,
+   "wallS": 0.2,
+   "testS": 0.0,
+   "peakCores": 0.0,
+   "waitShare": 0.11,
+   "kind": "real",
+   "minScale": null
+  },
+  "chaos_injectors": {
+   "cpuS": 0.7,
+   "wallS": 1.8,
+   "testS": 1.7,
+   "peakCores": 0.6,
+   "waitShare": 0.62,
+   "kind": "real",
+   "minScale": null
+  },
+  "client_kill": {
+   "cpuS": 10.1,
+   "wallS": 4.8,
+   "testS": 4.6,
+   "peakCores": 3.7,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "daemon_restart": {
+   "cpuS": 16.4,
+   "wallS": 6.0,
+   "testS": 5.8,
+   "peakCores": 4.7,
+   "waitShare": 0.0,
+   "kind": "real",
+   "minScale": null
+  },
+  "dead_client_lock_wait": {
+   "cpuS": 15.9,
+   "wallS": 13.7,
+   "testS": 13.4,
+   "peakCores": 3.2,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "dead_client_released": {
+   "cpuS": 15.1,
+   "wallS": 12.8,
+   "testS": 12.6,
+   "peakCores": 3.3,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "dead_write_not_applied": {
+   "cpuS": 17.8,
+   "wallS": 21.7,
+   "testS": 21.5,
+   "peakCores": 3.2,
+   "waitShare": 0.18,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "deadline_in_lock_wait": {
+   "cpuS": 13.5,
+   "wallS": 8.5,
+   "testS": 8.4,
+   "peakCores": 3.9,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "dll_import": {
+   "cpuS": 58.8,
+   "wallS": 28.2,
+   "testS": 28.0,
+   "peakCores": 6.1,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "e2a_client_kill": {
+   "cpuS": 20.7,
+   "wallS": 18.7,
+   "testS": 18.4,
+   "peakCores": 3.6,
+   "waitShare": 0.0,
+   "kind": "real",
+   "minScale": null
+  },
+  "e2a_handle_holder": {
+   "cpuS": 23.6,
+   "wallS": 39.0,
+   "testS": 38.8,
+   "peakCores": 4.1,
+   "waitShare": 0.39,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "e2a_kill_fork": {
+   "cpuS": 105.1,
+   "wallS": 15.6,
+   "testS": 15.2,
+   "peakCores": 11.2,
+   "waitShare": 0.0,
+   "kind": "real",
+   "minScale": null
+  },
+  "e2a_rollback_holder": {
+   "cpuS": 15.5,
+   "wallS": 12.2,
+   "testS": 12.0,
+   "peakCores": 4.0,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "e2a_self_leftover": {
+   "cpuS": 17.7,
+   "wallS": 8.4,
+   "testS": 8.3,
+   "peakCores": 4.2,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "e2a_sweeper": {
+   "cpuS": 16.1,
+   "wallS": 10.0,
+   "testS": 9.8,
+   "peakCores": 3.9,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "e8_check_errors": {
+   "cpuS": 10.7,
+   "wallS": 8.0,
+   "testS": 7.9,
+   "peakCores": 3.9,
+   "waitShare": 0.0,
+   "kind": "real",
+   "minScale": null
+  },
+  "e8_flush_before_rename": {
+   "cpuS": 26.7,
+   "wallS": 19.6,
+   "testS": 19.5,
+   "peakCores": 5.4,
+   "waitShare": 0.0,
+   "kind": "real",
+   "minScale": null
+  },
+  "e8_installed_jar": {
+   "cpuS": 5.4,
+   "wallS": 1.5,
+   "testS": 1.3,
+   "peakCores": 4.4,
+   "waitShare": 0.0,
+   "kind": "real",
+   "minScale": null
+  },
+  "e8_item_readonly": {
+   "cpuS": 9.7,
+   "wallS": 4.3,
+   "testS": 4.1,
+   "peakCores": 3.5,
+   "waitShare": 0.0,
+   "kind": "real",
+   "minScale": null
+  },
+  "e8_kill_loop": {
+   "cpuS": 133.9,
+   "wallS": 82.0,
+   "testS": 81.9,
+   "peakCores": 5.7,
+   "waitShare": 0.0,
+   "kind": "real",
+   "minScale": null
+  },
+  "e8_private_open": {
+   "cpuS": 9.4,
+   "wallS": 3.8,
+   "testS": 3.6,
+   "peakCores": 4.6,
+   "waitShare": 0.0,
+   "kind": "real",
+   "minScale": null
+  },
+  "e8_private_readonly": {
+   "cpuS": 7.2,
+   "wallS": 3.8,
+   "testS": 3.7,
+   "peakCores": 2.7,
+   "waitShare": 0.0,
+   "kind": "real",
+   "minScale": null
+  },
+  "e8_repair_open": {
+   "cpuS": 6.5,
+   "wallS": 3.2,
+   "testS": 3.0,
+   "peakCores": 3.7,
+   "waitShare": 0.0,
+   "kind": "real",
+   "minScale": null
+  },
+  "e8_save_time": {
+   "cpuS": 14.5,
+   "wallS": 26.0,
+   "testS": 25.6,
+   "peakCores": 2.5,
+   "waitShare": 0.44,
+   "kind": "real",
+   "minScale": null
+  },
+  "e8_sp5_flush_idempotent": {
+   "cpuS": 28.8,
+   "wallS": 41.3,
+   "testS": 41.1,
+   "peakCores": 4.9,
+   "waitShare": 0.3,
+   "kind": "real",
+   "minScale": null
+  },
+  "e8_version_chain": {
+   "cpuS": 5.0,
+   "wallS": 2.3,
+   "testS": 2.2,
+   "peakCores": 4.2,
+   "waitShare": 0.0,
+   "kind": "real",
+   "minScale": null
+  },
+  "e8_window_control": {
+   "cpuS": 21.4,
+   "wallS": 18.1,
+   "testS": 17.9,
+   "peakCores": 3.7,
+   "waitShare": 0.0,
+   "kind": "real",
+   "minScale": null
+  },
+  "edit": {
+   "cpuS": 25.0,
+   "wallS": 10.2,
+   "testS": 10.1,
+   "peakCores": 5.8,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "failed_test_releases": {
+   "cpuS": 8.1,
+   "wallS": 3.7,
+   "testS": 3.5,
+   "peakCores": 3.3,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "fair_key": {
+   "cpuS": 10.0,
+   "wallS": 7.9,
+   "testS": 7.7,
+   "peakCores": 4.1,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "fairness": {
+   "cpuS": 15.7,
+   "wallS": 15.2,
+   "testS": 15.0,
+   "peakCores": 5.1,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "folder_singletons": {
+   "cpuS": 5.8,
+   "wallS": 2.8,
+   "testS": 2.6,
+   "peakCores": 3.4,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "fork": {
+   "cpuS": 21.3,
+   "wallS": 29.0,
+   "testS": 28.9,
+   "peakCores": 5.0,
+   "waitShare": 0.27,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "fork_purposes": {
+   "cpuS": 10.4,
+   "wallS": 4.0,
+   "testS": 3.8,
+   "peakCores": 5.0,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "fork_report": {
+   "cpuS": 9.5,
+   "wallS": 4.5,
+   "testS": 4.4,
+   "peakCores": 3.4,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "fork_save_behind_analysis": {
+   "cpuS": 14.6,
+   "wallS": 10.5,
+   "testS": 10.4,
+   "peakCores": 3.3,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "format_readonly": {
+   "cpuS": 12.3,
+   "wallS": 5.4,
+   "testS": 5.3,
+   "peakCores": 3.9,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "format_truncated": {
+   "cpuS": 18.8,
+   "wallS": 30.9,
+   "testS": 30.0,
+   "peakCores": 4.0,
+   "waitShare": 0.39,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "holders": {
+   "cpuS": 23.3,
+   "wallS": 13.2,
+   "testS": 13.1,
+   "peakCores": 5.2,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "idle_shutdown": {
+   "cpuS": 6.4,
+   "wallS": 5.4,
+   "testS": 5.2,
+   "peakCores": 2.5,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "import_isolation": {
+   "cpuS": 106.8,
+   "wallS": 53.1,
+   "testS": 52.9,
+   "peakCores": 7.8,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "import_kill": {
+   "cpuS": 46.1,
+   "wallS": 32.4,
+   "testS": 32.2,
+   "peakCores": 4.0,
+   "waitShare": 0.0,
+   "kind": "real",
+   "minScale": null
+  },
+  "import_queue": {
+   "cpuS": 21.8,
+   "wallS": 14.0,
+   "testS": 13.9,
+   "peakCores": 2.9,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "import_readers": {
+   "cpuS": 27.3,
+   "wallS": 11.8,
+   "testS": 11.6,
+   "peakCores": 4.0,
+   "waitShare": 0.0,
+   "kind": "real",
+   "minScale": null
+  },
+  "import_speed": {
+   "cpuS": 27.9,
+   "wallS": 15.2,
+   "testS": 15.1,
+   "peakCores": 3.5,
+   "waitShare": 0.0,
+   "kind": "real",
+   "minScale": null
+  },
+  "import_wait": {
+   "cpuS": 50.0,
+   "wallS": 43.7,
+   "testS": 43.6,
+   "peakCores": 7.6,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "import_write_kill": {
+   "cpuS": 101.1,
+   "wallS": 53.1,
+   "testS": 53.0,
+   "peakCores": 3.8,
+   "waitShare": 0.0,
+   "kind": "real",
+   "minScale": null
+  },
+  "keep_warm": {
+   "cpuS": 10.7,
+   "wallS": 8.9,
+   "testS": 8.7,
+   "peakCores": 4.8,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "lane_starvation": {
+   "cpuS": 14.7,
+   "wallS": 6.4,
+   "testS": 6.3,
+   "peakCores": 4.9,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "legacy_foreign_owner": {
+   "cpuS": 5.2,
+   "wallS": 2.6,
+   "testS": 2.4,
+   "peakCores": 2.9,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "legacy_overlay": {
+   "cpuS": 13.7,
+   "wallS": 7.9,
+   "testS": 7.6,
+   "peakCores": 6.6,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "lock_queue_full": {
+   "cpuS": 16.4,
+   "wallS": 13.0,
+   "testS": 12.8,
+   "peakCores": 2.5,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "maint_lane": {
+   "cpuS": 14.2,
+   "wallS": 5.9,
+   "testS": 5.7,
+   "peakCores": 4.6,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "manifest_canonical": {
+   "cpuS": 10.8,
+   "wallS": 4.2,
+   "testS": 4.0,
+   "peakCores": 4.2,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "multi_writer": {
+   "cpuS": 77.4,
+   "wallS": 31.8,
+   "testS": 31.7,
+   "peakCores": 5.8,
+   "waitShare": 0.0,
+   "kind": "real",
+   "minScale": null
+  },
+  "oracle_crash_c_forks": {
+   "cpuS": 0.1,
+   "wallS": 0.1,
+   "testS": 0.0,
+   "peakCores": 0.0,
+   "waitShare": 0.25,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "oracle_header_watcher": {
+   "cpuS": 0.1,
+   "wallS": 1.1,
+   "testS": 1.0,
+   "peakCores": 0.2,
+   "waitShare": 0.88,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "oracle_invariants_fail": {
+   "cpuS": 1.2,
+   "wallS": 2.9,
+   "testS": 2.8,
+   "peakCores": 0.6,
+   "waitShare": 0.59,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "oracle_live_engine": {
+   "cpuS": 0.1,
+   "wallS": 0.2,
+   "testS": 0.0,
+   "peakCores": 0.0,
+   "waitShare": 0.17,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "oracle_selftest": {
+   "cpuS": 1.6,
+   "wallS": 6.1,
+   "testS": 5.4,
+   "peakCores": 0.5,
+   "waitShare": 0.74,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "orphan_shutdown": {
+   "cpuS": 24.4,
+   "wallS": 11.3,
+   "testS": 11.1,
+   "peakCores": 5.5,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "orphan_ttl": {
+   "cpuS": 16.2,
+   "wallS": 19.0,
+   "testS": 18.6,
+   "peakCores": 3.0,
+   "waitShare": 0.15,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "overlay_owned": {
+   "cpuS": 21.5,
+   "wallS": 21.5,
+   "testS": 21.2,
+   "peakCores": 5.7,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "overlay_script_changed": {
+   "cpuS": 15.0,
+   "wallS": 6.5,
+   "testS": 6.4,
+   "peakCores": 3.6,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "overlays": {
+   "cpuS": 19.8,
+   "wallS": 12.5,
+   "testS": 12.2,
+   "peakCores": 4.2,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "owner_leave_bounded": {
+   "cpuS": 19.1,
+   "wallS": 40.7,
+   "testS": 40.4,
+   "peakCores": 2.4,
+   "waitShare": 0.53,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "p1b_breakaway_probe": {
+   "cpuS": 0.1,
+   "wallS": 0.2,
+   "testS": 0.0,
+   "peakCores": 0.0,
+   "waitShare": 0.27,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "p1b_call_deadline": {
+   "cpuS": 11.5,
+   "wallS": 6.7,
+   "testS": 6.5,
+   "peakCores": 4.2,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "p1b_children_of_threads": {
+   "cpuS": 11.1,
+   "wallS": 3.0,
+   "testS": 2.8,
+   "peakCores": 4.0,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "p1b_concurrent_launchers": {
+   "cpuS": 17.5,
+   "wallS": 5.5,
+   "testS": 5.3,
+   "peakCores": 6.7,
+   "waitShare": 0.0,
+   "kind": "real",
+   "minScale": null
+  },
+  "p1b_daemon_survives_launcher_exit": {
+   "cpuS": 40.2,
+   "wallS": 37.9,
+   "testS": 37.7,
+   "peakCores": 4.6,
+   "waitShare": 0.0,
+   "kind": "real",
+   "minScale": null
+  },
+  "p1b_duplicate_daemon": {
+   "cpuS": 11.5,
+   "wallS": 4.7,
+   "testS": 4.5,
+   "peakCores": 4.3,
+   "waitShare": 0.0,
+   "kind": "real",
+   "minScale": null
+  },
+  "p1b_launch_errors": {
+   "cpuS": 3.5,
+   "wallS": 4.7,
+   "testS": 4.6,
+   "peakCores": 1.8,
+   "waitShare": 0.26,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "p1b_native_access_flag": {
+   "cpuS": 0.4,
+   "wallS": 0.4,
+   "testS": 0.2,
+   "peakCores": 0.0,
+   "waitShare": 0.05,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "p1b_stop_shutdown_deadline": {
+   "cpuS": 0.2,
+   "wallS": 8.4,
+   "testS": 8.1,
+   "peakCores": 0.2,
+   "waitShare": 0.98,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "p1b_wedged_connect": {
+   "cpuS": 5.6,
+   "wallS": 32.9,
+   "testS": 32.4,
+   "peakCores": 2.1,
+   "waitShare": 0.83,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "parallel_imports": {
+   "cpuS": 31.1,
+   "wallS": 17.5,
+   "testS": 17.4,
+   "peakCores": 3.7,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "parallel_reads": {
+   "cpuS": 13.3,
+   "wallS": 11.3,
+   "testS": 11.2,
+   "peakCores": 3.4,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "per_key_cap_conserving": {
+   "cpuS": 9.9,
+   "wallS": 9.2,
+   "testS": 8.6,
+   "peakCores": 4.2,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "preflight_wait": {
+   "cpuS": 23.2,
+   "wallS": 19.6,
+   "testS": 19.4,
+   "peakCores": 5.3,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "prepare_upgrade": {
+   "cpuS": 11.7,
+   "wallS": 4.1,
+   "testS": 3.9,
+   "peakCores": 5.1,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "private_beside_holder": {
+   "cpuS": 15.4,
+   "wallS": 15.2,
+   "testS": 15.1,
+   "peakCores": 4.1,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "private_open_cost": {
+   "cpuS": 14.2,
+   "wallS": 6.4,
+   "testS": 6.3,
+   "peakCores": 4.3,
+   "waitShare": 0.0,
+   "kind": "real",
+   "minScale": null
+  },
+  "program_lock_spike": {
+   "cpuS": 14.6,
+   "wallS": 14.3,
+   "testS": 14.1,
+   "peakCores": 3.3,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "promote_marker": {
+   "cpuS": 11.6,
+   "wallS": 4.3,
+   "testS": 4.2,
+   "peakCores": 5.1,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "queue_info": {
+   "cpuS": 20.2,
+   "wallS": 22.3,
+   "testS": 22.0,
+   "peakCores": 2.8,
+   "waitShare": 0.09,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "refresh_force": {
+   "cpuS": 12.2,
+   "wallS": 4.8,
+   "testS": 4.7,
+   "peakCores": 4.5,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "registry_unnested": {
+   "cpuS": 15.3,
+   "wallS": 14.9,
+   "testS": 14.7,
+   "peakCores": 4.8,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "repair_policy": {
+   "cpuS": 10.7,
+   "wallS": 5.0,
+   "testS": 4.8,
+   "peakCores": 3.8,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "revisions": {
+   "cpuS": 22.3,
+   "wallS": 11.4,
+   "testS": 11.2,
+   "peakCores": 5.3,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "runaway_bounds": {
+   "cpuS": 19.3,
+   "wallS": 32.2,
+   "testS": 32.1,
+   "peakCores": 2.9,
+   "waitShare": 0.4,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "rusticquery_read": {
+   "cpuS": 20.8,
+   "wallS": 11.1,
+   "testS": 10.9,
+   "peakCores": 4.5,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "script_changed": {
+   "cpuS": 20.1,
+   "wallS": 26.7,
+   "testS": 26.6,
+   "peakCores": 2.6,
+   "waitShare": 0.25,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "script_modes": {
+   "cpuS": 18.7,
+   "wallS": 23.4,
+   "testS": 23.1,
+   "peakCores": 2.9,
+   "waitShare": 0.2,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "script_reply": {
+   "cpuS": 14.4,
+   "wallS": 14.2,
+   "testS": 14.1,
+   "peakCores": 3.8,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "script_shared_visibility": {
+   "cpuS": 13.9,
+   "wallS": 10.3,
+   "testS": 10.2,
+   "peakCores": 4.9,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "seal_union": {
+   "cpuS": 12.2,
+   "wallS": 5.7,
+   "testS": 5.5,
+   "peakCores": 3.8,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "shared": {
+   "cpuS": 30.8,
+   "wallS": 16.5,
+   "testS": 16.3,
+   "peakCores": 5.6,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "shared_stress": {
+   "cpuS": 24.9,
+   "wallS": 11.4,
+   "testS": 11.2,
+   "peakCores": 5.6,
+   "waitShare": 0.0,
+   "kind": "real",
+   "minScale": null
+  },
+  "shared_stress_v3": {
+   "cpuS": 11.5,
+   "wallS": 4.4,
+   "testS": 4.2,
+   "peakCores": 4.3,
+   "waitShare": 0.0,
+   "kind": "real",
+   "minScale": null
+  },
+  "sidecar_unfinished": {
+   "cpuS": 17.8,
+   "wallS": 11.5,
+   "testS": 11.3,
+   "peakCores": 3.3,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "stalled_socket": {
+   "cpuS": 15.2,
+   "wallS": 12.1,
+   "testS": 11.8,
+   "peakCores": 3.4,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "stdio": {
+   "cpuS": 3.7,
+   "wallS": 2.1,
+   "testS": 1.9,
+   "peakCores": 2.1,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "sweeper_pid_reuse": {
+   "cpuS": 5.0,
+   "wallS": 5.5,
+   "testS": 5.2,
+   "peakCores": 3.0,
+   "waitShare": 0.1,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "two_harnesses": {
+   "cpuS": 6.9,
+   "wallS": 5.9,
+   "testS": 5.7,
+   "peakCores": 2.7,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "two_projects": {
+   "cpuS": 61.0,
+   "wallS": 31.4,
+   "testS": 31.2,
+   "peakCores": 4.8,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "unsaved_ignored": {
+   "cpuS": 16.5,
+   "wallS": 16.9,
+   "testS": 16.4,
+   "peakCores": 3.1,
+   "waitShare": 0.02,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "upgrade_cache": {
+   "cpuS": 31.9,
+   "wallS": 21.0,
+   "testS": 20.8,
+   "peakCores": 5.0,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null,
+   "status": "fail"
+  },
+  "upgrade_gate": {
+   "cpuS": 34.8,
+   "wallS": 11.5,
+   "testS": 11.3,
+   "peakCores": 5.4,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "waiter_caps": {
+   "cpuS": 14.0,
+   "wallS": 9.5,
+   "testS": 9.4,
+   "peakCores": 3.4,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  },
+  "writer_vs_steady_readers": {
+   "cpuS": 54.8,
+   "wallS": 66.0,
+   "testS": 65.9,
+   "peakCores": 4.4,
+   "waitShare": 0.17,
+   "kind": "unclassified",
+   "minScale": null
+  }
+ },
+ "session_smoke.py#t0": {
+  "session_smoke": {
+   "cpuS": 82.4,
+   "wallS": 49.9,
+   "peakCores": 5.6,
+   "waitShare": 0.0,
+   "kind": "unclassified",
+   "minScale": null
+  }
+ },
+ "_t0": {
+  "what": "T0 of the virtual-time design: per-test cpuS (user+kernel, whole process tree), wallS (whole run) measured alone; read-only data, run_parallel.py ignores these keys",
+  "date": "2026-10-29",
+  "machine": "DOOMBRINGER",
+  "engine": "E:\\Projects\\Hydra\\_engines\\int-tip",
+  "fixed": {
+   "daemon_cycle.TOTAL_PROCESS": {
+    "wallS": 1.94,
+    "cpuS": 3.16,
+    "reps": 5
+   },
+   "daemon_cycle.close_session": {
+    "wallS": 0.0,
+    "cpuS": 0.0,
+    "reps": 5
+   },
+   "daemon_cycle.daemon_start_connect": {
+    "wallS": 1.45,
+    "cpuS": 2.72,
+    "reps": 5
+   },
+   "daemon_cycle.daemon_stop": {
+    "wallS": 0.41,
+    "cpuS": 0.38,
+    "reps": 5
+   },
+   "daemon_cycle.hello_roundtrip": {
+    "wallS": 0.0,
+    "cpuS": 0.0,
+    "reps": 5
+   },
+   "project_import.TOTAL_PROCESS": {
+    "wallS": 23.47,
+    "cpuS": 55.34,
+    "reps": 1
+   },
+   "project_import.close_project_A": {
+    "wallS": 0.01,
+    "cpuS": 0.01,
+    "reps": 1
+   },
+   "project_import.copy_fixture_project": {
+    "wallS": 0.02,
+    "cpuS": 0.02,
+    "reps": 1
+   },
+   "project_import.daemon_start_connect": {
+    "wallS": 1.39,
+    "cpuS": 3.02,
+    "reps": 1
+   },
+   "project_import.daemon_start_connect_2nd": {
+    "wallS": 0.63,
+    "cpuS": 1.32,
+    "reps": 1
+   },
+   "project_import.daemon_stop": {
+    "wallS": 0.53,
+    "cpuS": 0.42,
+    "reps": 1
+   },
+   "project_import.daemon_stop_2nd": {
+    "wallS": 0.51,
+    "cpuS": 0.4,
+    "reps": 1
+   },
+   "project_import.fixture_import_analyze": {
+    "wallS": 11.25,
+    "cpuS": 21.0,
+    "reps": 1
+   },
+   "project_import.import_exe_no_analysis": {
+    "wallS": 6.03,
+    "cpuS": 17.22,
+    "reps": 1
+   },
+   "project_import.make_project": {
+    "wallS": 1.72,
+    "cpuS": 5.97,
+    "reps": 1
+   },
+   "project_import.make_project_B": {
+    "wallS": 0.09,
+    "cpuS": 0.12,
+    "reps": 1
+   },
+   "project_import.open_copied_project": {
+    "wallS": 0.77,
+    "cpuS": 3.89,
+    "reps": 1
+   },
+   "project_import.open_program": {
+    "wallS": 0.34,
+    "cpuS": 1.64,
+    "reps": 1
+   },
+   "project_import.open_project": {
+    "wallS": 0.05,
+    "cpuS": 0.14,
+    "reps": 1
+   },
+   "project_import.open_project_B": {
+    "wallS": 0.03,
+    "cpuS": 0.08,
+    "reps": 1
+   },
+   "project_import.save_close_B": {
+    "wallS": 0.01,
+    "cpuS": 0.03,
+    "reps": 1
+   },
+   "python_baseline.TOTAL_PROCESS": {
+    "wallS": 0.07,
+    "cpuS": 0.05,
+    "reps": 1
+   }
+  }
  }
 }
