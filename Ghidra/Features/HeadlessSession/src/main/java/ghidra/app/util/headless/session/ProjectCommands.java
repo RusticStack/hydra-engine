@@ -204,7 +204,9 @@ final class ProjectCommands {
 	 * view; the programs clients use are reopened from it under the same key, read-only, with their
 	 * overlays rebuilt, each as soon as its lock is free (never queueing for it); the read-only view
 	 * closes when its last command and program let go. The id, the keys and the clients' joins
-	 * stay. Held: {@link ProjectEntry#structure} only (not the project lock, not a registry).
+	 * stay. Held: {@link ProjectEntry#structure} only (not the project lock, not a registry). A close
+	 * of the project cannot run meanwhile: {@link ProjectRegistry#closeIdle} needs {@code structure}
+	 * too, so the {@code closed} check below and the repoint are one step against it.
 	 */
 	private void makeWritable(Client c, ProjectEntry p, long wait) {
 		// one structure change per project at a time; a second opener that waited here finds it done
@@ -607,10 +609,14 @@ final class ProjectCommands {
 			return r;
 		}
 		boolean unlock = true;
+		// the flag is cleared before the current view is read (both volatile): a refresh that repoints
+		// after this read fails its tryLock (we hold the lock) and finds the flag clear, so it marks the
+		// program again and it is reopened from that newer view; clearing it after the read could lose
+		// that mark and leave the program on the retired view
+		e.reopenPendingSince = 0;
 		ProjectEntry.View nv = p.retainView();
 		boolean bound = false;
 		try {
-			e.reopenPendingSince = 0;
 			if (e.userCount() == 0) {
 				s.programCmds.disposeProgram(e);
 				Json.put(r, "action", "closed (nobody used it)");

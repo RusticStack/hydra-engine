@@ -53,7 +53,10 @@ final class ProjectEntry {
 	volatile SessionProject project;
 	/** The current view, with the reference count that lets a retired one close when unused. */
 	private volatile View view;
-	/** Serialises the structure changes (refresh, reopening writable) of this project. */
+	/**
+	 * Serialises the structure changes (refresh, reopening writable) of this project, and excludes
+	 * them from its close ({@link ProjectRegistry#closeIdle} takes it without waiting).
+	 */
 	final ReentrantLock structure = new ReentrantLock();
 	final ReentrantReadWriteLock lock = new ReentrantReadWriteLock(true);
 	final long openedAt = System.currentTimeMillis();

@@ -33,12 +33,21 @@ import com.google.gson.JsonArray;
  * <p>
  * A {@link Slot} per canonical project path lives in a {@link ConcurrentHashMap}; its
  * {@link State} is {@code OPENING} (the first opener is opening the project, followers wait for it:
- * single flight), {@code OPEN}, or {@code CLOSING}. Every transition of one project happens under
- * that slot's own {@link Slot#transition} lock, so two projects never meet: the lock of one slot is
- * the only thing a request for that project can wait for, and the wait is the cancel-aware, bounded
- * {@link Waits#lock(java.util.concurrent.locks.Lock, long)}. Nothing in this class waits for a
- * project lock, a program lock or a client while holding a monitor (NB3); the one exclusive project
- * lock of a close is taken by the closer passed in, under the slot's {@code transition} lock only.
+ * single flight), {@code OPEN}, or {@code CLOSING}. The life-cycle transitions of one project (open,
+ * join, close) happen under that slot's own {@link Slot#transition} lock, so two projects never meet:
+ * the lock of one slot is the only thing a request for that project can wait for, and the wait is
+ * the cancel-aware, bounded {@link Waits#lock(java.util.concurrent.locks.Lock, long)}. The view
+ * changes of an open project (a {@code refresh}, the reopening of a read-only view as writable) are
+ * <i>not</i> under the slot's lock: they run under the project's {@link ProjectEntry#structure} lock
+ * only, so that readers keep joining while they run (BP7). A close and a view change exclude each
+ * other: a close takes the slot's lock and then {@code structure}, both without waiting
+ * ({@code tryLock}; a structure change in flight means the project is not idle, and the reap or the
+ * next leave tries again), and a view change checks {@link ProjectEntry#closed} under
+ * {@code structure}. Lock order: slot {@code transition}, then {@code structure}, then the project
+ * lock, then a program lock; nothing that holds {@code structure} takes a slot lock, and the close
+ * takes {@code structure} only with {@code tryLock}, so the order cannot deadlock. Nothing in this
+ * class waits for a project lock, a program lock or a client while holding a monitor (NB3); the one
+ * exclusive project lock of a close is taken by the closer passed in, under those two locks only.
  * <p>
  * The maps {@code Session.projects} and {@code Session.projectsById} stay as the read indexes of
  * the open projects; a slot's owner puts a project into them when it is {@code OPEN} and takes it
@@ -94,8 +103,10 @@ final class ProjectRegistry {
 		JsonArray a = new JsonArray();
 		for (Slot s : slots.values()) {
 			ProjectEntry p = s.entry;
+			// viewRefs: the references on the current view (1 for being current, 1 per program opened
+			// from it, 1 per running command pinned on it): a leak shows as a count that never returns
 			a.add(Json.of("canonical", s.canonical, "state", s.state.json(), "project",
-				p == null ? null : p.id));
+				p == null ? null : p.id, "viewRefs", p == null || p.closed ? null : p.viewRefs()));
 		}
 		return a;
 	}
@@ -103,8 +114,11 @@ final class ProjectRegistry {
 	/**
 	 * Closes {@code p} when nobody has joined it, without waiting for anything but what {@code closer}
 	 * waits for. A join, open or close of the same project in flight (its {@code transition} lock is
-	 * taken) means it is not idle after all: nothing happens and false is returned. If the closer
-	 * refuses (a request still runs there) the project stays {@code OPEN}.
+	 * taken), or a view change ({@code refresh}, a writable reopen: its {@link ProjectEntry#structure}
+	 * lock is taken, also by this very thread) means it is not idle after all: nothing happens and
+	 * false is returned (the view change would otherwise install a new view on a closed project, and
+	 * nothing would ever close it). If the closer refuses (a request still runs there) the project
+	 * stays {@code OPEN}.
 	 *
 	 * @return true when the project was closed
 	 */
@@ -114,32 +128,45 @@ final class ProjectRegistry {
 			return false;
 		}
 		try {
-			if (slots.get(p.canonical) != sl || p.closed) {
+			if (p.structure.isHeldByCurrentThread() || !p.structure.tryLock()) {
 				return false;
 			}
-			synchronized (p.users) {
-				if (!p.users.isEmpty()) {
-					return false;
-				}
-				p.closing = true;
-			}
-			sl.state = State.CLOSING;
 			try {
-				closer.accept(p);
+				return closeLocked(sl, p, closer);
 			}
-			catch (RuntimeException e) {
-				synchronized (p.users) {
-					p.closing = false;
-				}
-				sl.state = State.OPEN;
-				throw e;
+			finally {
+				p.structure.unlock();
 			}
-			slots.remove(p.canonical, sl);
-			return true;
 		}
 		finally {
 			sl.transition.unlock();
 		}
+	}
+
+	/** Held: {@code sl.transition} and {@code p.structure}. */
+	private boolean closeLocked(Slot sl, ProjectEntry p, Consumer<ProjectEntry> closer) {
+		if (slots.get(p.canonical) != sl || p.closed) {
+			return false;
+		}
+		synchronized (p.users) {
+			if (!p.users.isEmpty()) {
+				return false;
+			}
+			p.closing = true;
+		}
+		sl.state = State.CLOSING;
+		try {
+			closer.accept(p);
+		}
+		catch (RuntimeException e) {
+			synchronized (p.users) {
+				p.closing = false;
+			}
+			sl.state = State.OPEN;
+			throw e;
+		}
+		slots.remove(p.canonical, sl);
+		return true;
 	}
 
 	/**
@@ -160,11 +187,20 @@ final class ProjectRegistry {
 			try {
 				ProjectEntry p = sl.entry;
 				if (p != null && !p.closed) {
-					sl.state = State.CLOSING;
-					synchronized (p.users) {
-						p.closing = true;
+					// a view change in flight is waited for the same way (it checks closed under it)
+					boolean structure = Waits.tryLock(p.structure, waitMs);
+					try {
+						sl.state = State.CLOSING;
+						synchronized (p.users) {
+							p.closing = true;
+						}
+						closer.accept(p);
 					}
-					closer.accept(p);
+					finally {
+						if (structure) {
+							p.structure.unlock();
+						}
+					}
 				}
 				slots.remove(sl.canonical, sl);
 			}

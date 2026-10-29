@@ -595,6 +595,7 @@ public class HeadlessSession implements GhidraLaunchable {
 			preflight();
 			cancelHooks();
 			waiterCaps();
+			closeVsViewChange();
 			dbVersions();
 			System.out.println(
 				bad == 0 ? "all self-test checks held" : bad + " self-test check(s) FAILED");
@@ -1152,6 +1153,78 @@ public class HeadlessSession implements GhidraLaunchable {
 			}
 			finally {
 				release.countDown();
+			}
+		}
+
+		/**
+		 * The close of an idle project and a view change of it (a {@code refresh}, the reopening of a
+		 * read-only view as writable) exclude each other (E3c). A thread plays the view change the way
+		 * {@code ProjectCommands.makeWritable} and {@code refresh} run it: it holds the project's
+		 * {@code structure} lock, checks {@code closed}, and then (held by a latch, the slow
+		 * {@code SessionProject.open}) would install its new view. Meanwhile the reap's
+		 * {@code closeIdle} runs. Before the fix the close ran in that window and the new view was
+		 * installed on a closed project: nothing ever closed it and the daemon kept the project's OS
+		 * lock.
+		 */
+		private static void closeVsViewChange() {
+			ProjectRegistry reg = new ProjectRegistry();
+			ProjectRegistry.Slot sl = reg.slot("selftest:close-vs-view-change");
+			ProjectEntry p = new ProjectEntry("p1", null, sl.canonical, null, 0);
+			sl.entry = p;
+			sl.state = ProjectRegistry.State.OPEN;
+			java.util.concurrent.CountDownLatch checked = new java.util.concurrent.CountDownLatch(1);
+			java.util.concurrent.CountDownLatch go = new java.util.concurrent.CountDownLatch(1);
+			java.util.concurrent.atomic.AtomicBoolean onClosed =
+				new java.util.concurrent.atomic.AtomicBoolean();
+			java.util.concurrent.atomic.AtomicInteger closes =
+				new java.util.concurrent.atomic.AtomicInteger();
+			java.util.function.Consumer<ProjectEntry> closer = x -> {
+				closes.incrementAndGet();
+				x.closed = true;
+			};
+			Thread change = new Thread(() -> {
+				p.structure.lock();
+				try {
+					if (p.closed) {
+						return;
+					}
+					checked.countDown();
+					go.await(10, java.util.concurrent.TimeUnit.SECONDS);
+					onClosed.set(p.closed); // the repoint would install its view now
+				}
+				catch (InterruptedException e) {
+					Thread.currentThread().interrupt();
+				}
+				finally {
+					p.structure.unlock();
+				}
+			});
+			change.start();
+			try {
+				boolean ready = checked.await(10, java.util.concurrent.TimeUnit.SECONDS);
+				boolean during = reg.closeIdle(p, closer);
+				go.countDown();
+				change.join(10000);
+				p.structure.lock();
+				boolean ownThread;
+				try {
+					ownThread = reg.closeIdle(p, closer); // a view change of this very thread
+				}
+				finally {
+					p.structure.unlock();
+				}
+				boolean after = reg.closeIdle(p, closer);
+				check("a close of an idle project does not run while a view change of it (refresh, " +
+					"writable reopen) holds its structure lock, and runs once after it",
+					ready && !during && !onClosed.get() && !ownThread && after && closes.get() == 1 &&
+						reg.current(sl.canonical) == null);
+			}
+			catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				check("the close versus view change check was interrupted", false);
+			}
+			finally {
+				go.countDown();
 			}
 		}
 
