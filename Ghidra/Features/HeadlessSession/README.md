@@ -74,7 +74,14 @@ three extra JVMs `LaunchSupport` costs on every start:
   `PATH`. The version is read from the JDK's `release` file, without starting a JVM.
 - **JVM options:** `support/launch.properties` (`VMARGS`, `VMARGS_<OS>`, `ENVVARS`), then heap,
   GC, `java.io.tmpdir` and your extra options. JVM log messages go to stderr, never to the
-  protocol channel.
+  protocol channel. Compact object headers (`-XX:+UseCompactObjectHeaders`, a product option
+  since JDK 25) come from Ghidra's `launch.properties`, so every daemon has them; `vmargs`
+  `-XX:-UseCompactObjectHeaders` turns them off (your options come last and win), and the AOT
+  cache then gets a file of its own. Measured on JDK 25.0.4.1 (Temurin), import and analysis of
+  `ntdll.dll` (2.5 MB) in a daemon with its AOT cache, 3 runs each: about 4% less process CPU
+  (95 against 100 s), about 9% less peak heap after a collection (262 against 289 MB) and the
+  same wall time as with them off; without an AOT cache it took about 5% more CPU (101 s). The
+  daemon suite at 22 cores, 2 runs each, had the same failures either way.
 - **Classpath**, two modes:
   - `fast` (default): the classpath that `GhidraLauncher` would build, rebuilt from the module
     layout (patch dir, every module's `lib/` jars ordered by module type and name, extensions
