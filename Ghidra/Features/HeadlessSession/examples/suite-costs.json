@@ -120,5 +120,21 @@
   "upgrade_gate": 11.0,
   "waiter_caps": 6.2,
   "writer_vs_steady_readers": 106.1
- }
+ },
+ "daemon_tests.py#heavy": [
+  "dll_import",
+  "e8_flush_before_rename",
+  "e8_sp5_flush_idempotent",
+  "e8_window_control",
+  "import_isolation",
+  "import_kill",
+  "import_queue",
+  "import_readers",
+  "import_speed",
+  "import_write_kill",
+  "multi_writer",
+  "parallel_imports",
+  "two_projects",
+  "upgrade_cache"
+ ]
 }

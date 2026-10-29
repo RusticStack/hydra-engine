@@ -263,6 +263,58 @@ def selftest(gs):
     return 1 if bad else 0
 
 
+def _link_or_copy(src: pathlib.Path, dst: pathlib.Path):
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(src, dst)        # the AOT cache is only read (memory-mapped) by the JVMs
+    except OSError:
+        shutil.copy2(src, dst)
+
+
+def seed_state(seed: pathlib.Path, state: pathlib.Path):
+    """Puts what ``--prepare`` made into a fresh state dir: the class search cache and the AOT
+    cache (if one was made; hard-linked) of this install's daemon JVM, so that a daemon of the test
+    starts the way a user's second start does (measured: connect 0.7-1.0 s instead of 1.6-2.5 s). Neither changes what the daemon does, only how fast it starts; a test
+    that runs a daemon with other JVM options (another heap, collector, install) gets another cache
+    key and starts cold, as before."""
+    for f in sorted((seed / "state" / "aot").glob("*.aot")):
+        _link_or_copy(f, state / "aot" / f.name)
+    for f in sorted((seed / "state" / "classcache").glob("*.json")):
+        (state / "classcache").mkdir(parents=True, exist_ok=True)
+        shutil.copy2(f, state / "classcache" / f.name)   # small, and a daemon may rewrite it
+
+
+def prepare_seed(a, gs, aot=False):
+    """``--prepare``: makes ``--work`` a seed directory for ``--seed-dir``: the analysed fixture
+    project (what ``Ctx.fixture`` makes, once instead of once per test process), the class search
+    cache its daemon wrote, a copy of the install (``install``: a test that clones the install with
+    hard links needs a source on the same volume as its --work) and, with ``aot``, the AOT cache of the daemon JVM trained on a copy of
+    it. Returns the exit code."""
+    c = Ctx(a, gs)
+    t = time.perf_counter()
+    try:
+        base = c.fixture()
+        print(f"fixture {base} in {time.perf_counter() - t:.1f} s", flush=True)
+        t = time.perf_counter()
+        inst = c.work / "install"       # for the tests that clone the install with hard links (dt_e8.py)
+        if inst.exists():
+            shutil.rmtree(inst)
+        shutil.copytree(a.ghidra, inst)
+        print(f"install copy {inst} in {time.perf_counter() - t:.1f} s", flush=True)
+        if aot:
+            t = time.perf_counter()
+            train = c.work / "aot-train"
+            if train.exists():
+                shutil.rmtree(train)
+            shutil.copytree(base, train)
+            gs.build_aot(a.ghidra, str(c.state), str(train / "Fixture.gpr"), None)
+            shutil.rmtree(train, ignore_errors=True)
+            print(f"aot cache in {time.perf_counter() - t:.1f} s", flush=True)
+    finally:
+        c.cleanup()
+    return 0
+
+
 class Ctx:
     def __init__(self, a, gs):
         self.a = a
@@ -283,6 +335,9 @@ class Ctx:
         (self.state / "config.json").write_text(json.dumps(cfg))
         self.daemons = []
         self.timings = {}
+        self.seed = pathlib.Path(a.seed_dir).absolute() if getattr(a, "seed_dir", None) else None
+        if self.seed:
+            seed_state(self.seed, self.state)
 
     def daemon(self, instance, **cfg):
         d = self.gs.Daemon(self.a.ghidra, str(self.state), instance, **cfg)
@@ -308,6 +363,12 @@ class Ctx:
         """An analysed project with the EXE, made once and copied per test."""
         base = self.work / "fixture"
         gpr = base / "Fixture.gpr"
+        seeded = self.seed / "fixture" if self.seed else None
+        if not gpr.exists() and seeded and (seeded / "Fixture.gpr").is_file():
+            # the same project, made once by --prepare for the whole run (import+analyze of --exe)
+            t = time.perf_counter()
+            shutil.copytree(seeded, base)
+            self.timings["fixture copied from --seed-dir (s)"] = round(time.perf_counter() - t, 2)
         if not gpr.exists():
             d = self.daemon("fixture")
             with d.connect("fixture", "tests") as s:
@@ -2839,6 +2900,29 @@ TESTS = ["two_harnesses", "two_projects", "dll_import", "client_kill", "daemon_r
 REGISTRY = {}   # test name -> fn(ctx): the tests above and those of the dt_*.py files
 BASELINE = {}   # test name -> the premise it is a baseline of (expected to fail, see --baseline)
 LOADED = {}     # dt_*.py file name -> its test names, in order
+# test name -> {shard: fn(ctx)}: a test that is a loop of independent iterations (or of protocol
+# halves) may also be run as shards, ``name@shard``, each in its own process (run_parallel.py runs
+# them at once and reports them under ``name``). The shards together do everything the whole test
+# does (the same counts, the same checks per iteration); ``--only name`` still runs the whole test.
+SHARDS = {}
+
+
+def split_n(n, k):
+    """``n`` iterations over ``k`` shards as ``[(first, count)]``: the counts add up to ``n``."""
+    out, first = [], 0
+    for j in range(k):
+        cnt = n // k + (1 if j < n % k else 0)
+        out.append((first, cnt))
+        first += cnt
+    return out
+
+
+def test_fn(name):
+    """The function of a test name or of a shard ``name@shard``."""
+    if "@" in name:
+        t, s = name.split("@", 1)
+        return SHARDS[t][s]
+    return REGISTRY[name]
 
 
 def load_dt(tests_dir):
@@ -2858,9 +2942,16 @@ def load_dt(tests_dir):
             base = getattr(mod, "BASELINE", {})
             if not isinstance(base, dict) or set(base) - set(tests):
                 raise TypeError("BASELINE must be a dict {name: premise} of names in TESTS")
+            shards = getattr(mod, "SHARDS", {})
+            if not isinstance(shards, dict) or set(shards) - set(tests) or not all(
+                    isinstance(v, dict) and v and all(callable(x) and "@" not in k
+                                                      for k, x in v.items())
+                    for v in shards.values()):
+                raise TypeError("SHARDS must be a dict {name in TESTS: {shard: fn}}")
             for n, fn in tests.items():
                 if n in REGISTRY and REGISTRY[n] is not fn:
                     raise ValueError(f"test name {n!r} is already taken")
+            SHARDS.update(shards)
             for n, fn in tests.items():
                 REGISTRY[n] = fn
                 if n in base:
@@ -2891,7 +2982,7 @@ def run_test(c, n, secs):
     wd = watchdog(c, n, secs) if secs else None
     ev = {}
     try:
-        status, note = "pass", REGISTRY[n](c)
+        status, note = "pass", test_fn(n)(c)
         if str(note).startswith("skipped"):
             status = "skipped"
     except Skipped as e:
@@ -2949,6 +3040,18 @@ def main():
                     help="seconds one test may take before the run is ended with its daemons and "
                     "children killed (default: 600 with --baseline, else none)")
     ap.add_argument("--report", help="also write the results here, as JSON")
+    ap.add_argument("--list-shards", dest="list_shards", action="store_true",
+                    help="list the shards (name@shard) of the tests that have them, and exit")
+    ap.add_argument("--prepare", action="store_true",
+                    help="make --work a seed directory (the analysed fixture project and the "
+                    "daemon's AOT cache) for --seed-dir, and exit")
+    ap.add_argument("--prepare-aot", dest="prepare_aot", action="store_true",
+                    help="with --prepare: also train the daemon's AOT cache (about 30 s; measured "
+                    "0.1-0.3 s faster per daemon start than the class cache alone)")
+    ap.add_argument("--seed-dir", dest="seed_dir",
+                    help="a directory made by --prepare: the fixture is copied from it instead "
+                    "of being imported and analysed in this process, and the daemons start "
+                    "with its AOT cache (only read)")
     a = ap.parse_args()
     if a.selftest:
         sys.path.insert(0, str(pathlib.Path(a.ghidra) / "Ghidra" / "Features" / "HeadlessSession" /
@@ -2965,8 +3068,19 @@ def main():
     default = list(TESTS) + [n for fl in LOADED.values() for n in fl if n not in BASELINE]
     only = [x for x in (a.only or "").split(",") if x]
     for n in only:
-        if n not in REGISTRY:
+        t, _, s = n.partition("@")
+        if t not in REGISTRY:
             ap.error(f"unknown test {n}; known: {', '.join(REGISTRY)}")
+        if s and s not in SHARDS.get(t, {}):
+            ap.error(f"unknown shard {n}; the shards of {t}: "
+                     f"{', '.join(SHARDS.get(t, {})) or 'none'}")
+    if a.list_shards:
+        for t in REGISTRY:
+            for s in SHARDS.get(t, {}):
+                print(f"{t}@{s}")
+        for f, why in load_errors:
+            print(f"FAIL load {f}: {why}")
+        sys.exit(1 if load_errors else 0)
     if a.baseline:
         for n in only:
             if n not in BASELINE:
@@ -2985,8 +3099,10 @@ def main():
     sys.path.insert(0, str(pathlib.Path(a.ghidra) / "Ghidra" / "Features" / "HeadlessSession" /
                            "support"))
     import ghidra_session as gs
+    if a.prepare:
+        sys.exit(prepare_seed(a, gs, aot=a.prepare_aot))
     c = Ctx(a, gs)
-    secs = a.test_timeout if a.test_timeout is not None else (600 if a.baseline else 0)
+    secs =a.test_timeout if a.test_timeout is not None else (600 if a.baseline else 0)
     results = []
     bad = len(load_errors)
     for f, why in load_errors:
