@@ -77,6 +77,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import getpass
 import hashlib
 import json
 import os
@@ -597,6 +598,9 @@ DEFAULTS = {
     "singleton": "warn",     # warn | per-install: a live daemon of this install under another state
                              # dir is reported (warn) or refused (DuplicateDaemonError)
     "heapCheck": True,       # refuse an explicit maxHeap that is larger than the free physical memory
+    "settingsDir": "auto",   # Ghidra's per-user settings dir (OSGi felixcache, compiled script bundles) of a
+                             # daemon: auto (its own, <state>/settings/<instance>) | shared (the user's, as
+                             # Ghidra's launcher chooses it) | a directory
 }
 
 ENV_MAP = {
@@ -613,6 +617,7 @@ ENV_MAP = {
     "GHIDRA_SESSION_UPGRADE_CACHE_DIR": ("upgradeCacheDir", str),
     "GHIDRA_SESSION_FORK_COPY_LIMIT_MB": ("forkCopyLimitMb", int),
     "GHIDRA_SESSION_SINGLETON": ("singleton", str),
+    "GHIDRA_SESSION_SETTINGS_DIR": ("settingsDir", str),
     "GHIDRA_SESSION_HEAP_CHECK": ("heapCheck", lambda v: v.strip().lower() not in
                                   ("0", "false", "off", "no")),
 }
@@ -693,16 +698,62 @@ def load_config(state: Path, overrides: dict | None = None) -> dict:
 class Launch:
     """Everything needed to start one session JVM."""
 
-    def __init__(self, install: Install, cfg: dict, state: Path):
+    def __init__(self, install: Install, cfg: dict, state: Path, instance: str | None = None):
         self.install = install
         self.cfg = cfg
         self.state = state
+        #: the daemon instance this JVM is (its settings dir is named by it); None: not a daemon
+        self.instance = instance
         self.props = install.launch_properties()
         self.jdk, self.jdk_version = find_jdk(install, cfg.get("java"), self.props)
         self.java = _java_exe(self.jdk)
         self.env = dict(os.environ)
         for k, v in self.props["envvars"].items():
             self.env.setdefault(k, v)
+
+    def settings_dir_arg(self) -> str | None:
+        """``-Dapplication.settingsdir=...`` for a daemon JVM, or None. Ghidra keeps the OSGi bundle cache
+        (``osgi/felixcache``) and the compiled script bundles in its per-user settings dir, which every JVM
+        of the user shares: concurrent daemons (and a running Ghidra) contend for them (a 40 ms script
+        request took 2-3 s with 14 daemons at once). Each daemon therefore gets its own,
+        ``<state>/settings/<instance>``, unless ``settingsDir`` is ``shared`` or a JVM option already names
+        one. The user's ``Extensions`` are linked into it, so the same modules are found. The option
+        travels on the command line, so it also reaches the routes that carry no environment."""
+        mode = str(self.cfg.get("settingsDir") or "auto")
+        if self.instance is None or mode == "shared":
+            return None
+        if any(a.startswith("-Dapplication.settingsdir=")
+               for a in [*self.props["vmargs"], *(self.cfg.get("vmargs") or [])]):
+            return None
+        root = (self.state / "settings" / self.instance) if mode == "auto" else Path(mode)
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            self._link_extensions(root)
+        except OSError:
+            return None                 # the daemon then uses the shared dir, as before
+        return f"-Dapplication.settingsdir={root}"
+
+    def _link_extensions(self, root: Path):
+        """``<root>/<app>/<versioned>/Extensions`` -> the user's own (junction on Windows, symlink else),
+        when the user has any. Ghidra names the parent ``<app>`` below the home dir and ``<user>-<app>``
+        elsewhere."""
+        real = self.install.settings_dir(self.props["vmargs"]) / "Extensions"
+        if not real.is_dir():
+            return
+        app = self.install.name.lower().replace(" ", "")
+        home = Path.home().resolve()
+        inside = home == root.resolve() or home in root.resolve().parents
+        parent = app if inside else f"{getpass.getuser()}-{app}"
+        mine = real.parent
+        link = root / parent / mine.name / "Extensions"
+        if link.exists() or link.is_symlink():
+            return
+        link.parent.mkdir(parents=True, exist_ok=True)
+        if IS_WINDOWS:
+            subprocess.run(["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(real)],
+                           capture_output=True, creationflags=_CREATE_NO_WINDOW)
+        else:
+            os.symlink(real, link, target_is_directory=True)
 
     def gc_args(self) -> list[str]:
         gc = self.cfg["gc"]
@@ -837,6 +888,10 @@ class Launch:
         if self.cfg.get("tmpdir"):
             Path(self.cfg["tmpdir"]).mkdir(parents=True, exist_ok=True)
             vm.append(f"-Djava.io.tmpdir={self.cfg['tmpdir']}")
+        sd = self.settings_dir_arg()
+        if sd:
+            vm.append(sd)
+            info["settingsDir"] = sd.split("=", 1)[1]
         vm += list(self.cfg.get("vmargs") or [])
         info["maxHeap"] = heap
         app_args = list(app_args)
@@ -2041,7 +2096,7 @@ class Daemon:
         """Starts the JVM (D65: outside the caller's job when there is one) and returns its
         process object. How it was started is ``self.last_launch``."""
         cfg = load_config(self.state, self.cfg_overrides)
-        launch = Launch(install, cfg, self.state)
+        launch = Launch(install, cfg, self.state, self.instance)
         launch.check_heap()
         args = ["-daemon", "-stateDir", str(self.state), "-instance", self.instance,
                 "-idleTimeout", str(cfg["idleTimeout"]), "-keepWarm", str(cfg["keepWarm"]),

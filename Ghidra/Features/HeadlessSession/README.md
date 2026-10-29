@@ -146,6 +146,7 @@ Lowest to highest: defaults, `<state>/config.json`, environment, command-line op
 | `upgradeCache` | `GHIDRA_SESSION_UPGRADE_CACHE` (`off`, `false`, `0`: off) | `true` | Serve read-only opens of programs saved in an older database format from an upgraded copy (below). |
 | `upgradeCacheDir` | `GHIDRA_SESSION_UPGRADE_CACHE_DIR` | `<state>/upgrade-cache` | Where those copies live; best on the same volume as the projects (a block clone there costs nothing). |
 | `forkCopyLimitMb` | `GHIDRA_SESSION_FORK_COPY_LIMIT_MB` | `2048` | `fork_project` in `auto` mode refuses a full copy (one the file system cannot block-clone) larger than this; `"mode": "full"` copies anyway. |
+| `settingsDir` | `GHIDRA_SESSION_SETTINGS_DIR` | `auto` | Ghidra's per-user settings dir of the daemon (its OSGi `felixcache` and compiled script bundles, which every JVM of a user shares and contends for). `auto`: its own, `<state>/settings/<instance>` (the user's `Extensions` are linked into it); `shared`: the user's, as Ghidra's launcher chooses; or a directory. Passed as `-Dapplication.settingsdir`, so it also reaches the launch routes without an environment; a `-Dapplication.settingsdir` in `vmargs` or `launch.properties` wins. The first script of a daemon compiles into an empty cache. |
 
 #### Engine settings (protocol 3 release)
 

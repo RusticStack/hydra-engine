@@ -2066,7 +2066,14 @@ def code_functions(s, n, program=None):
             if not f["thunk"] and not f["external"]][:n]
 
 
+MW_ITERS, MW_SHARDS = 300, 3     # edit rounds of each writer in multi_writer; its shards split them
+
+
 def t_multi_writer(c: Ctx):
+    return _multi_writer(c, 0, MW_ITERS)
+
+
+def _multi_writer(c: Ctx, first: int, count: int):
     """Several writers in one project: a writable open while others hold the read-only view
     reopens it writable in place (the readers keep their keys and go on); a second writable
     open joins; two clients write two different programs of the project at the same time
@@ -2112,7 +2119,7 @@ def t_multi_writer(c: Ctx):
 
         def writer(s, key, fns, tag):
             try:
-                for i in range(300):
+                for i in range(first, first + count):
                     a = fns[i % len(fns)]
                     name = f"{tag}_{i}"
                     s.call("rename", program=key, address=a, name=name, wait=120000)
@@ -2135,9 +2142,9 @@ def t_multi_writer(c: Ctx):
         for th in ths:
             th.join()
         c.timings["two writers, two programs: 2x(300 renames + 300 comments + 7 saves)"] = round(
-            time.perf_counter() - t, 1)
+            time.perf_counter() - t, 1)      # the whole test; a shard has its share
         check(not errs, f"concurrent writers failed: {errs}")
-        notes.append(f"2 writers x 600 edits + saves on 2 programs in "
+        notes.append(f"2 writers x {2 * count} edits + saves on 2 programs in "
                      f"{c.timings['two writers, two programs: 2x(300 renames + 300 comments + 7 saves)']} s")
         for s in (r, w1, w2):
             s.call("close_project")
@@ -2934,6 +2941,12 @@ def split_n(n, k):
         out.append((first, cnt))
         first += cnt
     return out
+
+
+# multi_writer's edit rounds split over shards (each: its own setup, both writers concurrent on their own programs,
+# the saves and the reopen check; the one bounded analysis, at round 150, is in the shard that has that round)
+SHARDS["multi_writer"] = {f"i{j}": (lambda f, n: lambda c: _multi_writer(c, f, n))(f, n)
+                          for j, (f, n) in enumerate(split_n(MW_ITERS, MW_SHARDS))}
 
 
 # import_isolation's concurrent-load rounds split over shards (each its own daemon and projects, each repeating the

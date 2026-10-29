@@ -624,6 +624,9 @@ def selftest() -> int:
     check(f"import_isolation: {dt.ISO_SHARDS} shards whose rounds add up to {dt.ISO_ROUNDS}",
           len(dt.SHARDS.get("import_isolation", {})) == dt.ISO_SHARDS
           and sum(c for _, c in dt.split_n(dt.ISO_ROUNDS, dt.ISO_SHARDS)) == dt.ISO_ROUNDS)
+    check(f"multi_writer: {dt.MW_SHARDS} shards whose edit rounds add up to {dt.MW_ITERS}",
+          len(dt.SHARDS.get("multi_writer", {})) == dt.MW_SHARDS
+          and sum(c for _, c in dt.split_n(dt.MW_ITERS, dt.MW_SHARDS)) == dt.MW_ITERS)
     print(f"{'FAILED: ' + str(len(bad)) + ' check(s)' if bad else 'all run_parallel checks ok'}")
     return 1 if bad else 0
 
