@@ -175,7 +175,9 @@ listed. The design text for keys that belong to packages not yet part of the rel
 The build tool does not stamp a release version. The engine reports `hydraVersion` from
 `src/main/resources/hydra.properties`, which is empty in the tree, so a plain `gradle buildHeadless` or
 `gradle zipHeadless` says `<Ghidra version>-hydra.dev` and Hydralysis classifies it as a stock Ghidra. The
-release workflow writes the stamp before it builds. To get the same in a local build:
+release workflow writes the stamp before it builds. To get the same in a local build (in bash or
+PowerShell 7; Windows PowerShell 5.1 writes UTF-16 with `>`, which the build ignores, so use
+`Set-Content -Encoding utf8` there):
 
 ```
 echo hydra.version=12.3-hydra.4 > Ghidra/Features/HeadlessSession/src/main/resources/hydra.properties
@@ -716,16 +718,16 @@ in `error.details`:
   `"share": true`, a program has several writers at once ("Shared writing").
 - **Two lanes.** Requests take a slot in one of two lanes before any lock: **quick**
   (decompile, functions, list, open, rename; one slot per CPU) and **long** (analyze, import,
-  script, save; a quarter of the CPUs). Native commands stay in the quick lane while imports and
+  script, save; `max(8, CPUs)` slots by default; a quarter of the CPUs, at least two, up to 12.3-hydra.3). Native commands stay in the quick lane while imports and
   analyses run in the long lane. Scripts run in the long lane, so a client that asks its
   questions through scripts shares it, and a full long lane delays those questions (measured up
   to about 8 s). Readers of the program being analysed wait for its lock. When a lane is full,
-  waiting requests are admitted round-robin by connection; there was no cap on how many slots
-  one connection ran. The daemon's own background work (upgrade cache builds) takes a long slot
+  waiting requests are admitted round-robin by connection, and while another connection waits a per-connection cap limits how
+  many slots one connection runs (`maxRunningPerKey`; up to 12.3-hydra.3 there was no cap). The daemon's own background work (upgrade cache builds) takes a long slot
   only while no client waits for one. `status` shows each lane's use and queue.
 - **Cancellation is per client**, and per label when the request carries one (below). `cancel`
-  stops requests waiting for a slot and cooperative scripts; a request waiting for a program lock
-  stays until its `wait` runs out.
+  stops requests waiting for a slot or for a program lock, and cooperative scripts (before
+  12.3-hydra.4 a lock wait stayed until its `wait` ran out).
 - **Leaving.** When a client disconnects or its process dies (the OS resets its socket), its
   requests are cancelled and its uncommitted changes are rolled back (and logged) when its
   running request ends, and its programs go back to read-only for the others. A request blocked
@@ -875,7 +877,7 @@ When `maxImports` imports run, the next ones wait, and the wait is visible and u
 - An import waits in the import queue: without limit unless the request passes a numeric `wait`,
   in which case it fails with `busy` (details: the same queue information) after that long; the
   same `wait` also limits a wait for the same file. At the front it still needs a long slot and
-  fails `busy` after `wait` (10 s default) if none comes free.
+  fails `busy` when its `wait` runs out if none comes free.
 - Duplicates: the SHA-256 check runs when the import gets its turn, so two queued requests for
   the same file import it once and the second answers `imported: false`.
 

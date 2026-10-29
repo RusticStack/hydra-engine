@@ -22,15 +22,14 @@ claims audit in `Ghidra/Features/HeadlessSession/PROTOCOL-3.md`, section 8.3.
   quick lane while imports and analyses run in the long lane; scripts share the long lane, and
   the readers of a program being analysed wait for its lock. Each program and project has its
   own lock, but they share the daemon's lane slots and import gate. Waiting requests are
-  admitted round-robin by connection, with no cap on how many slots one connection runs. The
+  admitted round-robin by connection, and while another connection waits a per-connection cap limits how many slots one connection runs. The
   documents say "several clients (tested with up to 4 clients)" where they gave no limit.
 - Scripts, cancel and dead clients (C2, C5, C7): a contained script's changes are rolled back and
   never saved, but other clients can see them while it runs. `cancel` stops requests waiting for
-  a slot and cooperative scripts; a request waiting for a program lock stays until its `wait`
-  runs out. A disconnected client's requests are cancelled and its uncommitted changes rolled
+  a slot or for a program lock, and cooperative scripts. A disconnected client's requests are cancelled and its uncommitted changes rolled
   back when its running request ends.
 - Imports (C6): an import waits in the import queue; at the front it still needs a long slot and
-  fails `busy` after `wait` (10 s default).
+  fails `busy` when its `wait` runs out.
 - Facts (C8, C11, U10, U11): one daemon per state directory and instance; small fixes to
   Ghidra classes (three at the time of 12.3-hydra.3; see Unreleased below for the storage change); a native decompile takes about 1 to 45 ms by function size (7 ms in
   the benchmark function); the 7.0-7.8 s of `analyzeHeadless` was measured on stock Ghidra 12.1.4.
@@ -357,7 +356,7 @@ You need a JDK 25 and Python 3.10 or later; the install has no JDK.
   `positionAtEntry`, `behind`). Cancelling a queued import removes it without touching the
   running one; cancelling the running one starts the next. A numeric `wait` now limits the queue
   wait; without one a queued import waits in the queue without limit, and at the front it still
-  needs a long slot and fails `busy` after `wait` (10 s default).
+  needs a long slot and fails `busy` when its `wait` runs out.
 - **Per-request `client` and `harness` labels.** Any request may carry them; they replace the
   connection's name for that request in `busy`/`conflict` holders (`holder` and `holderInfo`), `status` (requests, scheduler
   lanes, owner of a writable program, `youAre`), the import queue and the log, and they scope

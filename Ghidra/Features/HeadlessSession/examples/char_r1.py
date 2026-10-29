@@ -41,6 +41,16 @@ from characterization_tests import Fail
 
 PROTOCOLS = (3,)
 PINNED_LIMITS = {"maxQuick": 4, "maxLong": 2, "maxImports": 2}
+# Written out from PROTOCOL-3.md 3.2 (the hello example) and 3.7, not derived from Advertised.java, so a package
+# that never declares its names makes the golden fail instead of passing without them.
+EXPECTED = {
+    "CAPABILITIES": ["errorNext", "expectAll", "idempotency", "laneHint", "maintLane", "queueInfo", "cancelWait",
+                     "forkReport", "format", "backup", "upgradeGate", "scriptIsolation", "scriptSha256",
+                     "attemptedChanges", "health", "identity"],
+    "LIMITS": ["maxQuick", "maxLong", "maxMaint", "maxImports", "quickScriptMaxS", "cleanupGraceS", "abandonWaitS",
+               "maxRunningPerKey"],
+    "POLICY": ["requireBackupForUpgrade", "requireExpect"],
+}
 ADVERTISED = (pathlib.Path(__file__).resolve().parent.parent / "src" / "main" / "java" / "ghidra" /
               "app" / "util" / "headless" / "session" / "Advertised.java")
 
@@ -62,6 +72,12 @@ def declared():
 def complete(res):
     """Fails (loudly) unless every declared name is in the reply, and says which are absent."""
     want = declared()
+    for kind, names in EXPECTED.items():
+        missing = [n for n in names if n not in want[kind]]
+        if missing:
+            raise Fail("r1: *** NOT COMPLETE *** Advertised.java does not declare " + ", ".join(missing)
+                       + " (PROTOCOL-3.md 3.2); nothing was recorded")
+        want[kind] = list(dict.fromkeys(names + want[kind]))
     absent = []
     for kind, key in (("CAPABILITIES", "capabilities"), ("LIMITS", "limits"), ("POLICY", "policy")):
         have = res.get(key) or {}

@@ -71,9 +71,10 @@ promise](#platform-and-limits) is spelled out below.
   while imports and analyses run in the long lane. Scripts run in the long lane, so questions
   asked through scripts, as Hydralysis does, share it, and a full long lane delays them (measured
   up to about 8 s). Readers of the program being analysed wait for its lock. Waiting requests are
-  admitted round-robin by connection; there is no cap on how many slots one connection runs.
-  `cancel` (per client and per label) stops requests waiting for a slot and cooperative scripts;
-  a request waiting for a program lock stays until its `wait` runs out. `busy`, `conflict` and
+  admitted round-robin by connection, and while another connection waits a per-connection cap limits
+  how many slots one connection runs (`maxRunningPerKey`, module README, "Engine settings").
+  `cancel` (per client and per label) stops requests waiting for a slot or for a program lock,
+  and cooperative scripts. `busy`, `conflict` and
   `not_owner` answers name who holds what and suggest what to do instead of a silent wait.
 - **Several agents writing.** Each in the way its work needs. Writes are serialized, and no
   corruption was seen in the tests listed; collisions are only detected when you pass `expect`:
@@ -154,7 +155,7 @@ Several at once (same machine; the module README has the method):
   rest get `not_owner`.
 - **The quick lane protects native commands, not scripts.** `decompile`, `functions`, `list`,
   `open_program` and the like take a quick slot; `analyze`, `import`, `script`, `save` and
-  `fork_project` take a long slot (a quarter of the CPUs, at least two). A client that sends its
+  `fork_project` take a long slot (`max(8, CPUs)` slots by default since hydra.4; a quarter of the CPUs, at least two, before). A client that sends its
   reads as `script` requests, as Hydralysis does today, shares those slots with imports and
   analysis. Measured on 12.3-hydra.3 with two 8 s scripts holding a two-slot long lane: ten
   short scripts that asked for the quick lane all succeeded but took 8.05 to 8.27 s each, and
@@ -185,7 +186,7 @@ refuses it is the owner's decision.
 | A raw JSON-line client speaking protocol 2 | works | works |
 | `ghidra_session.py` 1.0.0 (protocol 2) | works | works at protocol 2 |
 | `ghidra_session.py` 1.1.0 (protocols 2 to 3) | works at protocol 2, without the protocol 3 additions | the protocol 3 additions |
-| Hydralysis 0.4.x | works (its own pin) | refuses by its own pin, unless `hydra_allow_unpinned` is set |
+| Hydralysis 0.4.x | works (its own pin) | refuses by its own pin (protocol 2 client). `hydra_allow_unpinned` only lets a protocol 2 client of another release through; it does not accept a protocol 3 client |
 
 A build from the tree reports `<Ghidra version>-hydra.dev`, and Hydralysis treats such an engine as a stock
 Ghidra; stamping a local build is described in the module README, "Stamping a local build". The settings of the

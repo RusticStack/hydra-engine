@@ -113,5 +113,7 @@ gh workflow run release.yml --ref <branch> -f version=12.3-hydra.4   # dry run: 
 ```
 
 Before the tag: rename `## Unreleased` of `CHANGELOG.md` to `## 12.3-hydra.4`, add the line that names the
-upstream commit (``commit `<40-hex sha>` ``; the workflow fails without it), and fill in section 2 above with
-the runs that passed.
+upstream commit (``commit `<40-hex sha>` ``; the workflow fails without it), remove the
+paragraph "Text prepared for the 12.3-hydra.4 section ..." and the "(not released)" suffix of the
+`### Protocol 3 and the lock changes` and `### Storage integrity` headings (the release body would publish
+them), and fill in section 2 above with the runs that passed.
