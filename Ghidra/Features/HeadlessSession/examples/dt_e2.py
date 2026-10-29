@@ -250,10 +250,7 @@ def make_source(c, tag, files=12, mb=8):
     base = c.work / f"e2-src-{tag}"
     gpr = base / "Src.gpr"
     if not gpr.exists():
-        d = c.daemon(f"e2-mk-{tag}")
-        with d.connect("e2", "tests") as s:
-            c.make_project(s, base, "Src")
-        d.stop()
+        gpr = c.empty_project(base.name, "Src")     # made in a daemon of its own, or copied from the seed dir
         ballast = base / "Src.rep" / "ballast"
         ballast.mkdir()
         blob = os.urandom(1 << 20)

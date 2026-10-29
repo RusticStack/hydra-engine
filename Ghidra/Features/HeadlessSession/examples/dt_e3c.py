@@ -64,7 +64,6 @@
 """
 import contextlib
 import json
-import os
 import pathlib
 import random
 import shutil
@@ -757,41 +756,26 @@ def t_analyzing_join(c):
 def _two_program_project(c, name):
     """The fixture with a second program (the dll) imported.
 
-    With a ``--seed-dir`` (run_parallel.py) the two-program project is made once per run and cached there:
-    the first test that needs it imports the dll into a private copy and renames it into the seed dir
-    (atomic; a racing test that lost the rename drops its copy), every later one copies the cached project.
+    With a ``--seed-dir`` (run_parallel.py) the two-program project is made once per run and cached there
+    (``Ctx.cached_project``: keyed by the install, this file and the exe's and dll's bytes); every later
+    test copies the cached project.
     The three tests that use it (refresh_no_blackout, foreign_blocked_counter, yield_slots_stress) never
     imported anything else, so the copy is the same project the import made."""
     exe = prepare(c)
-    cached = None
-    if c.seed:
-        st = pathlib.Path(c.a.dll).stat()
-        cached = c.seed / f"e3c-two-program-{pathlib.Path(c.a.dll).name}-{st.st_size}-{int(st.st_mtime)}"
-        if (cached / "Fixture.gpr").is_file():
-            dst = c.work / name
-            if dst.exists():
-                shutil.rmtree(dst)
-            shutil.copytree(cached, dst)
-            c.timings["two-program project copied from the --seed-dir cache"] = True
-            return dst / "Fixture.gpr", exe, pathlib.Path(c.a.dll).name
-    gpr = c.copy_fixture(name)
-    d = c.daemon(name.lower() + "-mk")
-    w = c.connect(d, "mk", "e3c", 3)
-    try:
-        w.call("open_project", path=str(gpr), writable=True)
-        w.call("import", file=c.a.dll, wait=600000, timeout=600)
-        w.call("close_project")
-    finally:
-        close_all(w)
-        d.stop(force=True)
-    if cached is not None:
-        tmp = cached.parent / f"{cached.name}.{os.getpid()}.tmp"
-        with contextlib.suppress(OSError):
-            if tmp.exists():
-                shutil.rmtree(tmp)
-            shutil.copytree(gpr.parent, tmp)
-            os.rename(tmp, cached)      # fails if another test cached it first: theirs is the same
-        shutil.rmtree(tmp, ignore_errors=True)
+
+    def build(dst):
+        gpr = c.copy_fixture(dst.name)
+        d = c.daemon(dst.name.lower() + "-mk")
+        w = c.connect(d, "mk", "e3c", 3)
+        try:
+            w.call("open_project", path=str(gpr), writable=True)
+            w.call("import", file=c.a.dll, wait=600000, timeout=600)
+            w.call("close_project")
+        finally:
+            close_all(w)
+            d.stop(force=True)
+        return gpr
+    gpr = c.cached_project(name, "e3c-two-program", build, inputs=(c.a.exe, c.a.dll))
     return gpr, exe, pathlib.Path(c.a.dll).name
 
 

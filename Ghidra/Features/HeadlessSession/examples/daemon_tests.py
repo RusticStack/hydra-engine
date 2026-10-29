@@ -56,7 +56,9 @@ how it is used on an engine that is supposed to have fixed it.
 """
 import argparse
 import contextlib
+import hashlib
 import importlib.util
+import inspect
 import json
 import os
 import pathlib
@@ -284,6 +286,20 @@ def seed_state(seed: pathlib.Path, state: pathlib.Path):
         shutil.copy2(f, state / "classcache" / f.name)   # small, and a daemon may rewrite it
 
 
+def install_key(ghidra) -> str:
+    """The install, for the keys of the projects cached in a seed dir: every jar's path, size and
+    mtime, and the bytes of HeadlessSession's support files (the launcher)."""
+    root = pathlib.Path(ghidra)
+    h = hashlib.sha256(str(root.absolute()).encode())
+    for p in sorted((root / "Ghidra").rglob("*.jar")):
+        st = p.stat()
+        h.update(f"{p.relative_to(root)}|{st.st_size}|{st.st_mtime_ns}\n".encode())
+    sup = root / "Ghidra" / "Features" / "HeadlessSession" / "support"
+    for p in sorted(sup.rglob("*.py")) if sup.is_dir() else ():
+        h.update(p.name.encode() + p.read_bytes())
+    return h.hexdigest()
+
+
 def prepare_seed(a, gs, aot=False):
     """``--prepare``: makes ``--work`` a seed directory for ``--seed-dir``: the analysed fixture
     project (what ``Ctx.fixture`` makes, once instead of once per test process), the class search
@@ -293,6 +309,7 @@ def prepare_seed(a, gs, aot=False):
     c = Ctx(a, gs)
     t = time.perf_counter()
     try:
+        (c.work / "install.key").write_text(install_key(a.ghidra), encoding="utf-8")
         base = c.fixture()
         print(f"fixture {base} in {time.perf_counter() - t:.1f} s", flush=True)
         t = time.perf_counter()
@@ -381,6 +398,61 @@ class Ctx:
             d.stop()
         return base
 
+    def cached_project(self, name, tag, build, inputs=()):
+        """A project that ``build(dst)`` makes in the fresh directory ``dst`` (``work/name``) and
+        whose .gpr it returns. With a ``--seed-dir`` (run_parallel.py) it is made once per run
+        and every later test copies it (a full copy): the first test that needs it makes it in
+        its own ``dst``, copies that into the seed dir under a temporary name and renames it to
+        ``proj-<tag>-<key>`` (atomic; a test that lost the race drops its copy, the winner's is
+        the same project). The key is the install (``install.key`` of --prepare), ``tag``, the
+        source of ``build`` and of its whole file, and the bytes of every file in ``inputs``: another engine, another
+        builder or another input makes another project. Only for setup the test does not check:
+        a builder makes the project the way the test made it before, in a daemon of its own."""
+        dst = self.work / name
+        if dst.exists():
+            shutil.rmtree(dst)
+        cached = None
+        if self.seed:
+            h = hashlib.sha256(tag.encode())
+            ik = self.seed / "install.key"
+            h.update(ik.read_bytes() if ik.is_file() else install_key(self.a.ghidra).encode())
+            # the builder and the whole file it is in (the helpers it calls)
+            h.update(inspect.getsource(build).encode() + pathlib.Path(inspect.getsourcefile(build)).read_bytes())
+            for f in inputs:
+                f = pathlib.Path(f)
+                h.update(f.name.encode() + b"\0" + f.read_bytes())
+            cached = self.seed / f"proj-{tag}-{h.hexdigest()[:16]}"
+            rel = cached / "gpr.txt"
+            if rel.is_file():
+                t = time.perf_counter()
+                shutil.copytree(cached / "p", dst)
+                self.timings[f"project {tag} copied from the --seed-dir cache (s)"] = round(time.perf_counter() - t, 2)
+                return dst / rel.read_text(encoding="utf-8").strip()
+        t = time.perf_counter()
+        gpr = pathlib.Path(build(dst))
+        self.timings[f"project {tag} made (s)"] = round(time.perf_counter() - t, 2)
+        if cached is not None:
+            tmp = cached.parent / f"{cached.name}.{os.getpid()}.tmp"
+            with contextlib.suppress(OSError):
+                if tmp.exists():
+                    shutil.rmtree(tmp)
+                shutil.copytree(dst, tmp / "p")
+                (tmp / "gpr.txt").write_text(str(gpr.relative_to(dst)), encoding="utf-8")
+                os.rename(tmp, cached)      # fails if another test cached it first: theirs is the same
+            shutil.rmtree(tmp, ignore_errors=True)
+        return gpr
+
+    def empty_project(self, name, project):
+        """An empty project ``project`` in ``work/name`` (made by TestMakeProject.java in a daemon
+        of its own, or copied from the seed dir)."""
+        def build(dst):
+            d = self.daemon(f"mk-{project.lower()}")
+            with d.connect("mk", "tests") as s:
+                gpr = self.make_project(s, dst, project)
+            d.stop()
+            return gpr
+        return self.cached_project(name, f"empty-{project}", build)
+
     def copy_fixture(self, name):
         dst = self.work / name
         if dst.exists():
@@ -465,11 +537,21 @@ def t_two_harnesses(c: Ctx):
 def t_two_projects(c: Ctx):
     """Several projects open in one daemon at once, used by two clients concurrently."""
     a_gpr = c.copy_fixture("projA")
+
+    def build(dst):     # project B: the dll imported and analysed (made once per run with a seed dir)
+        d0 = c.daemon("multi-mk")
+        with d0.connect("y", "tests") as y:
+            gpr = c.make_project(y, dst, "ProjB")
+            y.call("open_project", path=str(gpr), writable=True)
+            y.call("import", file=c.a.dll, analyze=True, timeout=1800, wait=600000)
+            y.call("close_project")
+        d0.stop()
+        return gpr
+    b_gpr = c.cached_project("projB", "projB-dll-analysed", build, inputs=(c.a.dll,))
     d = c.daemon("multi")
     with d.connect("x", "tests") as x, d.connect("y", "tests") as y:
-        b_gpr = c.make_project(x, c.work / "projB", "ProjB")
         y.call("open_project", path=str(b_gpr), writable=True)
-        y.call("import", file=c.a.dll, analyze=True, timeout=1800, wait=600000)
+        y.call("open_program", path=pathlib.Path(c.a.dll).name, writable=True)    # as the import left it
         pa = x.call("open_project", path=str(a_gpr))
         x.call("open_program", path=pathlib.Path(c.a.exe).name)
         pb = y.call("projects")["activeProject"]
@@ -2081,14 +2163,18 @@ def _multi_writer(c: Ctx, first: int, count: int):
     not_owner with overlay/fork alternatives; the project reopens with both writers' work."""
     global s_scripts_dir
     s_scripts_dir = c.scripts
-    gpr = c.copy_fixture("projMW")
     exe, dll = pathlib.Path(c.a.exe).name, pathlib.Path(c.a.dll).name
-    d0 = c.daemon("mw-setup")
-    with d0.connect("setup", "tests") as s:
-        s.call("open_project", path=str(gpr), writable=True)
-        s.call("import", file=c.a.dll, analyze=True, timeout=1800, wait=600000)
-        s.call("close_project")
-    d0.stop()
+
+    def build(dst):     # the fixture with the dll imported and analysed (made once per run with a seed dir)
+        gpr = c.copy_fixture(dst.name)
+        d0 = c.daemon("mw-setup")
+        with d0.connect("setup", "tests") as s:
+            s.call("open_project", path=str(gpr), writable=True)
+            s.call("import", file=c.a.dll, analyze=True, timeout=1800, wait=600000)
+            s.call("close_project")
+        d0.stop()
+        return gpr
+    gpr = c.cached_project("projMW", "fixture-dll-analysed", build, inputs=(c.a.exe, c.a.dll))
     d = c.daemon("mw", keepWarm=0)
     notes = []
     with d.connect("reader", "tests") as r, d.connect("w1", "tests") as w1, \

@@ -72,12 +72,7 @@ def make_source(c, tag="main"):
     key = (str(c.work), tag)
     if key not in _SOURCES:
         base = c.work / f"e2a-src-{tag}"
-        if base.exists():
-            shutil.rmtree(base)
-        d = c.daemon("e2a-mk")
-        with d.connect("e2a", "tests") as s:
-            gpr = c.make_project(s, base, "Src")
-        d.stop()
+        gpr = c.empty_project(base.name, "Src")     # made in a daemon of its own, or copied from the seed dir
         ballast = base / "Src.rep" / "ballast"
         ballast.mkdir()
         blob = os.urandom(1 << 20)
