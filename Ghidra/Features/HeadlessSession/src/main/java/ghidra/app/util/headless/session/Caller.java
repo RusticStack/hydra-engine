@@ -48,7 +48,7 @@ final class Caller {
 
 	private static final ThreadLocal<Request> CURRENT = new ThreadLocal<>();
 
-	private record Request(Client client, Identity identity) {
+	private record Request(Client client, Identity identity, RequestMonitor monitor) {
 	}
 
 	private Caller() {
@@ -84,7 +84,27 @@ final class Caller {
 	}
 
 	static void enter(Client c, Identity id) {
-		CURRENT.set(new Request(c, id));
+		CURRENT.set(new Request(c, id, null));
+	}
+
+	/**
+	 * Like {@link #enter(Client, Identity)}, and also stores the request's monitor: the lock waits
+	 * of the request ({@link Waits}) register with it so that {@code cancel} reaches them.
+	 */
+	static void enter(Client c, Identity id, RequestMonitor m) {
+		CURRENT.set(new Request(c, id, m));
+	}
+
+	/** The monitor of the request this thread executes, or null (a cleanup wait has none). */
+	static RequestMonitor monitor() {
+		Request r = CURRENT.get();
+		return r == null ? null : r.monitor;
+	}
+
+	/** The client of the request this thread executes, or null. */
+	static Client client() {
+		Request r = CURRENT.get();
+		return r == null ? null : r.client;
 	}
 
 	static void leave() {
