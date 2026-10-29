@@ -2197,6 +2197,7 @@
    "e12_fork_publish",
    "e12_fork_publish_finding",
    "e12_post_commit_failure",
+   "e12_source_guards",
    "e2a_client_kill",
    "e2a_handle_holder",
    "e2a_rollback_holder",
