@@ -162,6 +162,7 @@ def main() -> int:
     if len(seen) < len(names):
         print(f"only {len(seen)} of {len(names)} tests have a result")
     if not bad:
+        subprocess.run(["attrib", "-R", str(scratch / "*"), "/S", "/D"], capture_output=True) if sys.platform == "win32" else None  # read-only files (the engine's backup.json) survive rmtree
         shutil.rmtree(scratch, ignore_errors=True)
     print("FAILED" if bad else "OK")
     return 1 if bad else 0
