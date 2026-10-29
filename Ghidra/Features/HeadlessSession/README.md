@@ -1225,17 +1225,42 @@ python examples/contract_tests.py --ghidra <install> --work <empty dir> [--lines
 Both use their own state dir and daemon instance, so they never touch the user's daemon.
 
 `daemon_tests.py` run serially takes 25 minutes or more, and the machine is idle most of that time (the tests wait
-on timers, kills and restarts). `examples/run_parallel.py` splits the tests into balanced groups and runs each group
-as its own `daemon_tests.py --only ...` process with its own work and state directories:
+on timers, kills and restarts). `examples/run_parallel.py` runs it as a work queue: every test (and every shard of
+the long ones, `name@shard`, reported under the test's name) is its own `daemon_tests.py --only ...` process with its
+own work, temp and state directories, longest first:
 
 ```
-python examples/run_parallel.py --ghidra <install> --scratch <dir on an NVMe disk> --logs <log dir> --groups 8 daemon_tests.py -- --exe A.exe --dll B.dll [--legacy-project <older project>]
+python examples/run_parallel.py --ghidra <install> --scratch <dir on an NVMe disk> --logs <log dir> daemon_tests.py -- --exe A.exe --dll B.dll [--legacy-project <older project>]
+python examples/run_parallel.py ... --affected [--base integration/w3] daemon_tests.py -- ...
+python examples/run_all.py --ghidra <install> --scratch <dir> --logs <dir> [--only daemon,cc,smoke,char2,char3,contract]
 ```
+
+* The fixture project, the class search cache and a copy of the install are made once (`daemon_tests.py --prepare`)
+  and kept in `seed-cache` next to `--scratch`, keyed by the install's jars and the suite's code; every test copies
+  or hard-links them instead of making its own.
+* The test daemons are lean JVMs (two GC threads, two compiler threads, and C1 only for the tests that are not in
+  `suite-costs.json`'s `daemon_tests.py#heavy` list; `--full-jvm` turns this off), and each test process has its
+  own Ghidra settings dir (`XDG_CONFIG_HOME`): with the user's one shared, every daemon contends for its OSGi bundle
+  cache and a script request took seconds instead of milliseconds.
+* The queue starts a test while the running ones' core demand stays within `--cores` (default 22; a test counts
+  `--light-cores` 1, a heavy one `--heavy-cores` 2, and at most `--heavy-slots` heavy ones run), the machine has
+  `--min-commit-gb` of commit left (Windows refuses new processes, exit 0xC0000142, when the commit runs out) and
+  fewer than `--max-procs` processes. `<logs>/machine.csv` has the busy cores, the running tests and the commit
+  every 2 s.
+* `--affected` runs only the tests `examples/test-map.json` maps the changed files to (`git diff <base>...HEAD`
+  and the working tree), plus a smoke set of 10; it prints what it skipped and why, and runs the whole suite when a
+  changed file is a core one (Session, Scheduler, Access, the protocol dispatch, the launcher, ...) or is not in the
+  map. The map is made by static analysis (`run_parallel.py --make-test-map`; `--selftest` checks it is current
+  and covers every test). Iterate with `--affected` or single tests; run the whole suite once before calling a
+  change done.
+* `run_all.py` puts the other suites (client_compat, session_smoke, characterization p2 and p3, contract) in the
+  same queue.
 
 A test that fails under that load is run again alone; it fails the run only if it fails alone too (`--strict` fails on
-both). A group that dies, or a test with no result, fails the run. Costs for the balancing are in
+both). A test process that dies, or a test with no result, fails the run. Costs for the balancing are in
 `examples/suite-costs.json` (`--record` refreshes them). Put `--scratch` on a fast local disk: the suites write and
-fsync a lot, and on a hard disk they are slower and more timing-sensitive.
+fsync a lot, and on a hard disk they are slower and more timing-sensitive. The default budget takes the whole machine:
+on a machine shared with other heavy work, run one suite at a time or lower `--cores`.
 
 ## Why each part lives where it does
 
