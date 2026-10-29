@@ -436,6 +436,7 @@ final class ScriptCommands {
 		JsonObject res = o.result();
 		String out = o.output();
 		JsonObject w = Json.of("pid", o.pid(), "totalMs", o.totalMs(), "startMs", o.startMs(),
+			"startCpuMs", o.startCpuMs(),
 			"cloneMs", lease.cloneMs, "cloneBytes", lease.cloneBytes, "killed", o.killed(),
 			"clone", lease.clone.toString());
 		w.add("marks", o.marks());

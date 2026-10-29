@@ -407,8 +407,8 @@ public final class ScriptWorker implements GhidraLaunchable {
 
 	/** Parent-side result of one run. */
 	record Outcome(JsonObject result, String output, boolean outputDropped, boolean killed,
-			Integer exitCode, String stderrTail, long totalMs, long startMs, JsonObject marks,
-			long pid) {
+			Integer exitCode, String stderrTail, long totalMs, long startMs, Long startCpuMs,
+			JsonObject marks, long pid) {
 	}
 
 	/** The JVM options of this daemon that a worker keeps: system properties and module flags. */
@@ -525,6 +525,7 @@ public final class ScriptWorker implements GhidraLaunchable {
 		private volatile JsonObject result;
 		private volatile JsonObject startMarks;
 		private volatile long startMs = -1;
+		private volatile long startCpuMs = -1;
 		private volatile boolean killed;
 		private volatile boolean finished;
 		private final CompletableFuture<Void> eof = new CompletableFuture<>();
@@ -589,6 +590,8 @@ public final class ScriptWorker implements GhidraLaunchable {
 						case "start" -> {
 							startMarks = o;
 							startMs = (System.nanoTime() - t0) / 1_000_000;
+							startCpuMs = o.has("cpuMs") ? Json.num(o, "cpuMs", -1, -1, Long.MAX_VALUE)
+									: parentSeenCpuMs(p);
 						}
 						case "result" -> result = o;
 						default -> {
@@ -711,14 +714,50 @@ public final class ScriptWorker implements GhidraLaunchable {
 			JsonObject res = result;
 			boolean wasKilled = killed;
 			JsonObject summary = Json.of("pid", pid, "totalMs", totalMs, "startMs",
-				startMs < 0 ? null : startMs, "cloneMs", lease.cloneMs, "cloneBytes", lease.cloneBytes,
+				startMs < 0 ? null : startMs, "startCpuMs", startCpuMs < 0 ? null : startCpuMs,
+				"cloneMs", lease.cloneMs, "cloneBytes", lease.cloneBytes,
 				"killed", wasKilled, "exitCode", exitCode);
 			if (res != null && res.has("mem")) {
 				summary.add("mem", res.get("mem"));
 			}
 			last = summary;
 			return new Outcome(res, text, drop, wasKilled, exitCode, err, totalMs,
-				Math.max(0, startMs), marks, pid);
+				Math.max(0, startMs), startCpuMs < 0 ? null : startCpuMs, marks, pid);
+		}
+	}
+
+	/**
+	 * The CPU time of a worker as the operating system reports it to this daemon, in ms, or -1: the
+	 * fallback when a worker did not report its own at start-up.
+	 */
+	static long parentSeenCpuMs(Process p) {
+		try {
+			return p.info().totalCpuDuration().map(java.time.Duration::toMillis).orElse(-1L);
+		}
+		catch (RuntimeException e) {
+			return -1;
+		}
+	}
+
+	/**
+	 * The CPU time this JVM has used so far (all its threads: JIT, GC, class loading), in ms, or -1.
+	 * Unlike wall time it does not grow when the machine is busy with other work, so it is the
+	 * start-up cost a budget can hold (E7, SP10).
+	 */
+	static long ownProcessCpuMs() {
+		try {
+			if (ManagementFactory
+					.getOperatingSystemMXBean() instanceof com.sun.management.OperatingSystemMXBean os) {
+				long ns = os.getProcessCpuTime();
+				if (ns >= 0) {
+					return ns / 1_000_000;
+				}
+			}
+			return ProcessHandle.current().info().totalCpuDuration()
+					.map(java.time.Duration::toMillis).orElse(-1L);
+		}
+		catch (RuntimeException | LinkageError e) {
+			return -1;
 		}
 	}
 
@@ -951,7 +990,7 @@ public final class ScriptWorker implements GhidraLaunchable {
 			GhidraState state = new GhidraState(null, project, program, loc, null, null);
 			long compileMs = (System.nanoTime() - t4) / 1_000_000;
 			pipe.send(Json.of("ev", "start", "initMs", initMs, "projectMs", projectMs, "programMs",
-				programMs, "compileMs", compileMs));
+				programMs, "compileMs", compileMs, "cpuMs", ownProcessCpuMs()));
 			long modBefore = program == null ? 0 : program.getModificationNumber();
 			int outer = -1;
 			if (program != null) {
