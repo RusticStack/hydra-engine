@@ -791,6 +791,7 @@ def t_analyzing_join(c):
 
 # ---- refresh_no_blackout --------------------------------------------------------------------
 
+@dt.prebuilt("e3c-two-program", users=("refresh_no_blackout", "foreign_blocked_counter", "yield_slots_stress"))
 def _two_program_project(c, name):
     """The fixture with a second program (the dll) imported.
 
