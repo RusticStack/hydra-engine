@@ -41,3 +41,6 @@ README.md||GHIDRA||||END|
 src/main/resources/hydra.properties||GHIDRA||||END|
 examples/suite-costs.json||GHIDRA||||END|
 examples/test-map.json||GHIDRA||||END|
+examples/fastlib.py||GHIDRA||||END|
+examples/test_fastlib.py||GHIDRA||||END|
+examples/lint_sleeps.py||GHIDRA||||END|
