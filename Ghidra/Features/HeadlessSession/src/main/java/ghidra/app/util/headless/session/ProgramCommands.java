@@ -208,7 +208,7 @@ final class ProgramCommands {
 					}
 					throw corruptNewest(c, p, e, ex);
 				}
-				JsonObject info = useProgram(c, e, e.openMs);
+				JsonObject info = useProgram(c, e, e.openMs, true);
 				if (c.v3()) {
 					// D42: what the open repaired in this project (a quarantined newest version)
 					JsonArray repairs = Seals.repairsSince(p.resolved, p.openedAt - 1000);
@@ -248,16 +248,31 @@ final class ProgramCommands {
 		}
 	}
 
-	/** Records that {@code c} uses {@code e} and makes it its active program. */
-	private JsonObject useProgram(Client c, ProgramEntry e, long openMs) {
+	/**
+	 * Records that {@code c} uses {@code e} and makes it its active program.
+	 *
+	 * @param exclusive true when the caller holds the program's exclusive lock (the open path, which
+	 *            may just have made {@code c} the owner or a writer); false for a join under the
+	 *            shared lock (which changes nothing but the users)
+	 */
+	private JsonObject useProgram(Client c, ProgramEntry e, long openMs, boolean exclusive) {
 		synchronized (e.users) {
 			e.users.add(c);
 		}
 		if (c.leaving) {
 			// the request of a client that is gone finished after its leave: it must not register
 			// (the leave removes users without the program lock, E3c; the flag is set before it)
-			synchronized (e.users) {
-				e.users.remove(c);
+			if (exclusive && !c.programs.contains(e.key)) {
+				// what this request set up for c (the program opened for it, c made its owner or a
+				// shared writer) was not seen by the leave: undo it here as the leave would have done
+				// (the owner and writers released, the program back to read-only for its other users
+				// or disposed), so that no dead owner holds the program and no writer waits for it
+				abandonOpen(c, e);
+			}
+			else {
+				synchronized (e.users) {
+					e.users.remove(c);
+				}
 			}
 			throw new SessionException(SessionException.CANCELLED,
 				c.label() + " is gone; " + e.key + " was not joined");
@@ -268,6 +283,30 @@ final class ProgramCommands {
 		JsonObject info = programInfo(e, c);
 		Json.put(info, "openMs", openMs);
 		return info;
+	}
+
+	/**
+	 * The open of a client that is gone ended after its leave: its use of {@code e} is released the
+	 * way its leave releases one ({@link #releaseUseHeld} with discard; the unsaved work of other
+	 * shared writers is kept as orphaned work there). Held: the project's pin and the program's
+	 * exclusive lock.
+	 */
+	private void abandonOpen(Client c, ProgramEntry e) {
+		try {
+			releaseUseHeld(c, e, true);
+			Msg.info(s, c.label() + " is gone; its open of " + e.key + " was undone");
+		}
+		catch (RuntimeException ex) {
+			Msg.error(s, c.label() + " is gone; could not undo its open of " + e.key, ex);
+			synchronized (e.users) {
+				e.users.remove(c);
+				e.writers.remove(c);
+			}
+			if (e.owner == c) {
+				e.setOwner(null);
+			}
+			c.programs.remove(e.key);
+		}
 	}
 
 	/**
@@ -289,7 +328,7 @@ final class ProgramCommands {
 				return null;
 			}
 			boolean restarted = !writable && retryCacheBuild(e);
-			JsonObject info = useProgram(c, e, 0);
+			JsonObject info = useProgram(c, e, 0, false);
 			if (restarted) {
 				Json.put(info, "cacheBuild", "started");
 			}
