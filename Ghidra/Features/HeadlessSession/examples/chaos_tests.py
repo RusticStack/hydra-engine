@@ -96,6 +96,11 @@ COUNTS = {
 }
 #: how often the daemon8 wrapper retries an open_project answered `busy` (see ef_busy_main)
 DAEMON8_OPEN_BUSY_RETRIES = 200
+#: the ``details.reason`` of a protocol 3 ``busy`` to open_project that explains it (PROTOCOL-3.md 3.5, 3.13, D39):
+#: ``lock_queue_full`` is the waiter cap (at most max(2, slots/4) waiters per project lock or open slot), the
+#: designed refusal when eight clients open one project at once; ``lock_wait``/``slot_wait`` a bounded wait that ran
+#: out; ``capacity`` the governor. Anything else, or an answer logged without details, is unexplained
+OPEN_BUSY_REASONS = ("lock_queue_full", "lock_wait", "slot_wait", "capacity")
 #: what the engine-level batches cannot cover and the check that does. A gate profile with any entry here is
 #: INCOMPLETE, never PASS: PASS is unreachable until the VF integration check lifts these (it edits these constants
 #: when it has run the checks they name; the selftest clears them to prove that a complete clean run would be PASS).
@@ -192,9 +197,24 @@ def judge_rows(rows: list, family: str) -> dict:
 
 
 def judge_batch(name: str, spec: dict, want: int, rows: list, footer: dict | None, exit_code, post_rep: oracle.Report,
-                gate: bool, busy_answers: int = 0) -> dict:
+                gate: bool, busy_answers: int = 0, busy_rows=None) -> dict:
     j = judge_rows(rows, spec["family"])
+    if busy_rows is not None:
+        # the logged answers (retry_open_busy): an answer is explained when the daemon named a documented reason
+        busy_answers = len(busy_rows)
+        explained: dict = {}
+        for b in busy_rows:
+            det = b.get("details")
+            reason = det.get("reason") if isinstance(det, dict) else None
+            if reason in OPEN_BUSY_REASONS:
+                explained[reason] = explained.get(reason, 0) + 1
+        unexplained = busy_answers - sum(explained.values())
+    else:
+        # only a count (no details logged): nothing is explained
+        explained, unexplained = {}, int(busy_answers)
     j["open_busy_answers"] = int(busy_answers)
+    j["open_busy_explained"] = explained
+    j["open_busy_unexplained"] = unexplained
     viol = []
     if j["failing_iterations"]:
         viol.append(f"{j['failing_iterations']} iteration(s) with anomalies: {j['anomaly_classes']}")
@@ -214,11 +234,13 @@ def judge_batch(name: str, spec: dict, want: int, rows: list, footer: dict | Non
         inc.append("no footer.json: the batch did not finish")
     verdict = "FAIL" if viol else ("INCOMPLETE" if inc else ("PASS" if gate else "SMOKE-OK"))
     out = {"batch": name, "verdict": verdict, "wanted": want, **j, "violations": viol, "incomplete": inc}
-    if busy_answers:
+    if unexplained:
         # gate 9.17 wants "no unexplained busy". The retries make the batch run on, they do not explain the answer:
-        # while the count is non-zero a gate profile cannot be PASS (a soft gap), and the count is in the evidence
-        out["busy_gap"] = (f"{busy_answers} open_project answer(s) `busy` were retried ({DAEMON8_OPEN_BUSY_RETRIES} at most per "
-                           "client): 9.17 wants no unexplained busy, so each needs an explanation (waiter cap or holder) before PASS")
+        # an answer without a documented reason keeps a gate profile from PASS (a soft gap). An answer that names the
+        # waiter cap (lock_queue_full, 3.5 / D39) or a lock or slot wait is the specified refusal: counted, not a gap
+        out["busy_gap"] = (f"{unexplained} unexplained open_project answer(s) `busy` (of {busy_answers}, retried "
+                           f"{DAEMON8_OPEN_BUSY_RETRIES} at most per client): 9.17 wants no unexplained busy, so each needs "
+                           "an explanation (details.reason: waiter cap or lock wait) before PASS")
     return out
 
 
@@ -466,8 +488,8 @@ class Chaos:
             (plant / "db.1.gbf").write_bytes(oracle.MAGIC + bytes(32))
             (plant / "db.2.gbf").write_bytes(bytes(40))        # X1: the newest version file has a zero header
             oracle.check_k2(outdirs[0] / "planted", post)
-        busy = sum(len(read_rows(b)) for b in busy_logs)
-        r = judge_batch(name, spec, want, rows, footer, exit_code, post, self.a.profile == "gate", busy_answers=busy)
+        busy_rows = [x for b in busy_logs for x in read_rows(b)]
+        r = judge_batch(name, spec, want, rows, footer, exit_code, post, self.a.profile == "gate", busy_rows=busy_rows)
         r["shards"] = [{"tag": t, "exit": rc, "seconds": s} for t, rc, s in results]
         r["what"] = spec["what"]
         r["k7_orphan_check"] = self.k7_seen.get(name)
@@ -716,6 +738,24 @@ def selftest(verbose: bool = True) -> int:
               and any("daemon8" in g and "busy" in g for g in o["soft_gaps"]), (d8, o))
         d8_0 = judge_batch("daemon8", BATCHES["daemon8"], 50, rows(50), {"base_unchanged": True}, 0, clean, True)
         check("no busy answer: no busy gap", "busy_gap" not in d8_0 and d8_0["open_busy_answers"] == 0, d8_0)
+        # the waiter cap of 3.5 / D39: eight v3 clients opening one project at once get busy{reason:lock_queue_full,
+        # waiters, waitersMax} beyond max(2, slots/4) waiters. A logged answer with that explanation is an explained busy
+        # (counted, not a gap); an answer without a documented reason stays a gap
+        qf = {"t": 1.0, "attempt": 1, "message": "too many requests already wait to open project analysis; retry",
+              "details": {"reason": "lock_queue_full", "waiters": 2, "waitersMax": 2, "gpr": "x.gpr", "name": "analysis"}}
+        d8_x = judge_batch("daemon8", BATCHES["daemon8"], 50, rows(50), {"base_unchanged": True}, 0, clean, True,
+                           busy_rows=[qf, dict(qf, details=dict(qf["details"], reason="lock_wait"))])
+        o = overall({**full2, "daemon8": d8_x}, "gate", {})
+        check("busy answers that carry the waiter-cap explanation are counted as explained and do not keep PASS away",
+              d8_x["open_busy_answers"] == 2 and d8_x["open_busy_explained"] == {"lock_queue_full": 1, "lock_wait": 1}
+              and "busy_gap" not in d8_x and o["verdict"] == "PASS", (d8_x, o))
+        d8_u = judge_batch("daemon8", BATCHES["daemon8"], 50, rows(50), {"base_unchanged": True}, 0, clean, True,
+                           busy_rows=[qf, {"t": 2.0, "attempt": 1, "message": "busy", "details": {}},
+                                      {"t": 3.0, "attempt": 2}])
+        o = overall({**full2, "daemon8": d8_u}, "gate", {})
+        check("a busy answer without a documented reason (or logged without details) stays an unexplained gap",
+              d8_u["open_busy_unexplained"] == 2 and "busy_gap" in d8_u and o["verdict"] == "INCOMPLETE"
+              and any("daemon8" in g and "unexplained" in g for g in o["soft_gaps"]), (d8_u, o))
         o = overall({b: r for b, r in full2.items() if b != "daemon8"}, "gate", {})
         check("a gate batch that neither ran nor was named as missing is a gap", o["verdict"] == "INCOMPLETE"
               and any("daemon8: not run" in g for g in o["gaps"]), o)
@@ -726,6 +766,8 @@ def selftest(verbose: bool = True) -> int:
         def __init__(self, code):
             super().__init__(code)
             self.code = code
+            self.message = "queue full" if code == "busy" else code
+            self.details = {"reason": "lock_queue_full", "waiters": 2, "waitersMax": 2} if code == "busy" else {}
 
     import tempfile as _tf  # noqa: PLC0415
     blog = pathlib.Path(_tf.mkdtemp(prefix="chaos-busy-")) / "busy.jsonl"
@@ -742,6 +784,9 @@ def selftest(verbose: bool = True) -> int:
     w = retry_open_busy(make_orig(["busy", "busy", "ok"]), _Err, 5, blog, sleep=lambda _s: None)
     check("open_project answered busy twice is retried and counted", w(None, "open_project", path="x") == {"cmd": "open_project"}
           and len(read_rows(blog)) == 2, read_rows(blog))
+    check("the busy log keeps the answer's message and details (what classifies it)",
+          all(r.get("details") == {"reason": "lock_queue_full", "waiters": 2, "waitersMax": 2}
+              and r.get("message") == "queue full" for r in read_rows(blog)), read_rows(blog))
     w = retry_open_busy(make_orig(["busy"] * 9), _Err, 3, blog, sleep=lambda _s: None)
     try:
         w(None, "open_project")
@@ -789,8 +834,11 @@ def retry_open_busy(orig, error_cls, retries: int, logp, sleep=time.sleep):
             except error_cls as e:
                 if cmd != "open_project" or getattr(e, "code", None) != "busy" or attempt >= retries:
                     raise
+                det = getattr(e, "details", None)
                 with lock, open(logp, "a", encoding="utf-8") as f:
-                    f.write(json.dumps({"t": round(time.time(), 3), "attempt": attempt + 1}) + "\n")
+                    f.write(json.dumps({"t": round(time.time(), 3), "attempt": attempt + 1,
+                                        "message": str(getattr(e, "message", "") or "")[:300],
+                                        "details": det if isinstance(det, dict) else None}, default=str) + "\n")
                 sleep(0.1)
     return call
 
