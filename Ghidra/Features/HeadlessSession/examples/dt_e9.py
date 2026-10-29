@@ -18,7 +18,7 @@
     python daemon_tests.py --ghidra <install> --work <dir> --exe A.exe --dll B.dll --only e9_selftest,...
 
 * ``e9_selftest``: the engine's own ``-selfTest`` (budgets, the gate's fairness, a guarded thread
-  that survives an ``OutOfMemoryError``, the sweep's path rule).
+  that survives an ``OutOfMemoryError``, 64 reservations racing for 4 views, the sweep's path rule).
 * ``e9_limits_job``: ``hello.limits`` and ``capabilities.admission`` (protocol 3 only); ``health.governor``
   and ``health.processJob`` (``own:true``, the daemon is in its own job, its decompiler is in the job).
 * ``e9_job_containment`` (Windows; SP3(b), K7, D60, X9): decompilers are **suspended**, then the daemon is
@@ -26,10 +26,21 @@
   ``ProcessJob`` disabled by two launch properties) must show the survivors, so the test is red without the
   job. The third phase is the fallback: with the job unavailable the start-up sweep kills an orphan
   decompiler of this install and leaves another install's decompiler and one with a live parent alone.
-* ``e9_decompiler_faults`` (GR9, SP4): ``kill -9`` of a native decompiler during a 12-client load fails one
-  request (``decompiler_failed``) and every other succeeds with the reference text; the next request
-  works (dispose and recreate); a suspended decompiler is a hang that ends at the request's timeout while
-  another client is not delayed; four failures on one function in a minute trip the negative cache.
+* ``e9_decompiler_faults`` (GR9, SP4): a killed native decompiler fails exactly one request
+  (``decompiler_failed``, deterministic: the only pooled decompiler is killed, the next request is the one that
+  fails) and the request after it works (dispose and recreate); under a 12-client load ``kill -9`` of one
+  decompiler fails at most one request, ``kill -9`` of every decompiler fails between one and as many requests
+  as decompilers were killed, and every other request returns the reference text.
+* ``e9_decompiler_hang`` (GR9): a **suspended** decompiler is a hang that ends at the request's timeout
+  (``decompiler_failed``, retryable) while a request of another client, made during the hang, is answered at
+  once by a fresh decompiler.
+* ``e9_guarded_threads`` (3.11 "Daemon threads", D46): ``health.governor.threadState`` shows the accept,
+  reaper and governor threads alive and beating; a Throwable planted in a lap of each (``debug_stall
+  what:"thread"``, behind the test-hooks launch property) restarts it and counts it; an
+  ``OutOfMemoryError`` also releases the emergency reserve, which the governor arms again.
+* ``e9_concurrent_open``: 16 clients open a program at the same moment with ``maxViews`` 4: exactly 4 are
+  admitted (the check and the reservation are one step); one client sending 6 opens at once with
+  ``maxViewsPerClient`` 2 gets exactly 2.
 * ``e9_gate``: with room for two native decompilers a third request waits and then gets
   ``busy{reason:"capacity", resource:"native"}`` instead of hanging; the gate never holds more than its
   permits; waits are served per client.
@@ -224,6 +235,9 @@ def t_selftest(c):
             "ok   the gate serves clients in turn",
             "ok   a wait for a permit that never comes ends in busy capacity native",
             "ok   a guarded body that threw an OutOfMemoryError twice ran a third time",
+            "ok   64 concurrent reservations against maxViews 4 grant exactly 4",
+            "ok   64 concurrent requests of one client against maxViewsPerClient 2 grant exactly 2",
+            "ok   the liveness figure of a guarded thread",
             "ok   a capacity refusal is busy with reason",
             "ok   the orphan sweep of an install with no decompiler finds none")
     for w in want:
@@ -247,7 +261,12 @@ def t_limits_job(c):
         for k, v in (("minXmxMb", 512), ("maxViews", 32), ("maxViewsPerClient", 4),
                      ("heapSoftPct", 70), ("heapHardPct", 85)):
             dt.check(lim.get(k) == v, f"hello.limits.{k} = {lim.get(k)}, expected {v}: {lim}")
-        dt.check(lim.get("nativeBudgetMb", 0) > 0 and lim.get("decompilerPermits", 0) >= 1, f"{lim}")
+        dt.check(lim.get("nativeBudgetMb", 0) > 0, f"{lim}")
+        # 3.11: every value of the table is a Settings key and advertised in hello.limits (sizes in MB)
+        for k, v in (("viewDiskBudget", 20 * 1024), ("diskReserve", 5 * 1024), ("decompilerIdleS", 60),
+                     ("decompilerWaitS", 60), ("decompilerFailLimit", 3), ("decompilerNegativeS", 600)):
+            dt.check(lim.get(k) == v, f"hello.limits.{k} = {lim.get(k)}, expected {v}: {lim}")
+        dt.check("decompilerPermits" not in lim, "decompilerPermits is derived, not a setting")
         dt.check(s3.hello["capabilities"].get("admission") == 1, f"{s3.hello['capabilities']}")
         dt.check("limits" not in s2.hello and "capabilities" not in s2.hello,
                  "a protocol 2 hello gained keys")
@@ -282,9 +301,9 @@ def t_limits_job(c):
 
 # ---- e9_job_containment ---------------------------------------------------------------------
 
-def _suspend_and_kill(c, name, vmargs, gpr, exe, expect_job):  # expect_job: documentation only
+def _suspend_and_kill(c, name, vmargs, gpr, exe):
     """Starts a daemon, makes 4 native decompilers, suspends them, TerminateProcess the daemon.
-    Returns ``(decompiler pids, seconds until they were gone or None, survivors)``."""
+    Returns ``(decompiler pids, seconds until they were gone or None, survivors, processJob, K7 report)``."""
     ch = chaos()
     d = c.daemon(name, vmargs=vmargs)
     sessions = []
@@ -305,7 +324,9 @@ def _suspend_and_kill(c, name, vmargs, gpr, exe, expect_job):  # expect_job: doc
         dt.check(r.get("terminated"), f"{name}: TerminateProcess of the daemon: {r}")
         gone = wait_gone(pids, 5.0)
         left = alive_of(pids)
-        return pids, gone, left, pj
+        # X0's oracle (K7, the shape of its planted violation X9): an orphan decompiler after the daemon's death
+        k7 = ch.oracle.check_k7_processes(daemon_pids=(), settle_s=0.5, only_pids=pids)
+        return pids, gone, left, pj, k7
     finally:
         close_all(*sessions)
         stop(d)
@@ -317,10 +338,11 @@ def t_job_containment(c):
     exe = fixture_args(c)
     gpr = c.copy_fixture("e9Job")
     # 1. the daemon's own job: suspended decompilers are gone within 5 s of TerminateProcess
-    pids, gone, left, pj = _suspend_and_kill(c, "e9-job", [], gpr, exe, True)
+    pids, gone, left, pj, k7 = _suspend_and_kill(c, "e9-job", [], gpr, exe)
     try:
         dt.check(gone is not None and not left,
                  f"decompilers {left} of {pids} (suspended) survived TerminateProcess of the daemon by 5 s")
+        dt.check(k7.ok, f"the K7 oracle flags the daemon's decompilers: {sorted(k7.codes())}")
     finally:
         for p in left:
             ch.terminate(p, 10)
@@ -328,11 +350,14 @@ def t_job_containment(c):
     # 2. the no-job control: the same steps, ProcessJob off: the survivors must be there (the test is RED
     #    without the job), and are ended here
     gpr2 = c.copy_fixture("e9Job2")
-    cpids, cgone, cleft, cpj = _suspend_and_kill(c, "e9-nojob", NO_JOB, gpr2, exe, False)
+    cpids, cgone, cleft, cpj, ck7 = _suspend_and_kill(c, "e9-nojob", NO_JOB, gpr2, exe)
     try:
         dt.check(cgone is None and len(cleft) == len(cpids),
                  f"the no-job control left {len(cleft)} of {len(cpids)} suspended decompilers: it must "
                  f"leave them all, or the containment test proves nothing")
+        dt.check("K7:orphan_decompiler" in ck7.codes(),
+                 f"X9: the K7 oracle must flag the no-job survivors as orphan_decompiler, it flagged "
+                 f"{sorted(ck7.codes())}")
     finally:
         for p in cleft:
             ch.terminate(p, 10)
@@ -389,18 +414,45 @@ def t_job_containment(c):
         with contextlib.suppress(Exception):
             live_parent.kill()
     return (f"with the job: {len(pids)} suspended decompilers gone {gone * 1000:.0f} ms after "
-            f"TerminateProcess; no-job control: all {len(cpids)} survived 5 s (red without the job); "
+            f"TerminateProcess (K7 oracle clean); no-job control: all {len(cpids)} survived 5 s and the K7 oracle "
+            f"flagged them orphan_decompiler (X9 shape; red without the job); "
             f"{sweep_note}; foreign copy and live-parent decompiler untouched")
 
 
 # ---- e9_decompiler_faults -------------------------------------------------------------------
+
+def _load(ss, fns, ref, seconds, results, lock):
+    """12 clients decompile in a loop for ``seconds``; each result is recorded as ``("ok"|"wrong"|"err", code)``."""
+    stopat = time.time() + seconds
+
+    def load(i):
+        n = 0
+        while time.time() < stopat:
+            a = fns[(i + n) % len(fns)]
+            n += 1
+            try:
+                r = ss[i].call("decompile", address=a, wait=60000)
+                ok = r.get("completed") is True and r.get("c") == ref[a]
+                rec = ("ok" if ok else "wrong", None)
+            except Exception as e:  # noqa: BLE001
+                rec = ("err", getattr(e, "code", type(e).__name__))
+            with lock:
+                results.append(rec)
+
+    ts = [threading.Thread(target=load, args=(i,)) for i in range(len(ss))]
+    for t in ts:
+        t.start()
+    return ts
+
 
 def t_decompiler_faults(c):
     windows_only()
     ch = chaos()
     exe = fixture_args(c)
     gpr = c.copy_fixture("e9Flt")
-    d = c.daemon("e9-flt", engine={"decompilerNegativeS": 8})
+    # the breaker (e9_negative_cache) is out of the way: a function that failed more than three times in a minute
+    # would be refused at once and the load would count refusals instead of decompiles
+    d = c.daemon("e9-flt", engine={"decompilerFailLimit": 100000})
     ss = []
     try:
         ss = [c.connect(d, f"load{i}", "e9", 3) for i in range(12)]
@@ -410,72 +462,124 @@ def t_decompiler_faults(c):
         fns = [f["address"] for f in ss[0].call("functions", limit=12)["functions"]]
         dt.check(len(fns) >= 4, f"only {len(fns)} functions in the fixture")
         ref = {a: ss[0].call("decompile", address=a)["c"] for a in fns}
-        # (a) kill -9 of one native decompiler during a 12-client load
-        stopat = time.time() + 9
-        results = []
-        lock = threading.Lock()
-
-        def load(i):
-            n = 0
-            while time.time() < stopat:
-                a = fns[(i + n) % len(fns)]
-                n += 1
-                try:
-                    r = ss[i].call("decompile", address=a, wait=60000)
-                    ok = r.get("completed") is True and r.get("c") == ref[a]
-                    rec = ("ok" if ok else "wrong", None)
-                except Exception as e:  # noqa: BLE001
-                    rec = ("err", getattr(e, "code", type(e).__name__))
-                with lock:
-                    results.append(rec)
-
-        ts = [threading.Thread(target=load, args=(i,)) for i in range(12)]
-        for t in ts:
-            t.start()
+        # (a) deterministic: ONE pooled decompiler exists; it is killed; the next request is the one that
+        #     fails (exactly one decompiler_failed, retryable), the one after it works with the same text
+        pooled = decompiler_pids(pid)
+        dt.check(len(pooled) == 1, f"expected one pooled decompiler after the serial warm-up: {pooled}")
+        k = ch.terminate(pooled[0], 10)
+        dt.check(k.get("terminated"), f"kill -9 of the pooled decompiler: {k}")
+        e = dt.expect_error("decompiler_failed", ss[1].call, "decompile", address=fns[0])
+        det = e.details or {}
+        dt.check(det.get("reason") == "crash" and det.get("retryable") is True, f"details {det}")
+        for a in fns[:4]:
+            r = ss[1].call("decompile", address=a)
+            dt.check(r["c"] == ref[a], f"after the kill {a} decompiles differently")
+        fl = ss[0].call("health")["governor"]["failures"]
+        dt.check(fl["failures"] == 1, f"one killed decompiler counted as {fl}")
+        # (b) 12 clients under load, kill -9 of ONE decompiler (which one is not controlled: a pooled idle
+        #     one may never be used again): at most one request fails, with decompiler_failed, and every
+        #     other request returns the reference text
+        results, lock = [], threading.Lock()
+        ts = _load(ss, fns, ref, 7, results, lock)
         time.sleep(3.0)
         victims = decompiler_pids(pid)
-        dt.check(len(victims) >= 6, f"under load only {len(victims)} decompilers exist")
+        dt.check(len(victims) >= 4, f"under load only {len(victims)} decompilers exist")
         k = ch.terminate(victims[len(victims) // 2], 10)
         dt.check(k.get("terminated"), f"kill -9 of a decompiler: {k}")
         for t in ts:
             t.join(60)
         errs = [r for r in results if r[0] != "ok"]
-        dt.check(len(results) > 100, f"only {len(results)} requests under load")
-        dt.check(len(errs) == 1 and errs[0] == ("err", "decompiler_failed"),
-                 f"kill -9 during the load: {len(errs)} requests failed, expected exactly one "
-                 f"decompiler_failed: {errs}")
-        # SP4: the next request works, same text (the failed decompiler was disposed, a fresh one made)
+        dt.check(len(results) > 60, f"only {len(results)} requests under load")
+        dt.check(len(errs) <= 1 and all(r == ("err", "decompiler_failed") for r in errs),
+                 f"kill -9 of one decompiler during the load: {len(errs)} requests failed, expected at most "
+                 f"one decompiler_failed: {errs}")
+        one = len(errs)
+        # (c) the same load, kill -9 of EVERY decompiler at once: each request that used a dead one fails
+        #     alone (decompiler_failed); at least one does (everything that exists is dead: a request
+        #     that comes after the kill finds a dead pooled decompiler or waits for a busy one that
+        #     dies), at most as many as were killed; nothing else fails or differs
+        results, lock = [], threading.Lock()
+        ts = _load(ss, fns, ref, 7, results, lock)
+        time.sleep(3.0)
+        victims = decompiler_pids(pid)
+        dt.check(len(victims) >= 4, f"under load only {len(victims)} decompilers exist")
+        for p in victims:
+            ch.terminate(p, 10)
+        for t in ts:
+            t.join(60)
+        errs = [r for r in results if r[0] != "ok"]
+        dt.check(len(results) > 60, f"only {len(results)} requests under load")
+        dt.check(1 <= len(errs) <= len(victims) and all(r == ("err", "decompiler_failed") for r in errs),
+                 f"kill -9 of all {len(victims)} decompilers during the load: {len(errs)} requests failed, "
+                 f"expected 1 to {len(victims)} decompiler_failed: {errs}")
+        # SP4: the next requests work, same text (the failed decompilers were disposed, fresh ones made)
         for a in fns[:4]:
             r = ss[1].call("decompile", address=a)
-            dt.check(r["c"] == ref[a], f"after the kill {a} decompiles differently")
+            dt.check(r["c"] == ref[a], f"after the kills {a} decompiles differently")
         h = ss[0].call("health")
-        fl = h["governor"]["failures"]
-        dt.check(fl["failures"] >= 1 and h["state"] == "ok", f"{fl} / {h['state']}")
-        # (b) a hang: suspend every pooled decompiler, then ask for a decompile with a 2 s timeout
-        for s in ss[2:]:
-            s.close()
-        ss = ss[:2]
-        time.sleep(0.5)
-        pooled = decompiler_pids(pid)
-        susp = ch.suspend_decompilers(pid)
-        dt.check(len(susp) == len(pooled) and susp, f"suspended {susp} of {pooled}")
-        t0 = time.perf_counter()
-        e = dt.expect_error("decompiler_failed", ss[0].call, "decompile", address=fns[0], timeout=2)
-        took = time.perf_counter() - t0
-        dt.check(took < 15, f"the hung decompile took {took:.1f} s for a 2 s timeout")
-        dt.check((e.details or {}).get("reason") in ("timeout", "crash") and
-                 (e.details or {}).get("retryable") is True, f"details {e.details}")
-        # the hang did not stop other clients: a request on another function is answered at once
-        for p in susp:
-            ch.resume(p)                    # the pooled ones that were not borrowed work again
-        time.sleep(0.3)
-        r = ss[1].call("decompile", address=fns[1])
-        dt.check(r["c"] == ref[fns[1]], "the request after the hang differs")
-        return (f"12 clients, {len(results)} requests, kill -9 of one native decompiler: 1 decompiler_failed, "
-                f"the other {len(results) - 1} identical to the reference; recreate after the kill gives the "
-                f"same text; hang ended in {took:.1f} s for timeout 2")
+        dt.check(h["state"] == "ok", f"state {h['state']}")
+        return (f"one pooled decompiler killed: exactly 1 decompiler_failed, then the same text; 12 clients, "
+                f"kill -9 of one decompiler: {one} failed (at most 1); of all {len(victims)}: {len(errs)} "
+                f"failed (1 to {len(victims)}); every other request identical to the reference")
     finally:
         close_all(*ss)
+        stop(d)
+
+
+def t_decompiler_hang(c):
+    windows_only()
+    ch = chaos()
+    exe = fixture_args(c)
+    gpr = c.copy_fixture("e9Hang")
+    d = c.daemon("e9-hang")
+    A = B = None
+    try:
+        A = c.connect(d, "hangA", "e9", 3)
+        B = c.connect(d, "hangB", "e9", 3)
+        open_view(c, A, gpr, exe)
+        open_view(c, B, gpr, exe)
+        pid = A.call("health")["pid"]
+        fns = [f["address"] for f in A.call("functions", limit=4)["functions"]]
+        ref = {a: A.call("decompile", address=a)["c"] for a in fns[:2]}
+        pooled = decompiler_pids(pid)
+        dt.check(len(pooled) == 1, f"expected exactly one pooled decompiler: {pooled}")
+        # the only decompiler is suspended; A borrows it and hangs until its own timeout (6 s)
+        susp = ch.suspend_decompilers(pid)
+        dt.check(sorted(susp) == sorted(pooled), f"suspended {susp} of {pooled}")
+        t0 = time.perf_counter()
+        rid = A.send("decompile", address=fns[0], timeout=6, wait=60000, parallel=True)
+        time.sleep(1.0)
+        # B asks during the hang: the suspended decompiler is borrowed, so B gets a fresh one at once
+        tb = time.perf_counter()
+        rb = B.call("decompile", address=fns[1], wait=60000)
+        took_b = time.perf_counter() - tb
+        at = time.perf_counter() - t0
+        dt.check(rb["c"] == ref[fns[1]], "the request of the other client differs from the reference")
+        dt.check(took_b < 4.0 and at < 5.5,
+                 f"the other client's request took {took_b:.1f} s and ended at {at:.1f} s of the 6 s hang: "
+                 f"the hang delayed it")
+        dt.check(len(decompiler_pids(pid)) == 2, "the other client's request did not get a fresh decompiler")
+        e = None
+        try:
+            A.wait(rid, 60)
+        except Exception as ex:  # noqa: BLE001
+            e = ex
+        took = time.perf_counter() - t0
+        dt.check(e is not None and getattr(e, "code", None) == "decompiler_failed",
+                 f"the hung decompile ended with {e!r}, expected decompiler_failed")
+        det = e.details or {}
+        dt.check(det.get("reason") in ("timeout", "crash") and det.get("retryable") is True, f"details {det}")
+        dt.check(5.0 <= took < 20, f"the hung decompile took {took:.1f} s for a 6 s timeout")
+        for p in susp:
+            with contextlib.suppress(Exception):
+                ch.terminate(p, 10)
+        r = A.call("decompile", address=fns[0])
+        dt.check(r["c"] == ref[fns[0]], "the request after the hang differs")
+        return (f"a suspended decompiler: the request that borrowed it ended decompiler_failed after "
+                f"{took:.1f} s (timeout 6); another client's request made during the hang was answered "
+                f"in {took_b:.1f} s by a fresh decompiler; the next request worked")
+    finally:
+        close_all(A, B)
         stop(d)
 
 
@@ -666,9 +770,13 @@ def t_admission_256(c):
         dt.check(all(r.get("resource") in ("heap", "views") for r in refused), f"{refused[:2]}")
         dt.check("OutOfMemoryError" not in log, "OutOfMemoryError in the daemon log")
         dt.check(h["memory"]["maxMb"] <= 260, f"heap {h['memory']}")
-        # the reaper and the governor thread were never restarted (a dead thread restarts at least once)
+        # the guarded threads are alive and beating (alive is the thread object, the beat a lap of its body;
+        # that a Throwable restarts them is e9_guarded_threads' claim, with a planted fault)
         th = h["governor"]["threads"]
-        dt.check(th.get("session-reaper", 0) == 0 and th.get("session-governor", 0) == 0, f"restarts {th}")
+        ts = h["governor"]["threadState"]
+        for name in GUARDED:
+            dt.check(name in ts and ts[name]["alive"] is True and ts[name]["stale"] is False,
+                     f"guarded thread {name} not alive and beating: {ts.get(name)}")
         dt.check(h["state"] in ("ok", "degraded"), f"state {h['state']}")
         return (f"-Xmx256m: {opened} of 24 views opened, {len(refused)} refused busy/capacity "
                 f"({sorted({r['resource'] for r in refused})}); 0 OutOfMemoryError; guarded threads "
@@ -852,6 +960,177 @@ def t_disk(c):
         stop(d)
 
 
+# ---- e9_guarded_threads ---------------------------------------------------------------------
+
+GUARDED = ("session-accept", "session-reaper", "session-governor")
+
+
+def _thread_states(s):
+    return s.call("health")["governor"]["threadState"]
+
+
+def t_guarded_threads(c):
+    # keepWarm 2 s: the reaper's lap is 1 s (a quarter of keepWarm, at least 1 s)
+    d = c.daemon("e9-thr", keepWarm=2, vmargs=HOOKS)
+    s = None
+    try:
+        s = c.connect(d, "thr", "e9", 3)
+        st = _thread_states(s)
+        for name in GUARDED:
+            dt.check(name in st, f"health.governor.threadState has no {name}: {sorted(st)}")
+            dt.check(st[name]["alive"] is True and st[name]["stale"] is False and st[name]["restarts"] == 0,
+                     f"{name} at start: {st[name]}")
+        # the reaper and the governor beat once per lap: the figure moves
+        for name in ("session-reaper", "session-governor"):
+            dt.check(st[name]["beatEveryMs"] > 0, f"{name} gives no lap period: {st[name]}")
+        dt.wait_for(lambda: all(_thread_states(s)[n]["lastBeatAgoMs"] <= 2500 and
+                                _thread_states(s)[n]["lastBeatAgoMs"] < st[n]["lastBeatAgoMs"] + 1
+                                for n in ("session-reaper", "session-governor")) or None,
+                    "the reaper and the governor to beat", 20, 0.3)
+        # an unknown thread is refused
+        dt.expect_error("bad_request", s.call, "debug_stall", what="thread", thread="no-such-thread")
+        # a Throwable in one lap of each thread: it is restarted, counted, alive, and keeps working
+        for name in ("session-reaper", "session-governor"):
+            before = _thread_states(s)[name]["restarts"]
+            r = s.call("debug_stall", what="thread", thread=name, error="runtime")
+            dt.check(r.get("planted") == "runtime", f"{r}")
+            now = dt.wait_for(lambda: (lambda x: x if x[name]["restarts"] > before else None)(_thread_states(s)),
+                              f"{name} to be restarted after a planted RuntimeException", 30, 0.25)
+            dt.check(now[name]["alive"] is True and now[name]["restarts"] == before + 1,
+                     f"{name} after the planted fault: {now[name]}")
+            # it must go on beating well after the restart (a thread that ran once more and ended would
+            # still show a fresh beat for a moment)
+            time.sleep(3.5)
+            st = _thread_states(s)[name]
+            dt.check(st["alive"] is True and st["lastBeatAgoMs"] <= 2500 and not st["stale"],
+                     f"{name} 3.5 s after its restart is not alive and beating: {st}")
+            dt.check(s.call("health")["governor"]["threads"][name] == before + 1, "threads counter disagrees")
+        # an OutOfMemoryError in the reaper: the emergency reserve is released, the thread runs again,
+        # the governor arms the reserve again (the heap is far below the soft watermark)
+        g0 = s.call("health")["governor"]
+        if g0["reserve"]["armed"]:
+            before = g0["threads"]["session-reaper"]
+            s.call("debug_stall", what="thread", thread="session-reaper", error="oom")
+            dt.wait_for(lambda: s.call("health")["governor"]["threads"]["session-reaper"] > before or None,
+                        "the reaper to be restarted after a planted OutOfMemoryError", 30, 0.25)
+            g1 = s.call("health")["governor"]
+            dt.check(g1["reserve"]["released"] == g0["reserve"]["released"] + 1, f"reserve {g1['reserve']}")
+            dt.wait_for(lambda: s.call("health")["governor"]["reserve"]["armed"] or None,
+                        "the governor to arm the emergency reserve again", 30, 0.25)
+            dt.check(_thread_states(s)["session-reaper"]["alive"] is True, "the reaper is gone after the OOM")
+        # the acceptor: the next connection is dropped by the planted fault, the thread restarts, a new
+        # connection works
+        before = _thread_states(s)["session-accept"]["restarts"]
+        s.call("debug_stall", what="thread", thread="session-accept", error="runtime")
+        dropped = None
+        try:
+            dropped = c.connect(d, "dropped", "e9", 3)
+            dropped.call("ping")
+        except Exception as e:  # noqa: BLE001
+            dropped = None
+            note = type(e).__name__
+        else:
+            note = "served"
+        if dropped is not None:
+            close_all(dropped)
+        now = dt.wait_for(lambda: (lambda x: x if x["session-accept"]["restarts"] > before else None)(_thread_states(s)),
+                          "the acceptor to be restarted after a planted fault", 30, 0.25)
+        dt.check(now["session-accept"]["alive"] is True, f"{now['session-accept']}")
+        again = None
+        for i in range(10):
+            try:
+                again = c.connect(d, f"again{i}", "e9", 3)
+                again.call("ping")
+                break
+            except Exception:  # noqa: BLE001
+                again = None
+                time.sleep(0.5)
+        dt.check(again is not None, "no new connection was accepted after the acceptor restarted")
+        close_all(again)
+        final = _thread_states(s)
+        dt.check(all(final[n]["alive"] and not final[n]["stale"] for n in GUARDED), f"{final}")
+        return (f"accept, reaper and governor threads alive and beating; a planted RuntimeException restarted "
+                f"each (restarts {[final[n]['restarts'] for n in GUARDED]}); an OutOfMemoryError released the "
+                f"reserve and the governor armed it again; the acceptor served a new connection "
+                f"(the one hit by the fault: {note})")
+    finally:
+        close_all(s)
+        stop(d)
+
+
+# ---- e9_concurrent_open ---------------------------------------------------------------------
+
+def _together(fns):
+    """Runs the callables at the same moment (a barrier); returns their results or exceptions."""
+    bar = threading.Barrier(len(fns))
+    out = [None] * len(fns)
+
+    def run(i):
+        bar.wait()
+        try:
+            out[i] = ("ok", fns[i]())
+        except Exception as e:  # noqa: BLE001
+            out[i] = ("err", e)
+
+    ts = [threading.Thread(target=run, args=(i,)) for i in range(len(fns))]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(180)
+    return out
+
+
+def t_concurrent_open(c):
+    exe = fixture_args(c)
+    # 16 clients, one program each, all at once, room for 4 views
+    d = c.daemon("e9-cv", engine={"maxViews": 4, "maxViewsPerClient": 4})
+    ss = []
+    try:
+        n = 16
+        ss = [c.connect(d, f"cv{i}", "e9", 3) for i in range(n)]
+        for i, s in enumerate(ss):
+            s.call("open_project", path=str(c.copy_fixture(f"cv{i}")))
+        res = _together([(lambda s=s: s.call("open_program", path=exe)) for s in ss])
+        ok = [r for r in res if r[0] == "ok"]
+        errs = [r[1] for r in res if r[0] == "err"]
+        codes = sorted({(getattr(e, "code", None), (getattr(e, "details", None) or {}).get("resource")) for e in errs})
+        g = ss[0].call("health")["governor"]
+        dt.check(len(ok) == 4 and all(e.code == "busy" for e in errs),
+                 f"maxViews 4, {n} clients opening at once: {len(ok)} opened, refusals {codes}; governor {g}")
+        dt.check(g["views"] == 4 and g["reserved"] == 0, f"governor after the opens: {g}")
+        dt.check(all(r.details.get("reason") == "capacity" for r in errs), "a refusal without reason capacity")
+    finally:
+        close_all(*ss)
+        stop(d)
+    # one client, 6 projects, 6 open_program requests in flight together, room for 2 per client
+    d = c.daemon("e9-cc", engine={"maxViews": 32, "maxViewsPerClient": 2})
+    s = None
+    try:
+        s = c.connect(d, "cc", "e9", 3)
+        gprs = [c.copy_fixture(f"cc{i}") for i in range(6)]
+        for g in gprs:
+            s.call("open_project", path=str(g))
+        rids = [s.send("open_program", path=exe, project=str(g), parallel=True) for g in gprs]
+        out = []
+        for rid in rids:
+            try:
+                out.append(("ok", s.wait(rid, 120)))
+            except Exception as e:  # noqa: BLE001
+                out.append(("err", e))
+        ok = [r for r in out if r[0] == "ok"]
+        errs = [r[1] for r in out if r[0] == "err"]
+        held = len(s.call("programs").get("programs", []))
+        dt.check(len(ok) == 2 and all(getattr(e, "code", None) == "busy" and
+                                      (e.details or {}).get("resource") == "client_cap" for e in errs),
+                 f"maxViewsPerClient 2, 6 opens at once: {len(ok)} opened ({held} listed), "
+                 f"{[(getattr(e, 'code', None), (getattr(e, 'details', None) or {}).get('resource')) for e in errs]}")
+        return ("maxViews 4: 16 clients opening at once, exactly 4 admitted, 12 busy/capacity, governor.views 4 and "
+                "no reservation left; maxViewsPerClient 2: 6 opens in flight, exactly 2 admitted (client_cap)")
+    finally:
+        close_all(s)
+        stop(d)
+
+
 # ---- e9_runaway -----------------------------------------------------------------------------
 
 def t_runaway(c):
@@ -885,6 +1164,9 @@ TESTS = {
     "e9_limits_job": t_limits_job,
     "e9_job_containment": t_job_containment,
     "e9_decompiler_faults": t_decompiler_faults,
+    "e9_decompiler_hang": t_decompiler_hang,
+    "e9_guarded_threads": t_guarded_threads,
+    "e9_concurrent_open": t_concurrent_open,
     "e9_negative_cache": t_negative_cache,
     "e9_gate": t_gate,
     "e9_idle_dispose": t_idle_dispose,

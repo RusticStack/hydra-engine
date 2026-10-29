@@ -238,7 +238,9 @@ final class Health {
 	 * {@code scheduler}, 5000 ms, at most 120000). {@code scheduler} holds the scheduler lock for
 	 * {@code ms} (the reply comes once it is held); {@code watchdog} stops the watchdog thread's
 	 * ticking for {@code ms} (the reply comes at once; the tick stops within a second). Neither
-	 * touches a client's request; both end by themselves.
+	 * touches a client's request; both end by themselves. {@code thread} (E9) plants one fault:
+	 * {@code {"what":"thread","thread":"session-reaper","error":"runtime"|"oom"}} makes the next lap
+	 * of that guarded thread throw, so that its restart can be tested.
 	 */
 	static JsonElement debugStall(Session session, JsonObject req) {
 		if (!TEST_HOOKS) {
@@ -258,9 +260,18 @@ final class Health {
 			case "watchdog":
 				session.watchdogStall(ms);
 				break;
+			case "thread": { // E9: the next lap of a guarded thread throws (tests Guarded in a daemon)
+				String thread = Json.str(req, "thread");
+				String error = Json.str(req, "error", "runtime");
+				if (!Guarded.inject(thread, error)) {
+					throw new SessionException(SessionException.BAD_REQUEST,
+						"no guarded thread named \"" + thread + "\"");
+				}
+				return Json.of("planted", error, "thread", thread);
+			}
 			default:
 				throw new SessionException(SessionException.BAD_REQUEST,
-					"what must be \"scheduler\" or \"watchdog\", not \"" + what + "\"");
+					"what must be \"scheduler\", \"watchdog\" or \"thread\", not \"" + what + "\"");
 		}
 		return Json.of("stalling", what, "ms", ms);
 	}

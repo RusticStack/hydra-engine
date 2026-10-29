@@ -186,7 +186,6 @@ public class HeadlessSession implements GhidraLaunchable {
 		// E9: the governor after the watchdog (admission, the decompiler gate, the guarded sampler)
 		Health.contribute("processJob", ProcessJob::describe); // after E3c's waits (the order is pinned)
 		Governor.start(session);
-		// after the contributors of Session (waits, leakedWorkers, leaked, repairs: the order E5 pins)
 		Runtime.getRuntime().addShutdownHook(new Thread(this::removeEndpoint, "session-exit"));
 
 		Connection stdio = null;
@@ -309,15 +308,29 @@ public class HeadlessSession implements GhidraLaunchable {
 	private void startAcceptor(ServerSocket server, String token) {
 		Guarded.start("session-accept", () -> {
 			while (!session.isShuttingDown()) {
+				Guarded.beat(0); // blocks in accept by design: liveness only
 				Socket s;
 				try {
 					s = server.accept();
 				}
 				catch (IOException e) {
-					if (!session.isShuttingDown()) {
-						Msg.error(this, "accept failed", e);
+					if (session.isShuttingDown() || server.isClosed()) {
+						return;
 					}
-					return;
+					// the accept thread is restarted (3.11): Guarded runs this body again
+					throw e;
+				}
+				try {
+					Guarded.beat(0); // where a planted test fault lands
+				}
+				catch (Throwable t) {
+					try {
+						s.close();
+					}
+					catch (IOException ignored) {
+						// the connection is dropped either way
+					}
+					throw t;
 				}
 				Thread ct = new Thread(() -> serveSocket(s, token), "session-socket");
 				ct.setDaemon(true);
@@ -351,7 +364,9 @@ public class HeadlessSession implements GhidraLaunchable {
 	private void startReaper() {
 		Guarded.start("session-reaper", () -> {
 			while (!session.isShuttingDown()) {
-				Thread.sleep(Math.min(15_000, Math.max(1_000, session.keepWarmMs / 4)));
+				long lapMs = Math.min(15_000, Math.max(1_000, session.keepWarmMs / 4));
+				Guarded.beat(lapMs); // proof of life in health.governor.threadState
+				Thread.sleep(lapMs);
 				session.reap();
 			}
 		});
@@ -700,6 +715,7 @@ public class HeadlessSession implements GhidraLaunchable {
 					Budgets.gatePermits() <= Runtime.getRuntime().availableProcessors());
 			gateFairness();
 			guardedRestarts();
+			reservations();
 			Governor.capacity("views", 1, 1, "x", 1);
 			SessionException busy = Governor.capacity("heap", 9, 5, "no room", 99_999);
 			check("a capacity refusal is busy with reason, resource, have, need and a clamped retry",
@@ -804,6 +820,99 @@ public class HeadlessSession implements GhidraLaunchable {
 				}));
 		}
 
+		/**
+		 * Requests that arrive together cannot all pass one count: 64 threads reserve at the same
+		 * moment (a barrier) against a view limit, a per-client limit and a heap limit, and exactly
+		 * the room there is is granted. The check and the reservation are one step (3.11).
+		 */
+		private static void reservations() {
+			int n = 64;
+			Settings.clear();
+			Settings.set("maxViews", "4");
+			Settings.set("maxViewsPerClient", "1000");
+			Governor g = Governor.forTest(() -> 0);
+			Client[] cs = new Client[n];
+			for (int i = 0; i < n; i++) {
+				cs[i] = new Client(i, "socket", false, e -> { });
+			}
+			int[] got = raceReserve(g, cs, 1);
+			check("64 concurrent reservations against maxViews 4 grant exactly 4 (granted " + got[0] +
+				", reserved " + g.reservedViewsNow() + ")", got[0] == 4 && g.reservedViewsNow() == 4);
+			for (int i = 0; i < n; i++) {
+				if (got[1 + i] == 1) {
+					g.unreserve(cs[i], true, 1);
+				}
+			}
+			check("the reservations are given back", g.reservedViewsNow() == 0);
+			got = raceReserve(g, cs, 1);
+			check("and the room is granted again, exactly 4 (granted " + got[0] + ")", got[0] == 4);
+			for (int i = 0; i < n; i++) {
+				if (got[1 + i] == 1) {
+					g.unreserve(cs[i], true, 1);
+				}
+			}
+			// one client, maxViewsPerClient 2, 64 requests at once
+			Settings.set("maxViews", "1000");
+			Settings.set("maxViewsPerClient", "2");
+			Client one = cs[0];
+			Client[] same = new Client[n];
+			java.util.Arrays.fill(same, one);
+			got = raceReserve(g, same, 1);
+			check("64 concurrent requests of one client against maxViewsPerClient 2 grant exactly 2 " +
+				"(granted " + got[0] + ")", got[0] == 2);
+			for (int i = 0; i < n; i++) {
+				if (got[1 + i] == 1) {
+					g.unreserve(one, true, 1);
+				}
+			}
+			// the heap: room for 5.5 estimates, so at most 5 are granted whoever asks
+			Settings.set("maxViewsPerClient", "1000");
+			long limit = Budgets.maxHeapBytes() / 100 * Budgets.heapSoftPct();
+			long room = limit - g.heapAfterGc();
+			if (room > (64L << 20)) {
+				long est = (long) (room / (Budgets.EST_FACTOR * 5.5));
+				got = raceReserve(g, cs, est);
+				check("64 concurrent reservations against room for 5.5 estimates of heap grant at " +
+					"most 5 (granted " + got[0] + ")", got[0] >= 1 && got[0] <= 6);
+			}
+			Settings.clear();
+		}
+
+		/** Every thread reserves one view at once; {@code [granted, per-thread 1/0...]}. */
+		private static int[] raceReserve(Governor g, Client[] cs, long est) {
+			int n = cs.length;
+			int[] out = new int[1 + n];
+			java.util.concurrent.CyclicBarrier bar = new java.util.concurrent.CyclicBarrier(n);
+			Thread[] ts = new Thread[n];
+			for (int i = 0; i < n; i++) {
+				int k = i;
+				ts[i] = new Thread(() -> {
+					try {
+						bar.await();
+						if (g.tryReserveView(cs[k], false, est, "k" + k, new boolean[1]) == null) {
+							out[1 + k] = 1;
+						}
+					}
+					catch (Exception e) {
+						out[1 + k] = -1;
+					}
+				});
+				ts[i].start();
+			}
+			for (Thread t : ts) {
+				try {
+					t.join(30_000);
+				}
+				catch (InterruptedException e) {
+					return out;
+				}
+			}
+			for (int i = 0; i < n; i++) {
+				out[0] += out[1 + i] == 1 ? 1 : 0;
+			}
+			return out;
+		}
+
 		/** A body that throws an Error is run again; the count is kept; the reserve is released. */
 		private static void guardedRestarts() {
 			Guarded.clear();
@@ -823,6 +932,13 @@ public class HeadlessSession implements GhidraLaunchable {
 			check("a guarded body that threw an OutOfMemoryError twice ran a third time and ended " +
 				"(restarts " + Guarded.restartsOf("selfTestThread") + ", runs " + n[0] + ")",
 				n[0] == 3 && Guarded.restartsOf("selfTestThread") == 2 && !t.isAlive());
+			JsonObject st = Guarded.states().getAsJsonObject("selfTestThread");
+			check("the liveness figure of a guarded thread: not alive, ended, 2 restarts, not stale",
+				st != null && !st.get("alive").getAsBoolean() && st.get("ended").getAsBoolean() &&
+					st.get("restarts").getAsInt() == 2 && !st.get("stale").getAsBoolean());
+			Guarded.beat(1); // not on a guarded thread: a no-op
+			check("a fault can only be planted on a guarded thread that exists",
+				!Guarded.inject("noSuchThread", "runtime"));
 			Guarded.clear();
 		}
 

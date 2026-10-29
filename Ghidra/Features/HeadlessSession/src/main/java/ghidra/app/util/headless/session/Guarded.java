@@ -46,6 +46,10 @@ final class Guarded {
 	private static final long STABLE_MS = 60_000;
 
 	private static final Map<String, AtomicInteger> RESTARTS = new ConcurrentHashMap<>();
+	private static final Map<String, State> STATES = new ConcurrentHashMap<>();
+	/** Test faults (debug_stall what:"thread"): thread name to the kind of error its next beat throws. */
+	private static final Map<String, String> FAULTS = new ConcurrentHashMap<>();
+	private static final ThreadLocal<State> CURRENT = new ThreadLocal<>();
 	private static volatile byte[] reserve;
 	private static final AtomicInteger RESERVE_RELEASED = new AtomicInteger();
 
@@ -85,6 +89,79 @@ final class Guarded {
 		return false;
 	}
 
+	/** What the health report knows of one guarded thread. */
+	private static final class State {
+		volatile Thread thread;
+		volatile long beatNs = System.nanoTime();
+		/** How often the body beats; 0: it blocks and shows liveness only. */
+		volatile long everyMs;
+		/** The body returned (a shutdown): the thread is expected to be gone. */
+		volatile boolean ended;
+	}
+
+	/**
+	 * Called by a guarded body once per lap: the proof of life {@code health.governor.threadState}
+	 * shows, and the point where a planted test fault ({@link #inject}) is thrown, so that the
+	 * restart path can be tested in a running daemon.
+	 *
+	 * @param everyMs the period of the body's laps (0: it blocks, no staleness is judged)
+	 */
+	static void beat(long everyMs) {
+		State st = CURRENT.get();
+		if (st == null) {
+			return; // not on a guarded thread
+		}
+		st.beatNs = System.nanoTime();
+		st.everyMs = everyMs;
+		String name = st.thread == null ? null : st.thread.getName();
+		String kind = name == null ? null : FAULTS.remove(name);
+		if (kind != null) {
+			if ("oom".equals(kind)) {
+				throw new OutOfMemoryError("planted by debug_stall what:thread");
+			}
+			throw new IllegalStateException("planted by debug_stall what:thread");
+		}
+	}
+
+	/**
+	 * Plants one fault: the next {@link #beat} of the thread named {@code name} throws
+	 * ({@code kind} {@code "oom"} an {@code OutOfMemoryError}, anything else a runtime exception).
+	 * Test hook only: the caller checks {@code Health.testHooks()}.
+	 *
+	 * @return false when no guarded thread has that name
+	 */
+	static boolean inject(String name, String kind) {
+		if (!STATES.containsKey(name)) {
+			return false;
+		}
+		FAULTS.put(name, kind == null ? "runtime" : kind);
+		return true;
+	}
+
+	/**
+	 * Per guarded thread: {@code alive} (the thread object is running), {@code restarts},
+	 * {@code lastBeatAgoMs}, {@code beatEveryMs} and {@code stale} (no beat for much longer than
+	 * its period; never for a thread that blocks by design).
+	 */
+	static JsonObject states() {
+		JsonObject o = new JsonObject();
+		long now = System.nanoTime();
+		new java.util.TreeMap<>(STATES).forEach((name, st) -> {
+			Thread t = st.thread;
+			boolean alive = t != null && t.isAlive();
+			long ago = (now - st.beatNs) / 1_000_000L;
+			JsonObject e = new JsonObject();
+			e.addProperty("alive", alive);
+			e.addProperty("ended", st.ended);
+			e.addProperty("restarts", restartsOf(name));
+			e.addProperty("lastBeatAgoMs", ago);
+			e.addProperty("beatEveryMs", st.everyMs);
+			e.addProperty("stale", alive && st.everyMs > 0 && ago > 4 * st.everyMs + 10_000);
+			o.add(name, e);
+		});
+		return o;
+	}
+
 	/** Restarts per guarded thread name. */
 	static JsonObject restarts() {
 		JsonObject o = new JsonObject();
@@ -100,6 +177,8 @@ final class Guarded {
 	/** Forgets the counts (the self-test). */
 	static void clear() {
 		RESTARTS.clear();
+		STATES.clear();
+		FAULTS.clear();
 	}
 
 	/**
@@ -110,6 +189,7 @@ final class Guarded {
 	static Thread start(String name, Body body) {
 		Thread t = new Thread(() -> loop(name, body), name);
 		t.setDaemon(true);
+		STATES.computeIfAbsent(name, k -> new State()).thread = t;
 		t.start();
 		return t;
 	}
@@ -123,9 +203,24 @@ final class Guarded {
 	/** The loop of a guarded thread, also callable from a test (it runs on the calling thread). */
 	static void loop(String name, Body body) {
 		RESTARTS.computeIfAbsent(name, k -> new AtomicInteger());
+		State st = STATES.computeIfAbsent(name, k -> new State());
+		st.thread = Thread.currentThread();
+		st.ended = false;
+		CURRENT.set(st);
+		try {
+			run(name, body, st);
+		}
+		finally {
+			st.ended = true;
+			CURRENT.remove();
+		}
+	}
+
+	private static void run(String name, Body body, State st) {
 		long backoff = BACKOFF_MIN_MS;
 		while (!Thread.currentThread().isInterrupted()) {
 			long began = System.nanoTime();
+			st.beatNs = began;
 			try {
 				body.run();
 				return;

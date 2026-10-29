@@ -47,7 +47,8 @@ final class Advertised {
 	static final List<String> LIMITS = List.of("maxQuick", "maxLong", "maxMaint", "maxImports",
 		"quickScriptMaxS", "cleanupGraceS", "abandonWaitS", "maxRunningPerKey", "minXmxMb",
 		"maxViews", "maxViewsPerClient", "heapSoftPct", "heapHardPct", "nativeBudgetMb",
-		"decompilerPermits");
+		"viewDiskBudget", "diskReserve", "decompilerIdleS", "decompilerWaitS", "decompilerFailLimit",
+		"decompilerNegativeS");
 
 	/** The policy names, in reply order. */
 	static final List<String> POLICY = List.of("requireBackupForUpgrade", "requireExpect");

@@ -61,14 +61,18 @@ import ghidra.util.Msg;
  * collection of its own (at most one every two seconds), so a stale figure does not refuse;</li>
  * <li><i>views</i>: fewer than {@code maxViews} programs open in the daemon, counting those
  * reserved by requests still in flight, and fewer than {@code maxViewsPerClient} per client; a
- * program another client already has open costs nothing but the per-client share;</li>
+ * program another client already has open costs nothing but the per-client share. The checks
+ * of a request (client share, view count, heap) and its reservation are one step under one lock
+ * ({@link #tryReserveView}), so requests that arrive together cannot all pass the same count;
+ * freeing room (idle programs, a collection) happens between two attempts, never under the lock;</li>
  * <li><i>degraded</i>: above {@code heapHardPct} after a collection the daemon refuses opens, forks
  * and imports and keeps serving reads ({@link #degraded}, which {@code health.state} reports);</li>
  * <li><i>disk</i>: a fork or an import needs {@code free >= estimate + max(5 GB, 5%)}, and the view
  * forks this daemon made stay under {@code viewDiskBudget}.</li>
  * </ul>
  * <b>Threads.</b> One guarded thread samples every half second: it releases idle decompilers,
- * re-arms the emergency reserve of {@link Guarded} and learns the cost of a first open.
+ * re-arms the emergency reserve of {@link Guarded} and measures the heap again when a stale figure
+ * says degraded.
  * <p>
  * {@code health.governor} shows all of it.
  */
@@ -86,6 +90,8 @@ final class Governor {
 	private static final Map<String, AtomicLong> REFUSED = new ConcurrentHashMap<>();
 
 	private final Session session;
+	/** The programs and overlays open now (the daemon's session; a stand-in in the self-test). */
+	private final java.util.function.IntSupplier viewCounter;
 	private final Set<MemoryPoolMXBean> heapPools = new HashSet<>();
 	private volatile long afterGcBytes;
 	private volatile long afterGcAtMs;
@@ -93,16 +99,28 @@ final class Governor {
 	private volatile long lastForcedGcMs;
 	private final AtomicInteger forcedGcs = new AtomicInteger();
 
+	/**
+	 * Guards the reservations. The checks of an admission and its reservation happen under one
+	 * acquisition of it ({@link #tryReserveView}); nothing slow (a collection, an eviction, a
+	 * disposal) ever runs while it is held, because {@code health.governor} takes it too.
+	 */
 	private final Object lock = new Object();
 	private int reservedViews;
 	private long reservedEstBytes;
 	private int inFlight;
+	/** Per client: the open_program / switch requests in flight that count towards its share. */
+	private final Map<Client, Integer> reservedByClient = new java.util.IdentityHashMap<>();
 	/** View forks this daemon made that are still on disk: gpr path to estimated bytes. */
 	private final Map<String, Long> viewForks = new ConcurrentHashMap<>();
 	private volatile long lastEstBytes;
 
 	private Governor(Session session) {
+		this(session, null);
+	}
+
+	private Governor(Session session, java.util.function.IntSupplier viewCounter) {
 		this.session = session;
+		this.viewCounter = viewCounter != null ? viewCounter : this::openViews;
 		for (MemoryPoolMXBean p : ManagementFactory.getMemoryPoolMXBeans()) {
 			if (p.getType() == MemoryType.HEAP) {
 				heapPools.add(p);
@@ -133,11 +151,23 @@ final class Governor {
 		Advertised.limit("heapSoftPct", Budgets::heapSoftPct);
 		Advertised.limit("heapHardPct", Budgets::heapHardPct);
 		Advertised.limit("nativeBudgetMb", Budgets::nativeBudgetMb);
-		Advertised.limit("decompilerPermits", () -> DecompilerGate.GATE.permits());
+		// sizes are advertised in megabytes; the permits of the gate are a derived figure that
+		// health.governor.gate shows, not a setting
+		Advertised.limit("viewDiskBudget", () -> Budgets.viewDiskBudgetBytes() >> 20);
+		Advertised.limit("diskReserve", () -> Budgets.size("diskReserve", 5L << 30) >> 20);
+		Advertised.limit("decompilerIdleS", Budgets::decompilerIdleS);
+		Advertised.limit("decompilerWaitS", Budgets::decompilerWaitS);
+		Advertised.limit("decompilerFailLimit", DecompilerGate.Breaker::failLimit);
+		Advertised.limit("decompilerNegativeS", () -> DecompilerGate.Breaker.negativeMs() / 1000);
 		g.listenForCollections();
 		Guarded.armReserve();
 		Health.contribute("governor", g::describe);
 		Guarded.start("session-governor", g::sampleLoop);
+	}
+
+	/** A governor with no session whose view count is {@code viewCounter} (the self-test). */
+	static Governor forTest(java.util.function.IntSupplier viewCounter) {
+		return new Governor(null, viewCounter);
 	}
 
 	/** Forgets the governor (the self-test). */
@@ -289,11 +319,18 @@ final class Governor {
 		private final File viewFork;
 		private final long forkBytes;
 		/** The heap after a collection when the admission was granted; -1: not measured. */
-		private final long gcAtAdmission;
+		private volatile long gcAtAdmission;
+		/** The client whose per-client share this admission holds, or null. */
+		private final Client client;
 		private boolean closed;
 
 		private Admission(Governor gov, String key, long estBytes, boolean newView, File viewFork,
 				long forkBytes, long gcAtAdmission) {
+			this(gov, key, estBytes, newView, viewFork, forkBytes, gcAtAdmission, null);
+		}
+
+		private Admission(Governor gov, String key, long estBytes, boolean newView, File viewFork,
+				long forkBytes, long gcAtAdmission, Client client) {
 			this.gov = gov;
 			this.key = key;
 			this.estBytes = estBytes;
@@ -301,6 +338,7 @@ final class Governor {
 			this.viewFork = viewFork;
 			this.forkBytes = forkBytes;
 			this.gcAtAdmission = gcAtAdmission;
+			this.client = client;
 		}
 
 		@Override
@@ -360,28 +398,55 @@ final class Governor {
 		}
 	}
 
-	/** The heap rule for {@code estBytes} more (plus what requests in flight reserved). */
-	private void requireHeap(long estBytes, String what) {
+	/** A refusal found under the lock; the exception is made (and counted) only when it is thrown. */
+	record Refusal(String resource, long have, long need, String message,
+			long retryAfterMs) {
+		SessionException toException() {
+			return capacity(resource, have, need, message, retryAfterMs);
+		}
+	}
+
+	/**
+	 * The heap rule for {@code estBytes} more plus what requests in flight reserved: null when it
+	 * holds. Must be called with {@link #lock} held when the reserved figure has to agree with a
+	 * reservation made in the same step.
+	 */
+	private Refusal heapRefusal(long estBytes, String what) {
 		long max = Budgets.maxHeapBytes();
 		long limit = max / 100 * Budgets.heapSoftPct();
-		long need;
-		synchronized (lock) {
-			need = (long) (Budgets.EST_FACTOR * (estBytes + reservedEstBytes));
+		long need = (long) (Budgets.EST_FACTOR * (estBytes + reservedEstBytes));
+		long after = afterGcBytes;
+		if (after + need <= limit) {
+			return null;
 		}
-		if (afterGcBytes + need > limit) {
-			// programs nobody uses are kept warm for later; before refusing, let them go
+		return new Refusal("heap", (after + need) >> 20, limit >> 20,
+			"the heap cannot take " + what + ": " + (after >> 20) + " MB in use after a " +
+				"collection plus " + (need >> 20) + " MB estimated, against " + (limit >> 20) +
+				" MB (" + Budgets.heapSoftPct() + "% of " + (max >> 20) + " MB). Close a " +
+				"program or retry.",
+			3000);
+	}
+
+	/**
+	 * The heap rule for a request that reserves nothing (a project, a fork, an import). Programs
+	 * nobody uses are let go, and the heap figure is refreshed once, before it refuses; neither
+	 * happens under the lock.
+	 */
+	private void requireHeap(long estBytes, String what) {
+		Refusal r = heapRefusalLocked(estBytes, what);
+		if (r != null) {
 			evictIdle();
-			if (refreshHeap() && afterGcBytes + need <= limit) {
-				return;
-			}
+			refreshHeap();
+			r = heapRefusalLocked(estBytes, what);
 		}
-		if (afterGcBytes + need > limit) {
-			throw capacity("heap", (afterGcBytes + need) >> 20, limit >> 20,
-				"the heap cannot take " + what + ": " + (afterGcBytes >> 20) + " MB in use after a " +
-					"collection plus " + (need >> 20) + " MB estimated, against " + (limit >> 20) +
-					" MB (" + Budgets.heapSoftPct() + "% of " + (max >> 20) + " MB). Close a " +
-					"program or retry.",
-				3000);
+		if (r != null) {
+			throw r.toException();
+		}
+	}
+
+	private Refusal heapRefusalLocked(long estBytes, String what) {
+		synchronized (lock) {
+			return heapRefusal(estBytes, what);
 		}
 	}
 
@@ -412,51 +477,99 @@ final class Governor {
 		if (mine) {
 			return NONE; // opening again what the client has: no new share
 		}
+		// a program already in memory for another client is shared: it costs the per-client share
+		// only, no view and no heap
+		boolean shared = open != null;
+		long est = 0;
+		if (!shared) {
+			long db = databaseBytes(c, projectKey, path);
+			est = Budgets.estHeap(key, db);
+		}
+		// The checks and the reservation are ONE step under the lock (reserve first, release on
+		// failure), so that requests that arrive together cannot all pass the same count. What
+		// frees room (idle programs, a collection) runs between two attempts, never under the lock.
+		boolean evicted = false;
+		boolean refreshed = false;
+		boolean[] eligible = new boolean[1];
+		while (true) {
+			Refusal r = tryReserveView(c, shared, est, key, eligible);
+			if (r == null) {
+				break;
+			}
+			if ("views".equals(r.resource()) && !evicted) {
+				evicted = true;
+				evictIdle();
+				continue;
+			}
+			if ("heap".equals(r.resource()) && !refreshed) {
+				refreshed = true;
+				if (!evicted) {
+					evicted = true;
+					evictIdle();
+				}
+				refreshHeap();
+				continue;
+			}
+			throw r.toException();
+		}
+		Admission a = new Admission(this, key, est, !shared, null, 0, -1, c);
+		if (shared) {
+			return a;
+		}
+		try {
+			// the first open of a program teaches its real cost: a collection now and one after the
+			// open, only when the heap is small enough for a collection to be cheap
+			Runtime rt = Runtime.getRuntime();
+			if (eligible[0] && rt.totalMemory() - rt.freeMemory() < (1L << 30) && refreshHeap()) {
+				a.gcAtAdmission = afterGcBytes;
+			}
+		}
+		catch (RuntimeException | Error e) {
+			a.close();
+			throw e;
+		}
+		return a;
+	}
+
+	/**
+	 * One atomic step: the per-client share, the view count and the heap rule are checked and, when
+	 * all hold, the reservation is made. Returns the first rule that does not hold (nothing is
+	 * reserved then).
+	 *
+	 * @param eligible out: true when this is the only request in flight and the program's cost is
+	 *            not known yet (the first open is then measured)
+	 */
+	Refusal tryReserveView(Client c, boolean shared, long est, String key, boolean[] eligible) {
 		synchronized (lock) {
 			int perClient = Budgets.maxViewsPerClient();
-			if (c.programs.size() >= perClient) {
-				throw capacity("client_cap", c.programs.size(), perClient,
-					"this client has " + c.programs.size() + " programs open; the limit is " +
+			int held = c.programs.size() + reservedByClient.getOrDefault(c, 0);
+			if (held >= perClient) {
+				return new Refusal("client_cap", held, perClient,
+					"this client has " + held + " programs open or opening; the limit is " +
 						perClient + " per client (maxViewsPerClient). Close one first.",
 					2000);
 			}
-		}
-		if (open != null) {
-			return NONE; // already in memory for another client: shared, no heap, no view
-		}
-		long db = databaseBytes(c, projectKey, path);
-		long est = Budgets.estHeap(key, db);
-		int maxViews = Budgets.maxViews();
-		synchronized (lock) {
-			int views = openViews() + reservedViews;
-			if (views >= maxViews && evictIdle()) {
-				views = openViews() + reservedViews;
+			if (!shared) {
+				int maxViews = Budgets.maxViews();
+				int views = viewCounter.getAsInt() + reservedViews;
+				if (views >= maxViews) {
+					return new Refusal("views", views, maxViews,
+						"the daemon has " + views + " views open or opening; the limit is " +
+							maxViews + " (maxViews). Close a program or retry.",
+						3000);
+				}
+				Refusal h = heapRefusal(est, "another view");
+				if (h != null) {
+					return h;
+				}
+				eligible[0] = inFlight == 0 && key != null && !Budgets.learned(key);
+				reservedViews++;
+				reservedEstBytes += est;
+				inFlight++;
 			}
-			if (views >= maxViews) {
-				throw capacity("views", views, maxViews,
-					"the daemon has " + views + " views open or opening; the limit is " + maxViews +
-						" (maxViews). Close a program or retry.",
-					3000);
-			}
+			reservedByClient.merge(c, 1, Integer::sum);
+			return null;
 		}
-		requireHeap(est, "another view");
-		// the first open of a program teaches its real cost: a collection now and one after the
-		// open, only when the heap is small enough for a collection to be cheap
-		long before = -1;
-		boolean eligible;
-		synchronized (lock) {
-			eligible = inFlight == 0 && key != null && !Budgets.learned(key);
-		}
-		Runtime rt = Runtime.getRuntime();
-		if (eligible && rt.totalMemory() - rt.freeMemory() < (1L << 30) && refreshHeap()) {
-			before = afterGcBytes;
-		}
-		synchronized (lock) {
-			reservedViews++;
-			reservedEstBytes += est;
-			inFlight++;
-		}
-		return new Admission(this, key, est, true, null, 0, before);
 	}
 
 	private Admission admitFork(Client c, JsonObject req) {
@@ -639,20 +752,39 @@ final class Governor {
 	// ---- the end of a request ------------------------------------------------------------------------
 
 	private void release(Admission a) {
-		boolean sole;
-		synchronized (lock) {
-			if (a.newView) {
-				reservedViews = Math.max(0, reservedViews - 1);
-				reservedEstBytes = Math.max(0, reservedEstBytes - a.estBytes);
-				inFlight = Math.max(0, inFlight - 1);
-			}
-			sole = inFlight == 0;
-		}
+		boolean sole = unreserve(a.client, a.newView, a.estBytes);
 		if (a.viewFork != null && a.viewFork.exists()) {
 			viewForks.put(a.viewFork.getPath(), a.forkBytes);
 		}
 		if (a.newView && a.gcAtAdmission >= 0 && sole) {
 			learnFirstOpen(a);
+		}
+	}
+
+	/**
+	 * Gives back what {@link #tryReserveView} reserved.
+	 *
+	 * @return true when no other reservation of a new view is in flight
+	 */
+	boolean unreserve(Client c, boolean newView, long estBytes) {
+		synchronized (lock) {
+			if (newView) {
+				reservedViews = Math.max(0, reservedViews - 1);
+				reservedEstBytes = Math.max(0, reservedEstBytes - estBytes);
+				inFlight = Math.max(0, inFlight - 1);
+			}
+			if (c != null) {
+				reservedByClient.merge(c, -1, Integer::sum);
+				reservedByClient.remove(c, 0);
+			}
+			return inFlight == 0;
+		}
+	}
+
+	/** Views reserved by requests in flight (the self-test). */
+	int reservedViewsNow() {
+		synchronized (lock) {
+			return reservedViews;
 		}
 	}
 
@@ -694,6 +826,7 @@ final class Governor {
 
 	private void sampleLoop() throws InterruptedException {
 		while (!session.isShuttingDown()) {
+			Guarded.beat(500); // proof of life in health.governor.threadState
 			Thread.sleep(500);
 			long now = System.currentTimeMillis();
 			if (now - lastSweepMs >= 5_000) {
@@ -705,6 +838,12 @@ final class Governor {
 			}
 			if (!Guarded.reserveArmed() && OK.equals(heapState())) {
 				Guarded.armReserve();
+			}
+			// degraded is judged on the figure the last collection left: with no collection for a
+			// while the figure is stale, so measure again (at most every 5 s, and only above the
+			// hard watermark, where the daemon refuses work anyway)
+			if (HARD.equals(heapState()) && now - afterGcAtMs > 5_000) {
+				refreshHeap();
 			}
 		}
 	}
@@ -743,6 +882,7 @@ final class Governor {
 		Json.put(o, "reserve", Json.of("armed", Guarded.reserveArmed(), "released",
 			Guarded.reserveReleases()));
 		o.add("threads", Guarded.restarts());
+		o.add("threadState", Guarded.states());
 		return o;
 	}
 }
