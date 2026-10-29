@@ -41,11 +41,13 @@ final class Advertised {
 	static final List<String> CAPABILITIES = List.of("errorNext", "expectAll", "idempotency",
 		"laneHint", "maintLane", "queueInfo", "cancelWait", "forkReport", "format", "backup",
 		"upgradeGate", "scriptIsolation", "scriptSha256", "attemptedChanges", "health", "identity",
-		"seal", "forkAtomic");
+		"seal", "forkAtomic", "admission");
 
 	/** The limit names, in reply order. */
 	static final List<String> LIMITS = List.of("maxQuick", "maxLong", "maxMaint", "maxImports",
-		"quickScriptMaxS", "cleanupGraceS", "abandonWaitS", "maxRunningPerKey");
+		"quickScriptMaxS", "cleanupGraceS", "abandonWaitS", "maxRunningPerKey", "minXmxMb",
+		"maxViews", "maxViewsPerClient", "heapSoftPct", "heapHardPct", "nativeBudgetMb",
+		"decompilerPermits");
 
 	/** The policy names, in reply order. */
 	static final List<String> POLICY = List.of("requireBackupForUpgrade", "requireExpect");

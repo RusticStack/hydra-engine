@@ -16,7 +16,9 @@
 package ghidra.app.util.headless.session;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
+import java.util.List;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import com.google.gson.JsonArray;
@@ -44,7 +46,7 @@ import ghidra.program.model.listing.Program;
  * the whole call and leaves the overlay as it was; the shared program is a different object and
  * is never touched.
  */
-final class Overlay implements Decompilers {
+final class Overlay implements Decompilers, DecompilerGate.Pool {
 
 	final Client client;
 	final String name;
@@ -72,45 +74,91 @@ final class Overlay implements Decompilers {
 	/** Set when a rebuild (after a refresh) could not reapply the log; the overlay is unusable. */
 	volatile String error;
 
-	private final Deque<DecompInterface> decompilers = new ArrayDeque<>();
+	/** A pooled decompiler and when it was put back (E9: idle ones are disposed). */
+	private record Pooled(DecompInterface d, long atNanos) {
+	}
+
+	private final Deque<Pooled> decompilers = new ArrayDeque<>();
 
 	Overlay(Client client, String name, ProgramEntry base) {
 		this.client = client;
 		this.name = name;
 		this.base = base;
 		this.id = id(client, base.key, name);
+		DecompilerGate.track(this);
 	}
 
 	static String id(Client c, String programKey, String name) {
 		return c.id + "|" + programKey + "|" + name;
 	}
 
+	/** A decompiler for the overlay's program, after a permit of the decompiler gate (E9). */
 	@Override
 	public DecompInterface borrowDecompiler() {
-		synchronized (decompilers) {
-			DecompInterface d = decompilers.poll();
-			if (d != null) {
-				return d;
+		DecompilerGate.Permit permit = DecompilerGate.enter();
+		try {
+			DecompInterface d = null;
+			synchronized (decompilers) {
+				Pooled p = decompilers.poll();
+				if (p != null) {
+					d = p.d();
+				}
 			}
+			if (d == null) {
+				d = ProgramEntry.newDecompiler(program, base.path);
+			}
+			DecompilerGate.attach(d, permit);
+			return d;
 		}
-		return ProgramEntry.newDecompiler(program, base.path);
+		catch (Throwable t) {
+			permit.release();
+			throw t;
+		}
 	}
 
 	@Override
 	public void returnDecompiler(DecompInterface d, boolean healthy) {
-		if (!healthy || d.getProgram() != program) {
-			d.dispose();
-			return;
+		try {
+			if (!healthy || d.getProgram() != program) {
+				DecompilerGate.dispose(d);
+				return;
+			}
+			synchronized (decompilers) {
+				decompilers.push(new Pooled(d, System.nanoTime()));
+			}
 		}
+		finally {
+			DecompilerGate.leave(d);
+		}
+	}
+
+	@Override
+	public int disposeIdle(long cutoffNanos) {
+		List<DecompInterface> gone = new ArrayList<>();
 		synchronized (decompilers) {
-			decompilers.push(d);
+			decompilers.removeIf(p -> {
+				if (p.atNanos() - cutoffNanos < 0) {
+					gone.add(p.d());
+					return true;
+				}
+				return false;
+			});
+		}
+		gone.forEach(DecompilerGate::dispose);
+		return gone.size();
+	}
+
+	@Override
+	public int idle() {
+		synchronized (decompilers) {
+			return decompilers.size();
 		}
 	}
 
 	/** Releases the program object and what holds it. Held: the write lock. */
 	void dispose() {
 		synchronized (decompilers) {
-			decompilers.forEach(DecompInterface::dispose);
+			decompilers.forEach(p -> DecompilerGate.dispose(p.d()));
 			decompilers.clear();
 		}
 		try {

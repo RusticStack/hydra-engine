@@ -105,6 +105,10 @@ public class HeadlessSession implements GhidraLaunchable {
 
 	@Override
 	public void launch(GhidraApplicationLayout layout, String[] args) throws Exception {
+		// E9, D60: the daemon makes its own kill-on-close Job Object before anything else, so
+		// every process it starts afterwards (native decompilers, script workers) dies with it.
+		// It never throws; health.processJob reports what happened.
+		ProcessJob.start(layout.getApplicationInstallationDir().getFile(false).toPath());
 		long t0 = System.nanoTime();
 		Options o;
 		boolean requireExpect = false;
@@ -113,6 +117,7 @@ public class HeadlessSession implements GhidraLaunchable {
 			requireExpect = Settings.bool("requireExpect", false); // a bad value is a usage error
 			Scheduler.validateSettings(); // so is a bad lane setting
 			Health.validateSettings(); // and testHooks as a setting: it is a launch property only
+			Budgets.validate(); // E9: the budgets, and -Xmx against minXmxMb
 		}
 		catch (IllegalArgumentException e) {
 			System.err.println(e.getMessage());
@@ -175,9 +180,13 @@ public class HeadlessSession implements GhidraLaunchable {
 			session.forkCopyLimitBytes = o.forkCopyLimitMb << 20;
 		}
 		// E5: the watchdog before anything can block (a project opened at start-up, a client);
-		// E9 starts the governor after this line. testHooks is read from the JVM property only.
+		// testHooks is read from the JVM property only.
 		Health.announce();
 		session.startWatchdog();
+		// E9: the governor after the watchdog (admission, the decompiler gate, the guarded sampler)
+		Health.contribute("processJob", ProcessJob::describe); // after E3c's waits (the order is pinned)
+		Governor.start(session);
+		// after the contributors of Session (waits, leakedWorkers, leaked, repairs: the order E5 pins)
 		Runtime.getRuntime().addShutdownHook(new Thread(this::removeEndpoint, "session-exit"));
 
 		Connection stdio = null;
@@ -298,7 +307,7 @@ public class HeadlessSession implements GhidraLaunchable {
 	}
 
 	private void startAcceptor(ServerSocket server, String token) {
-		Thread t = new Thread(() -> {
+		Guarded.start("session-accept", () -> {
 			while (!session.isShuttingDown()) {
 				Socket s;
 				try {
@@ -314,9 +323,7 @@ public class HeadlessSession implements GhidraLaunchable {
 				ct.setDaemon(true);
 				ct.start();
 			}
-		}, "session-accept");
-		t.setDaemon(true);
-		t.start();
+		});
 	}
 
 	private void serveSocket(Socket s, String token) {
@@ -335,23 +342,19 @@ public class HeadlessSession implements GhidraLaunchable {
 		}
 	}
 
+	/**
+	 * The reaper runs under {@link Guarded} (E9, D46): measurement A saw it die of an
+	 * {@code OutOfMemoryError} at {@code -Xmx256m} while the daemon went on without it. A
+	 * {@code Throwable} in a lap is logged and counted ({@code health.governor.threads}) and the
+	 * next lap runs after a backoff.
+	 */
 	private void startReaper() {
-		Thread t = new Thread(() -> {
+		Guarded.start("session-reaper", () -> {
 			while (!session.isShuttingDown()) {
-				try {
-					Thread.sleep(Math.min(15_000, Math.max(1_000, session.keepWarmMs / 4)));
-					session.reap();
-				}
-				catch (InterruptedException e) {
-					return;
-				}
-				catch (RuntimeException e) {
-					Msg.error(this, "reaper", e);
-				}
+				Thread.sleep(Math.min(15_000, Math.max(1_000, session.keepWarmMs / 4)));
+				session.reap();
 			}
-		}, "session-reaper");
-		t.setDaemon(true);
-		t.start();
+		});
 	}
 
 	private void idleLoop(long idleSeconds) throws InterruptedException {
@@ -603,6 +606,7 @@ public class HeadlessSession implements GhidraLaunchable {
 			closeVsViewChange();
 			dbVersions();
 			health();
+			governor();
 			System.out.println(
 				bad == 0 ? "all self-test checks held" : bad + " self-test check(s) FAILED");
 			return bad == 0 ? 0 : 1;
@@ -655,6 +659,171 @@ public class HeadlessSession implements GhidraLaunchable {
 				throwsIllegal(Health::validateSettings));
 			Settings.clear();
 			check("the test hooks are off in this JVM (no launch property)", !Health.testHooks());
+		}
+
+		/** E9: the budgets, the gate's fairness, the guarded thread and the sweep's path rule. */
+		private static void governor() {
+			Settings.clear();
+			check("viewDiskBudget and diskReserve take sizes; a plain number is megabytes",
+				sizeOf("20GB") == (20L << 30) && sizeOf("512MB") == (512L << 20) &&
+					sizeOf("7") == (7L << 20) && sizeOf("100 KB") == (100L << 10));
+			check("a size that is not one is a usage error naming the key",
+				throwsIllegal(() -> {
+					Settings.set("viewDiskBudget", "lots");
+					Budgets.size("viewDiskBudget", 0);
+				}));
+			Settings.clear();
+			check("the defaults of 3.11 validate on this heap (minXmxMb forced to 0)", ok(() -> {
+				Settings.set("minXmxMb", "0");
+				Budgets.validate();
+			}));
+			Settings.clear();
+			Settings.set("minXmxMb", "1000000");
+			check("a heap below minXmxMb is refused at start-up", throwsIllegal(Budgets::validate));
+			Settings.clear();
+			Settings.set("heapSoftPct", "90");
+			Settings.set("heapHardPct", "80");
+			check("a soft watermark above the hard one is a usage error",
+				throwsIllegal(Budgets::validate));
+			Settings.clear();
+			Settings.set("maxViews", "0");
+			check("maxViews below 1 is a usage error", throwsIllegal(Budgets::validate));
+			Settings.clear();
+			check("estHeap starts at max(8 MB, 6% of the database) and is replaced by a measurement",
+				Budgets.estHeap("k1", 1L << 20) == (8L << 20) &&
+					Budgets.estHeap("k1", 1000L << 20) == (60L << 20));
+			Budgets.learn("k1", 5L << 20);
+			check("a learned estimate replaces the default", Budgets.estHeap("k1", 1L << 30) == (5L << 20));
+			Budgets.clearLearned();
+			check("the gate has min(CPUs, nativeBudget / 200 MB) permits, at least one",
+				Budgets.gatePermits() >= 1 &&
+					Budgets.gatePermits() <= Runtime.getRuntime().availableProcessors());
+			gateFairness();
+			guardedRestarts();
+			Governor.capacity("views", 1, 1, "x", 1);
+			SessionException busy = Governor.capacity("heap", 9, 5, "no room", 99_999);
+			check("a capacity refusal is busy with reason, resource, have, need and a clamped retry",
+				busy.code().equals("busy") &&
+					busy.details().get("reason").getAsString().equals("capacity") &&
+					busy.details().get("resource").getAsString().equals("heap") &&
+					busy.details().get("have").getAsLong() == 9 &&
+					busy.details().get("need").getAsLong() == 5 &&
+					busy.retryAfterMs() == SessionException.RETRY_MAX_MS);
+			java.nio.file.Path fake = java.nio.file.Path.of(System.getProperty("java.io.tmpdir"),
+				"hydra-selftest-no-install");
+			JsonObject sw = ProcessJob.sweep(fake, false);
+			check("the orphan sweep of an install with no decompiler finds none (path match)",
+				sw.get("checked").getAsInt() == 0 && sw.getAsJsonArray("orphans").size() == 0);
+			check("the process job is off unless the test hooks and the property are both on",
+				!ProcessJob.disabledForTest());
+		}
+
+		private static long sizeOf(String v) {
+			Settings.set("selfTestSize", v);
+			return Budgets.size("selfTestSize", -1);
+		}
+
+		private static boolean ok(Runnable r) {
+			try {
+				r.run();
+				return true;
+			}
+			catch (RuntimeException e) {
+				System.out.println("     " + e.getMessage());
+				return false;
+			}
+		}
+
+		/** One permit held by X; X queues three waiters and Y one; the freed permit goes to Y first. */
+		private static void gateFairness() {
+			DecompilerGate g = new DecompilerGate(1);
+			Object x = "X";
+			Object y = "Y";
+			DecompilerGate.Permit first = g.acquire(x, null, 5000);
+			java.util.List<String> order = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+			java.util.List<Thread> ts = new java.util.ArrayList<>();
+			java.util.concurrent.atomic.AtomicInteger queued = new java.util.concurrent.atomic.AtomicInteger();
+			for (Object who : new Object[] { x, x, x, y }) {
+				Thread t = new Thread(() -> {
+					queued.incrementAndGet();
+					DecompilerGate.Permit p = g.acquire(who, null, 10_000);
+					order.add(who.toString());
+					try {
+						Thread.sleep(20);
+					}
+					catch (InterruptedException e) {
+						// ends
+					}
+					p.release();
+				});
+				ts.add(t);
+				t.start();
+				try {
+					while (g.waitingClients().size() < (who == y ? 2 : 1) ||
+						queued.get() < ts.size()) {
+						Thread.sleep(5);
+					}
+					Thread.sleep(30);
+				}
+				catch (InterruptedException e) {
+					return;
+				}
+			}
+			first.release();
+			for (Thread t : ts) {
+				try {
+					t.join(10_000);
+				}
+				catch (InterruptedException e) {
+					return;
+				}
+			}
+			check("the gate serves clients in turn: Y before the second X, not X X X Y (got " + order + ")",
+				order.equals(java.util.List.of("Y", "X", "X", "X")));
+			DecompilerGate g2 = new DecompilerGate(1);
+			DecompilerGate.Permit held = g2.acquire(x, null, 1000);
+			boolean refused = false;
+			long t0 = System.nanoTime();
+			try {
+				g2.acquire(y, null, 300);
+			}
+			catch (SessionException e) {
+				refused = e.code().equals("busy") &&
+					e.details().get("resource").getAsString().equals("native");
+			}
+			held.release();
+			check("a wait for a permit that never comes ends in busy capacity native",
+				refused && (System.nanoTime() - t0) / 1_000_000L < 3000);
+			check("a released permit can be taken again, and release twice counts once",
+				ok(() -> {
+					DecompilerGate.Permit p = g2.acquire(x, null, 500);
+					p.release();
+					p.release();
+					DecompilerGate.Permit q = g2.acquire(x, null, 500);
+					q.release();
+				}));
+		}
+
+		/** A body that throws an Error is run again; the count is kept; the reserve is released. */
+		private static void guardedRestarts() {
+			Guarded.clear();
+			int[] n = { 0 };
+			Thread t = new Thread(() -> Guarded.loop("selfTestThread", () -> {
+				if (++n[0] < 3) {
+					throw new OutOfMemoryError("planted");
+				}
+			}));
+			t.start();
+			try {
+				t.join(15_000);
+			}
+			catch (InterruptedException e) {
+				return;
+			}
+			check("a guarded body that threw an OutOfMemoryError twice ran a third time and ended " +
+				"(restarts " + Guarded.restartsOf("selfTestThread") + ", runs " + n[0] + ")",
+				n[0] == 3 && Guarded.restartsOf("selfTestThread") == 2 && !t.isAlive());
+			Guarded.clear();
 		}
 
 		private static void advertised() {
