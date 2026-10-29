@@ -73,5 +73,5 @@ def variant(name, how):
         try: d.stop(force=True)
         except Exception as e: print("stop", e)
     return out
-res = [variant("a_close_wait10s", "close"), variant("b_disconnect", "disc"), variant("c_close_wait100ms", "close_short")]
+res = [variant(n, how) for n, how in (("a_close_wait10s", "close"), ("b_disconnect", "disc"), ("c_close_wait100ms", "close_short")) if part(n[0])]
 save("s1_xqueue", res)

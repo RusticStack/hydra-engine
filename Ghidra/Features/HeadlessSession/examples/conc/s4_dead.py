@@ -38,65 +38,68 @@ def setup(name):
     return d, cl, pid, prog_key(pid)
 out = {}
 # (a) owner script exclusive vs readers
-d, cl, pid, prog = setup("s3a")
-try:
-    A, B, C, D = (cl[n] for n in "ABCD")
-    A.call("open_program", path=PROG, project=pid, writable=True)
-    C.call("open_program", path=PROG, project=pid)
-    t0 = time.perf_counter()
-    th = threading.Thread(target=lambda: A.call("script", script="LockHold.java", args=["coop", "8"], program=prog, wait=30000)); th.start()
-    time.sleep(0.5)
-    rows = []
-    for _ in range(6):
-        r = timed(C.call, "info", program=prog, wait=1000)
-        rows.append({"t": round(time.perf_counter() - t0, 1), "ok": r[0], "ms": r[1], "code": None if r[0] else r[2]["code"], "holder": None if r[0] else r[2]["details"].get("holder")})
-        time.sleep(1.0)
-    th.join(); out["a_owner_script_vs_reader"] = rows
-finally:
-    d.stop(force=True)
-# (b) client killed while waiting for the exclusive lock
-d, cl, pid, prog = setup("s4b")
-try:
-    A, B, C, D = (cl[n] for n in "ABCD")
-    B.call("open_program", path=PROG, project=pid, writable=True, share=True)
-    A.call("open_program", path=PROG, project=pid, writable=True, share=True)
-    C.call("open_program", path=PROG, project=pid)
-    t0 = time.perf_counter(); ev = []
-    ta = threading.Thread(target=lambda: ev.append(("A script ended", round(time.perf_counter() - t0, 1), A.call("script", script="LockHold.java", args=["coop", "16"], program=prog, wait=60000, exclusive=False)["mode"])))
-    # A is a shared writer -> script would be exclusive (isWriter). Use C (reader, contained) for the long read instead.
-    tc = threading.Thread(target=lambda: ev.append(("C long read ended", round(time.perf_counter() - t0, 1), C.call("script", script="LockHold.java", args=["coop", "16"], program=prog, wait=60000)["mode"])))
-    tc.start(); time.sleep(1.5)
-    # B sends an edit with a long wait (queues exclusive), then dies
-    rid = B.send("comment", program=prog, address=ADDR(0x9630), type="eol", text="DEAD CLIENT WRITE", wait=60000)
-    ev.append(("B comment sent", round(time.perf_counter() - t0, 1)))
-    time.sleep(1.5); B.close(); ev.append(("B socket closed", round(time.perf_counter() - t0, 1)))
-    rows = []
-    for _ in range(9):
-        r = timed(A.call, "info", program=prog, wait=800)
-        rows.append({"t": round(time.perf_counter() - t0, 1), "ok": r[0], "ms": r[1], "code": None if r[0] else r[2]["code"], "readers": None if r[0] else r[2]["details"].get("readers")})
-        time.sleep(1.2)
-    tc.join()
-    time.sleep(1.0)
-    after = timed(A.call, "journal", program=prog)
-    out["b_dead_waiter"] = {"events": ev, "probes": rows, "journal_after": str(after[2])[:500]}
-    st = A.call("status"); out["b_status_clients"] = str(st.get("clients"))[:600]
-finally:
-    d.stop(force=True)
-# (c) owner killed mid deaf script; plus cancel of a deaf script
-d, cl, pid, prog = setup("s4c")
-try:
-    A, B, C, D = (cl[n] for n in "ABCD")
-    A.call("open_program", path=PROG, project=pid, writable=True)
-    t0 = time.perf_counter(); ev = []
-    rid = A.send("script", script="LockHold.java", args=["deaf", "20"], program=prog, wait=60000)
-    time.sleep(1.5)
-    tcan = time.perf_counter(); A.call("cancel", target=rid); ev.append(("cancel returned", ms(tcan)))
-    time.sleep(1.0); A.close(); ev.append(("A closed", round(time.perf_counter() - t0, 1)))
-    out["c_owner_deaf_script_killed"] = {"events": ev, "probes": probes(C, D, prog, pid, t0, 24, "c", step=2.0)}
-    # slot accounting during/after
+if part("a"):
+    d, cl, pid, prog = setup("s3a")
     try:
-        st = C.call("status"); out["c_sched_end"] = {k: {kk: v[kk] for kk in ("slots", "inUse", "queued")} for k, v in st["scheduler"].items()}
-    except Exception as e: out["c_sched_end"] = repr(e)
-finally:
-    d.stop(force=True)
+        A, B, C, D = (cl[n] for n in "ABCD")
+        A.call("open_program", path=PROG, project=pid, writable=True)
+        C.call("open_program", path=PROG, project=pid)
+        t0 = time.perf_counter()
+        th = threading.Thread(target=lambda: A.call("script", script="LockHold.java", args=["coop", "8"], program=prog, wait=30000)); th.start()
+        time.sleep(0.5)
+        rows = []
+        for _ in range(6):
+            r = timed(C.call, "info", program=prog, wait=1000)
+            rows.append({"t": round(time.perf_counter() - t0, 1), "ok": r[0], "ms": r[1], "code": None if r[0] else r[2]["code"], "holder": None if r[0] else r[2]["details"].get("holder")})
+            time.sleep(1.0)
+        th.join(); out["a_owner_script_vs_reader"] = rows
+    finally:
+        d.stop(force=True)
+# (b) client killed while waiting for the exclusive lock
+if part("b"):
+    d, cl, pid, prog = setup("s4b")
+    try:
+        A, B, C, D = (cl[n] for n in "ABCD")
+        B.call("open_program", path=PROG, project=pid, writable=True, share=True)
+        A.call("open_program", path=PROG, project=pid, writable=True, share=True)
+        C.call("open_program", path=PROG, project=pid)
+        t0 = time.perf_counter(); ev = []
+        ta = threading.Thread(target=lambda: ev.append(("A script ended", round(time.perf_counter() - t0, 1), A.call("script", script="LockHold.java", args=["coop", "16"], program=prog, wait=60000, exclusive=False)["mode"])))
+        # A is a shared writer -> script would be exclusive (isWriter). Use C (reader, contained) for the long read instead.
+        tc = threading.Thread(target=lambda: ev.append(("C long read ended", round(time.perf_counter() - t0, 1), C.call("script", script="LockHold.java", args=["coop", "16"], program=prog, wait=60000)["mode"])))
+        tc.start(); time.sleep(1.5)
+        # B sends an edit with a long wait (queues exclusive), then dies
+        rid = B.send("comment", program=prog, address=ADDR(0x9630), type="eol", text="DEAD CLIENT WRITE", wait=60000)
+        ev.append(("B comment sent", round(time.perf_counter() - t0, 1)))
+        time.sleep(1.5); B.close(); ev.append(("B socket closed", round(time.perf_counter() - t0, 1)))
+        rows = []
+        for _ in range(9):
+            r = timed(A.call, "info", program=prog, wait=800)
+            rows.append({"t": round(time.perf_counter() - t0, 1), "ok": r[0], "ms": r[1], "code": None if r[0] else r[2]["code"], "readers": None if r[0] else r[2]["details"].get("readers")})
+            time.sleep(1.2)
+        tc.join()
+        time.sleep(1.0)
+        after = timed(A.call, "journal", program=prog)
+        out["b_dead_waiter"] = {"events": ev, "probes": rows, "journal_after": str(after[2])[:500]}
+        st = A.call("status"); out["b_status_clients"] = str(st.get("clients"))[:600]
+    finally:
+        d.stop(force=True)
+# (c) owner killed mid deaf script; plus cancel of a deaf script
+if part("c"):
+    d, cl, pid, prog = setup("s4c")
+    try:
+        A, B, C, D = (cl[n] for n in "ABCD")
+        A.call("open_program", path=PROG, project=pid, writable=True)
+        t0 = time.perf_counter(); ev = []
+        rid = A.send("script", script="LockHold.java", args=["deaf", "20"], program=prog, wait=60000)
+        time.sleep(1.5)
+        tcan = time.perf_counter(); A.call("cancel", target=rid); ev.append(("cancel returned", ms(tcan)))
+        time.sleep(1.0); A.close(); ev.append(("A closed", round(time.perf_counter() - t0, 1)))
+        out["c_owner_deaf_script_killed"] = {"events": ev, "probes": probes(C, D, prog, pid, t0, 24, "c", step=2.0)}
+        # slot accounting during/after
+        try:
+            st = C.call("status"); out["c_sched_end"] = {k: {kk: v[kk] for kk in ("slots", "inUse", "queued")} for k, v in st["scheduler"].items()}
+        except Exception as e: out["c_sched_end"] = repr(e)
+    finally:
+        d.stop(force=True)
 save("s4_dead", out)
