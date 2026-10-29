@@ -84,7 +84,8 @@ the two files; the build and the checks above were redone with this form.
 - One daemon per state directory.
 - `fork_project` is a block clone only on ReFS (Windows 11 24H2 or later); elsewhere a full copy,
   which `auto` refuses above `forkCopyLimitMb` (2048 by default).
-- Writes are serialized and never corrupt a program, but are not collision-checked by default
+- Writes are serialized and never corrupt a program (in the tests listed in the module README), but
+  are not collision-checked by default
   (last writer wins per value in shared mode; `expect` is opt-in per call).
 - Changes are kept only by `save`.
 - The base is a Ghidra development snapshot (upstream `master`), not a Ghidra release.

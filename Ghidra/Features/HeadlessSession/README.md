@@ -409,8 +409,8 @@ owner may turn its program shared by opening it again with `share`.
   transaction (Ghidra joins concurrent transactions on one program into one, which would let one
   client's rollback undo another's work). Readers share the lock between changes. A committed
   change is visible to every client at once: they share one program object.
-- **Writes are serialized and never corrupt the program, but they are not collision-checked
-  unless you ask.** **Last writer wins** per value (a name, a comment of a type at an address,
+- **Writes are serialized and never corrupt the program (in the tests listed, see
+  [Tests](#tests)), but they are not collision-checked unless you ask.** **Last writer wins** per value (a name, a comment of a type at an address,
   ...) by default; `expect` is optional on each call, not required. To detect a
   lost update instead, pass `"expect"` (the value you read; `null`: none) on `rename`, `comment`
   or an `edit` operation of those kinds: if the value changed since, the change is refused with `conflict`,

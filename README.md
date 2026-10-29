@@ -149,8 +149,9 @@ Several at once (same machine; the module README has the method):
   (or an instance name); a second daemon for the same one exits.
 - **`fork_project` is a block clone only on ReFS** (Windows 11 24H2 or later, for example a Dev
   Drive); on NTFS and elsewhere it is a full copy, which `auto` refuses above `forkCopyLimitMb`.
-- **Writes are serialized and never corrupt a program, but they are not collision-checked by
-  default.** Each change is its own transaction under the program's exclusive lock. In shared
+- **Writes are serialized and never corrupt a program (in the tests listed in the
+  [module README](Ghidra/Features/HeadlessSession/README.md#tests)), but they are not
+  collision-checked by default.** Each change is its own transaction under the program's exclusive lock. In shared
   mode (`"share": true`) the last writer wins per value; optimistic concurrency is opt-in per call
   (`expect`, in the module README's "Shared writing"). In owner mode one client writes and the
   rest get `not_owner`.
