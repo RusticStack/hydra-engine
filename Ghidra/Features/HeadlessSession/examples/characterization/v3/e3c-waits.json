@@ -1,0 +1,89 @@
+{
+ "scenario": "e3c-waits",
+ "protocol": 3,
+ "steps": [
+  {
+   "step": 1,
+   "who": "a",
+   "cmd": "open_project",
+   "request": {
+    "path": "<WORK>/e3c-waits/Fixture.gpr"
+   },
+   "response": {
+    "id": 2,
+    "ok": true,
+    "result": {
+     "id": "p1",
+     "name": "Fixture",
+     "dir": "<WORK>/e3c-waits",
+     "gpr": "<WORK>/e3c-waits/Fixture.gpr",
+     "writable": false,
+     "openMs": "<masked>",
+     "idleMs": "<masked>",
+     "files": 2,
+     "users": [
+      1
+     ],
+     "programs": 0,
+     "revision": "<rev1>",
+     "diskRevision": "<rev1>",
+     "stale": false,
+     "generation": 1,
+     "fork": null,
+     "format": {
+      "programDb": {
+       "min": 33,
+       "max": 33,
+       "current": 33
+      },
+      "dataTypeDb": {
+       "min": 3,
+       "max": 3,
+       "current": 3
+      },
+      "upgradeRequired": false,
+      "oneWay": false,
+      "newerThanEngine": false,
+      "programsScanned": 2,
+      "truncated": false,
+      "engine": {
+       "hydraVersion": "<masked>",
+       "ghidraVersion": "<masked>"
+      }
+     },
+     "opened": true
+    },
+    "ms": "<masked>"
+   },
+   "note": "one project open"
+  },
+  {
+   "step": 2,
+   "who": "a",
+   "cmd": "status",
+   "request": {},
+   "response": {
+    "ok": true,
+    "result": {
+     "waits": {
+      "foreignBlocked": {
+       "total": 0,
+       "lastMinute": 0,
+       "shared": 0
+      },
+      "singleFlightOpen": 0,
+      "contended": 0,
+      "lockWaitP99Ms": null
+     },
+     "projectStates": [
+      {
+       "state": "open",
+       "project": "p1"
+      }
+     ]
+    }
+   },
+   "note": "the deterministic evidence of D49 and the project state machine of D57"
+  }
+ ]
+}

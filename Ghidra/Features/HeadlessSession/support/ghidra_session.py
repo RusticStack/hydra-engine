@@ -1316,10 +1316,16 @@ class SpawnError(Exception):
 
 
 _K32 = None
+_K32_LOCK = threading.RLock()  # the signatures are set on a shared DLL object: once, never raced
 
 
 def _kernel32():
     """kernel32 with the signatures this file uses (Windows only), made once."""
+    with _K32_LOCK:
+        return _kernel32_locked()
+
+
+def _kernel32_locked():
     global _K32
     if _K32 is None:
         import ctypes
