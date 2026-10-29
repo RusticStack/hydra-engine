@@ -34,7 +34,12 @@ Hydralysis process and are run by the VF integration check: listed as a gap here
 killed with 8 clients). ``control`` runs the harness without a kill and must show 0 anomalies (a harness that
 reports a problem on an unkilled run is broken). A ReFS batch needs ``--refs-root`` (a scratch folder on a
 ReFS volume): without it the batch is **listed as a gap, not skipped silently**, and the verdict is INCOMPLETE.
-The wording "below 0.75% at 95%" is allowed only after 0 failures in at least 400 save kills.
+The wording "below 0.75% at 95%" is allowed only after 0 failures in at least 200 save kills on NTFS and 200
+on ReFS, with no harness error and no unfinished save batch, and not after a count override. A save, fork or
+promote kill counts only when its trigger fired (the version folder listing changed) and the operation was
+still unanswered when the process died: a kill that fell back to the 120 s timeout or came after the answer is
+reported (``unanswered_no_trigger``) but not counted. ``--n BATCH=N`` and ``--only`` change the profile: the
+run is then not a gate run, its verdict is capped at ``SMOKE-OK`` and the override is named.
 
 Verdicts: ``PASS`` (gate profile, every minimum reached, 0 anomalies, 0 harness errors, nothing missing),
 ``SMOKE-OK`` (the same for ``smoke``, whose numbers are never gate numbers), ``FAIL`` (an anomaly, a changed
@@ -78,17 +83,30 @@ BATCHES = {
     "control": dict(script="run_c.py", argv=["ctl", "{proj}", "ntfs"], family="control", fs="ntfs",
                     what="no kill: the harness must report 0 anomalies"),
 }
-#: unanswered kills per batch: the gate (9.15) and the smoke profile
+#: unanswered kills per batch: the gate (9.15) and the smoke profile. save 200+200, fork 300, daemon8 50 and the 200
+#: promote kills are the numbers of 9.15; `control` = 20 is this runner's own choice (the spec sets no number: it only has
+#: to be a few unkilled iterations that prove the harness reports 0 anomalies when nothing is killed)
 COUNTS = {
     "gate": dict(save_ntfs=200, save_refs=200, fork=300, promote=200, daemon8=50, control=20),
     "smoke": dict(save_ntfs=2, fork=2, promote=1, daemon8=1, control=1),
 }
-#: what the engine-level batches cannot cover and the check that does
+#: what the engine-level batches cannot cover and the check that does. A gate profile with any entry here is
+#: INCOMPLETE, never PASS: PASS is unreachable until the VF integration check lifts these (it edits these constants
+#: when it has run the checks they name; the selftest clears them to prove that a complete clean run would be PASS).
 SOFT_GAPS = {
     "publish_kills": "at least 200 publish and promote_overlay kills: the publish half kills a Hydralysis publish leader; "
-                     "run by the VF integration check",
+                     "run by the VF integration check. The 200 promote_overlay kills of the `promote` batch count toward "
+                     "that figure but do not satisfy it alone",
+    "oracle_per_kill": "gate 9.15 wants K1-K17 after every kill. This runner runs, per batch and not per kill: oracle.check_k2 "
+                       "over the iteration directories the harness kept (it keeps only anomalous ones, so for a clean batch "
+                       "that check is close to empty) and the K7 orphan-decompiler check (new orphans whose parent is gone). "
+                       "Stand-ins are the harness's own per-iteration classes (CORRUPT_OR_UNOPENABLE, LOSS_OF_ACKED_*, "
+                       "PARTIAL_DEST_VISIBLE, RETRY_BLOCKED, CANONICAL_CHANGED, staging left) and footer.base_unchanged. "
+                       "NOT run after the kills of the save, fork, promote and daemon8 batches: the oracle's K6 and K9 file "
+                       "checks, K7 handles/threads/locks/tmp, K3-K5, K8, K10-K17. They need the leftover trees, which the "
+                       "harness deletes for clean iterations; run by the VF integration check or by a harness change",
 }
-#: every kill is followed by the oracle; the file-level part (K2, K6, K7, K9) runs here over what is left
+#: gate 9.15 wants every kill followed by the oracle; see SOFT_GAPS["oracle_per_kill"] for what runs here
 BAD_PREFIX_OK = ()      # no anomaly class is tolerated
 
 
@@ -121,8 +139,8 @@ def is_kill(row: dict, family: str) -> bool:
     if family == "control":
         return False
     if family == "daemon8":
-        return True
-    return not row.get("acked_before_kill")
+        return True       # run_ef.py kills the daemon at a phase of the run, not on a folder trigger
+    return not row.get("acked_before_kill") and bool(row.get("trigger_hit"))
 
 
 def judge_rows(rows: list, family: str) -> dict:
@@ -145,6 +163,8 @@ def judge_rows(rows: list, family: str) -> dict:
                 continue
             classes[k] = classes.get(k, 0) + 1
     answered = len(rec) - len(kills)
+    no_trigger = sum(1 for r in rec if family not in ("control", "daemon8") and not r.get("acked_before_kill")
+                     and not r.get("trigger_hit"))
     # the failures that gate 9.15 names, read from the same classes
     unopenable = sum(n for k, n in classes.items() if "UNOPENABLE" in k or "OPEN_ERROR" in k)
     rep_no_gpr = sum(1 for r in rec if r.get("dest_state") == "rep_only_NO_GPR")
@@ -157,9 +177,11 @@ def judge_rows(rows: list, family: str) -> dict:
     failing_iterations = sum(1 for r in rec if [a for a in r.get("anomalies", []) if a.split(":")[0] not in BAD_PREFIX_OK
                                                  and a.split(":")[0] != "ORPHAN_TMP_LEFT"] or r.get("leftover_fork_tmp_after_retry"))
     return {"iterations": len(rec), "kills": len(kills), "answered_before_kill": answered,
+            "unanswered_no_trigger": no_trigger,
             "trigger_hits": sum(1 for r in rec if r.get("trigger_hit")),
             "anomaly_classes": classes, "failing_iterations": failing_iterations,
             "unopenable": unopenable, "rep_without_gpr": rep_no_gpr, "blocked_retries": blocked,
+            "open_busy_answers": sum(int(r.get("open_busy_answers") or 0) for r in rec),
             "leftovers_after_sweep": leftovers, "orphans_before_sweep": orphans_before_sweep, "lost_acknowledged": loss, "harness_errors": len(errs),
             "harness_error_samples": [str(e.get("harness_error"))[-300:] for e in errs[:3]]}
 
@@ -188,16 +210,37 @@ def judge_batch(name: str, spec: dict, want: int, rows: list, footer: dict | Non
     return {"batch": name, "verdict": verdict, "wanted": want, **j, "violations": viol, "incomplete": inc}
 
 
-def overall(batches: dict, profile: str, missing: dict) -> dict:
+#: the "below 0.75% at 95%" wording needs this many counted save kills on each file system (9.15)
+WORDING_MIN_SAVE_KILLS_PER_FS = 200
+
+
+def count_overrides(profile: str, counts: dict, only=()) -> list:
+    """What differs from the profile's counts (``--n``) or batches (``--only``)."""
+    out = [f"--n {b}={n} (profile {profile}: {COUNTS[profile].get(b, 0)})" for b, n in sorted(counts.items())
+           if n != COUNTS[profile].get(b, 0)]
+    if only:
+        out.append(f"--only {','.join(sorted(only))} (profile {profile}: all batches)")
+    return out
+
+
+def overall(batches: dict, profile: str, missing: dict, overrides=()) -> dict:
     gate = profile == "gate"
     viol = [f"{b}: {x}" for b, r in batches.items() for x in r["violations"]]
     gaps = [f"{b}: {x}" for b, r in batches.items() for x in r["incomplete"]]
     gaps += [f"{b}: {why}" for b, why in missing.items()]
+    # a batch of the profile that neither ran nor was named as missing (a harness bug or a bare --only)
+    gaps += [f"{b}: not run" for b, n in COUNTS[profile].items() if n > 0 and b not in batches and b not in missing]
     soft = [f"{k}: {v}" for k, v in SOFT_GAPS.items()]
-    save_kills = sum(r["kills"] for b, r in batches.items() if BATCHES[b]["family"] == "save")
-    save_fail = sum(r["failing_iterations"] for b, r in batches.items() if BATCHES[b]["family"] == "save")
-    save_fs = {BATCHES[b]["fs"] for b, r in batches.items() if BATCHES[b]["family"] == "save"}
-    wording = save_fail == 0 and save_kills >= 400 and {"ntfs", "refs"} <= save_fs
+    save_b = {b: r for b, r in batches.items() if BATCHES[b]["family"] == "save"}
+    save_kills = sum(r["kills"] for r in save_b.values())
+    save_fail = sum(r["failing_iterations"] for r in save_b.values())
+    kills_fs = {}
+    for b, r in save_b.items():
+        kills_fs[BATCHES[b]["fs"]] = kills_fs.get(BATCHES[b]["fs"], 0) + r["kills"]
+    save_clean = all(r["harness_errors"] == 0 and not r["incomplete"] for r in save_b.values())
+    wording = (not overrides and save_fail == 0 and save_clean
+               and kills_fs.get("ntfs", 0) >= WORDING_MIN_SAVE_KILLS_PER_FS
+               and kills_fs.get("refs", 0) >= WORDING_MIN_SAVE_KILLS_PER_FS)
     if viol:
         v = "FAIL"
     elif gaps or (gate and soft):
@@ -206,7 +249,12 @@ def overall(batches: dict, profile: str, missing: dict) -> dict:
         v = "PASS" if gate else "SMOKE-OK"
     if not gate and v == "INCOMPLETE" and not gaps:
         v = "SMOKE-OK"
-    return {"verdict": v, "violations": viol, "gaps": gaps, "soft_gaps": soft,
+    if overrides and v == "PASS":
+        v = "SMOKE-OK"        # the ceiling of a run that changed the profile
+    if overrides:
+        gaps = gaps + [f"profile overridden, not a gate run: {o}" for o in overrides]
+    return {"verdict": v, "violations": viol, "gaps": gaps, "soft_gaps": soft, "profile_overrides": list(overrides),
+            "save_kills_by_fs": kills_fs,
             "save_kills": save_kills, "save_failures": save_fail,
             "save_wilson_upper_95": round(wilson_upper(save_fail, save_kills), 5) if save_kills else None,
             "wording_below_0_75_percent_allowed": wording}
@@ -227,6 +275,8 @@ class Chaos:
             k, v = kv.split("=")
             self.counts[k] = int(v)
         self.only = set(x for x in (a.only or "").split(",") if x)
+        self.overrides = count_overrides(a.profile, self.counts, self.only)
+        self.k7_seen: dict = {}
 
     def common(self) -> list:
         c = ["--ghidra", self.a.ghidra, "--work", str(self.work), "--fixtures", self.a.fixtures,
@@ -291,6 +341,16 @@ class Chaos:
         return [(f"{name}{i}", base + (1 if i < extra else 0), self.a.seed + 1000 * i + sum(map(ord, name)))
                 for i in range(k)]
 
+    def k7_orphans(self, name: str, post: oracle.Report, before: set) -> dict:
+        """K7 over the batch: no decompiler started during it is left with its parent gone (the daemon was killed
+        or stopped). Decompilers that existed before the batch, or whose parent is alive (another run's daemon on
+        this machine), are not ours and are not judged. It is vacuous when the batch ran no decompiler."""
+        new = [o for o in oracle.find_orphan_decompilers() if o["pid"] not in before]
+        mine = {o["pid"] for o in new if not o["parent_alive"]}
+        oracle.check_k7_processes([], settle_s=8.0, only_pids=mine, rep=post)
+        self.k7_seen[name] = {"new_decompilers_present": len(new), "orphaned": len(mine)}
+        return self.k7_seen[name]
+
     def run_batch(self, name: str) -> dict:
         spec = BATCHES[name]
         want = self.counts.get(name, 0)
@@ -303,14 +363,20 @@ class Chaos:
             argv = [a.replace("{proj}", self.a.proj) for a in spec["argv"]]
             cmd = py + [str(CONC / spec["script"])] + argv + [str(n), str(seed)] + self.common()
             env = dict(os.environ, TRIG="1", RUN_TAG=f"{self.a.tag}{tag}")
+            if spec["family"] == "daemon8":
+                # eight clients open one project at once; a `busy` answer is retried by the harness and counted
+                # (open_busy_answers). The harness default (no retry) is unchanged for every other caller.
+                env["HYDRA_E6_OPEN_BUSY_RETRIES"] = "200"
             t0 = time.time()
             rc = self.run_proc(cmd, self.logs / f"{name}-{tag}.log", env, self.a.batch_timeout_s)
             results.append((tag, rc, round(time.time() - t0, 1)))
+        r_before = {o["pid"] for o in oracle.find_orphan_decompilers()}      # decompilers that exist before the batch
         ths = [threading.Thread(target=one, args=s) for s in shards]
         for th in ths:
             th.start()
         for th in ths:
             th.join()
+        self.stop_daemons()          # the daemons of the batch are dead before K7 looks for what they left
         rows, footers, codes = [], [], []
         scen = spec["argv"][0]
         for tag, rc, secs in results:
@@ -326,6 +392,7 @@ class Chaos:
             footer = {"base_unchanged": all(f.get("base_unchanged") for f in footers)}
         exit_code = 0 if all(c == 0 for c in codes) else next(c for c in codes if c != 0)
         post = oracle.Report("post:" + name)
+        self.k7_orphans(name, post, r_before)
         for out in outdirs:
             if out.is_dir():
                 oracle.check_k2(out, post)         # a kept iteration directory must have no bad version file
@@ -338,6 +405,7 @@ class Chaos:
         r = judge_batch(name, spec, want, rows, footer, exit_code, post, self.a.profile == "gate")
         r["shards"] = [{"tag": t, "exit": rc, "seconds": s} for t, rc, s in results]
         r["what"] = spec["what"]
+        r["k7_orphan_check"] = self.k7_seen.get(name)
         r["wilson_upper_95"] = round(wilson_upper(r["failing_iterations"], r["kills"]), 5) if r["kills"] else None
         # keep the evidence of the failing iterations only; the scratch goes (the harness keeps up to 6 anomalous dirs)
         return r
@@ -359,7 +427,10 @@ class Chaos:
                 continue
             batches[b] = self.run_batch(b)
             self.stop_daemons()
-        res = overall(batches, self.a.profile, missing)
+        for b in order:
+            if self.only and b not in self.only:
+                missing[b] = f"left out by --only {','.join(sorted(self.only))}"
+        res = overall(batches, self.a.profile, missing, self.overrides)
         out = {**res, "profile": self.a.profile, "smoke_numbers_are_not_gate_numbers": self.a.profile != "gate",
                "batches": batches, "counts_requested": self.counts, "proj": self.a.proj, "seed": self.a.seed,
                "c_sample_exit": rc, "elapsed_s": round(time.time() - t0, 1), "engine": {"install": self.a.ghidra},
@@ -423,6 +494,14 @@ def selftest(verbose: bool = True) -> int:
     check("a harness error: INCOMPLETE", r["verdict"] == "INCOMPLETE" and r["harness_errors"] == 1, r)
     r = judge_batch("save_ntfs", save, 5, rows(5), None, 1, clean, True)
     check("a batch that did not finish: INCOMPLETE", r["verdict"] == "INCOMPLETE", r)
+    r = judge_batch("save_ntfs", save, 5, rows(5), {"base_unchanged": True}, 1, clean, True)
+    check("a non-zero harness exit alone (footer present) is INCOMPLETE and named",
+          r["verdict"] == "INCOMPLETE" and any("exited 1" in x for x in r["incomplete"]), r)
+    r = judge_batch("save_ntfs", save, 5, rows(5), None, 0, clean, True)
+    check("a missing footer alone (exit 0) is INCOMPLETE and named",
+          r["verdict"] == "INCOMPLETE" and any("no footer" in x for x in r["incomplete"]), r)
+    r = judge_batch("save_ntfs", save, 5, rows(5), None, None, clean, True)
+    check("a missing footer with no exit code is INCOMPLETE too", r["verdict"] == "INCOMPLETE", r)
     bad_post = oracle.Report()
     bad_post.violation("K2", "newest_header_invalid", "planted")
     r = judge_batch("save_ntfs", save, 5, rows(5), {"base_unchanged": True}, 0, bad_post, True)
@@ -440,6 +519,35 @@ def selftest(verbose: bool = True) -> int:
         check("planted X1 (zero-header newest version file) is flagged by the post-batch check", "K2:newest_header_invalid" in p.codes(), p.codes())
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+    # the K7 orphan check over a batch (the process list is replaced by a stub)
+    saved_find, saved_k7 = oracle.find_orphan_decompilers, oracle.check_k7_processes
+    ch = Chaos.__new__(Chaos)
+    ch.k7_seen = {}
+    try:
+        def fake(lst):
+            return lambda daemon_pids=(), names=None: lst
+        seen_args = {}
+
+        def fake_k7(daemon_pids=(), settle_s=5.0, only_pids=None, names=None, rep=None):
+            seen_args["only"] = set(only_pids)
+            rep = rep or oracle.Report("K7")
+            rep.ran("K7")
+            for p_ in only_pids:
+                rep.violation("K7", "orphan_decompiler", f"pid {p_}", None)
+            return rep
+        oracle.check_k7_processes = fake_k7
+        oracle.find_orphan_decompilers = fake([{"pid": 1, "parent_alive": False}, {"pid": 2, "parent_alive": False},
+                                               {"pid": 3, "parent_alive": True}])
+        rp = oracle.Report()
+        res = ch.k7_orphans("save_ntfs", rp, {1})
+        check("K7 per batch: a new decompiler whose parent is gone is an orphan; an older one and one with a live parent are not ours",
+              seen_args["only"] == {2} and "K7:orphan_decompiler" in rp.codes() and res["orphaned"] == 1
+              and res["new_decompilers_present"] == 2, (seen_args, rp.codes(), res))
+        rp = oracle.Report()
+        ch.k7_orphans("save_ntfs", rp, {1, 2, 3})
+        check("K7 per batch: nothing new, nothing judged", seen_args["only"] == set() and rp.ok, rp.codes())
+    finally:
+        oracle.find_orphan_decompilers, oracle.check_k7_processes = saved_find, saved_k7
     # the totals
     full = {b: judge_batch(b, BATCHES[b], COUNTS["gate"][b], rows(COUNTS["gate"][b], kills=BATCHES[b]["family"] != "control"),
                            {"base_unchanged": True}, 0, clean, True) for b in COUNTS["gate"]}
@@ -461,6 +569,53 @@ def selftest(verbose: bool = True) -> int:
     check("smoke with everything clean: SMOKE-OK, never PASS", o["verdict"] == "SMOKE-OK" and not o["wording_below_0_75_percent_allowed"], o)
     check("Wilson: 0 of 3 is wide, 1 of 100 is above 0 of 100", wilson_upper(0, 3) > 0.4 and wilson_upper(1, 100) > wilson_upper(0, 100))
     check("every batch script exists", all((CONC / s["script"]).is_file() for s in BATCHES.values()))
+    # a kill whose trigger never fired is not counted
+    nt = rows(10) + [dict(r, trigger_hit=False) for r in rows(7)]
+    j = judge_rows(nt, "save")
+    check("only trigger-timed unanswered kills are counted (7 fallback kills reported, not counted)",
+          j["kills"] == 10 and j["unanswered_no_trigger"] == 7, j)
+    check("the daemon8 family counts every iteration (no folder trigger there)",
+          judge_rows([dict(r, trigger_hit=False) for r in rows(4)], "daemon8")["kills"] == 4)
+    # the wording
+    def save_pair(n_ntfs, n_refs, harness_errors=0, refs_fail=False):
+        a_ = judge_batch("save_ntfs", BATCHES["save_ntfs"], n_ntfs, rows(n_ntfs) + [{"harness_error": "x"}] * harness_errors,
+                         {"base_unchanged": True}, 0, clean, True)
+        b_ = judge_batch("save_refs", BATCHES["save_refs"], n_refs,
+                         rows(n_refs, anomalies=["CORRUPT_OR_UNOPENABLE"] if refs_fail else None),
+                         {"base_unchanged": True}, 0, clean, True)
+        return {"save_ntfs": a_, "save_refs": b_}
+    check("wording allowed: 200 counted kills on each file system, nothing failed",
+          overall(save_pair(200, 200), "gate", {})["wording_below_0_75_percent_allowed"])
+    check("wording refused: 399 save kills (199 on NTFS)",
+          not overall(save_pair(199, 200), "gate", {})["wording_below_0_75_percent_allowed"])
+    check("wording refused: 400 kills but 300 on NTFS and 100 on ReFS",
+          not overall(save_pair(300, 100), "gate", {})["wording_below_0_75_percent_allowed"])
+    check("wording refused: a save batch with a harness error",
+          not overall(save_pair(200, 200, harness_errors=1), "gate", {})["wording_below_0_75_percent_allowed"])
+    check("wording refused: a failure in a save batch",
+          not overall(save_pair(200, 200, refs_fail=True), "gate", {})["wording_below_0_75_percent_allowed"])
+    check("wording refused after a count override",
+          not overall(save_pair(200, 200), "gate", {}, ["--n control=2"])["wording_below_0_75_percent_allowed"])
+    # a count override is not a gate run
+    ov = count_overrides("gate", {**COUNTS["gate"], "save_ntfs": 2})
+    check("an override of a count is named", len(ov) == 1 and "save_ntfs=2" in ov[0], ov)
+    check("no override for the profile's own counts", count_overrides("gate", dict(COUNTS["gate"])) == [])
+    sm_ov = overall(sm, "smoke", {}, ["--n control=3"])
+    check("smoke with a count override: capped at SMOKE-OK and the override is a gap",
+          sm_ov["verdict"] == "SMOKE-OK" and any("overridden" in g for g in sm_ov["gaps"]) , sm_ov)
+    saved_soft = dict(SOFT_GAPS)
+    SOFT_GAPS.clear()
+    try:
+        full2 = {b: r for b, r in full.items()}
+        check("with the VF gap lifted a complete clean gate run is PASS (so the cap below is meaningful)",
+              overall(full2, "gate", {})["verdict"] == "PASS", overall(full2, "gate", {}))
+        o = overall(full2, "gate", {}, ["--n save_ntfs=2"])
+        check("planted: a gate run with an overridden count is capped at SMOKE-OK, never PASS", o["verdict"] == "SMOKE-OK", o)
+        o = overall({b: r for b, r in full2.items() if b != "daemon8"}, "gate", {})
+        check("a gate batch that neither ran nor was named as missing is a gap", o["verdict"] == "INCOMPLETE"
+              and any("daemon8: not run" in g for g in o["gaps"]), o)
+    finally:
+        SOFT_GAPS.update(saved_soft)
     check("gate counts: 400 save kills, 300 fork, 200 promote, 50 daemon",
           COUNTS["gate"]["save_ntfs"] + COUNTS["gate"]["save_refs"] == 400 and COUNTS["gate"]["fork"] == 300
           and COUNTS["gate"]["promote"] == 200 and COUNTS["gate"]["daemon8"] == 50)
@@ -490,8 +645,9 @@ def main(argv=None) -> int:
     r.add_argument("--tag", default="")
     r.add_argument("--seed", type=int, default=20261101)
     r.add_argument("--shards", type=int, default=1, help="processes per batch (each has its own state root)")
-    r.add_argument("--n", action="append", metavar="BATCH=N", help="override a batch's unanswered-kill count (not a gate run)")
-    r.add_argument("--only", help="comma list of batch ids")
+    r.add_argument("--n", action="append", metavar="BATCH=N",
+                   help="override a batch's unanswered-kill count (not a gate run: the verdict is capped at SMOKE-OK)")
+    r.add_argument("--only", help="comma list of batch ids (not a gate run: the verdict is capped at SMOKE-OK)")
     r.add_argument("--evidence")
     r.add_argument("--batch-timeout-s", type=int, default=6 * 3600)
     r.add_argument("--plant", action="store_true", help="plant a zero-header version file under a batch's output; the verdict must be FAIL")

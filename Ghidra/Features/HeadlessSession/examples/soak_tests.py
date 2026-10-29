@@ -27,7 +27,10 @@ says about itself.
 
 Profiles (9.17): ``pr`` 4 agents x 2 projects, 10 minutes; ``nightly`` 16 x 4, 2 hours, at least 150
 kills; ``release`` 24 x 6, at least 4 hours (the three green nightly runs on NTFS and the one on ReFS are
-separate invocations; this runner takes ``--master-root`` on the ReFS volume for the latter). ``smoke`` is
+separate invocations; for the latter ``--master-root`` puts the masters and the agents' trees, so the saves and
+fork publishes, on the ReFS volume and deletes them at the end). A run that shrinks a profile with
+``--agents``, ``--projects``, ``--duration-s`` or ``--ops`` is not a gate run: its verdict is capped at
+``SMOKE-OK`` and the override is named in the gaps. ``smoke`` is
 for proving the runner: it never yields ``PASS`` and its numbers are not gate numbers.
 
 The verdict is one of ``PASS`` (a gate profile, nothing violated, every required fault class fired its
@@ -343,6 +346,11 @@ def agent_main(spec_path: str) -> int:
         recs = oracle.Ledger.read(adir / "ledger.jsonl")
         gen = max([r.get("gen", 0) for r in recs if r.get("kind") in ("edit", "save")] or [0])
         fork_n = max([r.get("n", 0) for r in recs if r.get("kind") == "fork"] or [0])
+        # the generation THIS incarnation has edited and not yet saved. An agent that was killed (or whose daemon
+        # was) loses its unsaved edit: the ledger's last acknowledged edit is not in the re-opened program, so a
+        # respawned agent must not "save generation g" for an edit it never made (found in the review: save 39 was
+        # acknowledged after a respawn with only generation 38 on disk, a false K4/K5 violation)
+        pending = None
         fk_dir = adir / "fk"
         fk_dir.mkdir(exist_ok=True)
         funcs = None
@@ -361,7 +369,7 @@ def agent_main(spec_path: str) -> int:
                 call("read_functions", "quick", "functions", program=key, offset=rng.randrange(0, 50), limit=200)
 
         def op_edit_save():
-            nonlocal gen
+            nonlocal gen, pending
             gen += 1
             g = gen
             ops = [{"op": "rename", "address": a, "name": f"{pfx}{g}_{i:03d}"} for i, a in enumerate(meta["addrs"])]
@@ -369,6 +377,7 @@ def agent_main(spec_path: str) -> int:
             led.sent(opid, kind="edit", gen=g)
             call("edit", "edit", "edit", program=key, ops=ops)
             led.ack(opid, kind="edit", gen=g)
+            pending = g
             if rng.random() < 0.75:
                 led.sent(opid, kind="save", gen=g)
                 try:
@@ -376,6 +385,7 @@ def agent_main(spec_path: str) -> int:
                 except gs.SessionError as e:
                     if e.code != "failed":
                         raise
+                    pending = None          # the failed save's edit is discarded below
                     # a client's answer to a failed save: close the program without its unsaved edits and open
                     # it again (what a harness does after a file error). Whether that cures a program that the
                     # failed save left read-only is recorded, not assumed.
@@ -389,6 +399,7 @@ def agent_main(spec_path: str) -> int:
                         row("save_recover", "quick", t0, False, e2.code, message=(e2.message or "")[:200])
                     raise
                 led.ack(opid, kind="save", gen=g)
+                pending = None
 
         def op_quick_script():
             fields = dict(script=scripts["SoakQuick"], program=key)
@@ -420,11 +431,13 @@ def agent_main(spec_path: str) -> int:
                     raise
 
         def op_fork():
-            nonlocal fork_n
-            if gen:          # a fork copies what is saved: the engine refuses one with unsaved changes (unsaved_changes)
-                led.sent(f"{idx}:{gen}", kind="save", gen=gen)
+            nonlocal fork_n, pending
+            if pending is not None:     # a fork copies what is saved: the engine refuses one with unsaved changes (unsaved_changes)
+                pg = pending
+                led.sent(f"{idx}:{pg}", kind="save", gen=pg)
                 call("save", "maint", "save", program=key)
-                led.ack(f"{idx}:{gen}", kind="save", gen=gen)
+                led.ack(f"{idx}:{pg}", kind="save", gen=pg)
+                pending = None
             fork_n += 1
             n = fork_n
             dest = fk_dir / f"f{n}"
@@ -571,6 +584,27 @@ def judge_agent(idx: int, records, meta: dict, names: dict, baseline: dict, rep:
     return {"agent": idx, "recovered_generation": g, **{k: summ[k] for k in ("sent", "acked_edit", "acked_save")}}
 
 
+def unbounded_script_violations(rows) -> list:
+    """A deaf or runaway script must end within its natural time plus 20 s (a killable script worker would end
+    it at its timeout)."""
+    return [("script_unbounded", f"{r['op']} took {r['ms']} ms for a {r.get('natural_ms', 0)} ms script")
+            for r in rows if r["op"] in ("deaf_wall", "burn_wall") and r["ms"] > r.get("natural_ms", 0) + 20000]
+
+
+def judge_program_owners(programs, me, rep: oracle.Report):
+    """K7 after the clients are gone: no program keeps an owner (whatever its ``users`` say: an owner with
+    no users is exactly the leaked state), and no program keeps a user other than the supervisor itself
+    (``me``, the status ``you`` id) without an owner (a leaked read-only opening)."""
+    for p in programs:
+        owner, users = p.get("owner"), [u for u in (p.get("users") or []) if u != me]
+        if owner is not None:
+            rep.violation("K7", "program_owner_left", f"{p.get('path')} still has owner {owner} after the agents exited "
+                          f"(users: {users})", None)
+        elif owner is None and users:
+            rep.violation("K7", "program_user_left", f"{p.get('path')} still has user(s) {users} and no owner after the "
+                          f"agents exited", None)
+
+
 def judge_k11(views: dict, rep: oracle.Report):
     """K11: no view shows a tag another agent wrote. ``views`` maps agent index to the tag names seen in it."""
     own = {i: set() for i in views}
@@ -585,15 +619,76 @@ def judge_k11(views: dict, rep: oracle.Report):
     oracle.check_k11({f"a{i}": {"own": own.get(i, set()), "saw": seen.get(i, set())} for i in own}, {}, rep)
 
 
-def classify_rows(rows, windows, tolerated_after_s: float = 0.0):
-    """Judges the agents' result rows. Returns ``(violations, summary)``; ``violations`` is a list of
-    ``(code, detail)``. An error is tolerated when it falls inside a fault window that covers its agent."""
-    def covered(r):
-        for w in windows:
-            if w["t0"] - 2 <= r["t"] <= w["t1"] + tolerated_after_s and w["scope"] in ("all", r["agent"]):
-                return True
+#: what a fault window tolerates, per fault class: the error codes the fault can cause, and where a rule is
+#: narrower, the operations and the message. ``busy`` is never in the list: a ``busy`` is judged by its
+#: explanation (BUSY_EXPLAINERS) whatever the windows say, and any other code is an unexpected error.
+#: A daemon that is killed or suspended shows to a client as a closed connection or a timeout; a killed
+#: decompiler fails the one decompile that used it; a handle on the version folder fails a save (the engine
+#: answers ``failed`` with the IOException, and ``failed``/``read_only`` with ReadOnlyException until the
+#: agent re-opens the program).
+FAULT_TOLERATES = {
+    "kill_client": dict(codes=("closed", "conn:*")),
+    "kill_daemon_random": dict(codes=("closed", "conn:*", "timeout")),
+    "kill_daemon_trigger": dict(codes=("closed", "conn:*", "timeout")),
+    "kill_decompiler": dict(codes=("failed", "timeout"), ops=("read_decompile",)),
+    "suspend_daemon": dict(codes=("closed", "conn:*", "timeout")),
+    "suspend_client": dict(codes=("timeout",)),
+    "stalled_reader": dict(codes=("timeout",)),
+    "handle_holder": dict(codes=("failed", "read_only"), ops=("save", "edit"),
+                          msg=re.compile(r"IOException|ReadOnlyException|File error|read-only", re.I)),
+}
+
+
+def _window_tolerates(w: dict, r: dict) -> bool:
+    rule = FAULT_TOLERATES.get(w.get("cls"))
+    if rule is None:
         return False
+    code = r.get("code") or ""
+    if not any(code == c or (c.endswith("*") and code.startswith(c[:-1])) for c in rule["codes"]):
+        return False
+    if rule.get("ops") and r["op"] not in rule["ops"]:
+        return False
+    if rule.get("msg") is not None and not rule["msg"].search(r.get("message") or ""):
+        return False
+    return True
+
+
+def window_share(windows, tolerated_after_s: float, t_span, scope_all_only: bool = True) -> float:
+    """The share of ``t_span`` covered by the (union of the) windows, with the margins classify_rows uses."""
+    t0, t1 = t_span
+    if t1 <= t0:
+        return 0.0
+    iv = sorted((max(t0, w["t0"] - 2), min(t1, w["t1"] + tolerated_after_s)) for w in windows
+                if not scope_all_only or w.get("scope") == "all")
+    cov, cur_a, cur_b = 0.0, None, None
+    for a_, b_ in iv:
+        if b_ <= a_:
+            continue
+        if cur_b is None or a_ > cur_b:
+            if cur_b is not None:
+                cov += cur_b - cur_a
+            cur_a, cur_b = a_, b_
+        else:
+            cur_b = max(cur_b, b_)
+    if cur_b is not None:
+        cov += cur_b - cur_a
+    return round(cov / (t1 - t0), 4)
+
+
+def classify_rows(rows, windows, tolerated_after_s: float = 0.0, t_span=None):
+    """Judges the agents' result rows. Returns ``(violations, summary)``; ``violations`` is a list of
+    ``(code, detail)``. An error is tolerated only when it falls inside a fault window that covers its agent
+    AND is an error that fault class can cause (``FAULT_TOLERATES``); every tolerated error is counted by
+    class, operation and code in the summary, with the share of the run the all-scope windows cover, so
+    that a window cannot hide errors without that showing in the evidence."""
+    def tolerating(r):
+        for w in windows:
+            if w["t0"] - 2 <= r["t"] <= w["t1"] + tolerated_after_s and w["scope"] in ("all", r["agent"]) \
+                    and _window_tolerates(w, r):
+                return w
+        return None
     viol, unexpected, busy_ok, busy_bad = {}, 0, 0, 0
+    tolerated = {}
     for r in rows:
         if r.get("ok") or r.get("expected") or r["op"] in ("deaf_wall", "burn_wall", "ready"):
             continue
@@ -603,12 +698,13 @@ def classify_rows(rows, windows, tolerated_after_s: float = 0.0):
             if any(k in det for k in BUSY_EXPLAINERS):
                 busy_ok += 1
                 continue
-            if covered(r):
-                continue
             busy_bad += 1
             viol.setdefault(("unexplained_busy", r["op"]), []).append(r)
             continue
-        if covered(r):
+        w = tolerating(r)
+        if w is not None:
+            key = f"{w.get('cls')}/{r['op']}:{code}"
+            tolerated[key] = tolerated.get(key, 0) + 1
             continue
         if code == "closed" or code.startswith("conn:"):
             continue  # judged through the agent's exit (an agent that loses its daemon outside a fault is a violation there)
@@ -617,7 +713,11 @@ def classify_rows(rows, windows, tolerated_after_s: float = 0.0):
     out = []
     for (kind, what), rs in sorted(viol.items()):
         out.append((kind, f"{what}: {len(rs)} time(s); first: {json.dumps(rs[0], default=str)[:300]}"))
-    return out, {"unexpected": unexpected, "busy_explained": busy_ok, "busy_unexplained": busy_bad}
+    summary = {"unexpected": unexpected, "busy_explained": busy_ok, "busy_unexplained": busy_bad,
+               "tolerated_in_windows": tolerated, "tolerated_total": sum(tolerated.values())}
+    if t_span is not None:
+        summary["all_scope_window_share_of_run"] = window_share(windows, tolerated_after_s, t_span)
+    return out, summary
 
 
 def latency_table(rows, windows):
@@ -635,8 +735,25 @@ def latency_table(rows, windows):
     return out
 
 
+def profile_overrides(profile: str, agents: int, projects: int, duration_s: float, ops) -> list:
+    """What differs from the profile's fixed definition (9.17: pr 4x2 / 10 min, nightly 16x4 / 2 h, release
+    24x6 / 4 h): a run that shrinks any of it is not a gate run, whatever else it did."""
+    prof = PROFILES[profile]
+    out = []
+    if agents != prof["agents"]:
+        out.append(f"--agents {agents} (profile {profile}: {prof['agents']})")
+    if projects != prof["projects"]:
+        out.append(f"--projects {projects} (profile {profile}: {prof['projects']})")
+    if duration_s != prof["duration_s"]:
+        out.append(f"--duration-s {duration_s} (profile {profile}: {prof['duration_s']})")
+    if set(ops) != set(OPS):
+        out.append(f"--ops {','.join(sorted(ops))} (profile {profile}: all of {','.join(sorted(OPS))})")
+    return out
+
+
 def verdict_of(profile: str, rep: oracle.Report, hits: dict, workload: dict, features: dict, extra_viol: list,
-               cut_short: str | None, setup_error: str | None, ran_checks: set, plants_expected=()) -> dict:
+               cut_short: str | None, setup_error: str | None, ran_checks: set, plants_expected=(),
+               overrides=()) -> dict:
     """The verdict from the facts of a run. ``extra_viol`` are (code, detail) pairs of the runner's own
     criteria (unexpected errors, a lost agent, ...), ``hits`` the fault classes fired.
 
@@ -676,12 +793,17 @@ def verdict_of(profile: str, rep: oracle.Report, hits: dict, workload: dict, fea
     elif hard or (gate and soft):
         v = "INCOMPLETE"
     else:
-        v = "PASS" if gate else "SMOKE-OK"
+        # a run that shrank the profile (agents, projects, duration, operations) is not a gate run: its
+        # ceiling is SMOKE-OK, never PASS
+        v = "PASS" if gate and not overrides else "SMOKE-OK"
     missing = None
     if plants_expected:
         found = set(viol)
         missing = [p for p in plants_expected if not any(f.startswith(p) for f in found)]
-    return {"verdict": v, "gate_eligible": gate and not gaps and not viol, "violations": viol, "gaps": gaps,
+    if overrides:
+        gaps = gaps + [f"profile overridden, not a gate run: {o}" for o in overrides]
+    return {"verdict": v, "gate_eligible": gate and not gaps and not viol and not overrides, "violations": viol,
+            "gaps": gaps, "overrides": list(overrides),
             "hard_gaps": hard, "soft_gaps": soft, "plants_missing": missing or [],
             "plants_all_caught": None if missing is None else not missing}
 
@@ -696,6 +818,7 @@ class Soak:
         self.agents = a.agents or prof["agents"]
         self.nproj = a.projects or prof["projects"]
         self.duration = a.duration_s or prof["duration_s"]
+        self.overrides = profile_overrides(a.profile, self.agents, self.nproj, self.duration, a.ops)
         self.work = pathlib.Path(a.work).absolute()
         self.gs = load_gs(a.ghidra)
         self.rng = random.Random(a.seed)
@@ -705,8 +828,11 @@ class Soak:
         self.state = self.work / "state"
         self.tmpdir = self.work / "tmp"
         self.scripts_dir = self.work / "scripts"
-        self.masters_dir = (pathlib.Path(a.master_root).absolute() if a.master_root else self.work / "masters")
-        self.agents_dir = self.work / "agents"
+        # --master-root moves the masters AND the agents' trees (forks, saves, ledgers) to that volume: the
+        # ReFS lane exercises saves and fork publishes there, so they must not stay on the --work volume
+        self.tree_root = pathlib.Path(a.master_root).absolute() if a.master_root else self.work
+        self.masters_dir = self.tree_root / "masters"
+        self.agents_dir = self.tree_root / "agents"
         self.canary = self.work / "canary"
         self.instance = "soak"
         self.report = oracle.Report("soak")
@@ -745,7 +871,8 @@ class Soak:
         self.plant = [p for p in (a.plant or "").split(",") if p]
         self.agent_caps: dict = {}
         self.t_plant = None
-        self.no_respawn = set()
+        self.no_respawn = set()      # agents whose setup failed three times: never respawned
+        self.killed_agents = set()   # agents f_kill_client is working on: the monitor must not respawn them
         self.reap_lock = threading.RLock()
         self.setup_failures = {}
         self.baseline_taken_at = None
@@ -922,7 +1049,7 @@ class Soak:
         return p
 
     def live_agents(self) -> list:
-        return [i for i, p in self.procs.items() if p.poll() is None]
+        return [i for i, p in list(self.procs.items()) if p.poll() is None]
 
     def reap_agents(self, respawn: bool = True):
         """Notes exits; respawns an agent that ended while the daemon is up and the run is going."""
@@ -953,7 +1080,8 @@ class Soak:
                     self.extra_viol.append(("agent_lost", f"agent {i} exited {rc} with no fault active: {tail!r}"))
             self.rc_log.append(ev)
             self.procs.pop(i, None)
-            if respawn and not self.stopping.is_set() and not self.daemon_down.is_set() \
+            if respawn and i not in self.no_respawn and i not in self.killed_agents \
+                    and not self.stopping.is_set() and not self.daemon_down.is_set() \
                     and time.time() < self.t_start + self.duration:
                 self.spawn_agent(i)
 
@@ -1096,17 +1224,28 @@ class Soak:
         if i is None:
             return False
         label = f"soak-a{i:02d}"
-        p = self.procs[i]
-        self.no_respawn.add(i)
-        with self.fault_window("kill_client", scope=i, extra_s=45):
-            r = chaos.kill_client_proc(p)
-            self.rc_log.append({"agent": i, "rc": "killed", "t": round(self.t(), 1)})
-            self.procs.pop(i, None)
-            ok = self.k10(label, phase=f"kill_client a{i:02d}")
-            self.file_round(f"kill_client a{i:02d}", locks=False)
-            self.recovery_read([i], f"kill_client a{i:02d}")
-        self.spawn_agent(i)
-        self.no_respawn.discard(i)
+        r, ok = {}, None
+        try:
+            with self.fault_window("kill_client", scope=i, extra_s=45):
+                # the kill and the pop are one step under reap_lock, and the agent is marked as being
+                # killed first: the monitor thread must not see the exit and respawn it (two processes on
+                # one ledger and one fork)
+                with self.reap_lock:
+                    self.killed_agents.add(i)
+                    p = self.procs.get(i)
+                    if p is None or p.poll() is not None:
+                        return False        # the agent went away on its own: nothing was killed (the monitor judges its exit)
+                    r = chaos.kill_client_proc(p)
+                    self.rc_log.append({"agent": i, "rc": "killed", "t": round(self.t(), 1)})
+                    self.procs.pop(i, None)
+                ok = self.k10(label, phase=f"kill_client a{i:02d}")
+                self.file_round(f"kill_client a{i:02d}", locks=False)
+                self.recovery_read([i], f"kill_client a{i:02d}")
+        finally:
+            with self.reap_lock:
+                if r and not self.stopping.is_set() and i not in self.procs:
+                    self.spawn_agent(i)
+                self.killed_agents.discard(i)
         self.fault_log.append({"t": round(self.t(), 1), "fault": "kill_client", "agent": i, "kill": r, "k10": ok})
         return bool(r.get("terminated"))
 
@@ -1141,7 +1280,9 @@ class Soak:
         while self.live_agents() and time.time() < end:
             time.sleep(0.5)
         for i in self.live_agents():  # an agent that did not notice the dead socket within 60 s
-            chaos.kill_client_proc(self.procs[i])
+            p = self.procs.get(i)
+            if p is not None:
+                chaos.kill_client_proc(p)
         self.reap_agents(respawn=False)
         rep = oracle.Report("post-kill:" + cls)
         oracle.check_k7_processes([], settle_s=8.0, only_pids=before_dec, rep=rep)
@@ -1167,7 +1308,8 @@ class Soak:
         window["t1"] = time.time() + 20
         self.daemon_down.clear()
         for i in range(self.agents):
-            if i not in self.procs and time.time() < self.t_start + self.duration:
+            if i not in self.procs and i not in self.no_respawn and i not in self.killed_agents \
+                    and time.time() < self.t_start + self.duration:
                 self.spawn_agent(i)
 
     def warm_after_restart(self):
@@ -1240,8 +1382,11 @@ class Soak:
             return False
         secs = self.rng.uniform(3.0, 10.0)
         lats = []
+        proc = self.procs.get(i)
+        if proc is None:
+            return False                    # the agent went away between the pick and now
         with self.fault_window("suspend_client", scope=i, extra_s=30):
-            with chaos.Suspended(self.procs[i].pid):
+            with chaos.Suspended(proc.pid):
                 end = time.time() + secs
                 while time.time() < end:
                     t0 = time.time()
@@ -1497,6 +1642,9 @@ class Soak:
                                      "ms": 1.0, "ok": False, "code": "busy", "message": "planted"}) + "\n")
             done.append("BUSY")
         if allp or "K13" in plants:
+            # This replaces the health dict the drain hands to check_k13: it proves the K13 wiring (the verdict
+            # names the violation), NOT that a real waits.foreignBlocked counter is read from the engine's health
+            # command. That read is exercised only on an engine that has the command (VF integration check).
             self.plant_foreign_blocked = 3
             done.append("K13")
         if allp or "K7" in plants:
@@ -1510,8 +1658,37 @@ class Soak:
                 fh.write(json.dumps({"t": round(self.t_start + 1, 3), "agent": 0, "op": "save", "lane": "maint",
                                      "ms": 1.0, "ok": False, "code": "failed", "message": "planted"}) + "\n")
             done.append("ERR")
+        if allp or "WINDOW" in plants:
+            # rows inside a fault window that covers every agent: an unexplained busy and an error the fault
+            # cannot cause must still be flagged; a timeout is what a killed daemon causes and must be tolerated,
+            # by the explicit rule of FAULT_TOLERATES, and counted
+            now = time.time()
+            self.windows.append({"cls": "kill_daemon_random", "scope": "all", "t0": now - 1, "t1": now + 30,
+                                 "planted": True})
+            with open(self.agent_dir(0) / "results.jsonl", "a", encoding="utf-8") as fh:
+                for rec in (
+                        {"op": "read_functions", "lane": "quick", "code": "busy", "message": "planted-window-busy"},
+                        {"op": "edit", "lane": "edit", "code": "failed", "message": "IOException: planted-window-error"},
+                        {"op": "read_decompile", "lane": "quick", "code": "timeout", "message": "planted-window-tolerated"}):
+                    fh.write(json.dumps({"t": round(now + 0.5, 3), "agent": 0, "ms": 1.0, "ok": False, **rec}) + "\n")
+            done.append("WINDOW")
         self.fault_log.append({"t": round(self.t(), 1), "planted": done})
         return done
+
+    @staticmethod
+    def window_plants_missing(viol, summ) -> list:
+        """The in-window plants the classification must have flagged (busy, an error the fault cannot cause) or
+        tolerated by rule (a timeout in a daemon-kill window)."""
+        miss = []
+        if not any(k == "unexplained_busy" and "read_functions" in d for k, d in viol):
+            miss.append("WINDOW:busy_in_window_not_flagged")
+        if not any(k == "unexpected_error" and d.startswith("edit:failed") for k, d in viol):
+            miss.append("WINDOW:wrong_error_in_window_not_flagged")
+        if not (summ.get("tolerated_in_windows") or {}).get("kill_daemon_random/read_decompile:timeout"):
+            miss.append("WINDOW:timeout_in_daemon_kill_window_not_tolerated")
+        if any("planted-window-tolerated" in d for _k, d in viol):
+            miss.append("WINDOW:tolerated_row_was_flagged")
+        return miss
 
     PLANT_CODES = {"K2": "K2:", "K6": "K6:", "K9": "K9:", "K5": "K5:", "BUSY": "unexplained_busy", "K13": "K13:",
                    "K7": "K7:orphan_decompiler", "ERR": "unexpected_error"}
@@ -1598,7 +1775,7 @@ class Soak:
             import chaos_lib as chaos
             for i in self.live_agents():
                 self.extra_viol.append(("agent_did_not_stop", f"agent {i} still running 90 s after the stop request"))
-                chaos.kill_client_proc(self.procs[i])
+                chaos.kill_client_proc(self.procs[i]) if i in self.procs else None
             self.reap_agents(respawn=False)
         for w in self.watchers:
             w.stop()
@@ -1607,12 +1784,11 @@ class Soak:
         rows = self.load_rows()
         if not early and self.sess is not None and not self.daemon_down.is_set():
             self.drain_checks()
-        viol, summ = classify_rows(rows, self.windows, tolerated_after_s=45.0)
+        viol, summ = classify_rows(rows, self.windows, tolerated_after_s=5.0,
+                                   t_span=(self.t_start, time.time()))
         self.extra_viol += viol
         # deaf and runaway scripts: bounded (a script worker of E7 would end them at their timeout)
-        for r in rows:
-            if r["op"] in ("deaf_wall", "burn_wall") and r["ms"] > r.get("natural_ms", 0) + 20000:
-                self.extra_viol.append(("script_unbounded", f"{r['op']} took {r['ms']} ms for a {r['natural_ms']} ms script"))
+        self.extra_viol += unbounded_script_violations(rows)
         lat = latency_table(rows, self.windows)
         if self.a.quick_p99_ms and lat["quick"]["p99_ms"] and lat["quick"]["p99_ms"] > self.a.quick_p99_ms:
             self.extra_viol.append(("quick_lane_p99", f"{lat['quick']['p99_ms']} ms above the bound {self.a.quick_p99_ms}"))
@@ -1621,17 +1797,26 @@ class Soak:
         res = verdict_of(self.profile, self.report, self.hits, workload, self.features, self.extra_viol,
                          self.cut_short, self.setup_error, set(self.report.checked),
                          plants_expected=[self.PLANT_CODES[p] for p in (list(self.PLANT_CODES) if self.plant == ["all"]
-                                                                       else self.plant) if p in self.PLANT_CODES])
+                                                                       else self.plant) if p in self.PLANT_CODES],
+                         overrides=self.overrides)
+        if self.plant and ("all" in self.plant or "WINDOW" in self.plant):
+            wm = self.window_plants_missing(viol, summ)
+            res["plants_missing"] = list(res["plants_missing"]) + wm
+            res["plants_all_caught"] = not res["plants_missing"]
         out = {"verdict": res["verdict"], "gate_eligible": res["gate_eligible"] and self.profile != "smoke" and not self.plant,
                "profile": self.profile, "smoke_numbers_are_not_gate_numbers": self.profile == "smoke",
                "seed": self.a.seed, "agents": self.agents, "projects": self.nproj, "duration_s": round(self.t() if self.t_start else 0, 1),
-               "requested_duration_s": self.duration, "gaps": res["gaps"], "violations": res["violations"],
+               "requested_duration_s": self.duration, "profile_overrides": res["overrides"], "gaps": res["gaps"], "violations": res["violations"],
                "violation_details": self.report.findings, "runner_violations": [{"code": c, "detail": d} for c, d in self.extra_viol],
                "tolerated": self.report.tolerated, "notes": self.report.notes,
                "oracle_checks_ran": sorted(self.report.checked), "oracle_not_exercised": UNEXERCISED_CHECKS,
                "fault_hits": self.hits, "fault_attempts": self.attempts, "fault_minimums": MIN_FAULTS[self.profile],
                "fault_unavailable": UNAVAILABLE_FAULTS, "workload_unavailable": UNAVAILABLE_WORKLOAD,
                "workload_counts": workload, "row_summary": summ, "latency_ms": lat,
+               "workload_counts_note": "an operation counts as run when it succeeded or failed with an EXPECTED code "
+                                       "(cancelled, timeout): the deaf and burn counts include timeout/cancel results by design",
+               "evidence_note": "agent.log and daemon.log can carry program and function names of a game copy (engine "
+                                "error messages, up to 200 chars): keep the evidence folder off the repository",
                "features": self.features, "sample_stats": self.sample_stats, "k13_final_health": self.k13_final[-3:] +
                (self.health_samples[-1:] if self.health_samples else []),
                "agent_exits": self.rc_log[-200:], "fault_log": self.fault_log[-400:], "fault_windows": self.windows[-400:],
@@ -1683,9 +1868,7 @@ class Soak:
         for lane, v in (st.get("scheduler") or {}).items():
             if isinstance(v, dict) and v.get("queued"):
                 rep.violation("K14", "queue_not_empty", f"lane {lane}: {v['queued']} queued after drain", None, lane=lane)
-        owners = [p for p in st.get("programs", []) if p.get("owner") is not None and p.get("users")]
-        for p in owners:
-            rep.violation("K7", "program_owner_left", f"{p.get('path')} still has owner {p.get('owner')} after the agents exited", None)
+        judge_program_owners(st.get("programs", []), st.get("you"), rep)
         ab = [x for p in st.get("programs", []) for x in (p.get("abandonedRequests") or [])]
         if ab:
             rep.violation("K14", "abandoned_holder", f"{len(ab)} abandoned holder(s) after the cooperative scripts: "
@@ -1765,6 +1948,13 @@ class Soak:
             shutil.copy2(self.state / f"{self.instance}.log", self.evidence_dir / "daemon.log")
         for n in ("agents", "masters", "state", "tmp", "canary", "canary-forks", "stage-src", "backup-test"):
             rmtree(self.work / n)
+        if self.tree_root != self.work:
+            # the masters and the agents' trees live on another volume (--master-root): "a fixture under
+            # 10 GB on the volume, cleaned up" (9.17) means they go too; the folder itself only if empty
+            rmtree(self.masters_dir)
+            rmtree(self.agents_dir)
+            with contextlib.suppress(OSError):
+                self.tree_root.rmdir()
 
 
 def oracle_decompilers(daemon_pid):
@@ -1858,7 +2048,8 @@ def selftest(work: pathlib.Path | None = None, verbose: bool = True) -> int:
     rows2 = rows + [{"t": t, "agent": 1, "op": "save", "lane": "maint", "ms": 5.0, "ok": False, "code": "busy"}]
     viol, summ = classify_rows(rows2, [])
     check("planted: an unexplained busy is a violation", any(k == "unexplained_busy" for k, _ in viol), viol)
-    rows3 = rows + [{"t": t, "agent": 1, "op": "save", "lane": "maint", "ms": 5.0, "ok": False, "code": "failed"}]
+    rows3 = rows + [{"t": t, "agent": 1, "op": "save", "lane": "maint", "ms": 5.0, "ok": False, "code": "failed",
+                     "message": "IOException: File error during save"}]
     viol, _ = classify_rows(rows3, [])
     check("planted: an unexpected error outside a fault window is a violation", any(k == "unexpected_error" for k, _ in viol), viol)
     viol, _ = classify_rows(rows3, [{"t0": t - 1, "t1": t + 1, "scope": 1, "cls": "handle_holder"}])
@@ -1903,6 +2094,143 @@ def selftest(work: pathlib.Path | None = None, verbose: bool = True) -> int:
     check("release minimums are not below the nightly ones", all(MIN_FAULTS["release"][c] >= MIN_FAULTS["nightly"][c] for c in MIN_FAULTS["nightly"]))
     v = verdict_of("smoke", r, dict(MIN_FAULTS["smoke"]), wl, feats_ok, [], None, None, set(), plants_expected=["K2:", "K9:"])
     check("planted violations: a plant the run did not catch is named", v["plants_missing"] == ["K9:"] and v["plants_all_caught"] is False, v)
+
+    # ---- the fault windows tolerate only what the fault can cause
+    wall = {"t0": t - 1, "t1": t + 1, "scope": "all", "cls": "kill_daemon_random"}
+    brow = {"t": t, "agent": 2, "op": "read_decompile", "lane": "quick", "ms": 5.0, "ok": False, "code": "busy"}
+    viol, _ = classify_rows(rows + [brow], [wall])
+    check("planted: an unexplained busy INSIDE an all-scope window is still a violation",
+          any(k == "unexplained_busy" for k, _ in viol), viol)
+    frow = {"t": t, "agent": 2, "op": "edit", "lane": "edit", "ms": 5.0, "ok": False, "code": "failed", "message": "boom"}
+    viol, _ = classify_rows(rows + [frow], [wall])
+    check("planted: an error a daemon kill cannot cause is a violation inside its window",
+          any(k == "unexpected_error" for k, _ in viol), viol)
+    trow = {"t": t, "agent": 2, "op": "read_decompile", "lane": "quick", "ms": 5.0, "ok": False, "code": "timeout"}
+    viol, summ = classify_rows(rows + [trow], [wall])
+    check("a timeout inside a daemon-kill window is tolerated by rule and counted",
+          not viol and summ["tolerated_in_windows"] == {"kill_daemon_random/read_decompile:timeout": 1}, (viol, summ))
+    viol, _ = classify_rows(rows + [dict(trow, t=t + 100)], [wall])
+    check("the same timeout after the window is a violation", bool(viol), viol)
+    viol, _ = classify_rows(rows + [dict(frow, message="IOException: File error during save", op="save")],
+                            [dict(wall, cls="handle_holder")])
+    check("a failed save with an IOException in a handle-holder window is tolerated", not viol, viol)
+    viol, _ = classify_rows(rows + [dict(frow, message="IOException: x", op="read_decompile")], [dict(wall, cls="handle_holder")])
+    check("a handle holder does not excuse a failed read", bool(viol), viol)
+    sh = window_share([{"t0": 10, "t1": 20, "scope": "all"}, {"t0": 15, "t1": 30, "scope": "all"},
+                       {"t0": 50, "t1": 60, "scope": 3}], 0.0, (0, 100))
+    check("window share: union of the all-scope windows over the run (the scope-agent window excluded)",
+          abs(sh - 0.22) < 1e-6, sh)  # 8..30 = 22 s of 100
+    wl2 = [{"cls": "kill_daemon_random", "scope": "all", "t0": 100 * k, "t1": 100 * k + 30} for k in range(3)]
+    check("window share of three 30 s windows with a 45 s margin in 600 s is 3 x 77 s / 600 s",
+          abs(window_share(wl2, 45.0, (0, 600)) - 0.385) < 0.01, window_share(wl2, 45.0, (0, 600)))
+    pr_sched = Soak.__new__(Soak)
+    pr_sched.profile, pr_sched.duration, pr_sched.rng = "pr", 600, random.Random(1)
+    check("the pr schedule fires at least the minimum of every class",
+          len(pr_sched.schedule()) >= sum(MIN_FAULTS["pr"].values()))
+
+    # ---- program owners at the drain (K7)
+    r = oracle.Report()
+    judge_program_owners([{"path": "/a.exe", "owner": 7, "users": []}], 1, r)
+    check("planted K7: an owner with an empty users list is a leaked owner", "K7:program_owner_left" in r.codes(), r.codes())
+    r = oracle.Report()
+    judge_program_owners([{"path": "/a.exe", "owner": None, "users": [9]}], 1, r)
+    check("planted K7: users and no owner is a separate leak", "K7:program_user_left" in r.codes(), r.codes())
+    r = oracle.Report()
+    judge_program_owners([{"path": "/a.exe", "owner": None, "users": [1]}, {"path": "/b.exe", "owner": None, "users": []},
+                          {"path": "/c.exe"}], 1, r)
+    check("no owner and nobody but the supervisor: clean", r.ok, r.codes())
+
+    # ---- a profile that was shrunk is not a gate run
+    check("no override for the profile's own numbers", profile_overrides("pr", 4, 2, 600, list(OPS)) == [])
+    check("every override is named", len(profile_overrides("pr", 1, 1, 60, ["read"])) == 4)
+    saved = (dict(UNAVAILABLE_FAULTS), dict(UNAVAILABLE_WORKLOAD), dict(UNEXERCISED_CHECKS))
+    UNAVAILABLE_FAULTS.clear(), UNAVAILABLE_WORKLOAD.clear(), UNEXERCISED_CHECKS.clear()
+    try:
+        v = verdict_of("pr", rep_ok, full_pr, wl, feats_ok, [], None, None, set())
+        check("with no gap left a full pr run can PASS (so the override tests below are meaningful)",
+              v["verdict"] == "PASS" and v["gate_eligible"], v)
+        for ov in (profile_overrides("pr", 1, 2, 600, list(OPS)), profile_overrides("pr", 4, 1, 600, list(OPS)),
+                   profile_overrides("pr", 4, 2, 60, list(OPS)), profile_overrides("pr", 4, 2, 600, ["read"])):
+            v = verdict_of("pr", rep_ok, full_pr, wl, feats_ok, [], None, None, set(), overrides=ov)
+            check(f"planted: a shrunk gate run ({ov[0][:14]}) is SMOKE-OK, never PASS, and not gate eligible",
+                  v["verdict"] == "SMOKE-OK" and not v["gate_eligible"] and any("overridden" in g for g in v["gaps"]), v)
+        v = verdict_of("pr", rep_ok, full_pr, wl, feats_ok, [("agent_lost", "x")], None, None, set(),
+                       overrides=["--agents 1"])
+        check("a shrunk run with a violation is still FAIL", v["verdict"] == "FAIL", v)
+        # the nightly "at least 150 kills" rule on its own (the per-class minimums lowered so that they allow fewer)
+        saved_min = dict(MIN_FAULTS["nightly"])
+        MIN_FAULTS["nightly"] = {c: 1 for c in saved_min}
+        try:
+            v = verdict_of("nightly", rep_ok, {c: 30 for c in saved_min}, wl, feats_ok, [], None, None, set())
+            check("nightly: fewer than 150 kills in all is INCOMPLETE on that rule alone",
+                  v["verdict"] == "INCOMPLETE" and any("nightly kills" in g for g in v["hard_gaps"]), v)
+            v = verdict_of("nightly", rep_ok, {**{c: 30 for c in saved_min}, "kill_client": 100, "kill_decompiler": 30},
+                           wl, feats_ok, [], None, None, set())
+            check("nightly: 150 or more kills lift that rule", not any("nightly kills" in g for g in v["hard_gaps"]), v)
+        finally:
+            MIN_FAULTS["nightly"] = saved_min
+    finally:
+        UNAVAILABLE_FAULTS.update(saved[0]), UNAVAILABLE_WORKLOAD.update(saved[1]), UNEXERCISED_CHECKS.update(saved[2])
+    check("planted: a deaf script that ran 60 s for a 1 s script is unbounded",
+          [c for c, _ in unbounded_script_violations([{"op": "deaf_wall", "ms": 61000, "natural_ms": 1000}])] == ["script_unbounded"])
+    check("a script inside its bound is not",
+          not unbounded_script_violations([{"op": "burn_wall", "ms": 5000, "natural_ms": 1000}, {"op": "save", "ms": 99999}]))
+
+    # ---- the agent monitor must not respawn an agent the fault thread is killing (a race found in review)
+    class _Dead:
+        pid = 0
+
+        def poll(self):
+            time.sleep(0)       # lets the churn thread run in the middle of an iteration
+            return 137
+
+    def stub_soak():
+        sk = Soak.__new__(Soak)
+        sk.procs, sk.no_respawn, sk.killed_agents = {1: _Dead()}, set(), set()
+        sk.reap_lock, sk.stopping, sk.daemon_down = threading.RLock(), threading.Event(), threading.Event()
+        sk.rc_log, sk.setup_failures, sk.windows, sk.extra_viol = [], {}, [], []
+        sk.t_start, sk.duration, sk.spawned, sk.agents_dir = time.time(), 600, [], base / "agents"
+        sk.spawn_agent = lambda i: sk.spawned.append(i)
+        return sk
+    sk = stub_soak()
+    sk._reap_agents(True)
+    check("an exited agent nobody is killing is respawned (control)", sk.spawned == [1], sk.spawned)
+    sk = stub_soak()
+    sk.killed_agents.add(1)
+    sk._reap_agents(True)
+    check("planted race: an agent that f_kill_client is killing is NOT respawned by the monitor", sk.spawned == [], sk.spawned)
+    sk = stub_soak()
+    sk.no_respawn.add(1)
+    sk._reap_agents(True)
+    check("an agent whose setup failed three times is not respawned", sk.spawned == [], sk.spawned)
+    sk = stub_soak()
+    sk.procs = {k: _Dead() for k in range(40)}
+    stop_flag = threading.Event()
+
+    def churn():
+        k = 1000
+        while not stop_flag.is_set():
+            for j in range(20):
+                sk.procs[k + j] = _Dead()
+            for j in range(20):
+                sk.procs.pop(k + j, None)
+            k += 100
+    th = threading.Thread(target=churn, daemon=True)
+    th.start()
+    live_ok = True
+    old_si = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    t_end = time.time() + 0.5
+    try:
+        while time.time() < t_end:
+            sk.live_agents()
+    except RuntimeError:
+        live_ok = False
+    finally:
+        sys.setswitchinterval(old_si)
+    stop_flag.set()
+    th.join(2)
+    check("live_agents iterates a snapshot (no 'dict changed size' while another thread mutates procs)", live_ok)
 
     # ---- the oracle plumbing the runner uses, on a synthetic tree (clean, then planted)
     root = base / "tree"
@@ -1976,9 +2304,11 @@ def main(argv=None) -> int:
     r.add_argument("--duration-s", type=int, default=0, help="override the profile's duration (the run is then not a gate run)")
     r.add_argument("--edit-m", type=int, default=12, help="functions renamed by one edit set")
     r.add_argument("--evidence", help="folder for the evidence (default <work>/evidence; give one on E:)")
-    r.add_argument("--master-root", help="put the master projects here (a ReFS volume for the ReFS nightly run)")
+    r.add_argument("--master-root", help="put the master projects AND the agents' trees (forks, saves, ledgers) under "
+                                         "this folder (a ReFS volume for the ReFS nightly run); both are deleted at "
+                                         "the end. --work (state root, temp, scripts) stays where it is")
     r.add_argument("--plant", help="comma list of violations to plant into the live run and require the verdict to "
-                                   "flag: K2,K6,K9,K5,K7,K13,BUSY,ERR or all")
+                                   "flag: K2,K6,K9,K5,K7,K13,BUSY,ERR,WINDOW or all")
     r.add_argument("--quick-p99-ms", type=float, default=0.0,
                    help="fail the run when the quick-lane p99 outside fault windows exceeds this bound "
                         "(fixed from a quiet-machine run; report-only when 0)")
@@ -1992,9 +2322,11 @@ def main(argv=None) -> int:
         return selftest(pathlib.Path(a.work) if a.work else None)
     a.ops = [o for o in a.ops.split(",") if o]
     a.daemon_cfg = {}
-    if a.duration_s and a.profile != "smoke":
-        print("note: --duration-s changes the profile; the verdict can be at best SMOKE-like and is not a gate run",
-              file=sys.stderr)
+    ov = profile_overrides(a.profile, a.agents or PROFILES[a.profile]["agents"], a.projects or PROFILES[a.profile]["projects"],
+                           a.duration_s or PROFILES[a.profile]["duration_s"], a.ops)
+    if ov and PROFILES[a.profile]["gate"]:
+        print("note: this run changes the profile (" + "; ".join(ov) + "): it is not a gate run, the verdict is capped at "
+              "SMOKE-OK and the overrides are listed in the gaps", file=sys.stderr)
     if not pathlib.Path(a.project).is_file():
         print(f"--project {a.project} is not a file", file=sys.stderr)
         return 2

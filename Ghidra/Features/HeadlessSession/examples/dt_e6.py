@@ -29,7 +29,8 @@ these tests prove that the runner works end to end and that violations planted i
   folder left, a blocked retry, a changed canonical tree and an unkilled control with anomalies are
   violations; a short count is INCOMPLETE; no ReFS volume is a named gap; the Wilson bound).
 * ``soak_planted_run``: a live run of two agents on one project against this install, with the violations K2,
-  K5, K6, K7, K9, K13, an unexplained ``busy`` and an unexpected error planted into it (``--plant all``): the
+  K5, K6, K7, K9, K13, an unexplained ``busy`` and an unexpected error planted into it, both before any fault window and inside an
+  all-scope one (``--plant all``): the
   verdict must be FAIL and must name every plant. The run is too short for a gate and says so
   (``smoke_numbers_are_not_gate_numbers``); it proves the pipeline: agents, ledgers, the header watcher, the
   file and process checks, the recovery read and the evidence writer.
