@@ -262,6 +262,11 @@ class Runner:
                 h.update(f"{p.relative_to(self.a.ghidra)}|{st.st_size}|{st.st_mtime_ns}\n".encode())
             h.update((HERE / self.script).read_bytes())
             h.update("\0".join([self.a.ghidra, str(self.a.seed_aot)] + self.extra).encode())
+            # the JVM options that shape the AOT cache (garbage collector, compact object headers, ...): the seed's
+            # cache is named by them, so a seed made with others would leave every daemon without a cache, silently
+            props = Path(self.a.ghidra) / "support" / "launch.properties"
+            h.update(props.read_bytes() if props.is_file() else b"-")
+            h.update(("\0" + os.environ.get("GHIDRA_SESSION_VMARGS", "")).encode())
             key = h.hexdigest()[:20]
             entry = Path(self.a.seed_cache) / f"seed-{key}"
             if (entry / "ok").is_file():
