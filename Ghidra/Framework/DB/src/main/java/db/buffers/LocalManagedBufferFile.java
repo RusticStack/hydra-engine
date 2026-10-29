@@ -16,6 +16,8 @@
 package db.buffers;
 
 import java.io.*;
+import java.nio.channels.FileChannel;
+import java.nio.file.StandardOpenOption;
 
 import ghidra.util.Msg;
 import ghidra.util.exception.AssertException;
@@ -687,6 +689,7 @@ public class LocalManagedBufferFile extends LocalBufferFile implements ManagedBu
 		int newVersion = version + 1;
 		File newFile = bfMgr.getBufferFile(newVersion);
 		boolean success = false;
+		File closedVersionFile = null;
 		try {
 			if (saveChangeFile != null) {
 				saveChangeFile.close();
@@ -700,8 +703,24 @@ public class LocalManagedBufferFile extends LocalBufferFile implements ManagedBu
 			// an all-zero header. The flush in setReadOnly stays; it is idempotent.
 			saveFile.flush();
 
+			// Hydra E12: the reverse-delta file of the version being replaced is complete here
+			// (every put of the save is done) and is closed, which syncs it, before the new
+			// version gets its final name. Closed later, in setReadOnly below, a power loss
+			// between the rename and that close left a new version whose predecessor could not
+			// be rebuilt.
+			if (saveFile.versionOutFile != null) {
+				saveFile.versionOutFile.close();
+				saveFile.versionOutFile = null;
+				closedVersionFile = bfMgr.getVersionFile(version);
+			}
+
 			// Rename saveFile and enable transfer versioning settings
 			if (saveFile.renameFile(newFile)) {
+				// Hydra E12: the new directory entry must be durable before a later step of the
+				// save (setReadOnly below, through versionCreated) deletes the previous version;
+				// without it a power loss may keep the delete and lose the rename.
+				syncDirectory(newFile.getParentFile());
+
 				saveFile.version = newVersion;
 				saveFile.bfMgr = bfMgr;
 				saveFile.openForUpdate = true;
@@ -722,6 +741,20 @@ public class LocalManagedBufferFile extends LocalBufferFile implements ManagedBu
 		finally {
 			if (!success) {
 				saveFile.delete();
+				// Hydra E12: the version file was closed early, so saveFile.delete() can no
+				// longer abort it. A complete file left behind makes every later save of this
+				// database fail, because the VersionFile constructor refuses an existing file.
+				// Only when the commit left no new version behind: the save file still has its
+				// temporary name (the rename failed or threw), or it has the final name but the
+				// delete above removed it (a step after the rename failed before setReadOnly made
+				// the file read-only, e.g. the change data commit of a check-in). When the new
+				// version survives (the failure is after setReadOnly, so delete() was a no-op) the
+				// version file is the only way to rebuild the previous version and must stay, as
+				// before E12.
+				if (closedVersionFile != null &&
+					(!newFile.equals(saveFile.getFile()) || !newFile.exists())) {
+					closedVersionFile.delete();
+				}
 			}
 
 			saveFile = null;
@@ -729,6 +762,24 @@ public class LocalManagedBufferFile extends LocalBufferFile implements ManagedBu
 		}
 		if (!success) {
 			throw new IOException("File error during save");
+		}
+	}
+
+	/**
+	 * Hydra E12: flush a directory so that the entry of a file renamed into it is durable (POSIX:
+	 * a rename and a later unlink are ordered on disk only once the directory has been synced).
+	 * Best effort and silent: a directory cannot be opened as a channel on Windows
+	 * ({@code AccessDeniedException}), where the call does nothing and the save relies on the
+	 * file system's own ordering of its directory entries and on the {@code sync} of the renamed
+	 * file in {@code setReadOnly}. Nothing is written, so a failure leaves the save as it was.
+	 * @param dir the directory that received the renamed file
+	 */
+	static void syncDirectory(File dir) {
+		try (FileChannel ch = FileChannel.open(dir.toPath(), StandardOpenOption.READ)) {
+			ch.force(true);
+		}
+		catch (IOException | RuntimeException e) {
+			// not supported here, or not possible: the save is complete either way
 		}
 	}
 
