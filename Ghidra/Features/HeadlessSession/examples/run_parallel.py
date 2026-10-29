@@ -26,14 +26,19 @@ processes, exit 0xC0000142, when the commit runs out; see --min-commit-gb). Any 
 --tmpdir --only --report and reports the way daemon_tests.py does works; --names a,b,c names the tests when the
 script has no --list.
 
-Two things are optional, used when the script offers them (daemon_tests.py does):
+Three things are optional, used when the script offers them (daemon_tests.py does):
 * shards (--list-shards): a long test that is a loop of independent iterations runs as several processes
   (`name@shard`) whose iterations add up to the whole test's; they are reported under the test's name (the test
   passes when every shard passes) and --no-shards runs the whole tests instead;
 * a seed (--prepare / --seed-dir): the fixture project every test copies (an import and analysis of --exe, 20-25 s)
   and the daemon's class search cache (with --seed-aot also its AOT cache) are made once for the run instead of
   once per process; --seed-cache keeps them between runs
-  while the install, the script and the arguments are the same (--no-seed: every process makes its own).
+  while the install, the script and the arguments are the same (--no-seed: every process makes its own); the AOT
+  cache is in the seed by default (--no-seed-aot: not). Setup projects other than the fixture (Ctx.cached_project:
+  the fixture with the dll, an empty source project, ...) are cached in the seed dir by the first test that makes one;
+* a result cache (see ResultCache): every clean pass is stored under a key of the install, the test's source, the
+  shared source and data and the inputs; --affected takes a stored pass instead of running an unchanged test (marked
+  "cached" in the output and in report.json), a full run only with --result-cache, never with --no-result-cache.
 
 The verdict is per test, from each process's --report file:
 * a process that exits without a report, or with its test missing from it, is a PROBLEM (tests that did not run
@@ -286,6 +291,133 @@ class Runner:
         return f"seed made in {time.time() - t:.0f} s: {seed}"
 
 
+# ---- result cache ----------------------------------------------------------------------------
+#
+# A pass of a task (a test, or a shard) is stored under a key made of everything the result depends on: the install
+# (every jar's path, size and mtime, and the bytes of every file of HeadlessSession/support and of the launcher), the
+# test's own source (the file that defines it, and every examples/*.py that file names, transitively), the shared
+# source (daemon_tests.py, this runner's JVM options) and data (fixtures/, vectors/, examples/*.json but the two
+# files the runner itself writes), and the inputs (the arguments every process gets; every file they name, by its
+# bytes, a .gpr also with its .rep tree). --affected takes a stored pass for an unchanged key instead of running the
+# task again (--no-result-cache: it does not); a full run never does unless --result-cache. A taken result is a pass
+# marked "cached" (with when and in which run it was made) in the output, in report.json and in the summary line.
+# Only clean passes are stored: a failure, a skip, a pass after a rerun alone, a run with problems never is.
+
+RESULT_CACHE_VERSION = "1"
+_NOT_DATA = {"suite-costs.json", "test-map.json"}
+ENV_KEY = re.compile(r"^(GHIDRA|JAVA|JDK|XDG|HYDRA|P\d|E\d)\w*$", re.I)
+
+
+def _file_digest(h, p: Path):
+    h.update(f"{p.name}\0".encode())
+    try:
+        h.update(p.read_bytes())
+    except OSError as e:
+        h.update(f"unreadable {e}".encode())
+
+
+def install_fingerprint(ghidra: str) -> str:
+    root = Path(ghidra)
+    h = hashlib.sha256()
+    for p in sorted((root / "Ghidra").rglob("*.jar")):
+        st = p.stat()
+        h.update(f"{p.relative_to(root)}|{st.st_size}|{st.st_mtime_ns}\n".encode())
+    for d in (root / "Ghidra" / "Features" / "HeadlessSession" / "support", root / "support"):
+        for p in sorted(x for x in d.rglob("*") if x.is_file() and "__pycache__" not in x.parts) if d.is_dir() else ():
+            h.update(str(p.relative_to(root)).encode())
+            _file_digest(h, p)
+    return h.hexdigest()
+
+
+def inputs_fingerprint(extra: list[str]) -> str:
+    """The arguments and, by their bytes, every existing file they name (a .gpr also with its .rep tree)."""
+    h = hashlib.sha256("\0".join(extra).encode())
+    for x in extra:
+        p = Path(x)
+        if not x.startswith("-") and p.is_file():
+            _file_digest(h, p)
+            rep = p.with_suffix(".rep")
+            if p.suffix.lower() == ".gpr" and rep.is_dir():
+                for q in sorted(q for q in rep.rglob("*") if q.is_file()):
+                    h.update(str(q.relative_to(rep)).encode())
+                    _file_digest(h, q)
+    return h.hexdigest()
+
+
+def module_closure(start: str) -> list[str]:
+    """``start`` (an examples/*.py file name) and every examples/*.py it names (as a word), transitively; but from
+    daemon_tests.py (which loads every dt_*.py) only the files that are not dt_*.py, and never this runner (its JVM
+    options are in the key on their own)."""
+    stems = {p.stem: p.name for p in HERE.glob("*.py") if p.name != Path(__file__).name}
+    seen, todo = [], [start]
+    while todo:
+        f = todo.pop()
+        if f in seen or not (HERE / f).is_file():
+            continue
+        seen.append(f)
+        words = set(re.findall(r"\b(\w+)\b", (HERE / f).read_text(encoding="utf-8", errors="replace"))) & set(stems)
+        if f == "daemon_tests.py":
+            words = {w for w in words if not w.startswith("dt_")}
+        todo += [stems[w] for w in words if stems[w] not in seen]
+    return sorted(seen)
+
+
+class ResultCache:
+    def __init__(self, folder: Path, script: str, ghidra: str, extra: list[str], jvm: str, owners: dict[str, str]):
+        """``owners``: test name -> the examples file that defines it (a test not in it is never cached)."""
+        self.folder, self.script, self.owners = folder, script, owners
+        h = hashlib.sha256(f"v{RESULT_CACHE_VERSION}\0{script}\0{jvm}\0".encode())
+        h.update(install_fingerprint(ghidra).encode())
+        h.update(inputs_fingerprint(extra).encode())
+        for p in [HERE / script] + sorted(p for p in HERE.glob("*.json") if p.name not in _NOT_DATA) + \
+                sorted(p for d in ("fixtures", "vectors") for p in (HERE / d).rglob("*") if p.is_file()):
+            h.update(str(p.relative_to(HERE)).encode())
+            _file_digest(h, p)
+        self.base = h.hexdigest()
+        self._mods: dict[str, str] = {}
+
+    def _module_hash(self, f: str) -> str:
+        if f not in self._mods:
+            h = hashlib.sha256()
+            for g in module_closure(f):
+                _file_digest(h, HERE / g)
+            self._mods[f] = h.hexdigest()
+        return self._mods[f]
+
+    def key(self, task: str) -> str | None:
+        own = self.owners.get(task.partition("@")[0])
+        if own is None:
+            return None
+        return hashlib.sha256(f"{self.base}\0{self._module_hash(own)}\0{task}".encode()).hexdigest()[:32]
+
+    def get(self, task: str) -> dict | None:
+        k = self.key(task)
+        if k is None:
+            return None
+        try:
+            x = json.loads((self.folder / f"{k}.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return x if x.get("task") == task and x.get("result", {}).get("status") == "pass" else None
+
+    def put(self, task: str, result: dict, run: str):
+        k = self.key(task)
+        if k is None:
+            return
+        self.folder.mkdir(parents=True, exist_ok=True)
+        tmp = self.folder / f"{k}.{os.getpid()}.tmp"
+        tmp.write_text(json.dumps({"task": task, "result": result, "at": time.strftime("%Y-%m-%d %H:%M:%S"), "run": run}),
+                       encoding="utf-8")
+        os.replace(tmp, self.folder / f"{k}.json")
+
+
+def test_owners() -> dict[str, str]:
+    """Test name -> the examples file that defines it (daemon_tests.py, or the dt_*.py that registers it), loaded the
+    way daemon_tests.py loads them. A test missing here is never cached."""
+    dt = load_dt()
+    return {n: "daemon_tests.py" for n in dt.TESTS} | {n: f for f, ns in dt.LOADED.items() for n in ns}
+
+
 def is_heavy(r: Runner, task: str, heavy: set) -> bool:
     return any((r.prefix + n.partition("@")[0]) in heavy for n in task.split(","))
 
@@ -393,6 +525,7 @@ def run_queue(items: list[tuple[Runner, str]], workers: int, max_procs: int, min
                 problems.append(f"{j['runner'].prefix}{','.join(lost)}: exit {code}, no result (log {j['log']})")
             for n, x in got.items():
                 x["wall"] = round(secs, 1)
+                x["exit"] = code
                 results[j["runner"].prefix + n] = x
             if not lost and code == 0 and all(x["status"] in GOOD for x in got.values()):
                 shutil.rmtree(j["work"], ignore_errors=True)
@@ -632,6 +765,31 @@ def selftest() -> int:
     check(f"multi_writer: {dt.MW_SHARDS} shards whose edit rounds add up to {dt.MW_ITERS}",
           len(dt.SHARDS.get("multi_writer", {})) == dt.MW_SHARDS
           and sum(c for _, c in dt.split_n(dt.MW_ITERS, dt.MW_SHARDS)) == dt.MW_ITERS)
+    # the result cache: a key per task from install, inputs and the closure of the defining module
+    import tempfile
+    owners = test_owners()
+    check("result cache: every registered test has an owner file", set(dt.REGISTRY) <= set(owners))
+    c8, cd = module_closure("dt_e8.py"), module_closure("daemon_tests.py")
+    check(f"result cache: dt_e8.py's closure has itself and daemon_tests.py, not an unrelated module (dt_e3c.py) ({c8})",
+          "dt_e8.py" in c8 and "daemon_tests.py" in c8 and "dt_e3c.py" not in c8)
+    c3c = module_closure("dt_e3c.py")
+    check(f"result cache: dt_e3c.py's closure has dt_baseline.py, which it uses ({c3c})", "dt_baseline.py" in c3c)
+    check(f"result cache: daemon_tests.py's closure has no dt_*.py ({cd})", not [f for f in cd if f.startswith("dt_")])
+    with tempfile.TemporaryDirectory() as tmp:
+        inst = Path(tmp) / "inst"
+        (inst / "Ghidra").mkdir(parents=True)
+        (inst / "Ghidra" / "a.jar").write_bytes(b"1")
+        mk = lambda: ResultCache(Path(tmp) / "rc", "daemon_tests.py", str(inst), ["--exe", str(inst / "Ghidra" / "a.jar")], "j", owners)
+        rc = mk()
+        e8 = dt.LOADED["dt_e8.py"][0]
+        rc.put(e8, {"status": "pass", "seconds": 1.0, "note": "n"}, "run1")
+        rc.put("client_kill", {"status": "fail"}, "run1")
+        check("result cache: a stored pass comes back, a stored failure never, an unknown test is never stored",
+              (rc.get(e8) or {}).get("run") == "run1" and rc.get("client_kill") is None and rc.key("no_such_test") is None)
+        check("result cache: another task (a shard) has its own key", rc.key(e8) != rc.key(e8 + "@x") and rc.get(e8 + "@x") is None)
+        time.sleep(0.01)
+        (inst / "Ghidra" / "a.jar").write_bytes(b"22")     # another install, and another input file
+        check("result cache: a changed install or input misses", mk().get(e8) is None)
     print(f"{'FAILED: ' + str(len(bad)) + ' check(s)' if bad else 'all run_parallel checks ok'}")
     return 1 if bad else 0
 
@@ -678,10 +836,18 @@ def main() -> int:
     ap.add_argument("--base", default="integration/w3", help="--affected: the branch the changes are measured from")
     ap.add_argument("--no-shards", dest="no_shards", action="store_true", help="run sharded tests whole")
     ap.add_argument("--no-seed", dest="no_seed", action="store_true", help="no --prepare/--seed-dir")
-    ap.add_argument("--seed-aot", dest="seed_aot", action="store_true",
-                    help="the seed also has the daemon's AOT cache (about 30 s more to make, little faster)")
+    ap.add_argument("--seed-aot", dest="seed_aot", action="store_true", default=True,
+                    help="the seed also has the daemon's AOT cache (the default: about 30 s more to make, once per "
+                         "engine build with the seed cache; every test daemon then starts from it)")
+    ap.add_argument("--no-seed-aot", dest="seed_aot", action="store_false", help="a seed without the AOT cache")
     ap.add_argument("--seed-cache", dest="seed_cache", default=None,
                     help="keep the seed here between runs (default: seed-cache next to --scratch; 'none': do not)")
+    ap.add_argument("--result-cache", dest="result_cache", action="store_true",
+                    help="a full run also takes stored passes of unchanged tests instead of running them (--affected does by default)")
+    ap.add_argument("--no-result-cache", dest="no_result_cache", action="store_true",
+                    help="neither take nor store results (default: every clean pass is stored; --affected takes them)")
+    ap.add_argument("--result-cache-dir", dest="result_cache_dir", default=None,
+                    help="where passes are stored (default: result-cache next to --scratch)")
     ap.add_argument("--rerun-alone", type=int, default=1)
     ap.add_argument("--strict", action="store_true")
     ap.add_argument("--record", action="store_true", help="refresh suite-costs.json from this run")
@@ -731,9 +897,26 @@ def main() -> int:
                        min(a.workers, int(a.cores / a.light_cores)) if a.cores and a.light_cores else a.workers)
     print(f"{len(names)} tests as {len(tasks)} processes ({sum(len(v) for v in shards.values())} shards of {len(shards)} tests), "
           f"{a.workers} at once (while under {a.max_procs or 'any'} processes and over {a.min_commit:g} GB commit free); estimated {est:.0f} s; scratch {scratch}", flush=True)
-    print(r.prepare_seed() + f" ({time.time() - started:.0f} s)", flush=True)
-
     results: dict[str, dict] = {}
+    rc, cached = None, []
+    if not a.no_result_cache:
+        jvm = f"full_jvm={a.full_jvm} isolate={a.isolate_settings} {LEAN_THREADS} {LEAN_JIT}"
+        rc = ResultCache(Path(a.result_cache_dir) if a.result_cache_dir else scratch.parent / "result-cache",
+                         a.script, a.ghidra, extra, jvm, test_owners())
+        if a.affected or a.result_cache:
+            for t in tasks:
+                x = rc.get(t)
+                if x:
+                    res = dict(x["result"], note="[cached] " + x["result"].get("note", ""),
+                               cached={"at": x["at"], "run": x["run"], "key": rc.key(t)})
+                    results[t] = res
+                    cached.append(t)
+                    print(f"cached  {t:40s} pass at {x['at']} in {x['run']} (unchanged install, source, inputs)", flush=True)
+            tasks = [t for t in tasks if t not in results]
+            print(f"result cache: {len(cached)} task(s) taken from {rc.folder}, {len(tasks)} to run", flush=True)
+    if tasks:
+        print(r.prepare_seed() + f" ({time.time() - started:.0f} s)", flush=True)
+
     problems: list[str] = []
     q0 = time.time()
     heavy = set(allcosts.get(a.script + "#heavy", [])) if a.heavy_slots else set()
@@ -757,9 +940,14 @@ def main() -> int:
             if again:
                 results[t] = again
 
+    if rc:
+        for t, x in results.items():
+            if t not in cached and x["status"] == "pass" and x.get("exit") == 0 and verdict.get(t) is None:
+                rc.put(t, x, str(logs))
+
     if a.record:
         for t, x in results.items():
-            if x["status"] == "pass" and "seconds" in x and verdict.get(t) is None:
+            if x["status"] == "pass" and "seconds" in x and verdict.get(t) is None and t not in cached:
                 costs[t] = x["seconds"]
         for n, ss in shards.items():
             parts = [f"{n}@{s}" for s in ss]
@@ -780,8 +968,11 @@ def main() -> int:
             real.append(n)
         elif any(verdict.get(p) == "load" for p in parts):
             load.append(n)
+        if any(p in cached for p in parts):
+            m["cached"] = {p: results[p]["cached"] for p in parts if p in cached}
         seen[n] = m
-    (logs / "report.json").write_text(json.dumps({"tests": len(names), "processes": len(tasks), "results": list(seen.values()),
+    (logs / "report.json").write_text(json.dumps({"tests": len(names), "processes": len(tasks), "cached_tasks": cached,
+                                                  "results": list(seen.values()),
                                                   "rerun": verdict, "problems": problems, "machine": machine,
                                                   "wall_s": round(time.time() - started, 1)}, indent=1), encoding="utf-8")
 
@@ -794,7 +985,8 @@ def main() -> int:
     for line in problems:
         print("PROBLEM:", line)
     ok = sum(1 for n, x in seen.items() if x["status"] == "pass" and n not in load)
-    print(f"{len(names)} tests: {ok} passed, {len(skipped)} skipped{' (' + ', '.join(skipped) + ')' if skipped else ''}, {len(real)} failed alone, "
+    ncached = sum(1 for n in seen if "cached" in seen[n])
+    print(f"{len(names)} tests: {ok} passed ({ncached} of them from the result cache, not run), {len(skipped)} skipped{' (' + ', '.join(skipped) + ')' if skipped else ''}, {len(real)} failed alone, "
           f"{len(load)} failed only under load, {len(problems)} problems; queue {queue_s:.0f} s, wall {time.time() - started:.0f} s, "
           f"machine: {machine}; logs {logs}")
     bad = bool(real or problems or (a.strict and load) or len(seen) < len(names))
