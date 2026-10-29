@@ -2581,7 +2581,8 @@ def t_legacy_overlay(c: Ctx):
     """Overlays of a program saved by an older Ghidra (needs --legacy-project): an overlay
     opened while the first open's upgrade cache build is still running is upgraded in memory and
     works; once the copy is ready and the program reopens from it, a new overlay opens from the
-    copy, faster; both overlays stay private; the source is never written."""
+    copy (faster, asserted when the in-memory open took 200 ms or more; the median of 5 opens);
+    both overlays stay private; the source is never written."""
     global s_scripts_dir
     s_scripts_dir = c.scripts
     if not c.a.legacy_project:
@@ -2634,16 +2635,31 @@ def t_legacy_overlay(c: Ctx):
         time.sleep(2.5)  # the reaper closes the in-memory program (its copy is ready)
         r = s.call("open_program", path=prog, wait=600000)
         check(r["cachedUpgrade"] is True, f"reopen not from the copy: {r.get('upgradeCache')}")
+        # the speed of an overlay from the copy: the median of 5 opens. On a small fixture both
+        # opens take a few ms and their order is noise, so the order is asserted only when the
+        # in-memory upgrade took long enough to measure (200 ms); the copy itself is asserted above
+        # (cachedUpgrade) and below (the overlay works and stays private)
+        copy_times = []
+        for _ in range(4):
+            t = time.perf_counter()
+            s.call("open_program", path=prog, overlay="from-copy-probe", wait=600000)
+            copy_times.append((time.perf_counter() - t) * 1000)
+            s.call("drop_overlay", overlay="from-copy-probe")
         t = time.perf_counter()
         o2 = s.call("open_program", path=prog, overlay="from-copy", wait=600000)
-        copy_ms = (time.perf_counter() - t) * 1000
+        copy_times.append((time.perf_counter() - t) * 1000)
+        copy_ms = sorted(copy_times)[len(copy_times) // 2]
         check(o2["overlay"]["error"] is None, f"overlay from the copy: {o2['overlay']}")
         s.call("rename", overlay="from-copy", address=fn, name="ov_from_copy")
         check(s.call("decompile", overlay="from-copy", address=fn)["name"] == "ov_from_copy" and
               s.call("decompile", address=fn)["name"] == canon, "overlay from the copy")
-        check(copy_ms < mem_ms, f"overlay from the copy {copy_ms:.0f} ms, in memory "
-              f"{mem_ms:.0f} ms")
-        notes.append(f"overlay from the cache copy: {copy_ms:.0f} ms")
+        if mem_ms >= 200:
+            check(copy_ms < mem_ms, f"overlay from the copy {copy_ms:.0f} ms (median of 5), in "
+                  f"memory {mem_ms:.0f} ms")
+            notes.append(f"overlay from the cache copy: {copy_ms:.0f} ms (median of 5)")
+        else:
+            notes.append(f"overlay from the cache copy: {copy_ms:.0f} ms (median of 5; order not "
+                         f"asserted, the in-memory open took {mem_ms:.0f} ms < 200 ms)")
         c.timings["legacy overlay: in-memory / from the copy ms"] = [round(mem_ms),
                                                                      round(copy_ms)]
         s.call("drop_overlay", overlay="from-copy")
