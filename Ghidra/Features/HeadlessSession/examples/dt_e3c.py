@@ -103,12 +103,15 @@ public class E3cDeaf extends GhidraScript {
 }
 """
 
-#: deaf like E3cDeaf, and it runs until the file named by its argument exists: the test ends it
+#: deaf like E3cDeaf, and it runs until the file named by its argument exists: the test ends it.
+#: It creates ``<gate>.started`` once it runs (its lock held): "registered" is not "running"
 DEAF_GATE = """// @category HeadlessSession.Test
 import ghidra.app.script.GhidraScript;
 public class E3cDeafGate extends GhidraScript {
     @Override protected void run() throws Exception {
         java.io.File gate = new java.io.File(getScriptArgs()[0]);
+        // run() is entered with the program's lock held: say so, then wait for the gate
+        new java.io.File(getScriptArgs()[0] + ".started").createNewFile();
         while (!gate.exists()) {
             try {
                 Thread.sleep(20);
@@ -409,7 +412,9 @@ def _deferred_close(c, how):
     exe = prepare(c)
     gpr = c.copy_fixture(f"e3cDl{how}")
     gate = c.work / f"e3cDl{how}.gate"
+    started = pathlib.Path(str(gate) + ".started")
     gate.unlink(missing_ok=True)
+    started.unlink(missing_ok=True)
     d = c.daemon(f"e3c-dl-{how}", keepWarm=KEEP_WARM_S, engine={"cleanupGraceS": 1, "abandonWaitS": 1})
     obs = B = again = None
     try:
@@ -421,7 +426,9 @@ def _deferred_close(c, how):
         else:
             B.call("open_program", path=exe)
         # compiled once, with a gate that is already open
-        B.call("script", script=c.script("E3cDeafGate.java"), program=None, args=[str(gpr)],
+        warm_gate = c.work / f"e3cDl{how}.warm"
+        warm_gate.write_text("open")
+        B.call("script", script=c.script("E3cDeafGate.java"), program=None, args=[str(warm_gate)],
                wait=120000)
 
         def listed():
@@ -429,7 +436,9 @@ def _deferred_close(c, how):
         dt.check(listed(), "the project is not listed after the open")
         B.send("script", script=c.script("E3cDeafGate.java"), args=[str(gate)], parallel=True,
                wait=3600000)
-        dt.wait_for(lambda: running(obs, "B"), "B's deaf request to run", 120)
+        # the script itself says it runs: a request that is only listed may not hold its lock
+        # yet, and a FIN then cancels it before it starts (no pending leave, an early close)
+        dt.wait_for(started.exists, "B's deaf request to run", 300)
         t0 = time.perf_counter()
         B.close()                                    # a FIN while the deaf request runs
         B = None
