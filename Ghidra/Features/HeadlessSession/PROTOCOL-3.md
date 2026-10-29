@@ -3916,6 +3916,27 @@ items that are not rows) its edits are recorded here as facts, not as matrix row
 Not changed: `run_parallel.py --make-test-map` follows a test's helpers one level, so `multi_writer` (whose setup import is now
 in `proj_mw`, two levels down) is no longer listed under the import classes; its setup is made by the prebuild.
 
+### 8.12 Revision 8.8: no ReFS volume on the release machine (owner decision 2026-10-30, `w2/GATE1`)
+
+A coordinator amendment, recorded on branch `w2/GATE1` (from Hydra `integration/w3` at `3b8a2f751a`) during the hydra.4
+release-gate runs. It is a documentation change only: it changes no design decision and no code, flips no gate to passing and
+weakens no gate on NTFS. Where this section differs from an earlier one, it governs.
+
+**Owner decision 2026-10-30.** There is no ReFS volume (the Dev Drive `F:` is gone, 8.8). The parts of the release gates that
+need one are **not testable on the release machine, owner decision 2026-10-30; NTFS is the release file system**:
+
+| Gate | Part that cannot run | What still binds |
+|---|---|---|
+| 9.4 | "plus the fork tests on a ReFS volume" | every listed suite, on NTFS, with `--legacy-project` |
+| 9.15 | the 200 ReFS save kills of "at least 400 save kills (200 NTFS, 200 ReFS)" | every other count of the gate, on NTFS, including the 200 NTFS save kills |
+| 9.16 | the ReFS half of "NTFS and ReFS" | the NTFS medians, with the foreign load recorded |
+| 9.17 | "plus one on ReFS (a fixture under 10 GB on F:, cleaned up)" of the release lane | the three consecutive green NTFS nightly runs and the 24 x 6 run |
+
+This amendment says nothing about ReFS: no result is taken, inferred or carried over from another machine, and no document may
+state a ReFS property as tested on this release (6.2 "Copy-on-write is ReFS only" and "ReFS gives a disk saving and no
+protection" stay as written, as limits). A gate report names these parts "not testable on the release machine, owner decision
+2026-10-30", never "passed" and never "skipped as green".
+
 ### W0
 
 **X0 (Hydra, L): the oracle, the regression suites and the red table.**
