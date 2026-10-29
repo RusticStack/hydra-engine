@@ -1384,22 +1384,44 @@ class _PidProc:
         return self.returncode
 
 
+_PE32 = None
+_PE32_LOCK = threading.Lock()
+
+
+def _pe32_class():
+    """The PROCESSENTRY32W structure class, created once. ``_kernel32()`` is shared, and ctypes
+    checks ``argtypes`` by class identity, so a class made per call made two threads in
+    ``_children_of`` overwrite each other's ``argtypes`` ("expected LP_PE32 instance instead of
+    pointer to PE32")."""
+    global _PE32
+    with _PE32_LOCK:
+        if _PE32 is None:
+            import ctypes
+            import ctypes.wintypes as wt
+
+            class PE32(ctypes.Structure):
+                _fields_ = [("dwSize", wt.DWORD), ("cntUsage", wt.DWORD),
+                            ("th32ProcessID", wt.DWORD), ("th32DefaultHeapID", ctypes.c_size_t),
+                            ("th32ModuleID", wt.DWORD), ("cntThreads", wt.DWORD),
+                            ("th32ParentProcessID", wt.DWORD), ("pcPriClassBase", wt.LONG),
+                            ("dwFlags", wt.DWORD), ("szExeFile", wt.WCHAR * 260)]
+
+            # the signatures of the shared kernel32 are set here, once, under the lock: a
+            # per-call assignment of ``argtypes`` is what two threads raced on
+            k = _kernel32()
+            k.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
+            k.Process32FirstW.argtypes = k.Process32NextW.argtypes = [ctypes.c_void_p,
+                                                                      ctypes.POINTER(PE32)]
+            _PE32 = PE32
+        return _PE32
+
+
 def _children_of(pid: int) -> list[tuple[int, str]]:
     """``[(pid, image name)]`` of the direct children of ``pid`` (Toolhelp snapshot)."""
     import ctypes
-    import ctypes.wintypes as wt
 
-    class PE32(ctypes.Structure):
-        _fields_ = [("dwSize", wt.DWORD), ("cntUsage", wt.DWORD), ("th32ProcessID", wt.DWORD),
-                    ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wt.DWORD),
-                    ("cntThreads", wt.DWORD), ("th32ParentProcessID", wt.DWORD),
-                    ("pcPriClassBase", wt.LONG), ("dwFlags", wt.DWORD),
-                    ("szExeFile", wt.WCHAR * 260)]
-
+    PE32 = _pe32_class()
     k = _kernel32()
-    k.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
-    k.Process32FirstW.argtypes = k.Process32NextW.argtypes = [ctypes.c_void_p,
-                                                              ctypes.POINTER(PE32)]
     snap = k.CreateToolhelp32Snapshot(0x2, 0)
     out = []
     try:

@@ -37,7 +37,10 @@ More tests live in ``dt_<package>.py`` files next to this one (PROTOCOL-3.md, se
 exposes ``TESTS = {name: fn}`` (``fn(ctx)`` returns a note, or raises ``Fail``) and may expose
 ``BASELINE = {name: premise}``. They are imported by name (``import daemon_tests as dt`` gives
 them ``Fail``, ``check``, ``expect_error``, ``wait_for``, ``PremiseFail`` and the ``Ctx``), run after
-the tests above and selected by ``--only`` like them. A directory without any ``dt_*.py`` is fine
+the tests above and selected by ``--only`` like them. A test that cannot exercise its premise in
+this environment raises ``Skipped(reason)`` (or returns a note starting with "skipped"): it is
+printed as SKIP, counted apart from the passes, and does not fail the run. A failed test has its
+daemons asked to shut down (``Ctx.release``) and then killed, so it leaves no project open. A directory without any ``dt_*.py`` is fine
 (``--tests-dir`` names another one); a file that does not import is reported as a failure.
 
 Expected-fail baseline. A test named in a module's ``BASELINE`` is written against the behaviour
@@ -57,6 +60,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -120,6 +124,12 @@ class PremiseFail(Fail):
     def __init__(self, what, evidence=None):
         super().__init__(what)
         self.evidence = evidence or {}
+
+
+class Skipped(Exception):
+    """A test could not exercise its premise here (an environment limit, such as a job object that
+    refuses breakaway). The run reports it as SKIPPED with this reason, never as ok, and it does not
+    fail the run. Raise it only after proving the limit; a test that merely cannot decide fails."""
 
 
 _SHIM = threading.RLock()
@@ -326,6 +336,23 @@ class Ctx:
                              stdin=subprocess.DEVNULL)
         self.procs.append(p)
         return p
+
+    def release(self, timeout=20.0):
+        """Asks every daemon this run started that is still up to shut down (``force``: a failed
+        test leaves open projects, unsaved work and clients behind), all at once, and waits at most
+        ``timeout`` seconds. That closes the projects and drops their locks the way a stopped
+        daemon does, which a kill does not; ``cleanup`` then kills whatever did not answer. Never
+        raises: a daemon that is wedged is left to ``cleanup``."""
+        def stop(d):
+            with contextlib.suppress(Exception):
+                if d.jvm_alive():
+                    d.stop(force=True, timeout=timeout)
+        threads = [threading.Thread(target=stop, args=(d,), daemon=True) for d in self.daemons]
+        for t in threads:
+            t.start()
+        end = time.monotonic() + timeout + 10
+        for t in threads:
+            t.join(max(0.0, end - time.monotonic()))
 
     def cleanup(self):
         for p in self.procs:
@@ -1181,6 +1208,33 @@ def t_stdio(c: Ctx):
         check(st["listen"] is None and st["launch"]["mode"] in ("fast", "standard"), str(st))
     c.timings["stdio session ready"] = round(ready)
     return f"ready in {ready:.0f} ms ({st['launch']['mode']} mode)"
+
+
+def own_project(folder: pathlib.Path, user: str = None):
+    """Makes the copy of a project below ``folder`` owned by ``user`` (default: the user running
+    the tests, which is the user of the daemon). Ghidra refuses a writable open of a project whose
+    ``project.prp`` names another owner ("Project is owned by ..."), and a committed fixture names
+    whoever made it: on another machine or a CI runner every test that opens a copy of it writable
+    would fail. Only the OWNER value is rewritten, in copies, and the file keeps its modification
+    time; returns how many files it changed."""
+    if user is None:
+        import getpass
+        user = getpass.getuser()
+    from xml.sax.saxutils import quoteattr
+    xml_user = quoteattr(user)[1:-1].encode("utf-8")
+    n = 0
+    for prp in pathlib.Path(folder).glob("*.rep/project.prp"):
+        data = prp.read_bytes()
+        new = re.sub(rb'(<STATE NAME="OWNER" TYPE="string" VALUE=")[^"]*(")',
+                     lambda m: m.group(1) + xml_user + m.group(2), data)
+        if new != data:
+            st = prp.stat()
+            prp.write_bytes(new)
+            # a project's revision includes the times of its files ("a touched file moves its
+            # revision"), and every copy must have the revision of its source: keep the time
+            os.utime(prp, ns=(st.st_atime_ns, st.st_mtime_ns))
+            n += 1
+    return n
 
 
 def clone_tree(src: pathlib.Path, dst: pathlib.Path):
@@ -2160,7 +2214,12 @@ def t_shared_stress(c: Ctx):
     gpr = c.copy_fixture("projStress")
     exe = pathlib.Path(c.a.exe).name
     d = c.daemon("stress", keepWarm=0)
-    sessions = [d.connect(f"agent-{i}", f"harness-{i}") for i in range(4)]
+    # protocol 2 on purpose (E3b, amendment A-E3b-1): eight writers wait at once for one program
+    # lock with a wait of 300 s, and a protocol 3 connection is refused beyond max(2, slots/4)
+    # waiters (busy lock_queue_full, PROTOCOL-3.md 3.5, 3.10); this test does not retry, and it is
+    # about the shared mode's journal and order. The protocol 3 half, with the retry a client does,
+    # is dt_e3b.shared_stress_v3.
+    sessions = [c.connect(d, f"agent-{i}", f"harness-{i}", 2) for i in range(4)]
     for s in sessions:
         s.call("open_project", path=str(gpr), writable=True)
         s.call("open_program", path=exe, writable=True, share=True)
@@ -2522,7 +2581,8 @@ def t_legacy_overlay(c: Ctx):
     """Overlays of a program saved by an older Ghidra (needs --legacy-project): an overlay
     opened while the first open's upgrade cache build is still running is upgraded in memory and
     works; once the copy is ready and the program reopens from it, a new overlay opens from the
-    copy, faster; both overlays stay private; the source is never written."""
+    copy (faster, asserted when the in-memory open took 200 ms or more; the median of 5 opens);
+    both overlays stay private; the source is never written."""
     global s_scripts_dir
     s_scripts_dir = c.scripts
     if not c.a.legacy_project:
@@ -2575,16 +2635,31 @@ def t_legacy_overlay(c: Ctx):
         time.sleep(2.5)  # the reaper closes the in-memory program (its copy is ready)
         r = s.call("open_program", path=prog, wait=600000)
         check(r["cachedUpgrade"] is True, f"reopen not from the copy: {r.get('upgradeCache')}")
+        # the speed of an overlay from the copy: the median of 5 opens. On a small fixture both
+        # opens take a few ms and their order is noise, so the order is asserted only when the
+        # in-memory upgrade took long enough to measure (200 ms); the copy itself is asserted above
+        # (cachedUpgrade) and below (the overlay works and stays private)
+        copy_times = []
+        for _ in range(4):
+            t = time.perf_counter()
+            s.call("open_program", path=prog, overlay="from-copy-probe", wait=600000)
+            copy_times.append((time.perf_counter() - t) * 1000)
+            s.call("drop_overlay", overlay="from-copy-probe")
         t = time.perf_counter()
         o2 = s.call("open_program", path=prog, overlay="from-copy", wait=600000)
-        copy_ms = (time.perf_counter() - t) * 1000
+        copy_times.append((time.perf_counter() - t) * 1000)
+        copy_ms = sorted(copy_times)[len(copy_times) // 2]
         check(o2["overlay"]["error"] is None, f"overlay from the copy: {o2['overlay']}")
         s.call("rename", overlay="from-copy", address=fn, name="ov_from_copy")
         check(s.call("decompile", overlay="from-copy", address=fn)["name"] == "ov_from_copy" and
               s.call("decompile", address=fn)["name"] == canon, "overlay from the copy")
-        check(copy_ms < mem_ms, f"overlay from the copy {copy_ms:.0f} ms, in memory "
-              f"{mem_ms:.0f} ms")
-        notes.append(f"overlay from the cache copy: {copy_ms:.0f} ms")
+        if mem_ms >= 200:
+            check(copy_ms < mem_ms, f"overlay from the copy {copy_ms:.0f} ms (median of 5), in "
+                  f"memory {mem_ms:.0f} ms")
+            notes.append(f"overlay from the cache copy: {copy_ms:.0f} ms (median of 5)")
+        else:
+            notes.append(f"overlay from the cache copy: {copy_ms:.0f} ms (median of 5; order not "
+                         f"asserted, the in-memory open took {mem_ms:.0f} ms < 200 ms)")
         c.timings["legacy overlay: in-memory / from the copy ms"] = [round(mem_ms),
                                                                      round(copy_ms)]
         s.call("drop_overlay", overlay="from-copy")
@@ -2811,12 +2886,16 @@ def watchdog(c, name, secs):
 
 def run_test(c, n, secs):
     """Runs one test; returns (status, note, seconds, evidence): status is "pass", "premise"
-    (a PremiseFail) or "fail"."""
+    (a PremiseFail), "skipped" (``Skipped`` raised, or a note starting with "skipped") or "fail"."""
     t = time.perf_counter()
     wd = watchdog(c, n, secs) if secs else None
     ev = {}
     try:
         status, note = "pass", REGISTRY[n](c)
+        if str(note).startswith("skipped"):
+            status = "skipped"
+    except Skipped as e:
+        status, note = "skipped", f"skipped: {e}"
     except PremiseFail as e:
         status, note, ev = "premise", str(e), e.evidence
     except Exception as e:  # noqa: BLE001
@@ -2828,8 +2907,11 @@ def run_test(c, n, secs):
     finally:
         if wd:
             wd.cancel()
-    if status != "pass":
-        c.cleanup()  # nothing a failed test started may outlive it
+    if status in ("fail", "premise"):
+        # nothing a failed test started may outlive it, and its projects are closed (the daemons
+        # are asked to shut down) before they are killed, so the next test starts on a clean slate
+        c.release()
+        c.cleanup()
     return status, note, time.perf_counter() - t, ev
 
 
@@ -2915,12 +2997,14 @@ def main():
         for n in names:
             status, note, secs_n, ev = run_test(c, n, secs)
             if a.baseline:
-                word = {"premise": "CONFIRMED", "pass": "REFUTED", "fail": "OTHER"}[status]
+                word = {"premise": "CONFIRMED", "pass": "REFUTED", "fail": "OTHER",
+                        "skipped": "SKIPPED"}[status]
                 bad += status != "premise"
                 print(f"{word:9s} {n:24s} {secs_n:7.1f} s  {note}", flush=True)
             else:
-                bad += status != "pass"
-                word = {"pass": "ok  ", "premise": "FAIL", "fail": "FAIL"}[status]
+                bad += status not in ("pass", "skipped")
+                word = {"pass": "ok  ", "premise": "FAIL", "fail": "FAIL",
+                        "skipped": "SKIP"}[status]
                 tag = " (as premised)" if status == "premise" else ""
                 print(f"{word} {n:16s} {secs_n:7.1f} s  {note}{tag}", flush=True)
             results.append({"test": n, "status": status, "seconds": round(secs_n, 1),
@@ -2941,7 +3025,10 @@ def main():
         print(f"{n_ok}/{len(names)} baseline tests fail as premised{miss}")
     else:
         n_ok = sum(r["status"] == "pass" for r in results)
-        print(f"{n_ok}/{len(names)} passed{miss}")
+        n_skip = [r["test"] for r in results if r["status"] == "skipped"]
+        # a skipped test did not pass: it is counted apart, with its name, and does not fail the run
+        sk = f", {len(n_skip)} SKIPPED ({', '.join(n_skip)})" if n_skip else ""
+        print(f"{n_ok}/{len(names)} passed{sk}{miss}")
     sys.exit(1 if bad else 0)
 
 

@@ -25,7 +25,6 @@ import static ghidra.app.util.headless.session.ScriptCommands.findScript;
 import java.io.*;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
 import java.util.regex.Pattern;
 
@@ -110,7 +109,20 @@ final class OverlayCommands {
 			}
 			JsonObject plain = req.deepCopy();
 			plain.remove("overlay");
-			JsonObject info = (JsonObject) s.programCmds.openProgram(c, plain, m);
+			// BP24: a program this client already uses is not joined again (the join takes the
+			// program's shared lock, which an exclusive holder keeps for as long as it runs); the
+			// overlay is opened from the stored file and needs no lock of the base then
+			ProgramEntry used = alreadyUsed(c, plain);
+			JsonObject info;
+			if (used != null) {
+				c.active = used.key;
+				c.activeProject = used.project.id;
+				info = s.programCmds.programInfo(used, c);
+				Json.put(info, "openMs", 0);
+			}
+			else {
+				info = (JsonObject) s.programCmds.openProgram(c, plain, m);
+			}
 			ProgramEntry e = s.access.entryByKey(info.get("key").getAsString());
 			if (e == null) {
 				throw new SessionException(SessionException.NO_PROGRAM,
@@ -137,20 +149,24 @@ final class OverlayCommands {
 			boolean write = cmd.equals("apply_overlay") || cmd.equals("rename") ||
 				cmd.equals("comment") || cmd.equals("drop_overlay");
 			Lock ol = write ? o.lock.writeLock() : o.lock.readLock();
-			boolean got = false;
-			try {
-				got = ol.tryLock(waitMs(req), TimeUnit.MILLISECONDS);
-			}
-			catch (InterruptedException ex) {
-				Thread.currentThread().interrupt();
-			}
-			if (!got) {
+			Waits.Outcome got = Waits.lock(o.lock, write, waitMs(req), Waits.counter(o));
+			if (got != Waits.Outcome.GOT) {
+				boolean full = got == Waits.Outcome.QUEUE_FULL;
+				boolean v3 = c.v3();
 				JsonObject d = e.identity();
 				Json.put(d, "overlay", name);
 				d.add("holderInfo", c.holder("overlay " + name, 0));
 				Json.put(d, "suggest", "retry");
-				throw new SessionException(SessionException.BUSY,
-					"overlay '" + name + "' is busy with another of this client's requests", d);
+				d = SessionException.busyDetails(v3, d, full ? "lock_queue_full" : "lock_wait", null,
+					null);
+				SessionException ex = new SessionException(SessionException.BUSY,
+					full ? "overlay '" + name + "' already has too many requests waiting for it"
+							: "overlay '" + name + "' is busy with another of this client's requests",
+					d);
+				if (v3) {
+					ex.withRetryAfterMs(1000);
+				}
+				throw ex;
 			}
 			try {
 				if (cmd.equals("drop_overlay")) {
@@ -177,8 +193,7 @@ final class OverlayCommands {
 						ResourceFile src = findScript(Json.str(req, "script"));
 						m.deadline(Json.num(req, "timeout", 0, 0, 7 * 86_400));
 						yield withOverlay(o,
-							s.scripts.runScript(src, req, p.project, o.program, null, "contained",
-								m));
+							s.scripts.runOverlayScript(c, src, req, p.project, o.program, m));
 					}
 					case "rename" -> applyOverlay(o, ops(req, "rename"));
 					case "comment" -> applyOverlay(o, ops(req, "comment"));
@@ -194,6 +209,28 @@ final class OverlayCommands {
 		finally {
 			p.lastUsed = System.currentTimeMillis();
 			pl.unlock();
+		}
+	}
+
+	/**
+	 * The program {@code req.path} names when this client already uses it, else null (the open
+	 * then goes through {@code open_program}).
+	 */
+	private ProgramEntry alreadyUsed(Client c, JsonObject req) {
+		if (!Json.has(req, "path")) {
+			return null;
+		}
+		JsonObject sel = new JsonObject();
+		sel.add("program", req.get("path"));
+		if (Json.has(req, "project")) {
+			sel.add("project", req.get("project"));
+		}
+		try {
+			ProgramEntry e = s.access.selected(c, sel);
+			return e.program == null ? null : e;
+		}
+		catch (SessionException ex) {
+			return null;
 		}
 	}
 
@@ -218,7 +255,11 @@ final class OverlayCommands {
 		ProjectEntry p = e.project;
 		Lock pl = lockProject(p, false, wait, "open_program overlay");
 		try {
-			Lock l = e.acquire(false, wait, c, "open_program overlay");
+			// BP24: the overlay is opened from the stored file, so a request that holds the base
+			// exclusively without writing that file (a script, an analysis) does not block it; any
+			// other wait for the base is timed and cancel-aware (Waits)
+			Lock l = PrivateInstance.baseLock(e, wait, c, "open_program overlay");
+			String revisionAtOpen = e.revision;
 			try {
 				if (e.program == null || p.programs.get(e.path) != e) {
 					throw new SessionException(SessionException.NO_PROGRAM, e.key + " was closed");
@@ -257,12 +298,19 @@ final class OverlayCommands {
 					}
 					return prev;
 				}
+				if (l == null && !Objects.equals(revisionAtOpen, e.revision)) {
+					// opened without the base's lock and its stored file changed meanwhile (a
+					// refresh or a save): rebuild the overlay from the file as it is now
+					rebuildOverlays(e, m);
+				}
 				Msg.info(s, c.label() + " opened overlay " + name + " of " + e.key + " in " +
 					o.openMs + " ms");
 				return o;
 			}
 			finally {
-				e.release(l);
+				if (l != null) {
+					e.release(l);
+				}
 			}
 		}
 		finally {
@@ -272,37 +320,18 @@ final class OverlayCommands {
 
 	/**
 	 * Opens the overlay's own program object (from the upgrade cache copy when the shared program
-	 * came from one) and replays its log. Held: the overlay's write lock and the program's lock.
+	 * came from one) and replays its log. The open is {@link PrivateInstance#load}, the mechanism a
+	 * {@code private} script shares. Held: the overlay's write lock, and the program's lock unless
+	 * {@link PrivateInstance#baseLock} said it is not needed.
 	 */
 	private void loadOverlay(Overlay o, RequestMonitor m) {
 		ProgramEntry e = o.base;
-		long t0 = System.nanoTime();
-		Program prog = null;
-		try {
-			if (e.cacheView != null && e.cachePlan != null) {
-				UpgradeCache.Opened op = s.upgradeCache.openReady(e.cachePlan, o, m);
-				if (op != null) {
-					prog = op.program();
-					o.view = op.view();
-					o.lease = op.lease();
-				}
-			}
-			if (prog == null) {
-				prog = (Program) e.file.getReadOnlyDomainObject(o, DomainFile.DEFAULT_VERSION, m);
-			}
-		}
-		catch (CancelledException ex) {
-			throw cancelled(m);
-		}
-		catch (VersionException ex) {
-			throw new SessionException(SessionException.CONFLICT,
-				e.path + " was saved by another Ghidra version: " + ex.getMessage());
-		}
-		catch (IOException ex) {
-			throw new SessionException(SessionException.FAILED, ex.getMessage(), null, ex);
-		}
+		PrivateInstance.Loaded l = PrivateInstance.load(s.upgradeCache, e, o, m);
+		Program prog = l.program();
+		o.view = l.view();
+		o.lease = l.lease();
 		o.program = prog;
-		o.openMs = (System.nanoTime() - t0) / 1_000_000;
+		o.openMs = l.openMs();
 		o.sha256 = prog.getExecutableSHA256();
 		o.programRevision = e.revision;
 		o.projectRevision = e.project.revision();
