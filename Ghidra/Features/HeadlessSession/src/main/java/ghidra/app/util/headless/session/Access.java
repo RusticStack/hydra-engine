@@ -253,21 +253,25 @@ final class Access {
 		ProgramEntry e = selected(c, req);
 		ProjectEntry p = e.project;
 		Lock pl = lockProject(p, false, waitMs(req), cmd);
+		// while an analysis runs, and already while it queues for the program (the fair lock makes a
+		// reader that arrives behind it wait for all of it), a protocol 3 reader is told "analyzing" at
+		// once (BP5, 3.13). Marked only for a caller that may analyse (an unlocked look; the check
+		// under the lock below decides).
+		ProgramEntry.Analysis mark = exclusive && cmd.equals("analyze") && mayWrite(c, e, needOwner)
+				? new ProgramEntry.Analysis(c, Caller.monitor(), cmd, System.currentTimeMillis(),
+					Caller.current(c))
+				: null;
+		if (mark != null) {
+			e.analysisStarts(mark);
+		}
 		try {
 			Lock l = e.acquire(exclusive, waitMs(req), c, cmd);
-			boolean marked = false;
 			try {
 				if (e.program == null) {
 					throw new SessionException(SessionException.NO_PROGRAM, e.key + " was closed");
 				}
 				if (needOwner) {
 					requireOwner(c, e, cmd);
-				}
-				if (exclusive && cmd.equals("analyze")) {
-					// while this runs, a protocol 3 reader is told "analyzing" at once (BP5, 3.13)
-					e.analysis = new ProgramEntry.Analysis(c, Caller.monitor(), cmd,
-						System.currentTimeMillis(), Caller.current(c));
-					marked = true;
 				}
 				return work.run(e);
 			}
@@ -282,16 +286,24 @@ final class Access {
 					ex.getClass().getSimpleName() + ": " + ex.getMessage(), null, ex);
 			}
 			finally {
-				if (marked) {
-					e.analysis = null;
+				if (mark != null) {
+					e.analysisEnds(mark); // before the lock is free: no reader is told after it ended
 				}
 				e.release(l);
 			}
 		}
 		finally {
+			if (mark != null) {
+				e.analysisEnds(mark); // the lock was never had (busy, cancelled)
+			}
 			p.lastUsed = System.currentTimeMillis();
 			pl.unlock();
 		}
+	}
+
+	/** An unlocked look: may {@code c} run an owner's command on {@code e} now. */
+	private static boolean mayWrite(Client c, ProgramEntry e, boolean needOwner) {
+		return !needOwner || e.isWriter(c);
 	}
 
 	private static void requireOwner(Client c, ProgramEntry e, String cmd) {

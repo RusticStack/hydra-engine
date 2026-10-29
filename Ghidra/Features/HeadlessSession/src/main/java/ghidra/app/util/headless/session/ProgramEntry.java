@@ -284,6 +284,28 @@ final class ProgramEntry implements Decompilers {
 	 * for it is told {@code busy{reason:"analyzing"}} at once, with the job's progress (BP5, 3.13).
 	 */
 	volatile Analysis analysis;
+	/** The analyses that hold or wait for this lock, oldest first. Guarded by itself. */
+	private final ArrayDeque<Analysis> analyses = new ArrayDeque<>();
+
+	/**
+	 * An analysis starts waiting for this program's exclusive lock: from now on a protocol 3 reader is
+	 * told {@code analyzing} at once, also while the analysis still queues (on the fair lock a reader
+	 * that arrives behind a queued exclusive waits for the whole analysis).
+	 */
+	void analysisStarts(Analysis a) {
+		synchronized (analyses) {
+			analyses.add(a);
+			analysis = analyses.peekFirst();
+		}
+	}
+
+	/** An analysis ended (or never got the lock). Idempotent. */
+	void analysisEnds(Analysis a) {
+		synchronized (analyses) {
+			analyses.remove(a);
+			analysis = analyses.peekFirst();
+		}
+	}
 	/**
 	 * Set when the last user left and the program could not be disposed without waiting for its
 	 * lock: {@link Session#completeLeaves} (after the release of the lock that stood in the way, or
@@ -345,6 +367,11 @@ final class ProgramEntry implements Decompilers {
 		Waits.Outcome got = Waits.lock(lock, exclusive, waitMs, waiters, this::heldBy);
 		Lock l = exclusive ? lock.writeLock() : lock.readLock();
 		if (got != Waits.Outcome.GOT) {
+			Analysis late = analysis;
+			if (!exclusive && late != null && !late.client().leaving && Waits.v3()) {
+				// it queued in the instant before an analysis was marked: say what it waited for
+				throw analyzingBusy(late);
+			}
 			throw busy(exclusive, waitMs, got == Waits.Outcome.QUEUE_FULL);
 		}
 		Caller.Identity who = Caller.current(c);
@@ -604,6 +631,9 @@ final class ProgramEntry implements Decompilers {
 			Analysis a = analysis;
 			Json.put(o, "reopenPendingMs", since > 0 ? System.currentTimeMillis() - since : null);
 			Json.put(o, "analyzing", a != null);
+			// the deferred work that waits for this lock (a test and status figure, E3c)
+			Json.put(o, "disposePending", disposePending);
+			Json.put(o, "pendingLeaves", pendingLeaves.size());
 		}
 		return o;
 	}
