@@ -152,7 +152,11 @@
      "output": "slept\r\n",
      "changed": false,
      "unsaved": false,
-     "artifact": null
+     "artifact": null,
+     "isolation": "none",
+     "lane": "long",
+     "attemptedChanges": false,
+     "attemptedChangesCount": 0
     },
     "ms": "<masked>"
    }
@@ -179,7 +183,11 @@
      "output": "program none\r\nargs \r\n",
      "changed": false,
      "unsaved": false,
-     "artifact": null
+     "artifact": null,
+     "isolation": "none",
+     "lane": "long",
+     "attemptedChanges": false,
+     "attemptedChangesCount": 0
     },
     "queue": {
      "lane": "long",

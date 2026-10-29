@@ -1,0 +1,653 @@
+{
+ "scenario": "e4-script",
+ "protocol": 3,
+ "steps": [
+  {
+   "step": 1,
+   "who": "a",
+   "cmd": "open_project",
+   "request": {
+    "path": "<WORK>/e4/E4.gpr",
+    "writable": true
+   },
+   "response": {
+    "id": 3,
+    "ok": true,
+    "result": {
+     "id": "p1",
+     "name": "E4",
+     "dir": "<WORK>/e4",
+     "gpr": "<WORK>/e4/E4.gpr",
+     "writable": true,
+     "openMs": "<masked>",
+     "idleMs": "<masked>",
+     "files": 0,
+     "users": [
+      1
+     ],
+     "programs": 0,
+     "revision": "<rev1>",
+     "diskRevision": "<rev1>",
+     "stale": false,
+     "generation": 1,
+     "fork": null,
+     "format": {
+      "programDb": {
+       "min": null,
+       "max": null,
+       "current": 33
+      },
+      "dataTypeDb": null,
+      "upgradeRequired": false,
+      "oneWay": false,
+      "newerThanEngine": false,
+      "programsScanned": 0,
+      "truncated": false,
+      "engine": {
+       "hydraVersion": "<masked>",
+       "ghidraVersion": "<masked>"
+      }
+     },
+     "opened": true
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 2,
+   "who": "a",
+   "cmd": "import",
+   "request": {
+    "file": "<WORK>/bin/alpha.exe",
+    "analyze": true,
+    "timeout": 600,
+    "wait": 300000,
+    "language": "x86:LE:64:default",
+    "compiler": "windows"
+   },
+   "response": {
+    "id": 4,
+    "ok": true,
+    "result": {
+     "imported": true,
+     "project": "p1",
+     "path": "/alpha.exe",
+     "key": "p1:/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "importSeconds": "<masked>",
+     "program": {
+      "key": "p1:/alpha.exe",
+      "project": "p1",
+      "path": "/alpha.exe",
+      "name": "alpha.exe",
+      "mode": "writable",
+      "owner": 1,
+      "mine": true,
+      "active": true,
+      "language": "x86:LE:64:default",
+      "compiler": "windows",
+      "imageBase": "0x140000000",
+      "format": "Portable Executable (PE)",
+      "executable": "/<WORK>/bin/alpha.exe",
+      "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+      "md5": "b890095eec6aea60ef369f0140482870",
+      "functions": 0,
+      "analyzed": false,
+      "changed": false,
+      "revision": "<rev2>",
+      "projectRevision": "<rev3>",
+      "generation": 1,
+      "cachedUpgrade": false,
+      "upgradeCache": null,
+      "cacheBuild": "none",
+      "cacheBuildInfo": null,
+      "users": [
+       1
+      ],
+      "overlays": [],
+      "writers": [],
+      "writer": true,
+      "journalSeq": 0,
+      "unsavedEdits": 0,
+      "openMs": "<masked>"
+     },
+     "queue": {
+      "waitedMs": "<masked>",
+      "positionAtEntry": 1,
+      "behind": null,
+      "runningAtStart": 1
+     },
+     "analysis": {
+      "program": "p1:/alpha.exe",
+      "analyzed": true,
+      "seconds": "<masked>",
+      "functions": 3,
+      "changed": true
+     },
+     "save": {
+      "program": "p1:/alpha.exe",
+      "saved": true,
+      "revision": "<rev4>",
+      "projectRevision": "<rev5>",
+      "savedSeq": 0
+     }
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 3,
+   "who": "a",
+   "cmd": "close_project",
+   "request": {
+    "discard": true
+   },
+   "response": {
+    "id": 5,
+    "ok": true,
+    "result": {
+     "project": "p1",
+     "left": true,
+     "closed": true,
+     "activeProject": null
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 4,
+   "who": "b",
+   "cmd": "open_project",
+   "request": {
+    "path": "<WORK>/e4/E4.gpr"
+   },
+   "response": {
+    "id": 2,
+    "ok": true,
+    "result": {
+     "id": "p2",
+     "name": "E4",
+     "dir": "<WORK>/e4",
+     "gpr": "<WORK>/e4/E4.gpr",
+     "writable": false,
+     "openMs": "<masked>",
+     "idleMs": "<masked>",
+     "files": 1,
+     "users": [
+      2
+     ],
+     "programs": 0,
+     "revision": "<rev6>",
+     "diskRevision": "<rev6>",
+     "stale": false,
+     "generation": 1,
+     "fork": null,
+     "format": {
+      "programDb": {
+       "min": 33,
+       "max": 33,
+       "current": 33
+      },
+      "dataTypeDb": {
+       "min": 3,
+       "max": 3,
+       "current": 3
+      },
+      "upgradeRequired": false,
+      "oneWay": false,
+      "newerThanEngine": false,
+      "programsScanned": 1,
+      "truncated": false,
+      "engine": {
+       "hydraVersion": "<masked>",
+       "ghidraVersion": "<masked>"
+      }
+     },
+     "opened": true
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 5,
+   "who": "b",
+   "cmd": "open_program",
+   "request": {
+    "path": "/alpha.exe"
+   },
+   "response": {
+    "id": 3,
+    "ok": true,
+    "result": {
+     "key": "p2:/alpha.exe",
+     "project": "p2",
+     "path": "/alpha.exe",
+     "name": "alpha.exe",
+     "mode": "read_only",
+     "owner": null,
+     "mine": false,
+     "active": true,
+     "language": "x86:LE:64:default",
+     "compiler": "windows",
+     "imageBase": "0x140000000",
+     "format": "Portable Executable (PE)",
+     "executable": "/<WORK>/bin/alpha.exe",
+     "sha256": "e9e57b02d631d20f649f00a4feb640e945bcf1b1d0945d34eb6f9d3dc4311c6a",
+     "md5": "b890095eec6aea60ef369f0140482870",
+     "functions": 3,
+     "analyzed": true,
+     "changed": false,
+     "revision": "<rev4>",
+     "projectRevision": "<rev6>",
+     "generation": 1,
+     "cachedUpgrade": false,
+     "upgradeCache": null,
+     "cacheBuild": "none",
+     "cacheBuildInfo": null,
+     "users": [
+      2
+     ],
+     "overlays": [],
+     "writers": [],
+     "writer": false,
+     "journalSeq": 0,
+     "unsavedEdits": 0,
+     "openMs": "<masked>"
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 6,
+   "who": "b",
+   "cmd": "script",
+   "request": {
+    "script": "<WORK>/scripts/CharWrite.java",
+    "isolation": "shared"
+   },
+   "response": {
+    "id": 4,
+    "ok": true,
+    "result": {
+     "script": "<WORK>/scripts/CharWrite.java",
+     "mode": "contained",
+     "program": "p2:/alpha.exe",
+     "seconds": "<masked>",
+     "chars": 10,
+     "truncated": false,
+     "output": "labelled\r\n",
+     "changed": false,
+     "unsaved": false,
+     "artifact": null,
+     "isolation": "shared",
+     "lane": "long",
+     "attemptedChanges": true,
+     "attemptedChangesCount": 1,
+     "basedOn": {
+      "saved": true,
+      "programRevision": "<rev4>"
+     },
+     "unsavedIgnored": 0
+    },
+    "ms": "<masked>"
+   },
+   "note": "a mutating script, shared: attempted, rolled back, changed false"
+  },
+  {
+   "step": 7,
+   "who": "b",
+   "cmd": "script",
+   "request": {
+    "script": "<WORK>/scripts/CharWrite.java",
+    "isolation": "exclusive"
+   },
+   "response": {
+    "id": 5,
+    "ok": true,
+    "result": {
+     "script": "<WORK>/scripts/CharWrite.java",
+     "mode": "contained",
+     "program": "p2:/alpha.exe",
+     "seconds": "<masked>",
+     "chars": 10,
+     "truncated": false,
+     "output": "labelled\r\n",
+     "changed": false,
+     "unsaved": false,
+     "artifact": null,
+     "isolation": "exclusive",
+     "lane": "long",
+     "attemptedChanges": true,
+     "attemptedChangesCount": 1,
+     "basedOn": {
+      "saved": true,
+      "programRevision": "<rev4>"
+     },
+     "unsavedIgnored": 0
+    },
+    "ms": "<masked>"
+   },
+   "note": "a mutating script, exclusive: attempted, rolled back, changed false"
+  },
+  {
+   "step": 8,
+   "who": "b",
+   "cmd": "script",
+   "request": {
+    "script": "<WORK>/scripts/CharWrite.java",
+    "isolation": "private"
+   },
+   "response": {
+    "id": 6,
+    "ok": true,
+    "result": {
+     "script": "<WORK>/scripts/CharWrite.java",
+     "mode": "private",
+     "program": "p2:/alpha.exe",
+     "seconds": "<masked>",
+     "chars": 10,
+     "truncated": false,
+     "output": "labelled\r\n",
+     "changed": false,
+     "unsaved": false,
+     "artifact": null,
+     "isolation": "private",
+     "lane": "long",
+     "attemptedChanges": true,
+     "attemptedChangesCount": 1,
+     "basedOn": {
+      "saved": true,
+      "programRevision": "<rev4>"
+     },
+     "unsavedIgnored": 0
+    },
+    "ms": "<masked>"
+   },
+   "note": "a mutating script, private: attempted, rolled back, changed false"
+  },
+  {
+   "step": 9,
+   "who": "b",
+   "cmd": "script",
+   "request": {
+    "script": "<WORK>/scripts/CharWrite.java"
+   },
+   "response": {
+    "id": 7,
+    "ok": true,
+    "result": {
+     "script": "<WORK>/scripts/CharWrite.java",
+     "mode": "contained",
+     "program": "p2:/alpha.exe",
+     "seconds": "<masked>",
+     "chars": 10,
+     "truncated": false,
+     "output": "labelled\r\n",
+     "changed": false,
+     "unsaved": false,
+     "artifact": null,
+     "isolation": "shared",
+     "lane": "long",
+     "attemptedChanges": true,
+     "attemptedChangesCount": 1,
+     "basedOn": {
+      "saved": true,
+      "programRevision": "<rev4>"
+     },
+     "unsavedIgnored": 0
+    },
+    "ms": "<masked>"
+   },
+   "note": "no isolation: shared, as the default"
+  },
+  {
+   "step": 10,
+   "who": "b",
+   "cmd": "script",
+   "request": {
+    "script": "<WORK>/scripts/CharPrint.java",
+    "isolation": "private"
+   },
+   "response": {
+    "id": 8,
+    "ok": true,
+    "result": {
+     "script": "<WORK>/scripts/CharPrint.java",
+     "mode": "private",
+     "program": "p2:/alpha.exe",
+     "seconds": "<masked>",
+     "chars": 52,
+     "truncated": false,
+     "output": "program alpha.exe\r\nfunctions 3\r\nentry entry\r\nargs \r\n",
+     "changed": false,
+     "unsaved": false,
+     "artifact": null,
+     "isolation": "private",
+     "lane": "long",
+     "attemptedChanges": false,
+     "attemptedChangesCount": 0,
+     "basedOn": {
+      "saved": true,
+      "programRevision": "<rev4>"
+     },
+     "unsavedIgnored": 0
+    },
+    "ms": "<masked>"
+   },
+   "note": "a read-only script attempts nothing"
+  },
+  {
+   "step": 11,
+   "who": "b",
+   "cmd": "script",
+   "request": {
+    "script": "<WORK>/scripts/CharPrint.java",
+    "program": null
+   },
+   "response": {
+    "id": 9,
+    "ok": true,
+    "result": {
+     "script": "<WORK>/scripts/CharPrint.java",
+     "mode": "none",
+     "program": null,
+     "seconds": "<masked>",
+     "chars": 21,
+     "truncated": false,
+     "output": "program none\r\nargs \r\n",
+     "changed": false,
+     "unsaved": false,
+     "artifact": null,
+     "isolation": "none",
+     "lane": "long",
+     "attemptedChanges": false,
+     "attemptedChangesCount": 0
+    },
+    "ms": "<masked>"
+   },
+   "note": "no program: isolation none"
+  },
+  {
+   "step": 12,
+   "who": "b",
+   "cmd": "script",
+   "request": {
+    "script": "<WORK>/scripts/CharPrint.java",
+    "lane": "quick",
+    "timeout": 30
+   },
+   "response": {
+    "id": 10,
+    "ok": true,
+    "result": {
+     "script": "<WORK>/scripts/CharPrint.java",
+     "mode": "contained",
+     "program": "p2:/alpha.exe",
+     "seconds": "<masked>",
+     "chars": 52,
+     "truncated": false,
+     "output": "program alpha.exe\r\nfunctions 3\r\nentry entry\r\nargs \r\n",
+     "changed": false,
+     "unsaved": false,
+     "artifact": null,
+     "isolation": "shared",
+     "lane": "quick",
+     "attemptedChanges": false,
+     "attemptedChangesCount": 0,
+     "basedOn": {
+      "saved": true,
+      "programRevision": "<rev4>"
+     },
+     "unsavedIgnored": 0
+    },
+    "ms": "<masked>"
+   },
+   "note": "the lane decision of the monitor, copied"
+  },
+  {
+   "step": 13,
+   "who": "b",
+   "cmd": "script",
+   "request": {
+    "script": "<WORK>/scripts/CharPrint.java",
+    "lane": "quick"
+   },
+   "response": {
+    "id": 11,
+    "ok": true,
+    "result": {
+     "script": "<WORK>/scripts/CharPrint.java",
+     "mode": "contained",
+     "program": "p2:/alpha.exe",
+     "seconds": "<masked>",
+     "chars": 52,
+     "truncated": false,
+     "output": "program alpha.exe\r\nfunctions 3\r\nentry entry\r\nargs \r\n",
+     "changed": false,
+     "unsaved": false,
+     "artifact": null,
+     "isolation": "shared",
+     "lane": "long",
+     "laneNote": "lane quick needs a timeout of 1 to 60 seconds; the script runs in the long lane",
+     "attemptedChanges": false,
+     "attemptedChangesCount": 0,
+     "basedOn": {
+      "saved": true,
+      "programRevision": "<rev4>"
+     },
+     "unsavedIgnored": 0
+    },
+    "ms": "<masked>"
+   },
+   "note": "a lane hint that is not honoured: long, with laneNote"
+  },
+  {
+   "step": 14,
+   "who": "b",
+   "cmd": "script",
+   "request": {
+    "script": "<WORK>/scripts/E4Pinned.java",
+    "scriptSha256": "56b86d932246e817c03d45f46c04b27f0b9fd5191631d78d7bc2127ae2bcac77"
+   },
+   "response": {
+    "id": 12,
+    "ok": true,
+    "result": {
+     "script": "<WORK>/scripts/E4Pinned.java",
+     "mode": "contained",
+     "program": "p2:/alpha.exe",
+     "seconds": "<masked>",
+     "chars": 8,
+     "truncated": false,
+     "output": "pinned\r\n",
+     "changed": false,
+     "unsaved": false,
+     "artifact": null,
+     "isolation": "shared",
+     "lane": "long",
+     "attemptedChanges": false,
+     "attemptedChangesCount": 0,
+     "basedOn": {
+      "saved": true,
+      "programRevision": "<rev4>"
+     },
+     "unsavedIgnored": 0
+    },
+    "ms": "<masked>"
+   },
+   "note": "pinned: the digest matches"
+  },
+  {
+   "step": 15,
+   "who": "b",
+   "cmd": "script",
+   "request": {
+    "script": "<WORK>/scripts/E4Pinned.java",
+    "scriptSha256": "<n>"
+   },
+   "response": {
+    "id": 13,
+    "ok": false,
+    "error": {
+     "code": "script_changed",
+     "message": "script E4Pinned.java is not the file the request pinned (SHA-256 56b86d932246e817c03d45f46c04b27f0b9fd5191631d78d7bc2127ae2bcac77, expected <n>)",
+     "details": {
+      "expected": "<n>",
+      "actual": "56b86d932246e817c03d45f46c04b27f0b9fd5191631d78d7bc2127ae2bcac77",
+      "script": "<WORK>/scripts/E4Pinned.java"
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "pinned: the file is not the one the request named"
+  },
+  {
+   "step": 16,
+   "who": "b",
+   "cmd": "script",
+   "request": {
+    "script": "<WORK>/scripts/CharPrint.java",
+    "isolation": "bogus"
+   },
+   "response": {
+    "id": 14,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "isolation must be one of [shared, exclusive, private]",
+     "details": {
+      "field": "isolation",
+      "allowed": [
+       "shared",
+       "exclusive",
+       "private"
+      ]
+     }
+    },
+    "ms": "<masked>"
+   },
+   "note": "a closed field: details.field and allowed[]"
+  },
+  {
+   "step": 17,
+   "who": "b",
+   "cmd": "script",
+   "request": {
+    "script": "<WORK>/scripts/CharPrint.java",
+    "scriptSha256": "xyz"
+   },
+   "response": {
+    "id": 15,
+    "ok": false,
+    "error": {
+     "code": "bad_request",
+     "message": "scriptSha256 must be the SHA-256 of the script file as 64 hex digits",
+     "details": {
+      "field": "scriptSha256"
+     }
+    },
+    "ms": "<masked>"
+   }
+  }
+ ]
+}
