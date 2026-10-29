@@ -112,6 +112,7 @@ public class HeadlessSession implements GhidraLaunchable {
 			o = Options.parse(args);
 			requireExpect = Settings.bool("requireExpect", false); // a bad value is a usage error
 			Scheduler.validateSettings(); // so is a bad lane setting
+			Health.validateSettings(); // and testHooks as a setting: it is a launch property only
 		}
 		catch (IllegalArgumentException e) {
 			System.err.println(e.getMessage());
@@ -173,6 +174,10 @@ public class HeadlessSession implements GhidraLaunchable {
 		if (o.forkCopyLimitMb >= 0) {
 			session.forkCopyLimitBytes = o.forkCopyLimitMb << 20;
 		}
+		// E5: the watchdog before anything can block (a project opened at start-up, a client);
+		// E9 starts the governor after this line. testHooks is read from the JVM property only.
+		Health.announce();
+		session.startWatchdog();
 		Runtime.getRuntime().addShutdownHook(new Thread(this::removeEndpoint, "session-exit"));
 
 		Connection stdio = null;
@@ -597,9 +602,59 @@ public class HeadlessSession implements GhidraLaunchable {
 			waiterCaps();
 			closeVsViewChange();
 			dbVersions();
+			health();
 			System.out.println(
 				bad == 0 ? "all self-test checks held" : bad + " self-test check(s) FAILED");
 			return bad == 0 ? 0 : 1;
+		}
+
+		/** E5: the state rules of 3.4, the contributor list, and testHooks as a setting. */
+		private static void health() {
+			check("health.state: a fresh tick, a free lock and nothing wrong is ok",
+				Health.state(400, 15_000, true, 0, 0, true, false).equals("ok"));
+			check("health.state: an old tick, a held scheduler lock or a deadlock is suspect",
+				Health.state(15_001, 15_000, true, 0, 0, true, false).equals("suspect") &&
+					Health.state(0, 15_000, false, 0, 0, true, false).equals("suspect") &&
+					Health.state(0, 15_000, true, 2, 0, true, false).equals("suspect"));
+			check("health.state: an abandoned holder, an unreadable db version or the hook is " +
+				"degraded",
+				Health.state(0, 15_000, true, 0, 1, true, false).equals("degraded") &&
+					Health.state(0, 15_000, true, 0, 0, false, false).equals("degraded") &&
+					Health.state(0, 15_000, true, 0, 0, true, true).equals("degraded"));
+			check("health.state: suspect wins over degraded",
+				Health.state(0, 15_000, false, 0, 1, false, true).equals("suspect"));
+			check("a contributor may not use a core key of the reply or an empty name",
+				throwsIllegal(() -> Health.contribute("state", () -> null)) &&
+					throwsIllegal(() -> Health.contribute("", () -> null)));
+			Health.contribute("selfTestFigure", () -> new com.google.gson.JsonPrimitive(7));
+			Health.contribute("selfTestBroken", () -> {
+				throw new IllegalStateException("boom");
+			});
+			Health.contribute("selfTestNothing", () -> null);
+			Health.clearSnapshot();
+			JsonObject h = Health.reply(System.currentTimeMillis() - 5, null);
+			check("a contributor's figure is in the reply, a failing one is an error entry, a " +
+				"null one is left out",
+				h.get("selfTestFigure").getAsInt() == 7 &&
+					h.getAsJsonObject("selfTestBroken").get("error").getAsString()
+							.contains("boom") &&
+					!h.has("selfTestNothing"));
+			check("health keeps its core keys first, in the order of 3.4",
+				h.keySet().stream().limit(11).toList().equals(List.of("state", "pid", "uptimeMs",
+					"protocol", "tick", "schedulerLockOk", "lanes", "deadlocked", "abandoned",
+					"memory", "testHooks")));
+			check("health with no snapshot yet reports tick 0 and does not claim a held lock",
+				h.getAsJsonObject("tick").get("n").getAsInt() == 0 &&
+					h.get("schedulerLockOk").getAsBoolean());
+			Settings.set("testHooks", "true");
+			check("testHooks as an engine setting is a usage error (it is a launch property)",
+				throwsIllegal(Health::validateSettings));
+			Settings.clear();
+			Settings.set("watchdogStallMs", "soon");
+			check("a watchdogStallMs that is not an integer is a usage error",
+				throwsIllegal(Health::validateSettings));
+			Settings.clear();
+			check("the test hooks are off in this JVM (no launch property)", !Health.testHooks());
 		}
 
 		private static void advertised() {

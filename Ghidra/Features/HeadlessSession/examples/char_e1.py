@@ -60,8 +60,10 @@ def structure(res):
                        "upgradeCacheDir", "install"]:
         raise Fail(f"e1: paths keys {list(paths)}")
     plat = res["platform"]
-    if list(plat) != ["os", "osVersion", "arch", "cpus", "javaVendor", "javaVersion", "maxHeapMb",
-                      "fileSystems", "cow"] or "testHooks" in plat:
+    # ``testHooks`` (a boolean) is appended from E5 on; its value is asserted only by dt_e5/cc_e5
+    if [k for k in plat if k != "testHooks"] != [
+            "os", "osVersion", "arch", "cpus", "javaVendor", "javaVersion", "maxHeapMb",
+            "fileSystems", "cow"] or ("testHooks" in plat and list(plat)[-1] != "testHooks"):
         raise Fail(f"e1: platform keys {list(plat)}")
     ai = res["analysisIdentity"]
     if list(ai) != ["hydraVersion", "ghidraVersion", "buildDate", "dbVersions", "decompiler"]:
