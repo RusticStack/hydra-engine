@@ -100,6 +100,7 @@ public class ConstantPropagationAnalyzer extends AbstractAnalyzer {
 	protected boolean createComplexDataFromPointers = CREATE_COMPLEX_DATA_FROM_POINTERS_OPTION_DEFAULT_VALUE;
 	
 	protected int maxThreadCount = MAX_THREAD_COUNT_OPTION_DEFAULT_VALUE;
+	protected boolean deferredWrites = getDeferredWritesDefault();
 	protected long minStoreLoadRefAddress = MIN_KNOWN_REFADDRESS_OPTION_DEFAULT_VALUE;
 	protected long minSpeculativeRefAddress = MIN_SPECULATIVE_REFADDRESS_OPTION_DEFAULT_VALUE;
 	protected long maxSpeculativeRefAddress = MAX_SPECULATIVE_REFADDRESS_OPTION_DEFAULT_VALUE;
@@ -108,6 +109,20 @@ public class ConstantPropagationAnalyzer extends AbstractAnalyzer {
 
 	final static HashSet<String> handledProcessors = new HashSet<String>();
 	protected String processorName = "Basic";
+
+	/**
+	 * Whether every worker-time program write of this analyzer (its evaluator and any
+	 * overridden flow code) is routed through {@link ghidra.program.util.DeferredProgramWrites},
+	 * which is required for the "Deferred Ordered Writes" option to be deterministic.
+	 * True only for the generic analyzer (whose evaluator is converted); a processor subclass
+	 * must override this to return true once all of its own writes are deferred. Subclasses
+	 * that return false neither register nor honour the option.
+	 *
+	 * @return true if the deferred ordered-writes mode may be used
+	 */
+	protected boolean supportsDeferredWrites() {
+		return getClass() == ConstantPropagationAnalyzer.class;
+	}
 
 	public ConstantPropagationAnalyzer() {
 		this("Basic");
@@ -189,7 +204,11 @@ public class ConstantPropagationAnalyzer extends AbstractAnalyzer {
 			monitor.initialize(locationCount);
 			if (locationCount != 0) {
 				monitor.setMessage(getName());
-				AddressSetView resultSet = runParallelAddressAnalysis(program, locations, null, maxThreadCount, monitor);
+				AddressSetView resultSet = deferredWrites && supportsDeferredWrites()
+						? runDeferredParallelAddressAnalysis(program, locations, null,
+							maxThreadCount, monitor)
+						: runParallelAddressAnalysis(program, locations, null, maxThreadCount,
+							monitor);
 				// get rid of any reached addresses
 				unanalyzedSet.delete(resultSet);
 			}
@@ -574,6 +593,11 @@ public class ConstantPropagationAnalyzer extends AbstractAnalyzer {
 		options.registerOption(MAX_THREAD_COUNT_OPTION_NAME, maxThreadCount, null,
 			MAX_THREAD_COUNT_OPTION_DESCRIPTION);
 
+		if (supportsDeferredWrites()) {
+			options.registerOption(DEFERRED_WRITES_OPTION_NAME, deferredWrites, null,
+				DEFERRED_WRITES_OPTION_DESCRIPTION);
+		}
+
 		options.registerOption(MIN_KNOWN_REFADDRESS_OPTION_NAME, minStoreLoadRefAddress, null,
 			MIN_KNOWN_REFADDRESS_OPTION_DESCRIPTION);
 
@@ -597,6 +621,8 @@ public class ConstantPropagationAnalyzer extends AbstractAnalyzer {
 		createComplexDataFromPointers = options.getBoolean(CREATE_COMPLEX_DATA_FROM_POINTERS_OPTION_NAME, createComplexDataFromPointers);
 
 		maxThreadCount = options.getInt(MAX_THREAD_COUNT_OPTION_NAME, maxThreadCount);
+		deferredWrites = supportsDeferredWrites() &&
+			options.getBoolean(DEFERRED_WRITES_OPTION_NAME, deferredWrites);
 
 		// TODO: there should be a getAddress on option that validates and allows entry of addresses
 		minStoreLoadRefAddress =

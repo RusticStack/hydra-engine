@@ -28,6 +28,7 @@ import ghidra.program.model.pcode.PcodeOp;
 import ghidra.program.model.symbol.*;
 import ghidra.program.model.util.CodeUnitInsertionException;
 import ghidra.program.util.ContextEvaluatorAdapter;
+import ghidra.program.util.DeferredProgramWrites;
 import ghidra.program.util.VarnodeContext;
 import ghidra.util.task.TaskMonitor;
 
@@ -218,8 +219,10 @@ public class ConstantPropagationContextEvaluator extends ContextEvaluatorAdapter
 		AutoAnalysisManager aMgr = AutoAnalysisManager.getAnalysisManager(program);
 
 		// if data reference, handle data
+		// (DeferredProgramWrites: performed now, or recorded and applied later in a fixed order)
 		if (refType.isData()) {
-			createPointedToData(aMgr, program, address, refType, dataType, size);
+			DeferredProgramWrites.run(
+				() -> createPointedToData(aMgr, program, address, refType, dataType, size));
 		}
 
 		// if flowing to an address, disassemble it
@@ -227,11 +230,13 @@ public class ConstantPropagationContextEvaluator extends ContextEvaluatorAdapter
 		Memory memory = program.getMemory();
 		if (refType.isFlow() && !refType.isIndirect() && !memory.isExternalBlockAddress(address) &&
 			memory.getExecuteSet().contains(address)) {
-			Data udata = program.getListing().getUndefinedDataAt(address);
-			if (udata != null) {
-				DisassembleCommand cmd = new DisassembleCommand(address, null, true);
-				cmd.applyTo(program, monitor);
-			}
+			DeferredProgramWrites.run(() -> {
+				Data udata = program.getListing().getUndefinedDataAt(address);
+				if (udata != null) {
+					DisassembleCommand cmd = new DisassembleCommand(address, null, true);
+					cmd.applyTo(program, DeferredProgramWrites.monitor(monitor));
+				}
+			});
 			// 
 			// TODO: need to kick analysis if the target is a function and non-returning
 			// Function functionAt = program.getFunctionManager().getFunctionAt(address);

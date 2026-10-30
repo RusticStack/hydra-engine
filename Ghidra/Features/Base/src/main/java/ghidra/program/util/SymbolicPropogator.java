@@ -54,6 +54,10 @@ public class SymbolicPropogator {
 	protected ContextEvaluator evaluator = null;
 	protected Program program;
 	protected ProgramContext programContext;
+
+	// deferred mode only (DeferredProgramWrites): the reference being recorded must be
+	// skipped when applied if the instruction then already refers to the same target
+	private boolean deferredSkipIfTargetExists = false;
 	protected ProgramContext spaceContext;
 	protected ProgramContext savedProgramContext;
 	protected ProgramContext savedSpaceContext;
@@ -2433,7 +2437,22 @@ public class SymbolicPropogator {
 				!visitedBody.contains(ref.getFromAddress())) {
 				// if reference address is not in body yet, this is the first time at this location
 				// get rid of the reference, reference could be changed to new AddressSpace or value
-				instr.removeOperandReference(ref.getOperandIndex(), refAddr);
+				if (DeferredProgramWrites.isCollecting()) {
+					final Address from = instr.getMinAddress();
+					final int rmOpIndex = ref.getOperandIndex();
+					// capture locals only: a lambda reading the field would keep this whole
+					// propagator (and its VarnodeContext) alive until the writes are applied
+					final Listing listing = program.getListing();
+					DeferredProgramWrites.run(() -> {
+						Instruction in = listing.getInstructionAt(from);
+						if (in != null) {
+							in.removeOperandReference(rmOpIndex, refAddr);
+						}
+					});
+				}
+				else {
+					instr.removeOperandReference(ref.getOperandIndex(), refAddr);
+				}
 			}
 			else if (refAddr.getOffset() == addr.getOffset()) {
 				found = true;
@@ -2441,9 +2460,16 @@ public class SymbolicPropogator {
 		}
 
 		RefType refType = (callOffset == 0 ? RefType.DATA : RefType.PARAM);
-		makeReference(varnodeContext, instr, Reference.MNEMONIC, knownSpaceID, val, 0, dataType,
-			refType,
-			PcodeOp.UNIMPLEMENTED, knownReference, found, monitor);
+		// deferred mode: "found" cannot see references recorded earlier in this flow, so the
+		// recorded write re-checks it when applied
+		deferredSkipIfTargetExists = true;
+		try {
+			makeReference(varnodeContext, instr, Reference.MNEMONIC, knownSpaceID, val, 0,
+				dataType, refType, PcodeOp.UNIMPLEMENTED, knownReference, found, monitor);
+		}
+		finally {
+			deferredSkipIfTargetExists = false;
+		}
 	}
 
 	private Object getPointerDataTypeValue(DataType dataType, Address lastSetAddr,
@@ -2772,7 +2798,38 @@ public class SymbolicPropogator {
 			}
 		}
 
-		if (opIndex == Reference.MNEMONIC) {
+		if (DeferredProgramWrites.isCollecting()) {
+			// re-fetch the instruction when the write is applied: earlier applied writes
+			// may have changed the listing
+			final Address fromAddr = instruction.getMinAddress();
+			final int refOpIndex = opIndex;
+			final Address refTarget = target;
+			final RefType deferredRefType = refType;
+			final boolean skipIfTargetExists = deferredSkipIfTargetExists;
+			// capture locals only (not this propagator): see removeOperandReference above
+			final Listing listing = program.getListing();
+			DeferredProgramWrites.run(() -> {
+				Instruction instr = listing.getInstructionAt(fromAddr);
+				if (instr == null) {
+					return;
+				}
+				if (skipIfTargetExists) {
+					for (Reference r : instr.getReferencesFrom()) {
+						if (r.getToAddress().getOffset() == refTarget.getOffset()) {
+							return;
+						}
+					}
+				}
+				if (refOpIndex == Reference.MNEMONIC) {
+					instr.addMnemonicReference(refTarget, deferredRefType, SourceType.ANALYSIS);
+				}
+				else {
+					instr.addOperandReference(refOpIndex, refTarget, deferredRefType,
+						SourceType.ANALYSIS);
+				}
+			});
+		}
+		else if (opIndex == Reference.MNEMONIC) {
 			instruction.addMnemonicReference(target, refType, SourceType.ANALYSIS);
 		}
 		else {

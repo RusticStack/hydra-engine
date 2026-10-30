@@ -58,6 +58,11 @@ public class NewFunctionStackAnalysisCmd extends BackgroundCommand<Program> {
 
 	private boolean isX86 = false;
 
+	// deferred mode only: stack references recorded (not yet written) by this command
+	private record PendingRefKey(Address from, int opIndex) {}
+
+	private final Map<PendingRefKey, Integer> pendingStackRefs = new HashMap<>();
+
 	static String DEFAULT_FUNCTION_COMMENT = " FUNCTION";
 
 	/**
@@ -213,10 +218,12 @@ public class NewFunctionStackAnalysisCmd extends BackgroundCommand<Program> {
 			// Now check that there are not missing stack variables
 			//addMissingStackVariables(func);
 
-			if (oldSignatureSource != func.getSignatureSource()) {
-				// preserve signature source 
-				func.setSignatureSource(oldSignatureSource);
-			}
+			DeferredProgramWrites.run(() -> {
+				if (oldSignatureSource != func.getSignatureSource()) {
+					// preserve signature source
+					func.setSignatureSource(oldSignatureSource);
+				}
+			});
 		}
 		return true;
 	}
@@ -361,6 +368,27 @@ public class NewFunctionStackAnalysisCmd extends BackgroundCommand<Program> {
 
 		symEval.flowConstants(entryPoint, func.getBody(), eval, true, monitor);
 
+		// performed now, or recorded and applied later in a fixed order (DeferredProgramWrites)
+		if (DeferredProgramWrites.isCollecting()) {
+			DeferredProgramWrites.run(() -> {
+				try {
+					// apply-time (analysis) monitor, not the finished worker's monitor
+					addStackVariables(func, sortedVariables, DeferredProgramWrites.monitor(monitor));
+				}
+				catch (CancelledException e) {
+					// Runnable cannot throw it; DeferredProgramWrites.apply(monitor) checks the
+					// same (cancelled) monitor right after this write and throws there
+				}
+			});
+		}
+		else {
+			addStackVariables(func, sortedVariables, monitor);
+		}
+		return purge;
+	}
+
+	private void addStackVariables(Function func, List<Variable> sortedVariables,
+			TaskMonitor monitor) throws CancelledException {
 		if (sortedVariables.size() != 0) {
 
 			List<Variable> protectedFuncVars = new ArrayList<>();
@@ -381,7 +409,6 @@ public class NewFunctionStackAnalysisCmd extends BackgroundCommand<Program> {
 			addStackLocalVariables(func, sortedVariables, conflicts, monitor);
 
 		}
-		return purge;
 	}
 
 	private void addStackLocalVariables(Function func, List<Variable> sortedVariables,
@@ -652,6 +679,16 @@ public class NewFunctionStackAnalysisCmd extends BackgroundCommand<Program> {
 				return;
 			}
 
+			// deferred mode: a stack reference recorded earlier in this flow acts as if it
+			// had been written already (the immediate mode reads its own write here)
+			if (DeferredProgramWrites.isCollecting()) {
+				Integer pending = pendingStackRefs.get(new PendingRefKey(instr.getMinAddress(), opIndex));
+				if (pending != null) {
+					accumulateVariable(func, pending, refSize, sortedVariables);
+					return;
+				}
+			}
+
 			// check if operand already has a stack reference created
 			Reference ref = instr.getPrimaryReference(opIndex);
 			if (ref instanceof StackReference) {
@@ -664,8 +701,18 @@ public class NewFunctionStackAnalysisCmd extends BackgroundCommand<Program> {
 			}
 			else if (ref == null) {
 				RefType refType = RefTypeFactory.getDefaultStackRefType(instr, opIndex);
-				refMgr.addStackReference(instr.getMinAddress(), opIndex, stackOffset, refType,
-					SourceType.ANALYSIS);
+				if (DeferredProgramWrites.isCollecting()) {
+					final Address from = instr.getMinAddress();
+					pendingStackRefs.put(new PendingRefKey(from, opIndex), stackOffset);
+					// recorded once: later visits of this operand in the flow are answered
+					// from pendingStackRefs above (run() appends, it never replaces)
+					DeferredProgramWrites.run(() -> refMgr.addStackReference(from, opIndex,
+						stackOffset, refType, SourceType.ANALYSIS));
+				}
+				else {
+					refMgr.addStackReference(instr.getMinAddress(), opIndex, stackOffset, refType,
+						SourceType.ANALYSIS);
+				}
 				accumulateVariable(func, stackOffset, refSize, sortedVariables);
 			}
 		}
