@@ -21,6 +21,7 @@ examples/characterization/v3/e3c-analyzing.json||GHIDRA||||END|
 examples/characterization/v3/e3c-waits.json||GHIDRA||||END|
 examples/characterization/v3/e4-script.json||GHIDRA||||END|
 examples/characterization/v3/e9-limits.json||GHIDRA||||END|
+examples/characterization/v3/r1-hello.json||GHIDRA||||END|
 examples/fixtures/legacy-12.1.4/.gitattributes||GHIDRA||||END|
 examples/fixtures/legacy-12.1.4/legacy.gpr||GHIDRA||||END|
 examples/fixtures/legacy-12.1.4/legacy.rep/idata/00/00000000.prp||GHIDRA||||END|

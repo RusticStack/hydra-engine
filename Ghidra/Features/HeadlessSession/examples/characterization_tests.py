@@ -1025,6 +1025,11 @@ def selftest():
           list(m(sch())["scheduler"]["quick"]) == ["slots", "inUse"]
           and m(sch(inUse=1)) != m(sch()) and m(sch(admitted=3)) != m(sch()))
     check("slots outside a scheduler lane stay", m({"x": {"slots": 5}}) == {"x": {"slots": 5}})
+    stamp = "Hydra %s upgrade from 32; backup 6 | headless session"
+    check("the release inside an upgrade stamp is masked, the rest of the text stays",
+          m({"upgradeStamp": stamp % "12.3-hydra.dev"}) == m({"upgradeStamp": stamp % "12.3-hydra.4"})
+          == {"upgradeStamp": stamp % "<hydra-version>"}
+          and m({"upgradeStamp": "Hydra 12.3-hydra.4 upgrade from 31"}) != m({"upgradeStamp": stamp % "12.3-hydra.4"}))
 
     def slots_raises(v):
         try:
