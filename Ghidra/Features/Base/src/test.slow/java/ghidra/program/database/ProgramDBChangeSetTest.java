@@ -19,10 +19,15 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
+import java.util.LinkedList;
+import java.util.Random;
 
 import org.junit.*;
 
 import db.DBHandle;
+import ghidra.program.database.map.AddressMap;
 import ghidra.program.model.address.*;
 import ghidra.test.AbstractGhidraHeadedIntegrationTest;
 
@@ -452,6 +457,102 @@ public class ProgramDBChangeSetTest extends AbstractGhidraHeadedIntegrationTest 
 		assertTrue(addrsSinceSave.contains(addr(10)));
 		assertTrue(addrsSinceSave.intersects(addr(10), addr(15)));
 
+	}
+
+	@Test
+	public void testRandomCommitsUndoAndRedo() {
+		// the change set must match a plain AddressSet model of the changes since the last save
+		Random random = new Random(5678);
+		AddressSet model = new AddressSet();
+		AddressSet regModel = new AddressSet();
+		LinkedList<AddressSet[]> undoDiffs = new LinkedList<>();
+		LinkedList<AddressSet[]> redoDiffs = new LinkedList<>();
+		for (int i = 0; i < 1000; i++) {
+			int action = random.nextInt(10);
+			if (action < 6) {
+				AddressSet added = new AddressSet();
+				AddressSet regAdded = new AddressSet();
+				pcs.startTransaction();
+				for (int n = random.nextInt(4); n >= 0; n--) {
+					long start = random.nextInt(0x400);
+					long end = start + random.nextInt(random.nextBoolean() ? 2 : 40);
+					pcs.addRange(addr(start), addr(end));
+					added.addRange(addr(start), addr(end));
+					if (random.nextBoolean()) {
+						pcs.addRegisterRange(addr(end), addr(end + 3));
+						regAdded.addRange(addr(end), addr(end + 3));
+					}
+				}
+				boolean commit = action != 0;
+				pcs.endTransaction(commit);
+				if (commit) {
+					redoDiffs.clear();
+					undoDiffs.addLast(
+						new AddressSet[] { added.subtract(model), regAdded.subtract(regModel) });
+					if (undoDiffs.size() > 20) {
+						undoDiffs.removeFirst();
+					}
+					model.add(added);
+					regModel.add(regAdded);
+				}
+			}
+			else if (action < 8 && !undoDiffs.isEmpty()) {
+				pcs.undo();
+				AddressSet[] diff = undoDiffs.removeLast();
+				model.delete(diff[0]);
+				regModel.delete(diff[1]);
+				redoDiffs.addLast(diff);
+			}
+			else if (!redoDiffs.isEmpty()) {
+				pcs.redo();
+				AddressSet[] diff = redoDiffs.removeLast();
+				model.add(diff[0]);
+				regModel.add(diff[1]);
+				undoDiffs.addLast(diff);
+			}
+			assertTrue(model.hasSameAddresses(pcs.getAddressSet()));
+			assertTrue(regModel.hasSameAddresses(pcs.getRegisterAddressSet()));
+		}
+	}
+
+	@Test
+	public void testCommitCostDoesNotGrowWithEarlierChanges() {
+		// Count the address map calls of one small commit after many separate earlier changes.
+		// The commit must only look at its own changes, not at all the changes since the save.
+		AddressMap addrMap = program.getAddressMap();
+		int[] calls = new int[1];
+		AddressMap countingMap = (AddressMap) Proxy.newProxyInstance(
+			AddressMap.class.getClassLoader(), new Class<?>[] { AddressMap.class },
+			(proxy, method, args) -> {
+				calls[0]++;
+				try {
+					return method.invoke(addrMap, args);
+				}
+				catch (InvocationTargetException e) {
+					throw e.getCause();
+				}
+			});
+		pcs = new ProgramDBChangeSet(countingMap, 20);
+
+		pcs.startTransaction();
+		for (int i = 0; i < 10000; i++) {
+			pcs.addRange(addr(2 * i), addr(2 * i));
+		}
+		pcs.endTransaction(true);
+
+		for (int i = 0; i < 10; i++) {
+			pcs.startTransaction();
+			pcs.addRange(addr(2 * i + 1), addr(2 * i + 1));
+			calls[0] = 0;
+			pcs.endTransaction(true);
+			assertTrue("address map calls in one commit: " + calls[0], calls[0] < 100);
+		}
+		assertEquals(10000 - 10, pcs.getAddressSet().getNumAddressRanges());
+		assertEquals(10010, pcs.getAddressSet().getNumAddresses());
+
+		pcs.undo();
+		assertEquals(10009, pcs.getAddressSet().getNumAddresses());
+		assertTrue(!pcs.getAddressSet().contains(addr(19)));
 	}
 
 	private Address addr(long a) {

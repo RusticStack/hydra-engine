@@ -18,6 +18,7 @@ package ghidra.util.datastruct;
 import static org.junit.Assert.*;
 
 import java.util.Iterator;
+import java.util.Random;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -493,5 +494,47 @@ public class SortedRangeListTest extends AbstractGenericTest {
 		assertEquals(new Range(-5,15), it.next());
 		assertEquals(new Range(38, 52), it.next());
 		assertEquals(new Range(500, 600), it.next());
+	}
+
+	@Test
+	public void testRemoveListMatchesRemovingEachRange() {
+		Random random = new Random(1234);
+		for (int i = 0; i < 2000; i++) {
+			// cover both a smaller and a bigger other list
+			SortedRangeList mine = randomList(random, random.nextInt(20));
+			SortedRangeList other = randomList(random, random.nextInt(200));
+
+			SortedRangeList expected = new SortedRangeList(mine);
+			Iterator<Range> it = other.getRanges();
+			while (it.hasNext()) {
+				Range r = it.next();
+				expected.removeRange(r.min, r.max);
+			}
+			SortedRangeList expectedOther = new SortedRangeList(other);
+			SortedRangeList actual = new SortedRangeList(mine);
+			actual.remove(other);
+			assertEquals(expected, actual);
+			assertEquals(expectedOther, other);
+
+			// and the other way around
+			expected = new SortedRangeList(other);
+			it = mine.getRanges();
+			while (it.hasNext()) {
+				Range r = it.next();
+				expected.removeRange(r.min, r.max);
+			}
+			actual = new SortedRangeList(other);
+			actual.remove(mine);
+			assertEquals(expected, actual);
+		}
+	}
+
+	private SortedRangeList randomList(Random random, int numRanges) {
+		SortedRangeList randomList = new SortedRangeList();
+		for (int i = 0; i < numRanges; i++) {
+			int min = random.nextInt(1000) - 500;
+			randomList.addRange(min, min + random.nextInt(random.nextBoolean() ? 3 : 60));
+		}
+		return randomList;
 	}
 }
