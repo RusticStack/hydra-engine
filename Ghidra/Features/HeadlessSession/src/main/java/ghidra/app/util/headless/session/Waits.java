@@ -90,14 +90,15 @@ final class Waits {
 	}
 
 	/**
-	 * The waiter cap of a lane with {@code slots} slots: {@code max(lockWaitersMin, slots / 4)}, at
+	 * The waiter cap of a lane with {@code slots} slots: {@code max(lockWaitersMin, slots / 4)} (a
+	 * {@code lockWaitersMin} below 2 counts as 2, the old least cap), at
 	 * most half the lane (at least 2), so that one lock's queue can never take the lane (D39), with
 	 * or without {@code yieldSlots} (not every wait yields its slot, and a waiter takes a slot again
 	 * when it gets the lock). The bound by the lane is what the cap was for; the least value no
 	 * longer shrinks with the CPUs of the host.
 	 */
 	static int cap(int slots) {
-		int least = Math.max(1, Settings.integer("lockWaitersMin", DEFAULT_LOCK_WAITERS_MIN));
+		int least = Math.max(2, Settings.integer("lockWaitersMin", DEFAULT_LOCK_WAITERS_MIN));
 		return Math.min(Math.max(least, slots / 4), Math.max(2, slots / 2));
 	}
 

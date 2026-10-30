@@ -649,7 +649,7 @@ DEFAULTS = {
     "maxQuick": 0,           # concurrent quick requests (decompile, ...); 0: CPU count
     "maxLong": 0,            # concurrent long requests (analyze, import, script); 0: max(8, CPUs)
                              # (E3a, D40; an engine before hydra.4 still uses CPUs/4, at least 2)
-    "maxImports": 0,         # concurrent imports (each also takes a long slot); 0: CPU/4, 1..4
+    "maxImports": 0,         # concurrent imports (each also takes a long slot); 0: max(CPU/4, heap/2GB), 1..4
     "scriptPath": [],        # extra GhidraScript directories
     "log": None,             # daemon log; None: <state>/<instance>.log
     "upgradeCache": True,    # serve read-only opens of older-format programs from an upgraded copy

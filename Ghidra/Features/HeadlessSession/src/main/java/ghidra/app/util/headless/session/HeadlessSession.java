@@ -81,7 +81,7 @@ public class HeadlessSession implements GhidraLaunchable {
 		  -maxLong      concurrent long requests: analyze, import, script (and save, fork_project,
 		                refresh, reopen, promote_overlay on a protocol 2 connection)
 		                (default: max(8, CPUs); -set maxLong=<n> does the same)
-		  -maxImports   concurrent imports, each also in a long slot (default: CPU/4, 1 to 4)
+		  -maxImports   concurrent imports, each also in a long slot (default: CPU/4 or heap/2 GB, the more, 1 to 4)
 		  -scriptPath   an extra GhidraScript directory; repeat it, or give a list separated by
 		                the platform's path separator
 		  -log          Ghidra application log file
@@ -170,7 +170,8 @@ public class HeadlessSession implements GhidraLaunchable {
 		int maintSlots = Math.max(1, Settings.integer("maintSlots", Scheduler.DEFAULT_MAINT_SLOTS));
 		Scheduler scheduler = new Scheduler(maxQuick, maxLong, maintSlots);
 		int maxImports =
-			o.maxImports > 0 ? o.maxImports : ImportGate.defaultPermits(Budgets.maxHeapBytes());
+			o.maxImports > 0 ? o.maxImports : ImportGate.defaultPermits(Runtime.getRuntime().availableProcessors(),
+				Budgets.maxHeapBytes());
 		ImportGate.GLOBAL.setPermits(maxImports);
 		// what hello reports to a protocol 3 client (3.2); the other packages set their own
 		Advertised.limit("maxQuick", () -> maxQuick);
@@ -2045,7 +2046,7 @@ public class HeadlessSession implements GhidraLaunchable {
 		/**
 		 * The scheduling amendment (PROTOCOL-3.md 8.18): the waiter cap and the import permits are
 		 * not derived from the CPU count, a release wakes only its own lane's waiters, and the
-		 * collections that only measure are opt-in.
+		 * collections that only measure can be turned off.
 		 */
 		private static void scheduling() {
 			String yieldWas = Settings.string("yieldSlots", null);
@@ -2056,6 +2057,8 @@ public class HeadlessSession implements GhidraLaunchable {
 					Waits.cap(32) == 8);
 			Settings.set("lockWaitersMin", "2");
 			boolean configured = Waits.cap(8) == 2 && Waits.cap(32) == 8;
+			Settings.set("lockWaitersMin", "1");
+			configured &= Waits.cap(2) == 2 && Waits.cap(4) == 2 && Waits.cap(7) == 2;
 			Settings.remove("lockWaitersMin");
 			Settings.set("yieldSlots", "true");
 			boolean yielded = Waits.cap(2) == 2 && Waits.cap(4) == 2;
@@ -2063,13 +2066,24 @@ public class HeadlessSession implements GhidraLaunchable {
 			if (yieldWas != null) {
 				Settings.set("yieldSlots", yieldWas);
 			}
-			check("lockWaitersMin sets the least cap; the half-lane bound holds with yieldSlots too",
+			check("lockWaitersMin sets the least cap, never below 2; the half-lane bound holds with yieldSlots too",
 				configured && yielded);
 			long gb = 1L << 30;
-			check("the default maxImports is 4, one per 2 GB of heap, at least 1, whatever the CPUs",
-				ImportGate.defaultPermits(gb) == 1 && ImportGate.defaultPermits(4 * gb) == 2 &&
-					ImportGate.defaultPermits(8 * gb) == 4 &&
-					ImportGate.defaultPermits(64 * gb) == 4);
+			boolean neverFewer = true;
+			for (int cpus = 1; cpus <= 64; cpus++) {
+				for (long heap = gb / 2; heap <= 32 * gb; heap += gb / 2) {
+					neverFewer &= ImportGate.defaultPermits(cpus, heap) >= Math.max(1,
+						Math.min(4, cpus / 4));
+				}
+			}
+			check("the default maxImports is CPU/4 or heap/2 GB, the more, 1 to 4: never fewer than " +
+				"CPU/4",
+				ImportGate.defaultPermits(4, gb) == 1 && ImportGate.defaultPermits(4, 4 * gb) == 2 &&
+					ImportGate.defaultPermits(4, 8 * gb) == 4 &&
+					ImportGate.defaultPermits(16, 4 * gb) == 4 &&
+					ImportGate.defaultPermits(8, 3 * gb) == 2 &&
+					ImportGate.defaultPermits(32, 2 * gb) == 4 &&
+					ImportGate.defaultPermits(64, 64 * gb) == 4 && neverFewer);
 			Scheduler s = new Scheduler(1, 1, 1);
 			Client c = new Client(70, "selftest", false, null);
 			Scheduler.Ticket q = s.admit(c, "decompile", new JsonObject(), null, 100);
@@ -2084,14 +2098,14 @@ public class HeadlessSession implements GhidraLaunchable {
 				ownLane && s.signals(Scheduler.Lane.QUICK) == quickBefore + 1);
 			String gcWas = Settings.string("forcedGc", null);
 			Settings.remove("forcedGc");
-			boolean off = !Governor.measuringGcs();
-			Settings.set("forcedGc", "true");
 			boolean on = Governor.measuringGcs();
+			Settings.set("forcedGc", "false");
+			boolean off = !Governor.measuringGcs();
 			Settings.remove("forcedGc");
 			if (gcWas != null) {
 				Settings.set("forcedGc", gcWas);
 			}
-			check("the collections that only measure a first open are opt-in (forcedGc, off)",
+			check("the collections that only measure a first open are on by default and can be turned off (forcedGc)",
 				off && on);
 		}
 
