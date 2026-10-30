@@ -51,8 +51,13 @@ import ghidra.app.script.*;
  * after the load: the load's own build does not invalidate it, and a rebuild of the bundle by
  * anyone else replaces its OSGi bundle, which the next check sees);</li>
  * <li>the script directory still maps to the same, enabled source bundle, and its OSGi bundle
- * is the same object and active.</li>
+ * is the same object and active;</li>
+ * <li>the compiled bundle's manifest under the OSGi user directory (shared by every process of
+ * the same install version) has the stat it had at the load: another process wiping or
+ * recompiling it misses, and the usual path rebuilds as before.</li>
  * </ul>
+ * A generation bump drops every entry at once, so none keeps an old bundle's class loader. Runs
+ * share a soft bound ({@link #enterRun}).
  * Only loads whose activation could not have printed anything or depended on another bundle
  * are cached: the bundle has no build errors (which {@code build} reports on every call) and no
  * requirements (no {@code @importpackage}, no source manifest imports), so its dependency graph
@@ -89,14 +94,76 @@ final class ScriptClassCache {
 	record Before(ResourceFile sourceDir, List<Stat> stats) {
 	}
 
+	/**
+	 * {@code binManifest}/{@code binStat}: the compiled bundle's manifest under the OSGi user
+	 * directory and its stat at load time. Installs with the same version share that directory
+	 * across processes; when another process wipes or recompiles it, the usual path rebuilds,
+	 * so a hit must miss.
+	 */
 	private record Entry(ResourceFile sourceDir, List<Stat> stats, long generation,
-			GhidraSourceBundle bundle, Bundle osgi, Class<?> clazz) {
+			GhidraSourceBundle bundle, Bundle osgi, Class<?> clazz, Path binManifest,
+			Stat binStat) {
 	}
 
-	/** {@code health.scriptCache}: on, hits, misses and entries since start. */
+	/**
+	 * Soft bound on scripts executing at once. Before the cache, every run queued behind the
+	 * global load lock, which staggered them; lock-free hits let any number overlap and the
+	 * daemon's peak heap grew with them. A run waits for a permit at most {@link #RUN_WAIT_MS}
+	 * (or until its request is cancelled) and then runs anyway, so a long script never blocks
+	 * others for more than that. Sized from the CPUs the OS grants the process.
+	 * {@code -Dhydra.script.maxConcurrent=0} turns it off.
+	 */
+	static final int RUN_PERMITS = Integer.getInteger("hydra.script.maxConcurrent",
+		Math.max(2, Runtime.getRuntime().availableProcessors() / 4));
+	static final long RUN_WAIT_MS = Long.getLong("hydra.script.maxConcurrentWaitMs", 2000L);
+	private static final java.util.concurrent.Semaphore RUNS =
+		new java.util.concurrent.Semaphore(Math.max(1, RUN_PERMITS), true);
+	private static final LongAdder RUN_WAITED = new LongAdder();
+	private static final LongAdder RUN_OVERFLOW = new LongAdder();
+
+	/**
+	 * Takes a run permit, waiting at most {@link #RUN_WAIT_MS}; true when one was taken (pass it
+	 * to {@link #exitRun}). Never throws.
+	 */
+	static boolean enterRun(RequestMonitor m) {
+		if (RUN_PERMITS <= 0) {
+			return false;
+		}
+		if (RUNS.tryAcquire()) {
+			return true;
+		}
+		RUN_WAITED.increment();
+		long deadline = System.nanoTime() + RUN_WAIT_MS * 1_000_000L;
+		try {
+			while (m == null || !m.isCancelled()) {
+				long left = deadline - System.nanoTime();
+				if (left <= 0) {
+					break;
+				}
+				if (RUNS.tryAcquire(Math.min(left, 50_000_000L),
+					java.util.concurrent.TimeUnit.NANOSECONDS)) {
+					return true;
+				}
+			}
+		}
+		catch (InterruptedException ex) {
+			Thread.currentThread().interrupt();
+		}
+		RUN_OVERFLOW.increment();
+		return false;
+	}
+
+	static void exitRun(boolean held) {
+		if (held) {
+			RUNS.release();
+		}
+	}
+
+	/** {@code health.scriptCache}: on, hits, misses and entries since start, and the run bound. */
 	static com.google.gson.JsonElement describe() {
 		return Json.of("enabled", ENABLED, "hits", HITS.sum(), "misses", MISSES.sum(), "entries",
-			CACHE.size());
+			CACHE.size(), "runPermits", RUN_PERMITS, "runWaited", RUN_WAITED.sum(), "runOverflow",
+			RUN_OVERFLOW.sum());
 	}
 
 	/**
@@ -116,7 +183,8 @@ final class ScriptClassCache {
 		try {
 			BundleHost host = GhidraScriptUtil.getBundleHost();
 			if (host == null || host != listening || e.generation != GENERATION.get() ||
-				!valid(host, e) || !e.stats.equals(stats(e.sourceDir))) {
+				!valid(host, e) || !e.binStat.equals(statOf(e.binManifest)) ||
+				!e.stats.equals(stats(e.sourceDir))) {
 				CACHE.remove(key, e);
 				MISSES.increment();
 				return null;
@@ -194,15 +262,46 @@ final class ScriptClassCache {
 				script.getClass().getClassLoader() != classLoaderOf(osgi)) {
 				return;
 			}
+			Path binManifest = binaryManifestOf(osgi);
+			Stat binStat = binManifest == null ? null : statOf(binManifest);
+			if (binStat == null || binStat.size() < 0) {
+				return;
+			}
 			long gen = GENERATION.get();
 			if (CACHE.size() >= MAX_ENTRIES) {
 				CACHE.clear();
 			}
-			CACHE.put(src.getAbsolutePath(),
-				new Entry(b.sourceDir, b.stats, gen, bundle, osgi, script.getClass()));
+			CACHE.put(src.getAbsolutePath(), new Entry(b.sourceDir, b.stats, gen, bundle, osgi,
+				script.getClass(), binManifest, binStat));
 		}
 		catch (Throwable t) {
 			// not cached: the next call takes the usual path again
+		}
+	}
+
+	/**
+	 * The compiled manifest of a source bundle, from its OSGi location
+	 * ({@code reference:file://<binaryDir>}, see {@link GhidraSourceBundle}), or null.
+	 */
+	private static Path binaryManifestOf(Bundle osgi) {
+		String loc = osgi.getLocation();
+		String prefix = "reference:file://";
+		if (loc == null || !loc.startsWith(prefix)) {
+			return null;
+		}
+		return Paths.get(loc.substring(prefix.length())).resolve("META-INF").resolve(
+			"MANIFEST.MF");
+	}
+
+	/** The stat of one file, or a marker stat when it is missing or unreadable. */
+	private static Stat statOf(Path p) {
+		try {
+			BasicFileAttributes a = Files.readAttributes(p, BasicFileAttributes.class);
+			Instant t = a.lastModifiedTime().toInstant();
+			return new Stat("", a.size(), t.getEpochSecond() * 1_000_000_000L + t.getNano());
+		}
+		catch (IOException | RuntimeException ex) {
+			return new Stat("", -2, -2);
 		}
 	}
 
@@ -274,6 +373,8 @@ final class ScriptClassCache {
 
 	private static void bump() {
 		GENERATION.incrementAndGet();
+		// every entry is invalid now: drop them so that none keeps an old bundle's class loader
+		CACHE.clear();
 	}
 
 	/**

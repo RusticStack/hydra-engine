@@ -588,28 +588,37 @@ final class ScriptCommands {
 		boolean savedBefore = p != null && !p.isChanged();
 		long modAtEnd = modBefore;
 		int outer = -1;
-		if (contained) {
-			outer = p.startTransaction("session: contained script (rolled back)");
-		}
-		long t0 = System.nanoTime();
+		// H4: soft bound on scripts running at once (taken before any transaction is opened)
+		boolean permit = ScriptClassCache.enterRun(m);
+		long t0;
 		Throwable failure = null;
-		Runaway.Watch watch = c.v3() ? Runaway.watch(c, m, src) : null;
+		Runaway.Watch watch = null;
 		try {
-			s.execute(state, new ScriptControls(pw, pw, false, m));
-		}
-		catch (Throwable t) {
-			failure = t;
+			if (contained) {
+				outer = p.startTransaction("session: contained script (rolled back)");
+			}
+			t0 = System.nanoTime();
+			watch = c.v3() ? Runaway.watch(c, m, src) : null;
+			try {
+				s.execute(state, new ScriptControls(pw, pw, false, m));
+			}
+			catch (Throwable t) {
+				failure = t;
+			}
+			finally {
+				Runaway.unwatch(watch);
+				if (p != null) {
+					// what the script tried, measured before the rollback takes it back (3.4)
+					modAtEnd = p.getModificationNumber();
+				}
+				if (contained) {
+					p.endTransaction(outer, false);
+				}
+				pw.flush();
+			}
 		}
 		finally {
-			Runaway.unwatch(watch);
-			if (p != null) {
-				// what the script tried, measured before the rollback takes it back (3.4)
-				modAtEnd = p.getModificationNumber();
-			}
-			if (contained) {
-				p.endTransaction(outer, false);
-			}
-			pw.flush();
+			ScriptClassCache.exitRun(permit);
 		}
 		String out = sw.toString();
 		JsonObject r = Json.of("script", src.getAbsolutePath(), "mode", mode, "program",

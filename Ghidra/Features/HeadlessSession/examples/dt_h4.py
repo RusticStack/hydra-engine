@@ -197,7 +197,191 @@ def t_script_cache_identical(c):
     return f"{len(seqs['on'])} replies identical with the cache on and off"
 
 
+def _two_probes(c, sfx):
+    """H4Probe<sfx>, H4Helper<sfx> and a second probe H4Other<sfx> in the script directory."""
+    d = c.scripts
+    probe, helper, other = (d / f"H4{n}{sfx}.java" for n in ("Probe", "Helper", "Other"))
+    _write(helper, HELPER.replace("$SFX", sfx) % "h1")
+    _write(probe, PROBE.replace("$SFX", sfx) % "v1")
+    _write(other, OTHER.replace("$SFX", sfx))
+    return probe, helper, other
+
+
+OTHER = """import ghidra.app.script.GhidraScript;
+
+public class H4Other$SFX extends GhidraScript {
+    @Override
+    public void run() throws Exception {
+        println("other");
+    }
+}
+"""
+
+
+def t_script_cache_rebuild_frees(c):
+    """A rebuild of a bundle drops every cache entry: none keeps an old bundle's class loader."""
+    d = c.daemon("h4-frees")
+    s = None
+    files = _two_probes(c, "F")
+    try:
+        s = c.connect(d, "h4f", "dt_h4", protocol=3)
+        for _ in range(2):
+            s.call("script", script=str(files[2]), program=None)
+            _run(s, c, "F")
+        before = _cache(s)
+        dt.check(before["entries"] >= 2, f"both scripts not cached: {before}")
+        _write(files[1], HELPER.replace("$SFX", "F") % "h2")
+        r = _run(s, c, "F")   # rebuilds the bundle; H4OtherF is not called again
+        dt.check(r["ok"] and "probe v1 helper h2" in r["output"], f"edit not seen: {r}")
+        after = _cache(s)
+        dt.check(after["entries"] <= 1,
+                 f"stale entries kept after the rebuild (old class loaders alive): {after}")
+        return f"entries {before['entries']} -> {after['entries']} after a rebuild"
+    finally:
+        for f in files:
+            if f.exists():
+                f.unlink()
+        if s:
+            s.close()
+        d.stop(force=True)
+
+
+def _compiled_manifests(c, name):
+    """The compiled bundle manifests whose bundle holds class ``name`` (OSGi user dirs)."""
+    out = []
+    for cls in c.state.glob(f"settings/*/*/*/osgi/compiled-bundles/*/{name}.class"):
+        m = cls.parent / "META-INF" / "MANIFEST.MF"
+        if m.exists():
+            out.append(m)
+    for root in (os.environ.get("APPDATA"), os.environ.get("LOCALAPPDATA"),
+                 os.path.expanduser("~/.config"), os.path.expanduser("~/.ghidra")):
+        if not root:
+            continue
+        base = dt.pathlib.Path(root) / "ghidra"
+        for cls in base.glob(f"*/osgi/compiled-bundles/*/{name}.class"):
+            m = cls.parent / "META-INF" / "MANIFEST.MF"
+            if m.exists():
+                out.append(m)
+    return out
+
+
+def t_script_cache_binary_wiped(c):
+    """Another process wiping the shared compiled bundle makes the next call a miss (the usual
+    path recompiles it), with the same output."""
+    d = c.daemon("h4-wiped")
+    s = None
+    files = _two_probes(c, "W")
+    try:
+        s = c.connect(d, "h4w", "dt_h4", protocol=3)
+        for _ in range(3):
+            r = _run(s, c, "W")
+        dt.check(r["ok"] and "probe v1 helper h1" in r["output"], f"{r}")
+        mans = _compiled_manifests(c, "H4ProbeW")
+        dt.check(mans, "compiled bundle of H4ProbeW not found under the OSGi user directories")
+        h0 = _cache(s)["hits"]
+        for m in mans:
+            dt.shutil.rmtree(m.parent.parent)  # the whole compiled bundle, as another process would
+        r = _run(s, c, "W")
+        h1 = _cache(s)["hits"]
+        dt.check(r["ok"] and "probe v1 helper h1" in r["output"], f"after the wipe: {r}")
+        dt.check(h1 == h0, f"a call after the compiled bundle was wiped was a cache hit ({h0}->{h1})")
+        r = _run(s, c, "W")
+        dt.check(r["ok"] and "probe v1 helper h1" in r["output"], f"after the reload: {r}")
+        return f"wiped {len(mans)} manifest(s): miss, recompiled, same output"
+    finally:
+        for f in files:
+            if f.exists():
+                f.unlink()
+        if s:
+            s.close()
+        d.stop(force=True)
+
+
+def t_script_cache_parallel_edit(c):
+    """Parallel hits on four sessions while the sibling class is edited: every reply is the old
+    output or the new one, never an error."""
+    import threading
+    d = c.daemon("h4-par")
+    files = _two_probes(c, "P")
+    sessions = []
+    try:
+        for i in range(4):
+            sessions.append(c.connect(d, f"h4p{i}", "dt_h4", protocol=3))
+        _run(sessions[0], c, "P")
+        results, stop = [], threading.Event()
+
+        def worker(s):
+            while not stop.is_set():
+                results.append(_run(s, c, "P"))
+
+        ts = [threading.Thread(target=worker, args=(s,)) for s in sessions]
+        for t in ts:
+            t.start()
+        time.sleep(1.5)
+        _write(files[1], HELPER.replace("$SFX", "P") % "h2")
+        time.sleep(4)
+        stop.set()
+        for t in ts:
+            t.join(120)
+        last = _run(sessions[0], c, "P")
+        bad = [r for r in results if not (r["ok"] and any(
+            w in (r["output"] or "") for w in ("probe v1 helper h1", "probe v1 helper h2")))]
+        dt.check(not bad, f"{len(bad)} of {len(results)} replies neither old nor new: {bad[:2]}")
+        dt.check(last["ok"] and "probe v1 helper h2" in last["output"], f"edit not seen: {last}")
+        return f"{len(results)} parallel replies, all old or new output; edit seen"
+    finally:
+        for f in files:
+            if f.exists():
+                f.unlink()
+        for s in sessions:
+            s.close()
+        d.stop(force=True)
+
+
+def t_script_run_bound(c):
+    """With one run permit (and a long wait), two parallel sleeping scripts run one after the
+    other; health counts the wait; both succeed."""
+    import threading
+    d = c.daemon("h4-bound", vmargs=["-Dhydra.script.maxConcurrent=1",
+                                     "-Dhydra.script.maxConcurrentWaitMs=60000"])
+    sessions = []
+    try:
+        for i in range(2):
+            sessions.append(c.connect(d, f"h4b{i}", "dt_h4", protocol=3))
+        sessions[0].call("script", script=c.script("TestSleep.java"), program=None, args=["10"])
+        out = []
+
+        def go(s):
+            try:
+                s.call("script", script=c.script("TestSleep.java"), program=None, args=["1500"])
+                out.append(True)
+            except Exception as ex:  # noqa: BLE001
+                out.append(ex)
+
+        t0 = time.perf_counter()
+        ts = [threading.Thread(target=go, args=(s,)) for s in sessions]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join(120)
+        took = time.perf_counter() - t0
+        f = _cache(sessions[0])
+        dt.check(out == [True, True], f"a bounded run failed: {out}")
+        dt.check(f.get("runPermits") == 1 and f.get("runWaited", 0) >= 1,
+                 f"no run waited for the permit: {f}")
+        dt.check(took >= 2.9, f"two 1.5 s scripts with one permit took only {took:.1f} s")
+        return f"two runs serialised in {took:.1f} s; {f}"
+    finally:
+        for s in sessions:
+            s.close()
+        d.stop(force=True)
+
+
 TESTS = {
     "script_cache_fresh": t_script_cache_fresh,
     "script_cache_identical": t_script_cache_identical,
+    "script_cache_rebuild_frees": t_script_cache_rebuild_frees,
+    "script_cache_binary_wiped": t_script_cache_binary_wiped,
+    "script_cache_parallel_edit": t_script_cache_parallel_edit,
+    "script_run_bound": t_script_run_bound,
 }
