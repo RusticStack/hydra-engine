@@ -56,7 +56,8 @@ public class HydraCpuTest {
 		assertTrue(cpu.toString(), cpu.getAffinityCpus() <= cpu.getSystemCpus());
 		assertEquals(cpu.toString(), cpu.getAffinityCpus(),
 			cpu.getPerformanceCpus() + cpu.getEfficiencyCpus());
-		assertTrue(cpu.toString(), cpu.getPerformanceCores() >= 1);
+		// an affinity of E-cores only grants no performance core
+		assertTrue(cpu.toString(), cpu.getPerformanceCores() + cpu.getEfficiencyCores() >= 1);
 		assertTrue(cpu.toString(), cpu.getLastLevelCacheGroups() >= 1);
 		assertTrue(cpu.toString(), cpu.getPhysicalMemory() > 0);
 		assertTrue(cpu.toString(),
