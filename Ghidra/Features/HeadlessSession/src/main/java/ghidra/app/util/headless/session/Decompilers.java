@@ -20,7 +20,15 @@ import ghidra.app.decompiler.DecompInterface;
 /** A pool of decompilers bound to one program object: a shared program's, or an overlay's. */
 interface Decompilers {
 
-	/** A decompiler for the pool's program, warm when one is free. */
+	/**
+	 * A decompiler for the pool's program, warm when one is free.
+	 * <p>
+	 * Pooled decompilers are the text-only profile ({@link ProgramEntry#newDecompiler}: C code
+	 * on, syntax tree off). Their {@code DecompileResults} carry the C markup and the
+	 * signature, but {@code getHighFunction()} has no p-code syntax tree and no high
+	 * variables. A caller that needs p-code, varnodes, high variables or tokens tied to the
+	 * tree must build its own decompiler with {@code toggleSyntaxTree(true)}, not borrow one.
+	 */
 	DecompInterface borrowDecompiler();
 
 	/** Gives it back; an unhealthy one (an error, a timeout) is disposed instead. */
