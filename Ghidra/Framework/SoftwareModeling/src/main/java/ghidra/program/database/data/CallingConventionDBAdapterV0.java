@@ -52,8 +52,9 @@ class CallingConventionDBAdapterV0 extends CallingConventionDBAdapter {
 	 * decompiler callbacks of concurrent decompiles of one program): it is built in locals and
 	 * then published whole through a volatile field, so a reader never sees it half built
 	 * (before, a reader could find one map set and the other still null, a NullPointerException
-	 * in {@link #getCallingConventionName(byte)}, or a map still being filled). Additions happen
-	 * under the write lock; the maps are concurrent so readers may still look up meanwhile.
+	 * in {@link #getCallingConventionName(byte)}, or a map still being filled). Additions may come
+	 * from readers too (only the read lock is held), so they are serialized in {@link #allocate};
+	 * the maps are concurrent so readers may still look up meanwhile.
 	 *
 	 * @param nameToId calling convention name to ID
 	 * @param idToName calling convention ID to name
@@ -125,6 +126,15 @@ class CallingConventionDBAdapterV0 extends CallingConventionDBAdapter {
 		if (c != null) {
 			return c;
 		}
+		return buildCache();
+	}
+
+	/** Reads the cache from the table; serialized with {@link #allocate} (one build at a time). */
+	private synchronized Cache buildCache() throws IOException {
+		Cache c = cache;
+		if (c != null) {
+			return c;
+		}
 		Map<String, Byte> callingConventionNameToIDMap = new ConcurrentHashMap<>();
 		Map<Byte, String> callingConventionIDToNameMap = new ConcurrentHashMap<>();
 
@@ -162,10 +172,26 @@ class CallingConventionDBAdapterV0 extends CallingConventionDBAdapter {
 		else if (name.equals(CompilerSpec.CALLING_CONVENTION_default)) {
 			return DEFAULT_CALLING_CONVENTION_ID;
 		}
+		Byte id = populateCache().nameToId().get(name);
+		if (id != null) {
+			return id;
+		}
+		return allocate(name, conventionAdded);
+	}
+
+	/**
+	 * Adds {@code name} under a new ID. The caller of {@link #getCallingConventionId} may hold only
+	 * the data type manager's read lock, so two threads may miss the same new name at once: the
+	 * miss path is serialized (and excludes a concurrent {@link #populateCache} build) and checks
+	 * the name again inside, so a name gets exactly one ID and one record, and the free key set
+	 * (not thread-safe) is changed by one thread at a time.
+	 */
+	private synchronized byte allocate(String name, Consumer<String> conventionAdded)
+			throws IOException {
 		Cache c = populateCache();
 		Byte id = c.nameToId().get(name);
 		if (id != null) {
-			return id;
+			return id; // another thread added it meanwhile
 		}
 
 		byte newId = removeFirstAvailableKey(c.freeKeySet());

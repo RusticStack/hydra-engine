@@ -130,4 +130,60 @@ public class CallingConventionDBAdapterV0ConcurrencyTest extends AbstractGeneric
 		assertEquals(a + 1, b); // the free keys survive the invalidate
 		assertNull(adapter.getCallingConventionName((byte) 120));
 	}
+
+	/**
+	 * Readers hold only the read lock, so several may miss the same new name at once: the name
+	 * must get exactly one ID and one record, and different new names different IDs.
+	 */
+	@Test
+	public void testConcurrentAddsOfOneNewNameGetOneId() throws Exception {
+		ExecutorService pool = Executors.newFixedThreadPool(THREADS);
+		List<Throwable> failures = Collections.synchronizedList(new ArrayList<>());
+		long tx = dbh.startTransaction();
+		try {
+			for (int round = 0; round < 30 && failures.isEmpty(); round++) {
+				String name = "__new" + round;
+				String other = "__other" + round;
+				AtomicInteger added = new AtomicInteger();
+				CyclicBarrier start = new CyclicBarrier(THREADS);
+				List<Future<Byte>> fs = new ArrayList<>();
+				for (int t = 0; t < THREADS; t++) {
+					String n = (t & 3) == 3 ? other : name;
+					fs.add(pool.submit(() -> {
+						try {
+							start.await();
+							return adapter.getCallingConventionId(n, x -> added.incrementAndGet());
+						}
+						catch (Throwable e) {
+							failures.add(e);
+							return (byte) -1;
+						}
+					}));
+				}
+				Set<Byte> nameIds = new HashSet<>();
+				Set<Byte> otherIds = new HashSet<>();
+				for (int t = 0; t < THREADS; t++) {
+					((t & 3) == 3 ? otherIds : nameIds).add(fs.get(t).get(30, TimeUnit.SECONDS));
+				}
+				assertEquals("one new name got several IDs: " + nameIds, 1, nameIds.size());
+				assertEquals("one new name got several IDs: " + otherIds, 1, otherIds.size());
+				assertNotEquals(nameIds, otherIds);
+				assertEquals("a new name was added more than once", 2, added.get());
+				byte id = nameIds.iterator().next();
+				assertEquals(name, adapter.getCallingConventionName(id));
+				adapter.invalidateCache(); // the table holds exactly the same as the cache
+				assertEquals(name, adapter.getCallingConventionName(id));
+				assertEquals(id, adapter.getCallingConventionId(name, x -> fail("re-added")));
+				assertEquals(NAMES + 2 * (round + 1), adapter.getCallingConventionNames().size());
+			}
+		}
+		finally {
+			dbh.endTransaction(tx, true);
+			pool.shutdownNow();
+		}
+		if (!failures.isEmpty()) {
+			throw new AssertionError("a concurrent add failed: " + failures.get(0),
+				failures.get(0));
+		}
+	}
 }
