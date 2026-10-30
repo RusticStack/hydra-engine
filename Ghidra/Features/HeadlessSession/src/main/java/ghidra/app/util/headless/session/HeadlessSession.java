@@ -367,9 +367,20 @@ public class HeadlessSession implements GhidraLaunchable {
 		});
 	}
 
+	/** The send buffer of a socket served by virtual I/O threads (see {@link #serveSocket}). */
+	private static final int SEND_BUFFER_BYTES = 8 << 20;
+
 	private void serveSocket(Socket s, String token) {
 		try (s) {
 			s.setTcpNoDelay(true);
+			if (Connection.virtualIo()) {
+				// A virtual writer's socket is non-blocking underneath: only the send buffer is
+				// handed to the kernel and the rest of a reply waits for the client to read. A
+				// platform writer's blocking send on Windows hands the whole reply over, so a
+				// client busy for a few seconds was not dropped by writeStallMs. Give the kernel
+				// room for a large reply again (the buffer is only used while data is pending).
+				s.setSendBufferSize(SEND_BUFFER_BYTES);
+			}
 			s.setKeepAlive(true); // a client that vanishes without a FIN is still released
 			Connection c = new Connection(session,
 				new BufferedInputStream(s.getInputStream(), 1 << 16),
