@@ -72,6 +72,8 @@ final class ScriptCommands {
 				registered = true;
 				// the request validation the command itself runs (3.5): one method, two callers
 				Preflight.register("script", ScriptCommands::validate);
+				// H4: the resolved-script cache's figures (an added member of health only)
+				Health.contribute("scriptCache", ScriptClassCache::describe);
 			}
 		}
 	}
@@ -545,21 +547,31 @@ final class ScriptCommands {
 		int cap = (int) Json.num(req, "maxChars", DEFAULT_TEXT_CAP, 1, MAX_TEXT_CAP);
 		StringWriter sw = new StringWriter();
 		PrintWriter pw = new PrintWriter(sw, true);
-		GhidraScript s;
-		synchronized (SCRIPT_COMPILE) {
-			GhidraScriptProvider provider = GhidraScriptUtil.getProvider(src);
-			if (provider == null) {
-				throw new SessionException(SessionException.BAD_REQUEST,
-					"no script provider for " + src.getName());
-			}
-			try {
-				s = provider.getScriptInstance(src, pw);
-			}
-			catch (Exception ex) {
+		// H4: an unchanged script that loaded cleanly before needs no bundle activation; the hit
+		// takes no lock (ScriptClassCache says when an entry is valid)
+		GhidraScript s = ScriptClassCache.instance(src);
+		if (s == null) {
+			synchronized (SCRIPT_COMPILE) {
+				GhidraScriptProvider provider = GhidraScriptUtil.getProvider(src);
+				if (provider == null) {
+					throw new SessionException(SessionException.BAD_REQUEST,
+						"no script provider for " + src.getName());
+				}
+				ScriptClassCache.Before before = ScriptClassCache.before(src, provider);
+				try {
+					s = provider.getScriptInstance(src, pw);
+				}
+				catch (Exception ex) {
+					pw.flush();
+					throw new SessionException(SessionException.FAILED,
+						"script did not load: " + ex.getMessage(), Json.of("output", sw.toString()),
+						ex);
+				}
 				pw.flush();
-				throw new SessionException(SessionException.FAILED,
-					"script did not load: " + ex.getMessage(), Json.of("output", sw.toString()),
-					ex);
+				if (sw.getBuffer().length() == 0) {
+					// a load that printed nothing (no build messages): the same on a hit
+					ScriptClassCache.remember(src, provider, before, s);
+				}
 			}
 		}
 		s.setScriptArgs(Json.strings(req, "args").toArray(new String[0]));
@@ -708,6 +720,8 @@ final class ScriptCommands {
 		/** Leaked (quarantined) scripts, by owner key. */
 		private static final Map<String, Integer> LEAKED = new ConcurrentHashMap<>();
 		private static ScheduledExecutorService sampler;
+		/** Looked up once: the sampler used to look it up on every pass (H4). */
+		private static final ThreadMXBean THREAD_MX = ManagementFactory.getThreadMXBean();
 
 		private Runaway() {
 		}
@@ -796,7 +810,7 @@ final class ScriptCommands {
 				this.maxAllocBytes = Math.max(0L, setting("scriptAllocMb", 0)) * 1024L * 1024L;
 				this.graceNanos = TimeUnit.SECONDS.toNanos(
 					Math.max(0, setting("scriptGraceS", DEFAULT_GRACE_S)));
-				ThreadMXBean mx = ManagementFactory.getThreadMXBean();
+				ThreadMXBean mx = THREAD_MX;
 				long cpu = -1;
 				long alloc = -1;
 				try {
@@ -866,8 +880,11 @@ final class ScriptCommands {
 
 		/** One pass over the scripts under watch. Never throws (the executor would stop). */
 		static void sample() {
+			if (WATCHES.isEmpty()) {
+				return;
+			}
 			try {
-				ThreadMXBean mx = ManagementFactory.getThreadMXBean();
+				ThreadMXBean mx = THREAD_MX;
 				long now = System.nanoTime();
 				for (Watch w : WATCHES) {
 					if (!w.m.isCancelled()) {
