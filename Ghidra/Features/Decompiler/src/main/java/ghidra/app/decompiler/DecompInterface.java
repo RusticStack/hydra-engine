@@ -130,26 +130,43 @@ public class DecompInterface {
 	}
 
 	/**
-	 * The specification strings sent by registerProgram, built for one state of a program.
-	 * They depend on the language, the compiler spec, and the program's address spaces and
-	 * data organization; every change to the program bumps its modification number.
+	 * The specification strings sent by registerProgram
 	 */
 	static class SpecStrings {
-		private final long modificationNumber;
-		private final WeakReference<Language> language;
-		private final WeakReference<CompilerSpec> compilerSpec;
 		final String pspecxml;
 		final String cspecxml;
 		final String tspec;
 		final String coretypes;
 
-		SpecStrings(long modificationNumber, Language language, CompilerSpec compilerSpec,
-				String pspecxml, String cspecxml, String tspec, String coretypes) {
+		SpecStrings(String pspecxml, String cspecxml, String tspec, String coretypes) {
+			this.pspecxml = pspecxml;
+			this.cspecxml = cspecxml;
+			this.tspec = tspec;
+			this.coretypes = coretypes;
+		}
+	}
+
+	/**
+	 * The cached specification strings, built for one state of a program.  They depend on the
+	 * language, the compiler spec's data organization, and the program's address spaces; every
+	 * change to the program bumps its modification number.  The compiler spec itself is not
+	 * cached: spec extensions are installed into it in place, after the change that bumps the
+	 * modification number.
+	 */
+	private static class CachedSpecs {
+		private final long modificationNumber;
+		private final WeakReference<Language> language;
+		private final WeakReference<CompilerSpec> compilerSpec;
+		private final String pspecxml;
+		private final String tspec;
+		private final String coretypes;
+
+		CachedSpecs(long modificationNumber, Language language, CompilerSpec compilerSpec,
+				String pspecxml, String tspec, String coretypes) {
 			this.modificationNumber = modificationNumber;
 			this.language = new WeakReference<>(language);
 			this.compilerSpec = new WeakReference<>(compilerSpec);
 			this.pspecxml = pspecxml;
-			this.cspecxml = cspecxml;
 			this.tspec = tspec;
 			this.coretypes = coretypes;
 		}
@@ -161,7 +178,7 @@ public class DecompInterface {
 	}
 
 	// Shared by every interface (and so every process) opened on the same program
-	private static final Map<Program, SpecStrings> specCache = new WeakHashMap<>();
+	private static final Map<Program, CachedSpecs> specCache = new WeakHashMap<>();
 
 	protected Program program;
 	private SleighLanguage pcodelanguage;
@@ -287,38 +304,38 @@ public class DecompInterface {
 	}
 
 	/**
-	 * Get the specification strings for registering the current program, building them
-	 * only if the program changed since they were last built
+	 * Get the specification strings for registering the current program, building the cached
+	 * ones only if the program changed since they were last built
 	 * @return the specification strings
 	 * @throws IOException for problems reading the processor spec file
 	 */
 	SpecStrings getSpecStrings() throws IOException {
-		long modNumber = program.getModificationNumber();
-		synchronized (specCache) {
-			SpecStrings specs = specCache.get(program);
-			if (specs != null && specs.isValid(modNumber, pcodelanguage, compilerSpec)) {
-				return specs;
-			}
-		}
-		long uniqueBase = UniqueLayout.SLEIGH_BASE.getOffset(pcodelanguage);
 		XmlEncode xmlEncode = new XmlEncode(false);
-		pcodelanguage.encodeTranslator(xmlEncode, program.getAddressFactory(), uniqueBase);
-		String tspec = xmlEncode.toString();
-		xmlEncode.clear();
-		dtmanage.encodeCoreTypes(xmlEncode);
-		String coretypes = xmlEncode.toString();
-		SleighLanguageDescription sleighdescription = pcodelanguage.getLanguageDescription();
-		ResourceFile pspecfile = sleighdescription.getSpecFile();
-		String pspecxml = fileToString(pspecfile);
-		xmlEncode.clear();
 		compilerSpec.encode(xmlEncode);
 		String cspecxml = xmlEncode.toString();
-		SpecStrings specs = new SpecStrings(modNumber, pcodelanguage, compilerSpec, pspecxml,
-			cspecxml, tspec, coretypes);
+		long modNumber = program.getModificationNumber();
+		CachedSpecs specs;
 		synchronized (specCache) {
-			specCache.put(program, specs);
+			specs = specCache.get(program);
 		}
-		return specs;
+		if (specs == null || !specs.isValid(modNumber, pcodelanguage, compilerSpec)) {
+			long uniqueBase = UniqueLayout.SLEIGH_BASE.getOffset(pcodelanguage);
+			xmlEncode.clear();
+			pcodelanguage.encodeTranslator(xmlEncode, program.getAddressFactory(), uniqueBase);
+			String tspec = xmlEncode.toString();
+			xmlEncode.clear();
+			dtmanage.encodeCoreTypes(xmlEncode);
+			String coretypes = xmlEncode.toString();
+			SleighLanguageDescription sleighdescription = pcodelanguage.getLanguageDescription();
+			ResourceFile pspecfile = sleighdescription.getSpecFile();
+			String pspecxml = fileToString(pspecfile);
+			specs = new CachedSpecs(modNumber, pcodelanguage, compilerSpec, pspecxml, tspec,
+				coretypes);
+			synchronized (specCache) {
+				specCache.put(program, specs);
+			}
+		}
+		return new SpecStrings(specs.pspecxml, cspecxml, specs.tspec, specs.coretypes);
 	}
 
 	/**
