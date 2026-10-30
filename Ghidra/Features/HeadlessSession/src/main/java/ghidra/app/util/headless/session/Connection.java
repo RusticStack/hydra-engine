@@ -635,7 +635,7 @@ final class Connection {
 
 	/** Queues a line for the writer thread: events may be dropped, a reply may not (BP23). */
 	void send(JsonObject o) {
-		byte[] bytes = (Json.GSON.toJson(o) + "\n").getBytes(StandardCharsets.UTF_8);
+		byte[] bytes = encode(o);
 		boolean reply = o.has("ok");
 		if (!open && !reply) {
 			return;
@@ -647,6 +647,31 @@ final class Connection {
 		if (!outbound.offerReply(bytes)) {
 			onStall();
 		}
+	}
+
+	/**
+	 * The line for {@code o}: Gson's JSON and a newline. A {@code result} that is already JSON
+	 * bytes (the Rust read plane, {@link ReadPlane.RawJson}) is spliced in where Gson would have
+	 * written it, so the line is byte for byte the one a tree result gives.
+	 */
+	static byte[] encode(JsonObject o) {
+		if (o.get("result") instanceof ReadPlane.RawJson raw) {
+			o.add("result", JsonNull.INSTANCE); // same key, same place in the object
+			String s = Json.GSON.toJson(o);
+			String head = "{" + (o.has("id") ? "\"id\":" + Json.GSON.toJson(o.get("id")) + "," : "") +
+				"\"ok\":true,\"result\":";
+			if (s.startsWith(head + "null")) {
+				byte[] h = head.getBytes(StandardCharsets.UTF_8);
+				byte[] t = (s.substring(head.length() + 4) + "\n").getBytes(StandardCharsets.UTF_8);
+				byte[] out = new byte[h.length + raw.bytes.length + t.length];
+				System.arraycopy(h, 0, out, 0, h.length);
+				System.arraycopy(raw.bytes, 0, out, h.length, raw.bytes.length);
+				System.arraycopy(t, 0, out, h.length + raw.bytes.length, t.length);
+				return out;
+			}
+			o.add("result", raw.tree()); // an unexpected layout: the tree path
+		}
+		return (Json.GSON.toJson(o) + "\n").getBytes(StandardCharsets.UTF_8);
 	}
 
 	/** The client does not read: drop it (its requests are cancelled and its locks released). */

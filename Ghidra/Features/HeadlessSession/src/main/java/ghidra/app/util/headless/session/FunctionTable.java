@@ -57,6 +57,8 @@ final class FunctionTable {
 	private final long[] sizes;
 	private final byte[] flags;
 	private final long weight;
+	/** The same rows in the Rust read plane (pages rendered there), or null. */
+	private final ReadPlane.NativeFunctions nat;
 
 	private FunctionTable(String[] names, String[] entries, long[] sizes, byte[] flags) {
 		this.names = names;
@@ -68,7 +70,19 @@ final class FunctionTable {
 			// a String header and its array header, Latin-1 or UTF-16 bytes
 			w += 56 + 2L * names[i].length() + 56 + entries[i].length();
 		}
-		this.weight = w;
+		ReadPlane rp = ReadPlane.get();
+		this.nat = rp == null ? null : rp.functions(names, entries, sizes, flags);
+		this.weight = w + (nat == null ? 0 : nat.weight);
+	}
+
+	/** A table of these rows (the self-test's made-up listings). */
+	static FunctionTable of(String[] names, String[] entries, long[] sizes, byte[] flags) {
+		return new FunctionTable(names, entries, sizes, flags);
+	}
+
+	/** True when this table's pages can come from the Rust read plane. */
+	boolean isNative() {
+		return nat != null;
 	}
 
 	/** The table of {@code p} as it stands now: one walk of its functions. */
@@ -115,6 +129,21 @@ final class FunctionTable {
 	 * program state this table was built from.
 	 */
 	JsonObject page(Pattern pat, String sub, int offset, int limit) {
+		return (JsonObject) page(pat, sub, offset, limit, false);
+	}
+
+	/**
+	 * As {@link #page(Pattern, String, int, int)}; with {@code raw}, a page without {@code regex}
+	 * comes from the Rust read plane as the reply's bytes ({@link ReadPlane.RawJson}) when the
+	 * table is there.
+	 */
+	JsonElement page(Pattern pat, String sub, int offset, int limit, boolean raw) {
+		if (raw && nat != null && pat == null) {
+			ReadPlane.RawJson r = ReadPlane.get().page(nat, sub, offset, limit);
+			if (r != null) {
+				return r;
+			}
+		}
 		JsonArray a = new JsonArray();
 		boolean truncated = false;
 		int n = names.length;
@@ -228,13 +257,22 @@ final class FunctionTable {
 		 * now if worth it) or by a walk.
 		 */
 		JsonObject functions(Program prog, Pattern pat, String sub, int offset, int limit) {
+			return (JsonObject) functions(prog, pat, sub, offset, limit, false);
+		}
+
+		/**
+		 * As {@link #functions(Program, Pattern, String, int, int)}; with {@code raw} a page served
+		 * from a table may be the Rust read plane's bytes ({@link ReadPlane.RawJson}).
+		 */
+		JsonElement functions(Program prog, Pattern pat, String sub, int offset, int limit,
+				boolean raw) {
 			long mod = prog.getModificationNumber();
 			Holder h = holder(prog);
 			h.used = clock.incrementAndGet();
 			FunctionTable t = h.table;
 			if (t != null && h.tableMod == mod) {
 				hits.incrementAndGet();
-				return t.page(pat, sub, offset, limit);
+				return t.page(pat, sub, offset, limit, raw);
 			}
 			if (offset == 0 && h.walkedMod != mod) {
 				// the first listing of this state: the walk stops after one page
@@ -247,7 +285,7 @@ final class FunctionTable {
 				walks.incrementAndGet();
 				return walk(prog, pat, sub, offset, limit);
 			}
-			return t.page(pat, sub, offset, limit);
+			return t.page(pat, sub, offset, limit, raw);
 		}
 
 		/** The table of {@code prog} at {@code mod}: one build for concurrent callers. */

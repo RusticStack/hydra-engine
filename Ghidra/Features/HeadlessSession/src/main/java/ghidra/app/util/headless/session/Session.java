@@ -576,7 +576,7 @@ final class Session {
 				case "save" -> access.withProgram(c, req, cmd, true, true,
 					e -> edits.save(e, req, m));
 				case "functions" -> access.withProgram(c, req, cmd, false, false,
-					e -> queries.functions(e.program, req));
+					e -> queries.functions(e.program, req, true)); // sent as is (read plane)
 				case "decompile" -> access.withProgram(c, req, cmd, false, false,
 					e -> queries.decompile(e.program, e, req, m));
 				case "rename" -> access.withProgram(c, req, cmd, true, true,
