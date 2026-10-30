@@ -146,6 +146,16 @@ public:
   virtual void rawAction(void);
 };
 
+/// rief Command to  flush the per-function symbols of a Program, keeping its data-types
+///
+/// Like FlushNative, but the data-type and string caches are kept. The client sends it only while
+/// the Program is unchanged since the kept data-types were fetched, so the next function does not
+/// fetch them again. Function, symbol, comment and constant-pool state is cleared as by FlushNative.
+class FlushFunctions : public FlushNative {
+public:
+  virtual void rawAction(void);
+};
+
 /// \brief Command to \b decompile a specific function.
 ///
 /// The command expects 2 string parameters: the encoded integer id of the program,

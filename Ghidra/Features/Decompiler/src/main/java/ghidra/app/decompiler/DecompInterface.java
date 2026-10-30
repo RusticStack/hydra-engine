@@ -155,6 +155,14 @@ public class DecompInterface {
 	private short minor;				// Minor decompiler version
 	private int sigSettings;			// Settings for signature generation (0=not configured)
 
+	/**
+	 * Hydra: keep the native process's data-types between the functions of an unchanged program
+	 * (flushFunctions instead of flushNative). Off unless {@code -Dhydra.decompiler.keepTypes=true}.
+	 */
+	static final boolean KEEP_TYPES = Boolean.getBoolean("hydra.decompiler.keepTypes");
+	private static final long NO_KEPT_TYPES = -1;
+	private long keptTypesModification = NO_KEPT_TYPES;	// Program modification number of the kept types
+
 	public DecompInterface() {
 		program = null;
 		pcodelanguage = null;
@@ -371,6 +379,7 @@ public class DecompInterface {
 	 * @return true if the decompiler process is successfully initialized
 	 */
 	public synchronized boolean openProgram(Program prog) {
+		dropKeptTypes();
 		errorMessage = "";
 		program = prog;
 		Language lang = prog.getLanguage();
@@ -422,6 +431,7 @@ public class DecompInterface {
 	 * is made again.
 	 */
 	public synchronized void closeProgram() {
+		dropKeptTypes();
 		errorMessage = "";
 		if (program != null) {
 			program = null;
@@ -482,6 +492,7 @@ public class DecompInterface {
 	 * @return true - if the decompiler process was successfully configured
 	 */
 	public synchronized boolean setSimplificationStyle(String actionstring) {
+		dropKeptTypes();
 		actionname = actionstring;
 		// Property can be set before process exists
 		if (decompProcess == null) {
@@ -518,6 +529,7 @@ public class DecompInterface {
 	 * @return true if the decompiler process, accepted the change of state
 	 */
 	public synchronized boolean toggleSyntaxTree(boolean val) {
+		dropKeptTypes();
 		printSyntaxTree = val;
 		// Property can be set before process exists
 		if (decompProcess == null) {
@@ -556,6 +568,7 @@ public class DecompInterface {
 	 * @return true if the decompiler process accepted the new state
 	 */
 	public synchronized boolean toggleCCode(boolean val) {
+		dropKeptTypes();
 		printCCode = val;
 		// Property can be set before process exists
 		if (decompProcess == null) {
@@ -593,6 +606,7 @@ public class DecompInterface {
 	 * @return true if the decompiler process accepted the new state
 	 */
 	public synchronized boolean toggleParamMeasures(boolean val) {
+		dropKeptTypes();
 		sendParamMeasures = val;
 		// Property can be set before process exists
 		if (decompProcess == null) {
@@ -623,6 +637,7 @@ public class DecompInterface {
 	 * @return true if the decompiler process accepted the new state
 	 */
 	public synchronized boolean toggleJumpLoads(boolean val) {
+		dropKeptTypes();
 		jumpLoad = val;
 		// Property can be set before process exists
 		if (decompProcess == null) {
@@ -659,6 +674,7 @@ public class DecompInterface {
 	 * @return true if the decompiler process accepted the new options
 	 */
 	public synchronized boolean setOptions(DecompileOptions options) {
+		dropKeptTypes();
 		this.options = options;
 		if (dtmanage != null) {
 			dtmanage.setNameTransformer(options.getNameTransformer());
@@ -708,6 +724,7 @@ public class DecompInterface {
 	 */
 	public synchronized int flushCache() {
 		int res = -1;
+		keptTypesModification = NO_KEPT_TYPES;
 		try {
 			if ((decompProcess != null) && decompProcess.isReady()) {
 				decompProcess.sendCommand("flushNative", stringResponse);
@@ -724,8 +741,43 @@ public class DecompInterface {
 		return res;
 	}
 
+	/**
+	 * Clear the function and symbol information like {@link #flushCache()} but keep the data-types
+	 * (and string decodings) the decompiler fetched while the program was at {@code modification}.
+	 * They are dropped by the next {@link #flushCache()}, a program change, or any change of options.
+	 * @param modification is the program modification number the kept data-types belong to
+	 */
+	private void flushFunctions(long modification) {
+		try {
+			if ((decompProcess != null) && decompProcess.isReady()) {
+				decompProcess.sendCommand("flushFunctions", stringResponse);
+				keptTypesModification = modification;
+				return;
+			}
+		}
+		catch (IOException e) {
+			// don't care
+		}
+		catch (DecompileException e) {
+			// don't care
+		}
+		keptTypesModification = NO_KEPT_TYPES;
+		stopProcess();
+	}
+
+	/**
+	 * Drop the data-types kept by {@link #flushFunctions(long)}, before anything that may change
+	 * how data-types are sent to the decompiler.
+	 */
+	private void dropKeptTypes() {
+		if (keptTypesModification != NO_KEPT_TYPES) {
+			flushCache();
+		}
+	}
+
 	public synchronized BlockGraph structureGraph(BlockGraph ingraph, int timeoutSecs,
 			TaskMonitor monitor) {
+		dropKeptTypes();
 		errorMessage = "";
 		if (monitor != null && monitor.isCancelled()) {
 			return null;
@@ -769,7 +821,16 @@ public class DecompInterface {
 	public synchronized DecompileResults decompileFunction(Function func, int timeoutSecs,
 			TaskMonitor monitor) {
 
-		dtmanage.clearTemporaryIds();
+		long modification = program == null ? NO_KEPT_TYPES : program.getModificationNumber();
+		boolean debugWasOff = debug == null;
+		if (keptTypesModification != NO_KEPT_TYPES &&
+			(modification != keptTypesModification || debug != null)) {
+			flushCache();
+		}
+		if (keptTypesModification == NO_KEPT_TYPES) {
+			// Temporary ids stay valid as long as the native process keeps the data-types
+			dtmanage.clearTemporaryIds();
+		}
 		errorMessage = "";
 
 		if (program == null || (monitor != null && monitor.isCancelled())) {
@@ -822,7 +883,13 @@ public class DecompInterface {
 		if (decompProcess != null) {
 			processState = decompProcess.getDisposeState();
 			if (decompProcess.getDisposeState() == DecompileProcess.DisposeState.NOT_DISPOSED) {
-				flushCache();
+				if (KEEP_TYPES && program != null && debugWasOff &&
+					program.getModificationNumber() == modification) {
+					flushFunctions(modification);
+				}
+				else {
+					flushCache();
+				}
 			}
 		}
 		else {
@@ -841,6 +908,7 @@ public class DecompInterface {
 	 * process is being yanked away.
 	 */
 	public void stopProcess() {
+		keptTypesModification = NO_KEPT_TYPES;
 		if (decompProcess != null) {
 			decompProcess.dispose();
 		}
@@ -986,6 +1054,7 @@ public class DecompInterface {
 	 * @return true if the settings took effect
 	 */
 	public boolean setSignatureSettings(int value) {
+		dropKeptTypes();
 		sigSettings = value;
 		// Property can be set before process exists
 		if (decompProcess == null) {
