@@ -117,6 +117,11 @@ public class GTimer {
 		@Override
 		public boolean cancel() {
 			wasCancelled = super.cancel();
+			if (wasCancelled) {
+				// A cancelled task stays in the timer's queue until its time comes; frequent
+				// timeouts that are cancelled early (one per decompile) would pile up there
+				getTimer().purge();
+			}
 			return wasCancelled;
 		}
 

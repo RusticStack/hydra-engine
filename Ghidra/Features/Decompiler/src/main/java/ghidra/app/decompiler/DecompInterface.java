@@ -20,7 +20,10 @@ import static ghidra.program.model.pcode.AttributeId.*;
 import static ghidra.program.model.pcode.ElementId.*;
 
 import java.io.*;
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
+import java.util.Map;
+import java.util.WeakHashMap;
 
 import generic.jar.ResourceFile;
 import ghidra.app.decompiler.signature.DebugSignature;
@@ -125,6 +128,40 @@ public class DecompInterface {
 			((PackedEncodeOverlay) callbackResponse).setOverlay(spc);
 		}
 	}
+
+	/**
+	 * The specification strings sent by registerProgram, built for one state of a program.
+	 * They depend on the language, the compiler spec, and the program's address spaces and
+	 * data organization; every change to the program bumps its modification number.
+	 */
+	static class SpecStrings {
+		private final long modificationNumber;
+		private final WeakReference<Language> language;
+		private final WeakReference<CompilerSpec> compilerSpec;
+		final String pspecxml;
+		final String cspecxml;
+		final String tspec;
+		final String coretypes;
+
+		SpecStrings(long modificationNumber, Language language, CompilerSpec compilerSpec,
+				String pspecxml, String cspecxml, String tspec, String coretypes) {
+			this.modificationNumber = modificationNumber;
+			this.language = new WeakReference<>(language);
+			this.compilerSpec = new WeakReference<>(compilerSpec);
+			this.pspecxml = pspecxml;
+			this.cspecxml = cspecxml;
+			this.tspec = tspec;
+			this.coretypes = coretypes;
+		}
+
+		boolean isValid(long modNumber, Language lang, CompilerSpec cspec) {
+			return modificationNumber == modNumber && language.get() == lang &&
+				compilerSpec.get() == cspec;
+		}
+	}
+
+	// Shared by every interface (and so every process) opened on the same program
+	private static final Map<Program, SpecStrings> specCache = new WeakHashMap<>();
 
 	protected Program program;
 	private SleighLanguage pcodelanguage;
@@ -250,6 +287,41 @@ public class DecompInterface {
 	}
 
 	/**
+	 * Get the specification strings for registering the current program, building them
+	 * only if the program changed since they were last built
+	 * @return the specification strings
+	 * @throws IOException for problems reading the processor spec file
+	 */
+	SpecStrings getSpecStrings() throws IOException {
+		long modNumber = program.getModificationNumber();
+		synchronized (specCache) {
+			SpecStrings specs = specCache.get(program);
+			if (specs != null && specs.isValid(modNumber, pcodelanguage, compilerSpec)) {
+				return specs;
+			}
+		}
+		long uniqueBase = UniqueLayout.SLEIGH_BASE.getOffset(pcodelanguage);
+		XmlEncode xmlEncode = new XmlEncode(false);
+		pcodelanguage.encodeTranslator(xmlEncode, program.getAddressFactory(), uniqueBase);
+		String tspec = xmlEncode.toString();
+		xmlEncode.clear();
+		dtmanage.encodeCoreTypes(xmlEncode);
+		String coretypes = xmlEncode.toString();
+		SleighLanguageDescription sleighdescription = pcodelanguage.getLanguageDescription();
+		ResourceFile pspecfile = sleighdescription.getSpecFile();
+		String pspecxml = fileToString(pspecfile);
+		xmlEncode.clear();
+		compilerSpec.encode(xmlEncode);
+		String cspecxml = xmlEncode.toString();
+		SpecStrings specs = new SpecStrings(modNumber, pcodelanguage, compilerSpec, pspecxml,
+			cspecxml, tspec, coretypes);
+		synchronized (specCache) {
+			specCache.put(program, specs);
+		}
+		return specs;
+	}
+
+	/**
 	 * This is the main routine for making sure that a decompiler
 	 * process is active and that it is initialized properly
 	 * @throws IOException for any problems with the pipe to the decompiler process
@@ -266,24 +338,12 @@ public class DecompInterface {
 			DecompileProcessFactory.release(decompProcess);
 			decompProcess = DecompileProcessFactory.get();
 		}
-		long uniqueBase = UniqueLayout.SLEIGH_BASE.getOffset(pcodelanguage);
-		XmlEncode xmlEncode = new XmlEncode(false);
-		pcodelanguage.encodeTranslator(xmlEncode, program.getAddressFactory(), uniqueBase);
-		String tspec = xmlEncode.toString();
-		xmlEncode.clear();
-		dtmanage.encodeCoreTypes(xmlEncode);
-		String coretypes = xmlEncode.toString();
-		SleighLanguageDescription sleighdescription = pcodelanguage.getLanguageDescription();
-		ResourceFile pspecfile = sleighdescription.getSpecFile();
-		String pspecxml = fileToString(pspecfile);
-		xmlEncode.clear();
-		compilerSpec.encode(xmlEncode);
-		String cspecxml = xmlEncode.toString();
+		SpecStrings specs = getSpecStrings();
 		baseEncodingSet = new EncodeDecodeSet(program);
 
 		decompCallback.setErrorMessage("");
-		decompProcess.registerProgram(decompCallback, pspecxml, cspecxml, tspec, coretypes,
-			program);
+		decompProcess.registerProgram(decompCallback, specs.pspecxml, specs.cspecxml, specs.tspec,
+			specs.coretypes, program);
 		String nativeMessage = decompCallback.getErrorMessage();
 		if ((nativeMessage != null) && (nativeMessage.length() != 0)) {
 			throw new IOException("Could not register program: " + nativeMessage);

@@ -279,16 +279,10 @@ public class ConcurrentQ<I, R> {
 	 * 	      will be taken.
 	 */
 	public void add(Iterator<I> iterator) {
-		lock.lock();
-		try {
-			while (iterator.hasNext()) {
-				queue.add(iterator.next());
-				tracker.itemsAdded(1);
-				fillOpenProcessingSlots();
-			}
-		}
-		finally {
-			lock.unlock();
+		// The lock is not held while the iterator produces items (it may be slow, such as
+		// a database iterator), so that finished items can be completed in the meantime
+		while (iterator.hasNext()) {
+			add(iterator.next());
 		}
 	}
 

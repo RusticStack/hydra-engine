@@ -148,31 +148,16 @@ public class DecompileProcess {
 		statusGood = false;
 		
 		try {
-			nativeProcess = runtime.exec(exepath);
+			nativeProcess = launch();
 			
-			// Give process time to load and report possible error
-			try {
-				nativeProcess.waitFor(200, TimeUnit.MILLISECONDS);
-			}
-			catch (InterruptedException e) {
-				// Restore interrupted thread state since we are continuing with setup.
-				// It does not appear that the decompiler interface is affected by an
-				// interrupted thread so why stop here.
-				Thread.currentThread().interrupt();
-			}
-			
+			// No wait for the process to load: an executable that cannot run on this system
+			// exits without answering, which the registerProgram handshake detects
 			nativeIn = nativeProcess.getInputStream();
 			nativeOut = nativeProcess.getOutputStream();
 			
 			statusGood = nativeProcess.isAlive();
 			if (!statusGood) {
-				if (!getAndSetErrorDisplayed()) {
-					String err = new String(nativeProcess.getErrorStream().readAllBytes());
-					String errorDetail = "Decompiler executable may not be compatible with your system and may need to be rebuilt.\n" +
-							"(see GettingStarted.md, 'Building Native Components').\n\n" +
-							err;		
-					Msg.showError(this, null, "Failed to launch Decompiler process", errorDetail);
-				}
+				reportLaunchFailure(nativeProcess);
 			}
 		}
 		catch (IOException e) {
@@ -191,6 +176,58 @@ public class DecompileProcess {
 				throw exc;
 			}
 		}
+	}
+
+	/**
+	 * Start the decompiler executable
+	 * @return the new process
+	 * @throws IOException if the process cannot be started
+	 */
+	Process launch() throws IOException {
+		return runtime.exec(exepath);
+	}
+
+	private void reportLaunchFailure(Process process) throws IOException {
+		if (!getAndSetErrorDisplayed()) {
+			String err = new String(process.getErrorStream().readAllBytes());
+			String errorDetail = "Decompiler executable may not be compatible with your system and may need to be rebuilt.\n" +
+					"(see GettingStarted.md, 'Building Native Components').\n\n" +
+					err;
+			Msg.showError(this, null, "Failed to launch Decompiler process", errorDetail);
+		}
+	}
+
+	/**
+	 * Called when the registerProgram handshake fails.  If the process has exited without
+	 * being disposed, it failed to launch: report it as setup would have and mark this
+	 * process as a startup failure.
+	 * @param exc is the exception from the handshake
+	 * @throws IOException describing the launch failure, if the process failed to launch
+	 */
+	private void checkLaunchFailure(IOException exc) throws IOException {
+		Process process = nativeProcess;
+		if (process == null || disposestate != DisposeState.NOT_DISPOSED) {
+			return;
+		}
+		try {
+			// The pipe can break slightly before the process is reported as exited
+			if (!process.waitFor(200, TimeUnit.MILLISECONDS)) {
+				return;
+			}
+		}
+		catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			return;
+		}
+		try {
+			reportLaunchFailure(process);
+		}
+		finally {
+			disposestate = DisposeState.DISPOSED_ON_STARTUP_FAILURE;
+			nativeProcess = null;
+			process.destroy();
+		}
+		throw new IOException("Decompiler process failed to launch (see log for details)", exc);
 	}
 
 	private int readToBurst() throws IOException {
@@ -501,6 +538,7 @@ public class DecompileProcess {
 		}
 		catch (IOException e) {
 			statusGood = false;
+			checkLaunchFailure(e);
 			throw e;
 		}
 		archId = Integer.parseInt(response.toString());
