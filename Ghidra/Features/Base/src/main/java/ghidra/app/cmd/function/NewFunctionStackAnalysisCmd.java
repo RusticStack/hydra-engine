@@ -58,6 +58,11 @@ public class NewFunctionStackAnalysisCmd extends BackgroundCommand<Program> {
 
 	private boolean isX86 = false;
 
+	// deferred mode only: stack references recorded (not yet written) by this command
+	private record PendingRefKey(Address from, int opIndex) {}
+
+	private final Map<PendingRefKey, Integer> pendingStackRefs = new HashMap<>();
+
 	static String DEFAULT_FUNCTION_COMMENT = " FUNCTION";
 
 	/**
@@ -672,6 +677,16 @@ public class NewFunctionStackAnalysisCmd extends BackgroundCommand<Program> {
 				return;
 			}
 
+			// deferred mode: a stack reference recorded earlier in this flow acts as if it
+			// had been written already (the immediate mode reads its own write here)
+			if (DeferredProgramWrites.isCollecting()) {
+				Integer pending = pendingStackRefs.get(new PendingRefKey(instr.getMinAddress(), opIndex));
+				if (pending != null) {
+					accumulateVariable(func, pending, refSize, sortedVariables);
+					return;
+				}
+			}
+
 			// check if operand already has a stack reference created
 			Reference ref = instr.getPrimaryReference(opIndex);
 			if (ref instanceof StackReference) {
@@ -686,6 +701,7 @@ public class NewFunctionStackAnalysisCmd extends BackgroundCommand<Program> {
 				RefType refType = RefTypeFactory.getDefaultStackRefType(instr, opIndex);
 				if (DeferredProgramWrites.isCollecting()) {
 					final Address from = instr.getMinAddress();
+					pendingStackRefs.put(new PendingRefKey(from, opIndex), stackOffset);
 					// a duplicate record for the same operand replaces it
 					DeferredProgramWrites.run(() -> refMgr.addStackReference(from, opIndex,
 						stackOffset, refType, SourceType.ANALYSIS));
