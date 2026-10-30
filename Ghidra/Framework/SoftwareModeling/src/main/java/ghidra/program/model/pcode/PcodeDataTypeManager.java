@@ -981,7 +981,9 @@ public class PcodeDataTypeManager {
 	/**
 	 * Assign a temporary id to a data-type.  The data-type is assumed to not be BuiltIn
 	 * or a DataTypeDB.  The id allows DataType objects to be associated data-types returned by the
-	 * decompiler process and is only valid until the start of the next function decompilation.
+	 * decompiler process and is only valid until the start of the next function decompilation,
+	 * or, when the decompiler keeps its data-types between functions (hydra.decompiler.keepTypes),
+	 * until those data-types are flushed.
 	 * @param type is the data-type to be assigned
 	 * @return the temporary id
 	 */

@@ -132,3 +132,25 @@ What the characterization does not cover, and why:
 | Progress events, the start-up banner, the endpoint file, `unauthorized` | Not replies to a request; `contract_tests.py` checks the endpoint and the hello contract. |
 | The parallel and stdio transports, `maxImports` queueing, kills and restarts | Timing and process behaviour; `daemon_tests.py`. |
 | The values of timings, pids, ports, memory and the revision hashes | Differ on every run; masked. Their presence and key order are still checked. |
+
+## The native decompiler between functions
+
+`DecompInterface.decompileFunction` ends every function with `flushNative`, which drops everything the
+decompile process fetched from the program: symbols, functions, comments, constant pool, and also every
+data-type and string decoding, so the next function fetches its data-types again through callbacks.
+
+* `-Dhydra.decompiler.keepTypes=true` (off by default): while the program's modification number is
+  unchanged, a function ends with `flushFunctions` instead (ghidra_process.cc), which clears the same
+  symbol, function, comment and constant-pool state but keeps the data-types and string decodings, and the
+  Java side keeps its temporary data-type ids for them. A changed modification number, a debug dump, any
+  option or action change (`setOptions`, `setSimplificationStyle`, the `toggle*` methods,
+  `setSignatureSettings`), `structureGraph`, opening or closing a program and a process restart all go
+  back to a full `flushNative`. Function state is never kept: a kept `Funcdata` would leak a recovered
+  prototype into its callers' decompiles. The kept state is bounded: after
+  `-Dhydra.decompiler.keepTypesLimit` functions (default 1000) a full `flushNative` runs. The kept types
+  belong to one process; a restarted process starts with cleared temporary ids. A decompiler whose reply
+  to `flushFunctions` is not `0` (an older `decompile` without the command) gets a full `flushNative`
+  instead. `DecompInterface.getKeptTypesFlushCount()` counts the accepted commands.
+* D9 (giving the permit back before the C text is printed) is not done: the result is decoded inside
+  `decompileFunction`, so only `PrettyPrinter` and the JSON building would leave the permit early, an
+  unmeasured gain for a second return path.

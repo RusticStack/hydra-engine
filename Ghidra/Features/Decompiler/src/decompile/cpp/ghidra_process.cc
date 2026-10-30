@@ -265,6 +265,17 @@ void FlushNative::rawAction(void)
   res = 0;
 }
 
+void FlushFunctions::rawAction(void)
+
+{
+  Scope *globscope = ghidra->symboltab->getGlobalScope();
+  globscope->clear();		// Clear symbols first as this may delete scopes
+  ghidra->symboltab->deleteSubScopes(globscope); // Flush cached function and globals database
+  ghidra->commentdb->clear();	// Clear any comments
+  ghidra->cpool->clear();
+  res = 0;			// Data-types and string decodings are kept
+}
+
 void FlushNative::sendResult(const string &errorMsg)
 
 {
@@ -492,6 +503,7 @@ void GhidraDecompCapability::initialize(void)
   commandmap["registerProgram"] = new RegisterProgram();
   commandmap["deregisterProgram"] = new DeregisterProgram();
   commandmap["flushNative"] = new FlushNative();
+  commandmap["flushFunctions"] = new FlushFunctions();
   commandmap["decompileAt"] = new DecompileAt();
   commandmap["structureGraph"] = new StructureGraph();
   commandmap["setAction"] = new SetAction();
