@@ -446,6 +446,15 @@ public class SystemUtilities {
 	}
 
 	/**
+	 * The system property that, when {@code true}, sizes default thread pools from the granted
+	 * processors without the {@link #DEFAULT_THREAD_POOL_CAP fixed cap}.
+	 */
+	public static final String CPU_CORE_UNCAPPED_PROPERTY = "cpu.core.uncapped";
+
+	/** The most threads a default-sized pool gets unless {@code cpu.core.uncapped} is set. */
+	static final int DEFAULT_THREAD_POOL_CAP = 10;
+
+	/**
 	 * Returns the default size (in number of threads) for a <b>CPU processing bound</b>
 	 * thread pool.
 	 *
@@ -453,25 +462,28 @@ public class SystemUtilities {
 	 */
 	public static int getDefaultThreadPoolSize() {
 		return getDefaultThreadPoolSize(Runtime.getRuntime().availableProcessors(),
-			getCPUOverride(), getCPUCoreLimit());
+			getCPUOverride(), getCPUCoreLimit(), Boolean.getBoolean(CPU_CORE_UNCAPPED_PROPERTY));
 	}
 
 	/**
 	 * Computes the default size of a <b>CPU processing bound</b> thread pool.
 	 * <p>
 	 * The size follows the processors the OS grants this process
-	 * ({@link Runtime#availableProcessors()} honours affinity masks and container quotas).
-	 * There is no fixed upper bound: Ghidra used to cap pools at 10 threads, which left most
-	 * of a larger machine idle.  The {@code cpu.core.override} and {@code cpu.core.limit}
-	 * system properties still apply.
+	 * ({@link Runtime#availableProcessors()} honours affinity masks and container quotas),
+	 * capped at {@value #DEFAULT_THREAD_POOL_CAP} threads unless {@code uncapped} is set
+	 * ({@code -Dcpu.core.uncapped=true}, off by default).  The cap stays the default because
+	 * every default-sized pool shares it, including the decompiler pools whose threads each
+	 * keep a native decompiler process.  The {@code cpu.core.override} and
+	 * {@code cpu.core.limit} system properties still apply.
 	 *
 	 * @param availableProcessors the processors granted to this process
 	 * @param cpuOverride the exact size to use ({@code cpu.core.override}), or null
 	 * @param cpuCoreLimit the most cores to use ({@code cpu.core.limit}), or null
+	 * @param uncapped true to size from the granted processors without the fixed cap
 	 * @return the default pool size.
 	 */
 	static int getDefaultThreadPoolSize(int availableProcessors, Integer cpuOverride,
-			Integer cpuCoreLimit) {
+			Integer cpuCoreLimit, boolean uncapped) {
 
 		if (cpuOverride != null) {
 			return cpuOverride;
@@ -485,6 +497,18 @@ public class SystemUtilities {
 		// switching is taking place.
 		//
 		int numProcessors = Math.max(1, availableProcessors + 1);
+
+		//
+		// We enforce an upper bound here.  There is likely diminishing returns with
+		// more threads, and if there are too many, other resource limits can be hit.
+		//
+		// Note: the user can still override this with the tool option *for GUI usage*.
+		//       Users can set the system property cpu.core.override to specify an exact
+		//       value to use for non-GUI usage, or cpu.core.uncapped to drop the bound.
+		//
+		if (!uncapped && numProcessors > DEFAULT_THREAD_POOL_CAP) {
+			numProcessors = DEFAULT_THREAD_POOL_CAP;
+		}
 
 		// Note:  this serves only to limit the number of cores possible, not to increase
 		if (cpuCoreLimit == null) {

@@ -15,13 +15,18 @@ example `12.3-hydra.1`); its tag is `v` and the version. Releases are on
 - CI skips daemon_tests and contract_tests, as the release workflow does, when
   `.github/local-test-record.json` names a locally tested commit and only documents or `.github/`
   files changed since; the build, the smoke test and the client packaging always run.
-- The default CPU-bound thread pools (the shared "Analysis" pool, `GThreadPool` defaults) size
-  from the processors the OS grants the process (`Runtime.availableProcessors() + 1`) without
-  Ghidra's fixed cap of 10. `-Dcpu.core.override` (exact size) and `-Dcpu.core.limit` (upper
-  bound) still apply.
+- `-Dcpu.core.uncapped=true` (off by default) sizes the default CPU-bound thread pools (the
+  shared "Analysis" pool, `GThreadPool` defaults) from the processors the OS grants the process
+  (`Runtime.availableProcessors() + 1`) without Ghidra's fixed cap of 10. The cap stays the
+  default: it bounds every default-sized pool, including the decompiler pools
+  (`ParallelDecompiler`, `DecompilerConcurrentQ`) whose threads each keep a native decompiler
+  process, and no end-to-end speed-up from a bigger pool was measured. `-Dcpu.core.override`
+  (exact size) and `-Dcpu.core.limit` (upper bound) still apply.
 - A constant propagation Max Threads value above the analysis pool size runs with the whole
   pool (`AbstractAnalyzer.clampThreadCount`) instead of silently dropping to one thread
-  (`ConstantPropagationAnalyzer.runAddressAnalysis`). The default Max Threads (2) of the
+  (`ConstantPropagationAnalyzer.runAddressAnalysis`), and the Max Threads option is no longer
+  rewritten to 1. This is an accepted semantic change for users who set Max Threads above the
+  pool size; with the default (2) nothing changes. The default Max Threads (2) of the
   constant reference and stack analyzers is unchanged: on six x86/x64 binaries (four test
   fixtures, `zipfldr.dll`, `msvcp_win.dll`) every reference and stack variable was identical at
   1, 2, 4 and 24 threads, but neither analyzer got faster above 2-4 threads (the stack analyzer

@@ -26,17 +26,20 @@ public class SystemUtilitiesThreadPoolSizeTest {
 
 	private String savedOverride;
 	private String savedLimit;
+	private String savedUncapped;
 
 	@Before
 	public void setUp() {
 		savedOverride = System.getProperty("cpu.core.override");
 		savedLimit = System.getProperty("cpu.core.limit");
+		savedUncapped = System.getProperty(SystemUtilities.CPU_CORE_UNCAPPED_PROPERTY);
 	}
 
 	@After
 	public void tearDown() {
 		restore("cpu.core.override", savedOverride);
 		restore("cpu.core.limit", savedLimit);
+		restore(SystemUtilities.CPU_CORE_UNCAPPED_PROPERTY, savedUncapped);
 	}
 
 	private static void restore(String key, String value) {
@@ -48,39 +51,60 @@ public class SystemUtilitiesThreadPoolSizeTest {
 		}
 	}
 
+	private static int size(int processors, Integer override, Integer limit, boolean uncapped) {
+		return SystemUtilities.getDefaultThreadPoolSize(processors, override, limit, uncapped);
+	}
+
 	@Test
-	public void testSizeFollowsGrantedProcessorsWithoutFixedCap() {
-		assertEquals(5, SystemUtilities.getDefaultThreadPoolSize(4, null, null));
-		assertEquals(11, SystemUtilities.getDefaultThreadPoolSize(10, null, null));
-		assertEquals(25, SystemUtilities.getDefaultThreadPoolSize(24, null, null));
-		assertEquals(129, SystemUtilities.getDefaultThreadPoolSize(128, null, null));
+	public void testDefaultKeepsFixedCap() {
+		assertEquals(5, size(4, null, null, false));
+		assertEquals(10, size(9, null, null, false));
+		assertEquals(10, size(10, null, null, false));
+		assertEquals(10, size(24, null, null, false));
+		assertEquals(10, size(128, null, null, false));
+	}
+
+	@Test
+	public void testUncappedFollowsGrantedProcessors() {
+		assertEquals(5, size(4, null, null, true));
+		assertEquals(11, size(10, null, null, true));
+		assertEquals(25, size(24, null, null, true));
+		assertEquals(129, size(128, null, null, true));
 	}
 
 	@Test
 	public void testSizeIsAtLeastOne() {
-		assertEquals(1, SystemUtilities.getDefaultThreadPoolSize(0, null, null));
-		assertEquals(2, SystemUtilities.getDefaultThreadPoolSize(1, null, null));
+		assertEquals(1, size(0, null, null, false));
+		assertEquals(2, size(1, null, null, false));
+		assertEquals(1, size(0, null, null, true));
 	}
 
 	@Test
 	public void testOverrideIsExact() {
-		assertEquals(10, SystemUtilities.getDefaultThreadPoolSize(24, 10, null));
-		assertEquals(40, SystemUtilities.getDefaultThreadPoolSize(4, 40, null));
-		assertEquals(3, SystemUtilities.getDefaultThreadPoolSize(24, 3, 8));
+		assertEquals(10, size(24, 10, null, true));
+		assertEquals(40, size(4, 40, null, false));
+		assertEquals(3, size(24, 3, 8, false));
 	}
 
 	@Test
 	public void testLimitOnlyLowers() {
-		assertEquals(9, SystemUtilities.getDefaultThreadPoolSize(24, null, 8));
-		assertEquals(5, SystemUtilities.getDefaultThreadPoolSize(4, null, 8));
+		assertEquals(9, size(24, null, 8, false));
+		assertEquals(9, size(24, null, 8, true));
+		assertEquals(10, size(24, null, 16, false));
+		assertEquals(17, size(24, null, 16, true));
+		assertEquals(5, size(4, null, 8, true));
 	}
 
 	@Test
 	public void testDefaultUsesRuntimeProcessors() {
 		System.clearProperty("cpu.core.override");
 		System.clearProperty("cpu.core.limit");
-		assertEquals(Runtime.getRuntime().availableProcessors() + 1,
-			SystemUtilities.getDefaultThreadPoolSize());
+		System.clearProperty(SystemUtilities.CPU_CORE_UNCAPPED_PROPERTY);
+		int granted = Runtime.getRuntime().availableProcessors() + 1;
+		assertEquals(Math.min(granted, 10), SystemUtilities.getDefaultThreadPoolSize());
+
+		System.setProperty(SystemUtilities.CPU_CORE_UNCAPPED_PROPERTY, "true");
+		assertEquals(granted, SystemUtilities.getDefaultThreadPoolSize());
 	}
 
 	@Test

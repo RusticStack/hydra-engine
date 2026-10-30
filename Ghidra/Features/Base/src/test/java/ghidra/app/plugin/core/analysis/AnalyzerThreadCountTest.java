@@ -66,7 +66,8 @@ public class AnalyzerThreadCountTest {
 				return new AddressSet(start);
 			}
 		};
-		analyzer.maxThreadCount = pool.getMaxThreadCount() + 5;
+		int requested = pool.getMaxThreadCount() + 5;
+		analyzer.maxThreadCount = requested;
 
 		AddressSpace space = new GenericAddressSpace("ram", 32, AddressSpace.TYPE_RAM, 0);
 		Set<Address> locations = new TreeSet<>(List.of(space.getAddress(0x1000),
@@ -77,6 +78,8 @@ public class AnalyzerThreadCountTest {
 		assertTrue(result.contains(space.getAddress(0x1000)));
 		assertTrue(result.contains(space.getAddress(0x2000)));
 		assertFalse(barrier.isBroken());
+		assertEquals("the Max Threads option must not be rewritten", requested,
+			analyzer.maxThreadCount);
 	}
 
 	private static void assumePoolCanRunTwo(GThreadPool pool) {
