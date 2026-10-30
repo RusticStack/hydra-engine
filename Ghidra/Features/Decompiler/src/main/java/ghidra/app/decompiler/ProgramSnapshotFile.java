@@ -23,6 +23,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
 
+import ghidra.program.database.ProgramDB;
 import ghidra.program.model.address.AddressSpace;
 import ghidra.program.model.listing.Program;
 import ghidra.program.model.mem.*;
@@ -51,7 +52,14 @@ import ghidra.util.Msg;
  * the same space are merged, matching {@link Memory#getBytes} which reads across them.
  * <p>
  * Instances are shared by every {@link DecompInterface} of the same program and generation and are
- * deleted when the last lease is released.
+ * deleted when the last lease is released; files still leased when the JVM exits (an interface
+ * that was never disposed) are deleted by a shutdown hook.
+ * <p>
+ * The generation is best-effort under concurrent edits: {@link Program#getModificationNumber()} is
+ * bumped after a change is written and is read here without the program lock, so a decompile that
+ * races with a byte edit can see the bytes from before or after the edit, as the callback path can.
+ * The file is written outside the per-program lock; while one thread writes it, other interfaces
+ * of the program use callbacks instead of waiting.
  */
 public final class ProgramSnapshotFile {
 
@@ -67,6 +75,10 @@ public final class ProgramSnapshotFile {
 
 	/** Current snapshot per program, keyed by identity; each holder is its own lock. */
 	private static final Map<Program, Holder> HOLDERS = new WeakHashMap<>();
+
+	/** Snapshot files written by this JVM and not yet deleted; removed by a shutdown hook. */
+	private static final Set<Path> LIVE_FILES = new HashSet<>();
+	private static boolean shutdownHookAdded;	// guarded by LIVE_FILES
 
 	private final Holder holder;
 	private final Path path;
@@ -102,6 +114,7 @@ public final class ProgramSnapshotFile {
 
 	private static final class Holder {
 		ProgramSnapshotFile current;
+		boolean writing;	// a thread is writing a new generation outside the lock
 	}
 
 	private static Holder holder(Program program) {
@@ -115,29 +128,48 @@ public final class ProgramSnapshotFile {
 	 * The previous lease is released when a different snapshot is returned.
 	 * @param program the program
 	 * @param previous the caller's current lease, or null
-	 * @return the leased snapshot, or null if the program changed while it was written or the
-	 * file could not be written (the caller then uses callbacks only)
+	 * @return the leased snapshot, or null if the program is not a database program, another
+	 * thread is writing its snapshot, the program changed while it was written or the file could
+	 * not be written (the caller then uses callbacks only)
 	 */
 	static ProgramSnapshotFile acquire(Program program, ProgramSnapshotFile previous) {
+		if (!(program instanceof ProgramDB)) {
+			release(previous);	// other Program views may not read their memory like ProgramDB
+			return null;
+		}
 		long generation = program.getModificationNumber();
 		if (previous != null && previous.generation == generation) {
 			return previous;
 		}
 		Holder holder = holder(program);
-		ProgramSnapshotFile result;
+		ProgramSnapshotFile result = null;
+		boolean mustWrite = false;
 		synchronized (holder) {
 			ProgramSnapshotFile current = holder.current;
-			if (current == null || current.generation != generation) {
-				ProgramSnapshotFile written = write(holder, program, generation);
-				if (written == null) {
-					release(previous);
-					return null;
-				}
-				holder.current = written;
-				current = written;
+			if (current != null && current.generation == generation) {
+				current.leases++;
+				result = current;
 			}
-			current.leases++;
-			result = current;
+			else if (!holder.writing) {
+				holder.writing = true;
+				mustWrite = true;
+			}
+		}
+		if (mustWrite) {
+			ProgramSnapshotFile written = null;
+			try {
+				written = write(holder, program, generation);
+			}
+			finally {
+				synchronized (holder) {
+					holder.writing = false;
+					if (written != null) {
+						written.leases++;
+						holder.current = written;	// the old current is deleted by its last release
+					}
+				}
+			}
+			result = written;
 		}
 		release(previous);
 		return result;
@@ -163,11 +195,56 @@ public final class ProgramSnapshotFile {
 	}
 
 	private void delete() {
+		deleteFile(path);
+	}
+
+	private static void deleteFile(Path file) {
 		try {
-			Files.deleteIfExists(path);
+			Files.deleteIfExists(file);
 		}
 		catch (IOException e) {
-			path.toFile().deleteOnExit();
+			file.toFile().deleteOnExit();
+		}
+		synchronized (LIVE_FILES) {
+			LIVE_FILES.remove(file);
+		}
+	}
+
+	private static Path createFile() throws IOException {
+		Path file = Files.createTempFile(snapshotDirectory(), "prog-", ".hysnap");
+		synchronized (LIVE_FILES) {
+			LIVE_FILES.add(file);
+			if (!shutdownHookAdded) {
+				shutdownHookAdded = true;
+				Runtime.getRuntime()
+						.addShutdownHook(new Thread(ProgramSnapshotFile::deleteLiveFiles,
+							"Decompiler snapshot cleanup"));
+			}
+		}
+		return file;
+	}
+
+	private static void deleteLiveFiles() {
+		List<Path> files;
+		synchronized (LIVE_FILES) {
+			files = new ArrayList<>(LIVE_FILES);
+		}
+		for (Path file : files) {
+			try {
+				Files.deleteIfExists(file);
+			}
+			catch (IOException e) {
+				// the process may still map it; nothing more to do at exit
+			}
+		}
+	}
+
+	/**
+	 * @return the snapshot files this JVM has written and not yet deleted (tests)
+	 */
+	static Set<Path> liveFiles() {
+		synchronized (LIVE_FILES) {
+			return new HashSet<>(LIVE_FILES);
 		}
 	}
 
@@ -183,7 +260,8 @@ public final class ProgramSnapshotFile {
 
 	/**
 	 * Collect the regions the snapshot holds: initialized, unmapped blocks in byte-addressable
-	 * spaces, with adjacent blocks of one space merged.
+	 * loaded memory spaces (not OTHER sections such as .comment or .debug_*, which the decompiler
+	 * does not read), with adjacent blocks of one space merged.
 	 * @param memory the program memory
 	 * @param spaceNames receives the space names in index order
 	 * @return the regions sorted by space index and offset
@@ -195,7 +273,7 @@ public final class ProgramSnapshotFile {
 				continue;
 			}
 			AddressSpace space = block.getStart().getAddressSpace();
-			if (space.getAddressableUnitSize() != 1) {
+			if (space.getAddressableUnitSize() != 1 || !space.isLoadedMemorySpace()) {
 				continue;
 			}
 			bySpace.computeIfAbsent(space, s -> new ArrayList<>()).add(block);
@@ -231,12 +309,12 @@ public final class ProgramSnapshotFile {
 	private static ProgramSnapshotFile write(Holder holder, Program program, long generation) {
 		Path file = null;
 		try {
-			file = Files.createTempFile(snapshotDirectory(), "prog-", ".hysnap");
+			file = createFile();
 			List<String> spaceNames = new ArrayList<>();
 			List<Region> regions = collectRegions(program.getMemory(), spaceNames);
 			writeFile(file, generation, spaceNames, regions);
 			if (program.getModificationNumber() != generation) {
-				Files.deleteIfExists(file);	// changed while written: not a sealed generation
+				deleteFile(file);	// changed while written: not a sealed generation
 				return null;
 			}
 			return new ProgramSnapshotFile(holder, file, generation);
@@ -245,12 +323,7 @@ public final class ProgramSnapshotFile {
 			Msg.warn(ProgramSnapshotFile.class,
 				"Decompiler snapshot not written, using callbacks: " + e.getMessage());
 			if (file != null) {
-				try {
-					Files.deleteIfExists(file);
-				}
-				catch (IOException e2) {
-					file.toFile().deleteOnExit();
-				}
+				deleteFile(file);
 			}
 			return null;
 		}

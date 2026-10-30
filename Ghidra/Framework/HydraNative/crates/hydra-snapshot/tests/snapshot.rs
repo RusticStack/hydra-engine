@@ -225,3 +225,61 @@ fn engine_written_file_validates() {
         s.regions().len()
     );
 }
+
+/// The format conformance vector shared with ProgramSnapshotFileTest (Java writer): generation 7,
+/// space "ram", regions 0x1000 (bytes 0..16) and 0x2000 (eight 0xAA). Both sides must produce and
+/// accept exactly these bytes.
+const GOLDEN_V1_HEX: &str = concat!(
+    "4859534e41503031010000000100000002000000000000000700000000000000",
+    "0000000000000000001000000000000010000000000000006800000000000000",
+    "0000000000000000002000000000000008000000000000007800000000000000",
+    "0300000072616d00000102030405060708090a0b0c0d0e0faaaaaaaaaaaaaaaa",
+);
+
+fn golden_v1() -> Vec<u8> {
+    (0..GOLDEN_V1_HEX.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&GOLDEN_V1_HEX[i..i + 2], 16).unwrap())
+        .collect()
+}
+
+#[test]
+fn golden_v1_conformance() {
+    let text: Vec<u8> = (0..16u8).collect();
+    let data = [0xAAu8; 8];
+    let encoded = encode(7, &["ram"], &[(0, 0x1000, &text), (0, 0x2000, &data)]);
+    assert_eq!(encoded, golden_v1(), "encode matches the shared vector");
+    let s = Snapshot::from_vec(golden_v1()).unwrap();
+    assert_eq!(s.generation(), 7);
+    assert_eq!(s.spaces(), ["ram".to_string()]);
+    let mut buf = [0u8; 16];
+    assert!(s.read(0, 0x1000, &mut buf));
+    assert_eq!(buf.to_vec(), text);
+    let mut buf = [0u8; 8];
+    assert!(s.read(0, 0x2000, &mut buf));
+    assert_eq!(buf, data);
+}
+
+#[test]
+fn huge_space_count_is_an_error_not_an_abort() {
+    let mut bad = sample();
+    bad[12..16].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert!(Snapshot::from_vec(bad).is_err());
+}
+
+#[cfg(windows)]
+#[test]
+fn open_snapshot_refuses_writers() {
+    let dir = std::env::temp_dir().join(format!("hysnap-share-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("share.hysnap");
+    std::fs::write(&path, sample()).unwrap();
+    let s = Snapshot::open(&path).unwrap();
+    assert!(
+        std::fs::OpenOptions::new().write(true).open(&path).is_err(),
+        "a writer cannot open a mapped snapshot"
+    );
+    assert!(std::fs::File::open(&path).is_ok(), "readers still can");
+    drop(s);
+    std::fs::remove_dir_all(&dir).unwrap();
+}

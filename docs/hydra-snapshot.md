@@ -24,14 +24,22 @@ the same time with no lock and no round trip.
 
 ### Why the output cannot change
 
-- The file holds the bytes `Memory.getBytes` returns: initialized, unmapped blocks of byte-addressable spaces, with
-  adjacent blocks of one space merged (as `Memory.getBytes` reads across them).
+- The file holds the bytes `Memory.getBytes` returns: initialized, unmapped blocks of byte-addressable loaded memory
+  spaces (not OTHER sections such as `.comment` or `.debug_*`), with adjacent blocks of one space merged (as
+  `Memory.getBytes` reads across them; `MemoryMapDB.getBytes` reads each block through `MemoryBlock.getBytes`, which is
+  what the writer uses). Only `ProgramDB` programs get a snapshot; other `Program` views stay on callbacks.
 - A request is served from the file only when the **whole** range lies in one region. Partial ranges (where the
   callback returns the read part plus zeros), uninitialized or mapped blocks, word-addressed spaces and register
   addresses all go to the callback, unchanged.
 - The file is written for one modification number and checked again after writing; a program that changed while it
   was written gets no snapshot. Each decompile compares the modification number and moves to a new file when it
-  changed, so the process never reads bytes older than the program.
+  changed. This is best-effort under concurrent edits: the modification number is bumped after a change is written
+  and is read without the program lock, so a decompile that races with a byte edit can see the bytes from before or
+  after it, as the callback path can. Without concurrent edits the bytes are those of the current program.
+- The file is written outside the per-program lock: while one thread writes a generation, other interfaces of the
+  same program use callbacks for that decompile instead of waiting.
+- A process that rejects a file (`f`) is not sent it again; a decompiler without the `setSnapshot` command (an
+  older `decompile.exe`) stays on callbacks for the life of that process.
 - `DecompileDebug` dumps need every byte request; while one records, the snapshot is dropped.
 
 ### File format (version 1, little-endian)
@@ -115,7 +123,12 @@ query to Java, so a partial snapshot is always correct and only fewer callbacks 
 - The C++ reader is a small in-tree copy of the format (no Rust in `decompile.exe` yet); once the Rust workspace from
   `rust/p1-native-core` is in the build, the C++ side can link the `hydra-snapshot` C ABI instead, or keep the copy and
   test both against the same files (`HYSNAP_SAMPLE=<file> cargo test` validates an engine-written file).
-- Snapshot files live in `java.io.tmpdir/hydra-decompiler-snapshots`; a JVM that is killed leaves them behind
-  (`deleteOnExit` covers normal exits). A daemon should clean the folder at start.
-- With frequent edits the file is rewritten per modification number; for the daemon this wants an incremental
-  generation (byte-change events) before the flag can default on.
+- Snapshot files live in `java.io.tmpdir/hydra-decompiler-snapshots`. A shutdown hook deletes every file this JVM
+  still holds, including those leased by a `DecompInterface` that was never disposed; a JVM that is killed leaves
+  them behind. A daemon should clean the folder at start (not done here: other JVMs share the folder).
+- The generation is the program modification number, which every change bumps (symbols, comments, types too), so
+  during auto-analysis the file is rewritten for almost every decompile. Not for use during auto-analysis: before the
+  flag can default on, the generation must follow memory changes only (block and byte change events) and be written
+  incrementally.
+- Conformance: the Java writer (`ProgramSnapshotFileTest`) and the Rust reader (`golden_v1_conformance`) are tested
+  against the same 128-byte vector; the C++ reader is covered only by the decompile test with the flag on.
