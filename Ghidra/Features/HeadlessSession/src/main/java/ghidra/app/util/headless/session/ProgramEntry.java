@@ -575,9 +575,14 @@ final class ProgramEntry implements Decompilers, DecompilerGate.Pool {
 	 * {@link DecompileCache} key: change it with the set-up. The program's own decompiler options
 	 * ({@code grabFromProgram}) are program state, covered by the modification number.
 	 */
-	static final int DECOMPILER_SETUP =
-		"DecompileOptions.grabFromProgram|toggleCCode=true|toggleSyntaxTree=true|style=decompile"
-				.hashCode();
+	static final boolean DECOMPILER_C_CODE = true;
+	static final boolean DECOMPILER_SYNTAX_TREE = true;
+	static final String DECOMPILER_STYLE = "decompile";
+	/** The set-up {@link #newDecompiler} applies, made from the very constants it uses. */
+	static final String DECOMPILER_SETUP_TEXT = "DecompileOptions.grabFromProgram|toggleCCode=" +
+		DECOMPILER_C_CODE + "|toggleSyntaxTree=" + DECOMPILER_SYNTAX_TREE + "|style=" +
+		DECOMPILER_STYLE;
+	static final int DECOMPILER_SETUP = DECOMPILER_SETUP_TEXT.hashCode();
 
 	/** A decompiler opened on {@code program}, set up the way every session decompile runs. */
 	static DecompInterface newDecompiler(Program program, String path) {
@@ -585,9 +590,9 @@ final class ProgramEntry implements Decompilers, DecompilerGate.Pool {
 		DecompileOptions options = new DecompileOptions();
 		options.grabFromProgram(program);
 		d.setOptions(options);
-		d.toggleCCode(true);
-		d.toggleSyntaxTree(true);
-		d.setSimplificationStyle("decompile");
+		d.toggleCCode(DECOMPILER_C_CODE);
+		d.toggleSyntaxTree(DECOMPILER_SYNTAX_TREE);
+		d.setSimplificationStyle(DECOMPILER_STYLE);
 		if (!d.openProgram(program)) {
 			String msg = d.getLastMessage();
 			d.dispose();
