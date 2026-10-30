@@ -72,6 +72,8 @@ final class ScriptCommands {
 				registered = true;
 				// the request validation the command itself runs (3.5): one method, two callers
 				Preflight.register("script", ScriptCommands::validate);
+				// H4: the resolved-script cache's figures (an added member of health only)
+				Health.contribute("scriptCache", ScriptClassCache::describe);
 			}
 		}
 	}
@@ -548,12 +550,18 @@ final class ScriptCommands {
 		ScriptClasses.Lookup look = ScriptClasses.lookup(src);
 		GhidraScript s = look.instance();
 		if (s == null) {
+			// H4: an unchanged script that loaded cleanly before needs no bundle activation; the
+			// hit takes no lock (ScriptClassCache says when an entry is valid)
+			s = ScriptClassCache.instance(src);
+		}
+		if (s == null) {
 			synchronized (SCRIPT_COMPILE) {
 				GhidraScriptProvider provider = GhidraScriptUtil.getProvider(src);
 				if (provider == null) {
 					throw new SessionException(SessionException.BAD_REQUEST,
 						"no script provider for " + src.getName());
 				}
+				ScriptClassCache.Before before = ScriptClassCache.before(src, provider);
 				try {
 					s = provider.getScriptInstance(src, pw);
 				}
@@ -564,6 +572,11 @@ final class ScriptCommands {
 						ex);
 				}
 				look.remember(provider, s);
+				pw.flush();
+				if (sw.getBuffer().length() == 0) {
+					// a load that printed nothing (no build messages): the same on a hit
+					ScriptClassCache.remember(src, provider, before, s);
+				}
 			}
 		}
 		s.setScriptArgs(Json.strings(req, "args").toArray(new String[0]));
@@ -580,28 +593,37 @@ final class ScriptCommands {
 		boolean savedBefore = p != null && !p.isChanged();
 		long modAtEnd = modBefore;
 		int outer = -1;
-		if (contained) {
-			outer = p.startTransaction("session: contained script (rolled back)");
-		}
-		long t0 = System.nanoTime();
+		// H4: soft bound on scripts running at once (taken before any transaction is opened)
+		boolean permit = ScriptClassCache.enterRun(m);
+		long t0;
 		Throwable failure = null;
-		Runaway.Watch watch = c.v3() ? Runaway.watch(c, m, src) : null;
+		Runaway.Watch watch = null;
 		try {
-			s.execute(state, new ScriptControls(pw, pw, false, m));
-		}
-		catch (Throwable t) {
-			failure = t;
+			if (contained) {
+				outer = p.startTransaction("session: contained script (rolled back)");
+			}
+			t0 = System.nanoTime();
+			watch = c.v3() ? Runaway.watch(c, m, src) : null;
+			try {
+				s.execute(state, new ScriptControls(pw, pw, false, m));
+			}
+			catch (Throwable t) {
+				failure = t;
+			}
+			finally {
+				Runaway.unwatch(watch);
+				if (p != null) {
+					// what the script tried, measured before the rollback takes it back (3.4)
+					modAtEnd = p.getModificationNumber();
+				}
+				if (contained) {
+					p.endTransaction(outer, false);
+				}
+				pw.flush();
+			}
 		}
 		finally {
-			Runaway.unwatch(watch);
-			if (p != null) {
-				// what the script tried, measured before the rollback takes it back (3.4)
-				modAtEnd = p.getModificationNumber();
-			}
-			if (contained) {
-				p.endTransaction(outer, false);
-			}
-			pw.flush();
+			ScriptClassCache.exitRun(permit);
 		}
 		String out = sw.toString();
 		JsonObject r = Json.of("script", src.getAbsolutePath(), "mode", mode, "program",
@@ -712,6 +734,8 @@ final class ScriptCommands {
 		/** Leaked (quarantined) scripts, by owner key. */
 		private static final Map<String, Integer> LEAKED = new ConcurrentHashMap<>();
 		private static ScheduledExecutorService sampler;
+		/** Looked up once: the sampler used to look it up on every pass (H4). */
+		private static final ThreadMXBean THREAD_MX = ManagementFactory.getThreadMXBean();
 
 		private Runaway() {
 		}
@@ -800,7 +824,7 @@ final class ScriptCommands {
 				this.maxAllocBytes = Math.max(0L, setting("scriptAllocMb", 0)) * 1024L * 1024L;
 				this.graceNanos = TimeUnit.SECONDS.toNanos(
 					Math.max(0, setting("scriptGraceS", DEFAULT_GRACE_S)));
-				ThreadMXBean mx = ManagementFactory.getThreadMXBean();
+				ThreadMXBean mx = THREAD_MX;
 				long cpu = -1;
 				long alloc = -1;
 				try {
@@ -870,8 +894,11 @@ final class ScriptCommands {
 
 		/** One pass over the scripts under watch. Never throws (the executor would stop). */
 		static void sample() {
+			if (WATCHES.isEmpty()) {
+				return;
+			}
 			try {
-				ThreadMXBean mx = ManagementFactory.getThreadMXBean();
+				ThreadMXBean mx = THREAD_MX;
 				long now = System.nanoTime();
 				for (Watch w : WATCHES) {
 					if (!w.m.isCancelled()) {
