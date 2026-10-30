@@ -74,6 +74,10 @@ final class SessionProject extends DefaultProject {
 	 * (last opened project, recent projects), and builds the user's tool chest only when something
 	 * asks for it (see {@link LazyToolChest}): a headless session has no tools, so the parse of
 	 * every {@code .tool} file the base constructor did on each project open is not done at all.
+	 * This also defers the base class's seeding of the default tools into an empty user tools
+	 * folder: a session no longer writes those {@code .tool} files on open (which parallel
+	 * sessions used to race on); the folder is seeded on the chest's first use instead, and the
+	 * GUI's project manager still seeds it as before.
 	 */
 	static final class Manager extends DefaultProjectManager {
 		@Override
