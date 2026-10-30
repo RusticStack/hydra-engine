@@ -21,6 +21,7 @@ import org.junit.*;
 
 import generic.test.AbstractGenericTest;
 import ghidra.program.model.address.Address;
+import ghidra.program.model.address.AddressSetView;
 import ghidra.program.model.listing.CommentType;
 import ghidra.program.model.listing.Listing;
 
@@ -36,11 +37,15 @@ public class ProgramDBLightViewTest extends AbstractGenericTest {
 
 	@Before
 	public void setUp() throws Exception {
-		ProgramBuilder builder = new ProgramBuilder("Light", ProgramBuilder._TOY);
+		ProgramBuilder builder = new ProgramBuilder("Light", ProgramBuilder._X86);
 		builder.createMemory("RAM", "0x1000", 0x1000);
 		p = builder.getProgram();
 		p.addConsumer(this);
 		builder.dispose();
+		// as if opened from a project file: changes count and are recorded (setDomainFile does that)
+		p.setTemporary(false);
+		p.setDomainFile(p.getDomainFile());
+		p.clearUndo();
 		listing = p.getListing();
 	}
 
@@ -63,6 +68,10 @@ public class ProgramDBLightViewTest extends AbstractGenericTest {
 		}
 	}
 
+	private AddressSetView changes() {
+		return p.getChanges().getAddressSet();
+	}
+
 	private String comment(long off) {
 		return listing.getComment(CommentType.EOL, a(off));
 	}
@@ -71,7 +80,7 @@ public class ProgramDBLightViewTest extends AbstractGenericTest {
 	public void testDefaultRecordsChanges() {
 		assertTrue(p.isRecordingChanges());
 		comment(0x1010, "x", true);
-		assertTrue(p.getChangeSet().getAddressSet().contains(a(0x1010)));
+		assertTrue(changes().contains(a(0x1010)));
 	}
 
 	@Test
@@ -80,10 +89,10 @@ public class ProgramDBLightViewTest extends AbstractGenericTest {
 		p.disableChangeRecording();
 		assertFalse(p.isRecordingChanges());
 		// what was recorded is forgotten, nothing new is recorded, isChanged() still works
-		assertTrue(p.getChangeSet().getAddressSet().isEmpty());
+		assertTrue(changes().isEmpty());
 		comment(0x1010, "x", true);
 		assertTrue(p.isChanged());
-		assertTrue(p.getChangeSet().getAddressSet().isEmpty());
+		assertTrue(changes().isEmpty());
 		assertEquals("x", comment(0x1010));
 	}
 
@@ -115,11 +124,15 @@ public class ProgramDBLightViewTest extends AbstractGenericTest {
 		assertEquals("c16", comment(0x1000));
 		assertEquals("c19", comment(0x100c));
 		assertEquals("b", comment(0x1100));
+		// the rollback used the one checkpoint besides the baseline: nothing is left to undo
+		assertFalse(p.canUndo());
 		// one undoable transaction is kept, not 50
+		comment(0x1100, "b2", true);
+		comment(0x1104, "d", true);
 		assertTrue(p.canUndo());
 		p.undo();
-		assertNull(comment(0x1100));
-		assertEquals("c19", comment(0x100c));
+		assertNull(comment(0x1104));
+		assertEquals("b2", comment(0x1100));
 		assertFalse(p.canUndo());
 	}
 
