@@ -250,13 +250,15 @@ public class MappedProgramSnapshotTest extends AbstractGhidraHeadlessIntegration
 
 	/**
 	 * A snapshot that serves nothing and records, when it is dropped, what the database held at
-	 * that moment: the byte at {@code 0x1004} and whether the {@code .rodata} block still exists.
+	 * that moment: the byte at {@code 0x1004}, whether the {@code .rodata} block still exists and
+	 * where the block holding {@code 0x1080} starts.
 	 */
 	private final class RecordingSnapshot implements MemoryReadSnapshot {
 		private final long generation = program.getModificationNumber();
 		final AtomicInteger drops = new AtomicInteger();
 		volatile String byteSeen;
 		volatile Boolean blockSeen;
+		volatile String splitSeen;
 
 		@Override
 		public long getGeneration() {
@@ -275,6 +277,7 @@ public class MappedProgramSnapshotTest extends AbstractGhidraHeadlessIntegration
 				Memory memory = program.getMemory();
 				byteSeen = attempt(() -> Byte.toString(memory.getByte(builder.addr("0x1004"))));
 				blockSeen = memory.getBlock(builder.addr("0x2000")) != null;
+				splitSeen = memory.getBlock(builder.addr("0x1080")).getStart().toString();
 			}
 		}
 	}
@@ -326,6 +329,19 @@ public class MappedProgramSnapshotTest extends AbstractGhidraHeadlessIntegration
 		assertNull(memory.getBlock(builder.addr("0x2000")));
 		assertEquals(1, rec.drops.get());
 		assertEquals("dropped while the block still existed", Boolean.TRUE, rec.blockSeen);
+	}
+
+	@Test
+	public void testSplitDropsTheSnapshotBeforeTheBlockSplits() throws Exception {
+		Memory memory = program.getMemory();
+		MemoryBlock text = memory.getBlock(builder.addr("0x1000"));
+		RecordingSnapshot rec = new RecordingSnapshot();
+		program.getMemory().setReadSnapshot(rec);
+		builder.tx(() -> memory.split(text, builder.addr("0x1080")));
+		assertEquals(builder.addr("0x1080"), memory.getBlock(builder.addr("0x1080")).getStart());
+		assertEquals(1, rec.drops.get());
+		assertEquals("dropped before the block was split", builder.addr("0x1000").toString(),
+			rec.splitSeen);
 	}
 
 	/**
