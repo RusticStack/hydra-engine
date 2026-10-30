@@ -110,18 +110,28 @@ def t_v2_decompile_unchanged(c):
         S = d.connect("v2", "cc-e9")
         S.call("open_project", path=str(gpr))
         S.call("open_program", path=exe)
-        fn = S.call("functions", limit=1)["functions"][0]["address"]
+        fns = [f["address"] for f in S.call("functions", limit=2)["functions"]]
+        fn, other = fns[0], fns[-1]
+        check(fn != other, f"two functions: {fns}")
         ref = S.call("decompile", address=fn)
         pid = S.call("health")["pid"]
         pids = ch.decompilers_of(pid)
         check(len(pids) == 1, f"decompilers {pids}")
         check(ch.terminate(pids[0], 10).get("terminated"), "kill -9 of the decompiler")
-        r = S.call("decompile", address=fn)      # the pooled decompiler is dead: this request fails alone
+        # a result the engine already has (the decompile cache, on by default) needs no decompiler:
+        # the same reply as before the kill, byte for byte (the dead process is not touched)
+        rc = S.call("decompile", address=fn)
+        check(rc == ref, f"a cached decompile after the kill: {str(rc)[:200]}")
+        # the first request that needs the process: the pooled decompiler is dead, it fails alone
+        r = S.call("decompile", address=other)
         check(r.get("completed") is False and "error" in r and "timedOut" in r,
               f"hydra.3 answers a dead decompiler in the result, not as an error: {r}")
-        r2 = S.call("decompile", address=fn)
-        check(r2.get("completed") is True and r2["c"] == ref["c"], f"the next request: {str(r2)[:200]}")
-        return "a killed decompiler fails one protocol 2 request with completed:false (no new code); the next works"
+        r2 = S.call("decompile", address=other)
+        check(r2.get("completed") is True and r2.get("c"), f"the next request: {str(r2)[:200]}")
+        r3 = S.call("decompile", address=fn)
+        check(r3.get("completed") is True and r3["c"] == ref["c"], f"the first function again: {str(r3)[:200]}")
+        return ("a killed decompiler fails one protocol 2 request with completed:false (no new code); the "
+                "next works; a result already decompiled is answered unchanged without the process")
     finally:
         close(S)
         d.stop(force=True)
