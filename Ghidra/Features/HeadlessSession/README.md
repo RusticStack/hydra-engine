@@ -136,8 +136,8 @@ Lowest to highest: defaults, `<state>/config.json`, environment, command-line op
 |---|---|---|---|
 | `java` | `GHIDRA_SESSION_JAVA_HOME` | discovered | JDK home. |
 | `maxHeap` | `GHIDRA_SESSION_MAXMEM` | a quarter of RAM, 2-31 GiB | `-Xmx`. G1 only takes what it needs and returns idle memory. |
-| `minHeap` | | `512m` | `-Xms`. |
-| `gc` | `GHIDRA_SESSION_GC` | `g1` | `g1` (with string deduplication and periodic uncommit), `zgc`, `parallel`, `default`. |
+| `minHeap` | | `128m` | `-Xms` (it was `512m`; G1 never shrinks below it). |
+| `gc` | `GHIDRA_SESSION_GC` | `g1` | `g1` (with string deduplication, periodic uncommit and `MinHeapFreeRatio=15`/`MaxHeapFreeRatio=40`), `zgc`, `parallel`, `default`. |
 | `vmargs` | `GHIDRA_SESSION_VMARGS` (space-separated) | `[]` | Extra JVM options, last. |
 | `tmpdir` | `GHIDRA_SESSION_TMPDIR` | the JVM's | `java.io.tmpdir`: where Ghidra keeps unsaved database buffers. Put it on a fast disk with room. |
 | `mode` | `GHIDRA_SESSION_MODE` | `fast` | `fast` or `standard` (above). |
