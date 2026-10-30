@@ -124,3 +124,22 @@ without overrides (rustc itself still goes through kache). `HYDRA_DECOMP_CC_WRAP
 7. Failure isolation: a C++ crash in-process takes the daemon down, unlike a `decompile.exe`
    crash. Keep the process backend as the fallback; run the host in a child process (one process,
    N threads) until the crash rate on the full KotOR set is measured at zero.
+
+## Step 5 status (rust/p5-decomp-backend, 2026-10-30)
+
+In place: the daemon seam. `HeadlessSession` `QueryCommands.decompile` offers every request to
+`HostDecompileBackend.tryDecompile` first (`-Dhydra.decomp.backend=host`, default `process`);
+`null` takes the existing `DecompInterface` path. `unsupportedReason` names the first missing
+piece; the first fallback is logged once (`decompile backend host: falling back ...`), and
+`hostedCount`/`fallbackCount` count both paths.
+
+Not in place: the provider. The snapshot (format v1) holds bytes only, nothing exports the
+symbol scope, data types, prototypes, comments, context, cpool or inject payloads per generation,
+the host has no `SnapshotArchitecture` and no C ABI the JVM calls (no FFM binding or child
+process). So every request falls back today and the flag changes no reply.
+
+Gate run (fixture projects copied from `_golden/projects/fixtures`, all 8 programs, every
+non-external function, 3959 decompiles, reply JSON hashed per function): flag on vs off identical
+with 1 client and with 4 concurrent clients; 4 clients vs 1 client identical. Wall, sum over the 8
+programs (on and off ran at the same time on a shared machine): 1 client off 40.3 s / on 40.0 s;
+4 clients off 12.7 s / on 12.5 s. The numbers measure the process path both times.

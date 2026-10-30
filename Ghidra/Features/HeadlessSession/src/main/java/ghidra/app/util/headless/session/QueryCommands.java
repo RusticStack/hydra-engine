@@ -252,6 +252,11 @@ final class QueryCommands {
 			Json.put(r, "timedOut", false);
 			return r;
 		}
+		// Hydra: the optional host backend (hydra.decomp.backend=host); null = the process path
+		JsonObject hosted = HostDecompileBackend.tryDecompile(prog, f, timeout, cap);
+		if (hosted != null) {
+			return hosted;
+		}
 		DecompInterface d = e.borrowDecompiler();
 		boolean healthy = false;
 		try {
