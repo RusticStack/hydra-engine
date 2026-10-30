@@ -473,6 +473,44 @@ def find_jdk(install: Install, explicit: str | None, launch_props: dict) -> tupl
 
 # ---- state dir and configuration ------------------------------------------------------------
 
+#: How long ``write_shared`` keeps retrying a rename that another writer or a reader blocks.
+SHARED_WRITE_DEADLINE = 10.0
+
+
+def write_shared(path: Path, text: str, same_ok: bool = False,
+                 deadline: float = SHARED_WRITE_DEADLINE) -> None:
+    """Writes ``text`` to ``path`` atomically when other threads or processes may write the same
+    file at the same time. Each writer has its own temporary file (pid plus a random suffix) that
+    ``os.replace`` moves into place. On Windows the rename fails (WinError 5 or 32) while another
+    writer's rename or a reader holds ``path``: with ``same_ok`` a ``path`` that already holds
+    ``text`` is accepted; otherwise the rename is retried until ``deadline`` seconds have passed,
+    and then the error is raised. The temporary file never outlives the call."""
+    path = Path(path)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}-{uuid.uuid4().hex[:12]}.tmp")
+    end = time.monotonic() + deadline
+    delay = 0.002
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        while True:
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                if same_ok:
+                    try:
+                        if path.read_text(encoding="utf-8") == text:
+                            return
+                    except OSError:
+                        pass
+                if time.monotonic() >= end:
+                    raise
+                time.sleep(delay)  # backoff while the other side lets go; not synchronisation
+                delay = min(delay * 2, 0.05)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+
+
 def state_dir(explicit: str | None = None) -> Path:
     if explicit:
         return Path(explicit).resolve()
@@ -849,11 +887,10 @@ class Launch:
             argdir.mkdir(parents=True, exist_ok=True)
             argfile = argdir / f"classpath-{key}.args"
             if not argfile.is_file():
-                tmp = argfile.with_suffix(".tmp")
-                # @argfile syntax: quote, and escape backslashes inside quotes
+                # @argfile syntax: quote, and escape backslashes inside quotes. Clients launching
+                # against one state dir at once all write this file: same name, same content.
                 quoted = os.pathsep.join(cp).replace("\\", "\\\\")
-                tmp.write_text(f'-cp "{quoted}"\n', encoding="utf-8")
-                os.replace(tmp, argfile)
+                write_shared(argfile, f'-cp "{quoted}"\n', same_ok=True)
             info["key"] = key
             info["classpathEntries"] = len(cp)
             head = [f"@{argfile}"]
@@ -1801,9 +1838,7 @@ def registry_write(install: "Install", state: Path, instance: str, pid,
         entry = {"pid": pid, "stateDir": str(state), "instance": instance,
                  "install": str(install.dir), "hydraVersion": version or install.version,
                  "startedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
-        tmp = f.with_name(f.name + f".{os.getpid()}.tmp")
-        tmp.write_text(json.dumps(entry, indent=1), encoding="utf-8")
-        os.replace(tmp, f)
+        write_shared(f, json.dumps(entry, indent=1))
         return f
     except OSError:
         return None
@@ -2037,9 +2072,7 @@ class Daemon:
         registry_write(install, self.state, self.instance, pid,
                        str(s.endpoint.get("hydraVersion") or s.endpoint.get("ghidra") or ""))
         try:
-            tmp = self.launch_file.with_name(self.launch_file.name + f".{os.getpid()}.tmp")
-            tmp.write_text(json.dumps({"pid": pid, "launch": public}, indent=1), encoding="utf-8")
-            os.replace(tmp, self.launch_file)
+            write_shared(self.launch_file, json.dumps({"pid": pid, "launch": public}, indent=1))
         except OSError:
             pass
 
@@ -2308,7 +2341,8 @@ def build_aot(ghidra: str | None, state: str | None, project: str | None,
     key = info["aotKey"]
     out = st / "aot" / f"{key}.aot"
     out.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out.with_suffix(".building")
+    # Two training runs at once must not write (or rename) one another's output file.
+    tmp = out.with_name(f"{out.stem}.{os.getpid()}-{uuid.uuid4().hex[:12]}.building")
     argv, info = launch.command([], aot_output=tmp)
     t0 = time.perf_counter()
     errlog = st / "aot" / f"{key}.log"
