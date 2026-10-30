@@ -21,7 +21,6 @@ import java.io.File;
 import java.lang.foreign.*;
 import java.lang.invoke.MethodHandle;
 import java.nio.charset.StandardCharsets;
-import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.atomic.AtomicLong;
 
 import com.google.gson.JsonObject;
@@ -42,9 +41,6 @@ import ghidra.util.HydraCpu;
  */
 final class ReplyEncoder {
 
-	/** The pooled output buffers kept: at most this many, each at most {@link #POOL_MAX_BYTES}. */
-	private static final int POOL_MAX = 8;
-	private static final long POOL_MAX_BYTES = 4L << 20;
 	/** The bytes of the cached pages of one program state, at most. */
 	static final long PAGE_CACHE_BYTES = 16L << 20;
 
@@ -57,8 +53,6 @@ final class ReplyEncoder {
 	private static final AtomicLong PAGE_HITS = new AtomicLong();
 	private static final AtomicLong FAILED = new AtomicLong();
 	private static final AtomicLong COLUMNS = new AtomicLong();
-
-	private static final ConcurrentLinkedDeque<Buffer> POOL = new ConcurrentLinkedDeque<>();
 
 	static {
 		MethodHandle rows = null;
@@ -196,31 +190,6 @@ final class ReplyEncoder {
 		}
 	}
 
-	/** A pooled native output buffer. */
-	private record Buffer(Arena arena, MemorySegment seg) {
-	}
-
-	private static Buffer take(long need) {
-		for (var it = POOL.iterator(); it.hasNext();) {
-			Buffer b = it.next();
-			if (b.seg.byteSize() >= need && POOL.remove(b)) {
-				return b;
-			}
-		}
-		long size = Math.max(64L << 10, Long.highestOneBit(Math.max(1, need - 1)) << 1);
-		Arena a = Arena.ofShared();
-		return new Buffer(a, a.allocate(size, 16));
-	}
-
-	private static void give(Buffer b) {
-		if (b.seg.byteSize() <= POOL_MAX_BYTES && POOL.size() < POOL_MAX) {
-			POOL.addFirst(b);
-		}
-		else {
-			b.arena.close();
-		}
-	}
-
 	/**
 	 * The JSON array of rows {@code from..to} of {@code s} (when {@code idx} is null) or of rows
 	 * {@code idx[0..nidx]}, or null when the native encoder failed (the caller uses Java).
@@ -237,23 +206,25 @@ final class ReplyEncoder {
 				need += c.bound(idx[k]);
 			}
 		}
-		Buffer b = take(need);
 		long len;
+		// one confined arena per call, for the output and the index list: freed at once on this
+		// thread (a shared arena's close would need a handshake with every thread of the daemon)
 		try (Arena call = Arena.ofConfined()) {
+			MemorySegment buf = call.allocate(need, 16);
 			MemorySegment ix = MemorySegment.NULL;
 			if (idx != null) {
 				ix = call.allocate(JAVA_INT, Math.max(1, nidx));
 				MemorySegment.copy(idx, 0, ix, JAVA_INT, 0, nidx);
 			}
 			len = (long) ROWS.invokeExact(c.names, c.nameOff, c.addrs, c.addrOff, c.sizes, c.flags,
-				(long) c.n, ix, (long) (idx == null ? 0 : nidx), (long) from, (long) to, b.seg,
-				b.seg.byteSize());
+				(long) c.n, ix, (long) (idx == null ? 0 : nidx), (long) from, (long) to, buf,
+				buf.byteSize());
 			if (len < 0) {
 				FAILED.incrementAndGet();
 				return null;
 			}
 			byte[] out = new byte[(int) len];
-			MemorySegment.copy(b.seg, JAVA_BYTE, 0, out, 0, (int) len);
+			MemorySegment.copy(buf, JAVA_BYTE, 0, out, 0, (int) len);
 			CALLS.incrementAndGet();
 			ROWS_WRITTEN.addAndGet(idx == null ? to - from : nidx);
 			BYTES.addAndGet(len);
@@ -262,9 +233,6 @@ final class ReplyEncoder {
 		catch (Throwable t) {
 			FAILED.incrementAndGet();
 			return null;
-		}
-		finally {
-			give(b);
 		}
 	}
 
