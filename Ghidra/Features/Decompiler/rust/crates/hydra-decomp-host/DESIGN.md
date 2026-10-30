@@ -234,7 +234,18 @@ when a generation is made (data types, strings), and look at the cold-path conte
   request at a time keeps one Architecture instead of one per worker (unit test
   `sequential_jobs_of_one_store_stay_on_one_worker`); concurrent requests still spread to idle
   workers. The pool mirrors the C++ per-worker LRU (`HYDRA_SNAPSHOT_ARCHS`) and forgets a store
-  when it is closed.
+  when it is closed. Affinity is a preference, not a binding: a worker whose own queue is empty
+  steals a queued job from a running worker (one for a store it holds first, else the oldest job
+  of the longest queue), so a job never waits behind a long decompile while a worker is idle
+  (review fix; unit test `idle_worker_steals_jobs_queued_behind_a_long_job`, which fails on the
+  first version: 1.52 s instead of under 0.1 s). Queues and bookkeeping share one lock, so
+  choosing a worker and a worker going idle cannot miss each other.
+- **Async failure handling (review fixes).** If the completion thread stops, every pending run is
+  failed (future, slot, generation released) and later requests fall back to the process path,
+  so no request waits forever (also with timeout 0). A full host queue (`BUSY`) falls back instead
+  of making a blocking downcall on a possibly virtual thread. The deadline is checked after the
+  export work (prefetch, learn) too, so the timeout bounds the whole hosted decompile as in the
+  blocking path. A failed pool start stops the workers it already started.
 - **Identity.** KotOR, all 8,616 non-external functions through the daemon `decompile` command
   (decompile cache off, 4 clients), with the host as the default: 8,616 identical to the hydra.4
   reference (`gate/dc/h4-plain.json`, aggregate `c954f77a1b13d6f2`), 0 errors, 8,600 hosted,

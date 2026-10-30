@@ -183,21 +183,58 @@ public final class HostDecompiler {
 		final Semaphore slots;
 		final AtomicLong tickets = new AtomicLong();
 		final ConcurrentHashMap<Long, Pending> pending = new ConcurrentHashMap<>();
+		/**
+		 * Why the completion thread stopped (null while it runs). Once set, no run is submitted
+		 * (requests fall back to the process path) and every pending run has been failed.
+		 */
+		volatile String drainStopped;
 
 		/** The completion thread: takes finished runs and completes their futures. */
 		private void drain() {
+			try {
+				drain0();
+			}
+			catch (Throwable t) {
+				stopDrain(t);
+				if (t instanceof VirtualMachineError e) {
+					throw e;
+				}
+			}
+		}
+
+		/**
+		 * The completion thread is gone: marks the host unusable for async runs and fails every
+		 * pending run (its future, its slot and its generation), so no request waits forever.
+		 */
+		void stopDrain(Throwable t) {
+			Msg.error(HostDecompiler.class, "decompile host completions stopped: " + t, t);
+			drainStopped = "host completions stopped: " + t;
+			for (Long ticket : pending.keySet()) {
+				failPending(ticket);
+			}
+		}
+
+		/** Fails one pending run if it is still pending (whoever removes it owns it). */
+		void failPending(long ticket) {
+			Pending p = pending.remove(ticket);
+			if (p == null) {
+				return;
+			}
+			slots.release();
+			try {
+				p.future.completeExceptionally(new IllegalStateException(drainStopped));
+			}
+			finally {
+				p.gen.release(this);
+			}
+		}
+
+		private void drain0() throws Throwable {
 			final long size = 48;	// struct Completion (snapshot.rs)
 			final int batch = 64;
 			MemorySegment buf = Arena.global().allocate(size * batch, 8);
 			while (true) {
-				int n;
-				try {
-					n = (int) completions.invokeExact(buf, (long) batch, 1000L);
-				}
-				catch (Throwable t) {
-					Msg.error(HostDecompiler.class, "decompile host completions: " + t, t);
-					return;
-				}
+				int n = (int) completions.invokeExact(buf, (long) batch, 1000L);
 				for (int i = 0; i < n; i++) {
 					long b = i * size;
 					long ticket = buf.get(JAVA_LONG, b);
@@ -846,18 +883,32 @@ public final class HostDecompiler {
 	 */
 	private static Run runAsync(Lib l, Gen g, byte[] addr, long deadline) throws Throwable {
 		long t0 = System.nanoTime();
+		if (l.drainStopped != null) {
+			return refused(l.drainStopped);
+		}
 		if (deadline != 0) {
 			if (!l.slots.tryAcquire(Math.max(0, deadline - t0), TimeUnit.NANOSECONDS)) {
 				throw new TimeoutException();
 			}
 		}
 		else {
-			l.slots.acquire();
+			// bounded waits, so a stopped completion thread (which fails the pending runs but
+			// may leave this caller waiting for a slot) is noticed
+			while (!l.slots.tryAcquire(1, TimeUnit.SECONDS)) {
+				if (l.drainStopped != null) {
+					return refused(l.drainStopped);
+				}
+			}
 		}
 		long ticket = l.tickets.incrementAndGet();
 		CompletableFuture<Run> fut = new CompletableFuture<>();
 		g.pin();
 		l.pending.put(ticket, new Pending(fut, g));
+		if (l.drainStopped != null) {
+			// the completion thread stopped after the check above: nobody would complete this run
+			l.failPending(ticket);
+			return refused(l.drainStopped);
+		}
 		int rc;
 		try (Arena a = Arena.ofConfined()) {
 			rc = (int) l.submit.invokeExact(g.store, segment(a, addr), (long) addr.length, ticket);
@@ -866,17 +917,17 @@ public final class HostDecompiler {
 			rc = -100;
 		}
 		if (rc != OK) {
-			l.pending.remove(ticket);
-			l.slots.release();
-			g.release(l);
-			if (rc == BUSY) {
-				return run(l, g, addr);
+			if (l.pending.remove(ticket) != null) {
+				l.slots.release();
+				g.release(l);
 			}
-			return new Run(rc, ("host submit refused: " + rc).getBytes(StandardCharsets.UTF_8),
-				List.of(), List.of());
+			// BUSY (another user of the library filled the host queue): fall back instead of a
+			// blocking downcall, which would pin this (possibly virtual) thread's carrier
+			return refused(rc == BUSY ? "host busy" : "host submit refused: " + rc);
 		}
 		try {
 			if (deadline == 0) {
+				// the completion thread completes every pending future, also when it stops
 				return fut.get();
 			}
 			return fut.get(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
@@ -888,6 +939,11 @@ public final class HostDecompiler {
 			NATIVE_NANOS.add(System.nanoTime() - t0);
 			ROUNDS.increment();
 		}
+	}
+
+	/** A run that was not made: the request falls back to the process path, saying why. */
+	private static Run refused(String why) {
+		return new Run(-100, why.getBytes(StandardCharsets.UTF_8), List.of(), List.of());
 	}
 
 	private static byte[] take(Lib l, MemorySegment p, long len) throws Throwable {
@@ -1020,6 +1076,13 @@ public final class HostDecompiler {
 		}
 	}
 
+	/** @throws TimeoutException past {@code deadline} ({@link System#nanoTime}; 0: none) */
+	static void checkDeadline(long deadline) throws TimeoutException {
+		if (deadline != 0 && System.nanoTime() - deadline >= 0) {
+			throw new TimeoutException();
+		}
+	}
+
 	private static Outcome hosted(Lib l, Gen g, Function f, DecompileOptions options,
 			long deadline) throws Throwable {
 		DecompileSnapshot a = g.borrow();
@@ -1030,14 +1093,15 @@ public final class HostDecompiler {
 			prefetch(l, g, a, f, addr);
 			EXPORT_NANOS.add(System.nanoTime() - t0);
 			for (int round = 1; round <= MAX_ROUNDS; round++) {
-				if (deadline != 0 && System.nanoTime() - deadline >= 0) {
-					throw new TimeoutException();
-				}
+				// the export work (prefetch, learn) runs on this thread: the deadline bounds it as
+				// the blocking path's fut.get(timeoutSecs) bounds the whole of hosted()
+				checkDeadline(deadline);
 				Run r = ASYNC ? runAsync(l, g, addr, deadline) : run(l, g, addr);
 				if (r.rc() == MISSES && r.out().length > 0 && exactRun(a, r)) {
 					// every miss was fed its real answer: the run is the process path's run
 					EXACT_RUNS.increment();
 					learn(l, g, a, addr, r);
+					checkDeadline(deadline);
 					r = new Run(OK, r.out(), List.of(), List.of());
 				}
 				if (r.rc() == OK) {
