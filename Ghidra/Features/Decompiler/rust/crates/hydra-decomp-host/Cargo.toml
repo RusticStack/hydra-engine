@@ -12,6 +12,8 @@ links = "hydradecomp"
 [lib]
 name = "hydra_decomp_host"
 path = "src/lib.rs"
+# cdylib: hydra_decomp_host.dll, the library the engine calls through FFM (snapshot backend)
+crate-type = ["rlib", "cdylib"]
 
 [[bin]]
 name = "hydra-decomp-host"

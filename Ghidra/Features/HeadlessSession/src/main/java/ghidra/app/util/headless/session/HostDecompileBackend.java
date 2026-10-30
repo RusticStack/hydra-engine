@@ -15,37 +15,49 @@
  */
 package ghidra.app.util.headless.session;
 
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
+import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 
+import ghidra.app.decompiler.*;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Program;
 import ghidra.util.Msg;
 
 /**
- * Hydra: the optional in-process decompile backend (plan rank 12, step 5 of
+ * Hydra: the optional in-process decompile backend (plan rank 12, steps 5 and 6 of
  * {@code Ghidra/Features/Decompiler/rust/crates/hydra-decomp-host/DESIGN.md}). With
  * {@code -Dhydra.decomp.backend=host} (default {@code process}) a decompile request is first offered
- * to the Rust host (N C++ Architectures on a worker pool, reading the program's sealed snapshot and
- * data the Java side exports once per generation, never per-call upcalls). Any case the host does
- * not cover returns {@code null} here and the caller takes the existing {@code DecompInterface}
- * path, so replies stay byte-for-byte what clients get today.
+ * to {@link HostDecompiler}: the Rust host's worker pool runs the stock C++ {@code
+ * ArchitectureGhidra} over a {@code SnapshotArchitecture} channel, answered from the answers the
+ * Java side exports once per program generation ({@link DecompileSnapshot}), with no Java callback
+ * during the decompile. Any case the host does not cover returns {@code null} here and the caller
+ * takes the existing {@code DecompInterface} path, so replies stay byte-for-byte what clients get
+ * today.
  *
- * <p>Coverage today: the sealed snapshot ({@code ProgramSnapshotFile}, format v1) holds the
- * program's bytes only. A host decompile also needs the symbol scope, data types, function
- * prototypes, comments, context registers, cpool and inject payloads, none of which is exported per
- * generation yet, and the host has no {@code SnapshotArchitecture}; it reads DecompileDebug dumps
- * only. Every request therefore falls back. The seam, the flag, the fallback count and the
- * identity gate (flag on vs off) are in place so the provider can be filled in section by section.
+ * <p>Only decompiles of a {@link ProgramEntry} (the program's own decompilers, set up by
+ * {@code ProgramEntry.newDecompiler}: options from the program, the default action, C code and
+ * syntax tree on) are offered; overlays and anything else take the process path.
  */
 final class HostDecompileBackend {
 
 	/** {@code host} turns the backend on; anything else (the default {@code process}) keeps it off. */
 	static final String PROPERTY = "hydra.decomp.backend";
 
+	/**
+	 * The host registers a program as {@code DecompInterface} does with its defaults (no setAction):
+	 * only the set-up {@code ProgramEntry.newDecompiler} uses today is offered.
+	 */
+	static final boolean SETUP_MATCHES = ProgramEntry.DECOMPILER_C_CODE &&
+		ProgramEntry.DECOMPILER_SYNTAX_TREE && "decompile".equals(ProgramEntry.DECOMPILER_STYLE);
+
 	private static final AtomicLong HOSTED = new AtomicLong();
 	private static final AtomicLong FALLBACKS = new AtomicLong();
+	private static final Set<String> LOGGED = ConcurrentHashMap.newKeySet();
 
 	private HostDecompileBackend() {
 	}
@@ -55,36 +67,49 @@ final class HostDecompileBackend {
 	}
 
 	/**
-	 * Why the host cannot decompile {@code f} of {@code prog}, or {@code null} when it can. The
-	 * reasons name the first missing piece, in the order DESIGN.md wires them.
+	 * Why the host cannot be offered {@code f} decompiled by {@code e}, or {@code null} when it can.
 	 */
-	static String unsupportedReason(Program prog, Function f) {
-		if (f.isExternal() || f.isThunk()) {
-			return "external or thunk function";
+	static String unsupportedReason(Program prog, Decompilers e, Function f) {
+		if (!(e instanceof ProgramEntry pe) || pe.program != prog) {
+			return "not a program entry's decompiler (overlay or other view)";
 		}
-		// snapshot v1: bytes only; scope, types, prototypes, comments, context, cpool and inject
-		// payloads are not exported per generation, and there is no SnapshotArchitecture yet
-		return "snapshot v1 covers bytes only (no symbol/type/prototype export)";
+		if (!SETUP_MATCHES) {
+			return "decompiler set-up differs from the registration the host makes";
+		}
+		return DecompileSnapshot.hostable(f);
 	}
 
 	/**
-	 * The reply for a decompile of {@code f}, in the same format as the process path, or
-	 * {@code null} to take the process path (backend off, or a case the host does not cover).
+	 * The results of a host decompile of {@code f}, the same as the process path returns for it, or
+	 * {@code null} to take the process path (backend off, a case the host does not cover, or a
+	 * host run that did not complete).
 	 */
-	static JsonObject tryDecompile(Program prog, Function f, int timeoutS, int cap) {
+	static DecompileResults tryDecompile(Program prog, Decompilers e, Function f, int timeoutS) {
 		if (!enabled()) {
 			return null;
 		}
-		String reason = unsupportedReason(prog, f);
-		if (reason != null) {
-			if (FALLBACKS.incrementAndGet() == 1) {
-				Msg.info(HostDecompileBackend.class,
-					"decompile backend host: falling back to the process path (" + reason + ")");
+		String reason = unsupportedReason(prog, e, f);
+		if (reason == null) {
+			// the options every ProgramEntry decompiler is opened with (newDecompiler)
+			DecompileOptions options = new DecompileOptions();
+			options.grabFromProgram(prog);
+			HostDecompiler.Outcome o = HostDecompiler.decompile(prog, f, options, timeoutS);
+			if (o.results() != null) {
+				HOSTED.incrementAndGet();
+				return o.results();
 			}
-			return null;
+			reason = o.fallback();
 		}
-		HOSTED.incrementAndGet();
-		return null; // unreachable until a provider reports support
+		FALLBACKS.incrementAndGet();
+		String kind = reason.replaceAll("0x[0-9a-fA-F]+|\\b[0-9a-fA-F]{6,}\\b", "#");
+		if (kind.length() > 120) {
+			kind = kind.substring(0, 120);
+		}
+		if (LOGGED.size() < 64 && LOGGED.add(kind)) {
+			Msg.info(HostDecompileBackend.class, "decompile backend host: falling back to the " +
+				"process path for " + f.getName(true) + " (" + reason + ")");
+		}
+		return null;
 	}
 
 	/** Requests answered by the host since start (for the gate and tests). */
@@ -95,5 +120,14 @@ final class HostDecompileBackend {
 	/** Requests the backend, while on, handed to the process path. */
 	static long fallbackCount() {
 		return FALLBACKS.get();
+	}
+
+	/** {@code status.decompileBackend} while the backend is on: the counts and the host's figures. */
+	static JsonObject describe() {
+		JsonObject o = Json.of("backend", "host", "hostedCount", HOSTED.get(), "fallbackCount",
+			FALLBACKS.get());
+		Map<String, Object> s = HostDecompiler.stats();
+		o.add("host", new Gson().toJsonTree(s));
+		return o;
 	}
 }

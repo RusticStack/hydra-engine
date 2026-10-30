@@ -484,3 +484,48 @@ rootProject.createInstallationZip {
 		}
 	}
 }
+
+
+/*****************************************************************************************
+ * Hydra: hydra_decomp_host, the decompile host library (rust/crates/hydra-decomp-host, a cdylib
+ * holding the C++ decompiler and its SnapshotArchitecture) that HostDecompiler calls through the
+ * foreign function API when -Dhydra.decomp.backend=host (DESIGN.md step 6).
+ *
+ * cargoBuildDecompHost builds it with the toolchain pinned in rust/rust-toolchain.toml and the
+ * dependencies pinned in rust/Cargo.lock (--locked); the library goes where Ghidra's natives go
+ * (build/os/<platform>, shipped as os/<platform>, next to decompile). Cargo is found on the PATH,
+ * or set CARGO.
+ *****************************************************************************************/
+def hostPlatform = rootProject.getCurrentPlatformName()
+def hostCargoDir = file('build/cargo-host')
+def hostLibrary = System.mapLibraryName('hydra_decomp_host')
+
+task cargoBuildDecompHost(type: Exec) {
+	group = 'Hydra'
+	description = 'Builds hydra_decomp_host with cargo (release). [Ghidra/Features/Decompiler/build.gradle]'
+	workingDir file('rust')
+	executable System.getenv('CARGO') ?: 'cargo'
+	args 'build', '--release', '--locked', '-p', 'hydra-decomp-host', '--lib'
+	environment 'CARGO_TARGET_DIR', hostCargoDir.path
+	inputs.files(fileTree(file('rust')) {
+		include 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/**', 'crates/**'
+		exclude '**/build/**'
+	})
+	inputs.files(fileTree(file('src/decompile')) {
+		include 'cpp/**', 'zlib/**'
+	})
+	outputs.file "${hostCargoDir}/release/${hostLibrary}"
+}
+
+def buildDecompHost = task "buildDecompHost_${hostPlatform}"(type: Copy) {
+	group = 'Hydra'
+	description = "Copies hydra_decomp_host to build/os/${hostPlatform}. [Ghidra/Features/Decompiler/build.gradle]"
+	from "${hostCargoDir}/release/${hostLibrary}"
+	into "build/os/${hostPlatform}"
+	dependsOn cargoBuildDecompHost
+}
+
+// The install's os/<platform> is copied from build/os/<platform> (distributableGhidraModule.gradle)
+rootProject.tasks.named("assembleDistribution_${hostPlatform}") {
+	dependsOn buildDecompHost
+}
