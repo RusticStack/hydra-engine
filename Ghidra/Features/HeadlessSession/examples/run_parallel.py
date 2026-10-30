@@ -630,7 +630,8 @@ IGNORE = ["*.md", "*.txt", "Ghidra/Features/HeadlessSession/examples/conc/*", "G
 EXTRA = {"Ghidra/Framework/DB/src/main/java/db/buffers/LocalManagedBufferFile.java": ("dt_e8.py", "dt_hh.py"),
          "Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/data/LocalDatabaseItem.java": "dt_e8.py",
          "Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/local/LocalDatabaseItem.java":
-             ("dt_e8.py", "dt_hh.py")}
+             ("dt_e8.py", "dt_hh.py"),
+         "Ghidra/Features/Base/src/main/java/ghidra/app/plugin/core/osgi/OSGiParallelLock.java": "dt_osgi.py"}
 #: commands nearly every test sends: they say nothing about which tests a file affects
 UBIQUITOUS = {"hello", "ping", "status", "open_project", "open_program", "close_project", "close_program", "list",
               "functions", "info", "shutdown", "switch", "projects", "programs"}
