@@ -66,7 +66,7 @@ final class Waits {
 	/**
 	 * The default least waiter cap (setting {@code lockWaitersMin}, PROTOCOL-3.md 8.18; it was 2). A
 	 * fixed number, not a share of the CPUs, so that a small host queues as many waiters on one lock
-	 * as a big one, bounded by half the lane while a waiter keeps its slot (see {@link #cap(int)}).
+	 * as a big one, bounded by half the lane (see {@link #cap(int)}).
 	 */
 	static final int DEFAULT_LOCK_WAITERS_MIN = 4;
 
@@ -90,18 +90,15 @@ final class Waits {
 	}
 
 	/**
-	 * The waiter cap of a lane with {@code slots} slots: {@code max(lockWaitersMin, slots / 4)}, and,
-	 * while a waiter keeps its lane slot (setting {@code yieldSlots} off), at most half the lane
-	 * (at least 2), so that one lock's queue can never take the lane (D39). The bound by the lane
-	 * is what the cap was for; the least value no longer shrinks with the CPUs of the host.
+	 * The waiter cap of a lane with {@code slots} slots: {@code max(lockWaitersMin, slots / 4)}, at
+	 * most half the lane (at least 2), so that one lock's queue can never take the lane (D39), with
+	 * or without {@code yieldSlots} (not every wait yields its slot, and a waiter takes a slot again
+	 * when it gets the lock). The bound by the lane is what the cap was for; the least value no
+	 * longer shrinks with the CPUs of the host.
 	 */
 	static int cap(int slots) {
 		int least = Math.max(1, Settings.integer("lockWaitersMin", DEFAULT_LOCK_WAITERS_MIN));
-		int cap = Math.max(least, slots / 4);
-		if (!Settings.bool("yieldSlots", false)) {
-			cap = Math.min(cap, Math.max(2, slots / 2));
-		}
-		return cap;
+		return Math.min(Math.max(least, slots / 4), Math.max(2, slots / 2));
 	}
 
 	/** True when the request this thread executes speaks protocol 3 (the gate of the v3-only keys). */

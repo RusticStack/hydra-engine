@@ -4267,9 +4267,9 @@ that is off by default or only ever admits more than before.
   read class of BP15 are unchanged (the launcher library's `labelled()` view sends `parallel:true` by default, which runs
   a label's requests with no order at all; `orderPerScope` is for a client that wants each label's order kept). Test: `dt_e3b` `scope_order` (both settings).
 * (b) **The waiter cap no longer shrinks with the host (S7).** The protocol 3 waiter cap of 3.5 / D39 was
-  `max(2, slots/4)` of the request's lane. It is now `max(lockWaitersMin, slots/4)` with `lockWaitersMin` 4, and, while a
-  waiter keeps its lane slot (`yieldSlots` off, the default), at most half the lane (at least 2), which is what the cap
-  protects (one lock's queue never takes the lane, BP9). For every lane size the new cap is at least the old one
+  `max(2, slots/4)` of the request's lane. It is now `max(lockWaitersMin, slots/4)` with `lockWaitersMin` 4, and at most
+  half the lane (at least 2), which is what the cap protects (one lock's queue never takes the lane, BP9); the bound holds
+  with `yieldSlots` on too (`dt_e3c` `yield_slots_stress` failed without it: not every wait yields its slot). For every lane size the new cap is at least the old one
   (2, 2, 4, 4, 8 waiters for 2, 4, 8, 12, 32 slots, against 2, 2, 2, 3, 8): a request that was admitted to a lock queue is
   still admitted, some that were refused `lock_queue_full` now wait. `dt_e3b` `waiter_caps` pins `lockWaitersMin` 2 (its
   premise is the cap of 2 on 8 quick slots). Self-test: "the waiter cap is max(4, slots/4) ...".

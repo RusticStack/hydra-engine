@@ -1520,12 +1520,12 @@ public class HeadlessSession implements GhidraLaunchable {
 			boolean configured = Waits.cap(8) == 2 && Waits.cap(32) == 8;
 			Settings.remove("lockWaitersMin");
 			Settings.set("yieldSlots", "true");
-			boolean yielded = Waits.cap(4) == 4;
+			boolean yielded = Waits.cap(2) == 2 && Waits.cap(4) == 2;
 			Settings.remove("yieldSlots");
 			if (yieldWas != null) {
 				Settings.set("yieldSlots", yieldWas);
 			}
-			check("lockWaitersMin sets the least cap; with yieldSlots the half-lane bound goes",
+			check("lockWaitersMin sets the least cap; the half-lane bound holds with yieldSlots too",
 				configured && yielded);
 			long gb = 1L << 30;
 			check("the default maxImports is 4, one per 2 GB of heap, at least 1, whatever the CPUs",
