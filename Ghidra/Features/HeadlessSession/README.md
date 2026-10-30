@@ -96,8 +96,18 @@ three extra JVMs `LaunchSupport` costs on every start:
     `-Xshare:off`), minus the shell and `LaunchSupport`.
 - **Class search cache:** Ghidra scans every jar for extension points on each start. The result
   depends only on the classpath and the modules' `ExtensionPoint.manifest` files, so the session
-  stores it (`<state>/classcache/`) with the size and time of every input and reuses it while all
-  are unchanged; anything changed means a normal search and a new cache.
+  stores it with the size and time of every input and reuses it while all are unchanged; anything
+  changed means a normal search and a new cache. A state dir that has no cache of its own
+  (`<state>/classcache/`) uses the shared one of the install (`classCacheDir`, by default
+  `<per-user state root>/classcache/`), so a daemon in a new state dir (another harness, a test, a
+  benchmark run) starts with a hit: measured 6.4 -> 4.2 CPU s per start, 3925 -> 3400 classes,
+  20.6 -> 17.0 MB metaspace.
+- **One-shot code without C2** (`jitOneShot`): javac and the class-file API, the RELAX NG
+  validator of the language specs and the Sleigh preprocessor run once or rarely in a daemon (a
+  script's first compile, a language's first load), but their hot loops made the optimising JIT
+  (C2) compile more bytecode of javac alone than of any Ghidra package. A compiler directives file
+  (`<state>/launch/jit-one-shot-*.json`) keeps them on C1; the JIT never changes what a method
+  computes.
 - **AOT cache** (JDK 25+): `ghidra_session.py aot [--project <a small project>]` runs a training
   session (start-up, a project, a program, a few decompiles) with `-XX:AOTCacheOutput`; fast-mode
   starts then use it automatically. It is keyed by the JDK, the install and every classpath jar's
@@ -143,6 +153,8 @@ Lowest to highest: defaults, `<state>/config.json`, environment, command-line op
 | `mode` | `GHIDRA_SESSION_MODE` | `fast` | `fast` or `standard` (above). |
 | `aot` | `GHIDRA_SESSION_AOT` | `auto` | `auto`: use the AOT cache when one exists; `off`. |
 | `classCache` | | `true` | The class search cache. |
+| `classCacheDir` | `GHIDRA_SESSION_CLASS_CACHE_DIR` | `<per-user state root>/classcache` | Where a state dir without its own class search cache finds the shared one; `none`: only the state dir's own. |
+| `jitOneShot` | `GHIDRA_SESSION_JIT_ONE_SHOT` | `true` | No C2 for code a daemon runs once or rarely (javac, spec validation, the Sleigh preprocessor); `false`: the JDK default. Off when `vmargs` name a `-XX:CompilerDirectivesFile`. |
 | `idleTimeout` | `GHIDRA_SESSION_IDLE_TIMEOUT` | `0` | Seconds without clients before the daemon exits; `0`: stay up. |
 | `keepWarm` | `GHIDRA_SESSION_KEEP_WARM` | `3600` | Seconds an unused read-only program or project stays open, so the next client gets it at once with warm decompilers; `0`: close at once. |
 | `maxQuick` | | CPU count | Concurrent quick requests. |
