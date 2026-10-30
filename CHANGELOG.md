@@ -9,6 +9,13 @@ example `12.3-hydra.1`); its tag is `v` and the version. Releases are on
 
 ## Unreleased
 
+- Python 3.13 or later is required (3.10 reaches end of life in October 2026). `ghidra_session.py`
+  exits with status 2 and "Hydra Engine's launcher needs Python 3.13 or later; this is X.Y" on an
+  older Python. CI and the upstream sync run on 3.13.
+- CI skips daemon_tests and contract_tests, as the release workflow does, when
+  `.github/local-test-record.json` names a locally tested commit and only documents or `.github/`
+  files changed since; the build, the smoke test and the client packaging always run.
+
 ## 12.3-hydra.4
 
 Released 2026-10-30. Based on upstream Ghidra `master` (12.3 DEV) at

@@ -35,7 +35,7 @@ driven by JSON lines over an authenticated loopback socket (or stdio), that:
 
 It is one new module, plus five small changes to Ghidra classes and one added class, found by the
 session's measurements and tests (see "Changes outside this module"). No launcher is changed, and there are no `.bat`, `.sh`
-or PowerShell launchers: `support/ghidra_session.py` (Python 3.10+, standard library only, any
+or PowerShell launchers: `support/ghidra_session.py` (Python 3.13+, standard library only, any
 OS) starts the JVM itself.
 
 ## Quick start
