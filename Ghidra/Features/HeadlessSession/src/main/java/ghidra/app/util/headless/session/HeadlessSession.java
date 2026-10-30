@@ -625,9 +625,164 @@ public class HeadlessSession implements GhidraLaunchable {
 			dbVersions();
 			health();
 			governor();
+			decompileCache();
 			System.out.println(
 				bad == 0 ? "all self-test checks held" : bad + " self-test check(s) FAILED");
 			return bad == 0 ? 0 : 1;
+		}
+
+		/**
+		 * Goal 4: the decompile cache's budget rule, single flight, LRU bound and invalidation,
+		 * without a program (keys made by hand).
+		 */
+		private static void decompileCache() {
+			check("decompileCache default: 1/32 of the heap, at most 256 MB, off below 8 MB",
+				DecompileCache.defaultBytes(512L << 20) == 16L << 20 &&
+					DecompileCache.defaultBytes(128L << 20) == 0 &&
+					DecompileCache.defaultBytes(64L << 30) == 256L << 20);
+			DecompileCache c = new DecompileCache(1L << 20);
+			DecompileCache.Key k = new DecompileCache.Key(1, 5, 0, 0x1000, 7);
+			java.util.concurrent.atomic.AtomicInteger runs =
+				new java.util.concurrent.atomic.AtomicInteger();
+			java.util.concurrent.CountDownLatch go = new java.util.concurrent.CountDownLatch(1);
+			int n = 8;
+			DecompileCache.Result[] got = new DecompileCache.Result[n];
+			Thread[] ts = new Thread[n];
+			for (int i = 0; i < n; i++) {
+				int j = i;
+				ts[i] = new Thread(() -> {
+					try {
+						go.await();
+					}
+					catch (InterruptedException e) {
+						return;
+					}
+					got[j] = c.compute(k, () -> false, () -> 5, () -> {
+						runs.incrementAndGet();
+						try {
+							Thread.sleep(300);
+						}
+						catch (InterruptedException e) {
+							Thread.currentThread().interrupt();
+						}
+						return new DecompileCache.Result("int f(void)", "int f(void) { return 1; }");
+					});
+				});
+				ts[i].start();
+			}
+			go.countDown();
+			for (Thread t : ts) {
+				try {
+					t.join(10_000);
+				}
+				catch (InterruptedException e) {
+					Thread.currentThread().interrupt();
+				}
+			}
+			boolean same = true;
+			for (DecompileCache.Result r : got) {
+				same &= r != null && r.c().equals("int f(void) { return 1; }");
+			}
+			check("decompileCache: 8 callers of one key at once run one decompile and all get " +
+				"its result (runs " + runs.get() + ", joined " + c.joined() + ")",
+				runs.get() == 1 && same && c.misses() == 1);
+			c.compute(k, () -> false, () -> 5, () -> {
+				throw new IllegalStateException("a later caller must be served from the cache");
+			});
+			check("decompileCache: a later caller of an unchanged program is a hit", c.hits() >= 1);
+
+			// a failed leader hands the work to the next caller; nothing is stored
+			DecompileCache.Key f = new DecompileCache.Key(1, 5, 0, 0x2000, 7);
+			java.util.concurrent.atomic.AtomicInteger fr =
+				new java.util.concurrent.atomic.AtomicInteger();
+			DecompileCache.Result none = c.compute(f, () -> false, () -> 5, () -> {
+				fr.incrementAndGet();
+				return null;
+			});
+			DecompileCache.Result again = c.compute(f, () -> false, () -> 5, () -> {
+				fr.incrementAndGet();
+				return null;
+			});
+			check("decompileCache: a decompile that did not complete is not stored",
+				none == null && again == null && fr.get() == 2);
+
+			// a change of the program during the decompile: answered, not stored
+			DecompileCache.Key moving = new DecompileCache.Key(1, 5, 0, 0x3000, 7);
+			c.compute(moving, () -> false, () -> 6, () -> new DecompileCache.Result("s", "c"));
+			int[] w = { 0 };
+			c.compute(moving, () -> false, () -> 6, () -> {
+				w[0]++;
+				return new DecompileCache.Result("s", "c");
+			});
+			check("decompileCache: a result whose program changed during the decompile is not " +
+				"stored", w[0] == 1);
+
+			// invalidation: the first result of a newer modification drops the program's older ones
+			int before = c.entries();
+			DecompileCache.Key newer = new DecompileCache.Key(1, 6, 0, 0x1000, 7);
+			int[] nr = { 0 };
+			c.compute(newer, () -> false, () -> 6, () -> {
+				nr[0]++;
+				return new DecompileCache.Result("int f(void)", "int f(void) { return 2; }");
+			});
+			DecompileCache.Result old = c.compute(k, () -> false, () -> 6, () -> null);
+			check("decompileCache: a changed program is decompiled again and its older entries " +
+				"are dropped (entries " + before + " -> " + c.entries() + ")",
+				nr[0] == 1 && before == 1 && c.entries() == 1 && old == null);
+
+			// a cancelled waiter returns at once while the leader keeps going
+			DecompileCache.Key slow = new DecompileCache.Key(2, 1, 0, 0x10, 7);
+			java.util.concurrent.CountDownLatch started = new java.util.concurrent.CountDownLatch(1);
+			Thread leader = new Thread(() -> c.compute(slow, () -> false, () -> 1, () -> {
+				started.countDown();
+				try {
+					Thread.sleep(400);
+				}
+				catch (InterruptedException e) {
+					Thread.currentThread().interrupt();
+				}
+				return new DecompileCache.Result("s", "c");
+			}));
+			leader.start();
+			boolean cancelledFast;
+			try {
+				started.await(5, java.util.concurrent.TimeUnit.SECONDS);
+				long t0 = System.nanoTime();
+				DecompileCache.Result cr = c.compute(slow, () -> true, () -> 1, () -> null);
+				cancelledFast = cr == null && System.nanoTime() - t0 < 300_000_000L;
+				leader.join(5000);
+			}
+			catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				cancelledFast = false;
+			}
+			check("decompileCache: a cancelled waiter stops waiting for the leader", cancelledFast);
+
+			// the LRU stays within its budget and keeps the recently used entry
+			DecompileCache small = new DecompileCache(64L << 10);
+			String body = "x".repeat(2000); // about 4 KB per entry, the budget holds about 15
+			DecompileCache.Key first = new DecompileCache.Key(3, 1, 0, 0, 7);
+			small.compute(first, () -> false, () -> 1, () -> new DecompileCache.Result("s", body));
+			for (int i = 1; i < 60; i++) {
+				small.compute(first, () -> false, () -> 1, () -> null); // touch: most recent
+				DecompileCache.Key ki = new DecompileCache.Key(3, 1, 0, i, 7);
+				small.compute(ki, () -> false, () -> 1, () -> new DecompileCache.Result("s", body));
+			}
+			int[] firstRuns = { 0 };
+			small.compute(first, () -> false, () -> 1, () -> {
+				firstRuns[0]++;
+				return null;
+			});
+			DecompileCache.Key gone = new DecompileCache.Key(3, 1, 0, 1, 7);
+			int[] goneRuns = { 0 };
+			small.compute(gone, () -> false, () -> 1, () -> {
+				goneRuns[0]++;
+				return null;
+			});
+			check("decompileCache: the LRU stays within its budget (" + small.bytes() + " of " +
+				(64 << 10) + " bytes, " + small.entries() + " entries) and keeps the recently " +
+				"used entry", small.bytes() <= 64L << 10 && small.entries() < 60 &&
+					firstRuns[0] == 0 && goneRuns[0] == 1);
 		}
 
 		/** E5: the state rules of 3.4, the contributor list, and testHooks as a setting. */

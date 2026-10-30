@@ -41,6 +41,8 @@ import java.util.regex.Pattern;
  * <tr><td>{@code diskReserve}</td><td>{@code max(5 GB, 5%)} of the volume stays free</td></tr>
  * <tr><td>{@code decompilerIdleS}</td><td>60: an idle pooled decompiler is disposed after
  * this</td></tr>
+ * <tr><td>{@code decompileCache}</td><td>1/32 of {@code -Xmx}, at most 256 MB, off below 8 MB: the
+ * decompile results of unchanged programs shared by every connection (0 turns it off)</td></tr>
  * <tr><td>{@code decompilerWaitS}</td><td>60: the longest a request waits for a decompiler
  * permit before {@code busy}</td></tr>
  * </table>
@@ -127,6 +129,14 @@ final class Budgets {
 	static int gatePermits() {
 		int cpus = Runtime.getRuntime().availableProcessors();
 		return (int) Math.max(1, Math.min(cpus, nativeBudgetMb() / DECOMPILER_MB));
+	}
+
+	/**
+	 * {@code decompileCache}: the bytes of decompile results kept for unchanged programs
+	 * ({@link DecompileCache}); default 1/32 of the heap, at most 256 MB, 0 (off) below 8 MB.
+	 */
+	static long decompileCacheBytes() {
+		return size("decompileCache", DecompileCache.defaultBytes(maxHeapBytes()));
 	}
 
 	static long viewDiskBudgetBytes() {

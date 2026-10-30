@@ -123,6 +123,47 @@ final class QueryCommands {
 		int cap = (int) Json.num(req, "maxChars", DEFAULT_TEXT_CAP, 1, MAX_TEXT_CAP);
 		Client caller = Caller.client();
 		boolean v3 = caller != null && caller.v3();
+		DecompileCache cache = DecompileCache.get();
+		if (cache == null) {
+			return fresh(prog, e, f, timeout, cap, v3, m, null);
+		}
+		// goal 4: an unchanged program's result is served from the cache, and N callers of one
+		// function at once share one decompile; the reply is the one a fresh decompile gives
+		DecompileCache.Key k = cache.key(prog, f);
+		JsonObject[] own = new JsonObject[1];
+		DecompileCache.Result r = cache.compute(k, m::isCancelled, prog::getModificationNumber,
+			() -> {
+				DecompileCache.Result[] out = new DecompileCache.Result[1];
+				own[0] = fresh(prog, e, f, timeout, cap, v3, m, out);
+				return out[0];
+			});
+		if (own[0] != null) {
+			return own[0];
+		}
+		if (r == null) {
+			throw cancelled(m);
+		}
+		return reply(f, r, cap);
+	}
+
+	/** The reply of a completed decompile, fresh or cached (one shape for both). */
+	private static JsonObject reply(Function f, DecompileCache.Result res, int cap) {
+		JsonObject r = Json.of("name", f.getName(true), "entry", hex(f.getEntryPoint()));
+		Json.put(r, "completed", true);
+		String c = res.c();
+		Json.put(r, "signature", res.signature());
+		Json.put(r, "chars", c.length());
+		Json.put(r, "truncated", c.length() > cap);
+		Json.put(r, "c", c.length() > cap ? c.substring(0, cap) : c);
+		return r;
+	}
+
+	/**
+	 * A decompile by a native decompiler; a completed one also goes to {@code out[0]} (when
+	 * {@code out} is given) for the cache.
+	 */
+	private JsonObject fresh(Program prog, Decompilers e, Function f, int timeout, int cap,
+			boolean v3, RequestMonitor m, DecompileCache.Result[] out) {
 		// E9: a function that crashed or hung the native process more than three times in a minute
 		// is refused for ten minutes (the circuit breaker), before a permit or a process is spent
 		long banned = DecompilerGate.Breaker.negativeLeftMs(prog, f);
@@ -171,12 +212,11 @@ final class QueryCommands {
 			healthy = true;
 			DecompilerGate.Breaker.succeeded(prog, f);
 			DecompiledFunction df = res.getDecompiledFunction();
-			String c = df.getC();
-			Json.put(r, "signature", df.getSignature());
-			Json.put(r, "chars", c.length());
-			Json.put(r, "truncated", c.length() > cap);
-			Json.put(r, "c", c.length() > cap ? c.substring(0, cap) : c);
-			return r;
+			DecompileCache.Result done = new DecompileCache.Result(df.getSignature(), df.getC());
+			if (out != null) {
+				out[0] = done;
+			}
+			return reply(f, done, cap);
 		}
 		finally {
 			e.returnDecompiler(d, healthy);

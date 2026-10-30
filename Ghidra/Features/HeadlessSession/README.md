@@ -177,6 +177,7 @@ listed. The design text for keys that belong to packages not yet part of the rel
 | `starveMs` | 30000 | A lane with a request waiting longer than this reports `starving` in `status`. |
 | `writeStallMs` | 5000 | A client that does not read its socket for this long is disconnected. |
 | `scriptMaxS`, `scriptGraceS` | 600, 5 | Wall-clock budget of a script, and the seconds a script that ignores its cancel may run on before it is quarantined. |
+| `decompileCache` | 1/32 of `-Xmx`, at most 256 MB; off below 8 MB | Bytes of `decompile` results kept for unchanged programs, shared by every connection (size-based LRU; `0` turns it off). The key is the program object, its modification number (every change of the program increments it), the function's entry and the decompiler set-up; only completed decompiles are kept, and N callers of one function at once share one decompile. Replies are byte-identical to a fresh decompile (`examples/dt_dc.py`); `health.decompileCache` has the hit, miss, joined and eviction counts. |
 
 #### Stamping a local build
 

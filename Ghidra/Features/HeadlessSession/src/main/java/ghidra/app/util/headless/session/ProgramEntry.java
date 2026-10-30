@@ -570,6 +570,15 @@ final class ProgramEntry implements Decompilers, DecompilerGate.Pool {
 		}
 	}
 
+	/**
+	 * The hash of the set-up {@link #newDecompiler} gives every decompiler, part of the
+	 * {@link DecompileCache} key: change it with the set-up. The program's own decompiler options
+	 * ({@code grabFromProgram}) are program state, covered by the modification number.
+	 */
+	static final int DECOMPILER_SETUP =
+		"DecompileOptions.grabFromProgram|toggleCCode=true|toggleSyntaxTree=true|style=decompile"
+				.hashCode();
+
 	/** A decompiler opened on {@code program}, set up the way every session decompile runs. */
 	static DecompInterface newDecompiler(Program program, String path) {
 		DecompInterface d = new DecompInterface();
