@@ -20,6 +20,15 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.file.FileVisitResult;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.List;
 
 import org.apache.commons.lang3.StringUtils;
 
@@ -813,49 +822,272 @@ public class LocalDatabaseItem extends LocalFolderItem implements DatabaseItem {
 		return this;
 	}
 
+	/**
+	 * Removes the old presave files ({@code tmp<n>.ps}) below a writable file-system root, in the
+	 * background, as Ghidra always did at open: every presave file whose time is before the open.
+	 * <p>
+	 * Hydra (H6): the open used to start a new {@code Database-Item-Cleanup} thread per call (a
+	 * project open makes three calls, for its private, user and versioned file systems; every
+	 * fork and every upgrade copy opens one more project), and each thread created and deleted a
+	 * temporary file in the root and then stat'ed every entry of the tree. Now one low-priority
+	 * daemon worker serves every root and ends when idle; a root that is already waiting is not
+	 * queued twice (the later open's cutoff covers the earlier one); each folder is listed once
+	 * with the attributes the listing returns, without a stat per entry; and the file-system clock
+	 * (the temporary file) is read only when a presave file is found. The cutoff is the
+	 * file-system time of the open itself, so a presave file that a save creates after the open
+	 * is never taken, however long the worker's queue is.
+	 * @param root file-system root directory
+	 */
 	static void cleanupOldPresaveFiles(File root) {
-		Thread t = new Thread(new CleanupRunnable(root), "Database-Item-Cleanup");
-		t.start();
+		PresaveCleanup.request(root);
 	}
 
-	private static class CleanupRunnable implements Runnable {
-		private File root;
+	/**
+	 * The process-wide presave cleanup worker (see {@link #cleanupOldPresaveFiles(File)}).
+	 */
+	static final class PresaveCleanup {
 
-		CleanupRunnable(File root) {
-			this.root = root;
+		static final String THREAD_NAME = "Database-Item-Cleanup";
+		/** How long the worker waits for more work before it ends. */
+		static final long IDLE_MS = 1000;
+
+		private static final Object LOCK = new Object();
+		/** Roots waiting for a scan, by absolute path, with the time of their latest open. */
+		private static final LinkedHashMap<String, Request> PENDING = new LinkedHashMap<>();
+		private static Thread worker;
+		private static boolean busy;
+		// counters, for tests and diagnostics
+		private static long requests;
+		private static long scans;
+		private static long threadsStarted;
+		private static long clockProbes;
+
+		private record Request(File root, long openNanos) {
 		}
 
-		@Override
-		public void run() {
-
-			// Determine current filesystem time
-			File f;
-			try {
-				f = File.createTempFile("tmp", ".tmp", root);
-				long now = f.lastModified();
-				f.delete();
-
-				cleanupDir(root, now);
-
-			}
-			catch (IOException e) {
-				Msg.error(this, "Unexpected Exception: " + e.getMessage(), e);
-			}
-
+		private PresaveCleanup() {
 		}
 
-		private void cleanupDir(File dir, long beforeNow) {
+		static void request(File root) {
+			File abs = root.getAbsoluteFile();
+			Request r = new Request(abs, System.nanoTime());
+			synchronized (LOCK) {
+				requests++;
+				// a root already waiting keeps its place; the newer open has the later cutoff,
+				// which covers every file the earlier open's scan would have removed
+				PENDING.put(abs.getPath(), r);
+				if (worker == null) {
+					Thread t = new Thread(PresaveCleanup::work, THREAD_NAME);
+					t.setDaemon(true);
+					t.setPriority(Thread.MIN_PRIORITY);
+					worker = t;
+					threadsStarted++;
+					t.start();
+				}
+				else {
+					LOCK.notifyAll();
+				}
+			}
+		}
+
+		private static void work() {
+			for (;;) {
+				Request r;
+				synchronized (LOCK) {
+					busy = false;
+					LOCK.notifyAll();
+					long deadline = System.nanoTime() + IDLE_MS * 1_000_000L;
+					while (PENDING.isEmpty()) {
+						long waitMs = (deadline - System.nanoTime()) / 1_000_000L;
+						if (waitMs <= 0) {
+							worker = null;
+							return;
+						}
+						try {
+							LOCK.wait(waitMs);
+						}
+						catch (InterruptedException e) {
+							// keep serving: an interrupt must not drop a queued root
+						}
+					}
+					Iterator<Request> it = PENDING.values().iterator();
+					r = it.next();
+					it.remove();
+					busy = true;
+				}
+				try {
+					scan(r);
+				}
+				catch (Throwable t) {
+					Msg.error(PresaveCleanup.class, "Unexpected Exception: " + t.getMessage(), t);
+				}
+				finally {
+					synchronized (LOCK) {
+						scans++;
+					}
+				}
+			}
+		}
+
+		/**
+		 * Waits until no root is waiting and no scan is running. For tests.
+		 * @param timeoutMs the longest wait
+		 * @return true when idle
+		 * @throws InterruptedException if interrupted
+		 */
+		static boolean awaitIdle(long timeoutMs) throws InterruptedException {
+			long deadline = System.nanoTime() + timeoutMs * 1_000_000L;
+			synchronized (LOCK) {
+				while (!PENDING.isEmpty() || busy) {
+					long waitMs = (deadline - System.nanoTime()) / 1_000_000L;
+					if (waitMs <= 0) {
+						return false;
+					}
+					LOCK.wait(waitMs);
+				}
+				return true;
+			}
+		}
+
+		/**
+		 * The counters, for tests.
+		 * @return requests, scans, threads started, file-system clock probes
+		 */
+		static long[] counters() {
+			synchronized (LOCK) {
+				return new long[] { requests, scans, threadsStarted, clockProbes };
+			}
+		}
+
+		private static void scan(Request r) throws IOException {
+			File root = r.root();
+			List<File> found = new ArrayList<>();
+			if (root.isDirectory()) {
+				collect(root.toPath(), found);
+			}
+			if (found.isEmpty()) {
+				return;
+			}
+			// The file-system time of the open (the clock of the volume, which can differ from
+			// this machine's on a network share): its time now, less the time since the open
+			File f = File.createTempFile("tmp", ".tmp", root);
+			long now = f.lastModified();
+			f.delete();
+			synchronized (LOCK) {
+				clockProbes++;
+			}
+			long beforeNow = now;
+			if (now != 0) {
+				long sinceOpenMs = (System.nanoTime() - r.openNanos()) / 1_000_000L;
+				beforeNow = Math.max(1, now - sinceOpenMs);
+			}
+			for (File oldFile : found) {
+				if ((beforeNow == 0 || oldFile.lastModified() < beforeNow) && oldFile.delete()) {
+					Msg.info(LocalBufferFile.class, "Removed old presave file: " + oldFile);
+				}
+			}
+		}
+
+		/**
+		 * The presave files of the tree, chosen as the old recursion did: a non-hidden folder is
+		 * entered; a hidden folder named {@code *.db} is a database folder, whose files named
+		 * {@code *.ps} are taken (not its sub-folders); other hidden folders are skipped. One
+		 * listing per folder, using the attributes it returns. A symbolic link is followed, as
+		 * {@link File#isDirectory()} and {@link File#isFile()} did.
+		 */
+		private static void collect(Path root, List<File> found) throws IOException {
+			Files.walkFileTree(root, new SimpleFileVisitor<>() {
+				@Override
+				public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
+					if (dir.equals(root)) {
+						return FileVisitResult.CONTINUE;
+					}
+					if (isDataDir(dir.getParent())) {
+						return FileVisitResult.SKIP_SUBTREE;
+					}
+					String name = dir.getFileName().toString();
+					return !LocalFileSystem.isHiddenDirName(name) ||
+						name.endsWith(DATA_DIR_EXTENSION) ? FileVisitResult.CONTINUE
+								: FileVisitResult.SKIP_SUBTREE;
+				}
+
+				@Override
+				public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
+					boolean inDataDir = isDataDir(file.getParent());
+					if (attrs.isSymbolicLink()) {
+						linked(file.toFile(), inDataDir, found);
+					}
+					else if (inDataDir && attrs.isRegularFile() &&
+						file.getFileName().toString().endsWith(LocalBufferFile.PRESAVE_FILE_EXT)) {
+						found.add(file.toFile());
+					}
+					return FileVisitResult.CONTINUE;
+				}
+
+				@Override
+				public FileVisitResult visitFileFailed(Path file, IOException exc) {
+					return FileVisitResult.CONTINUE; // as File.listFiles: lists nothing
+				}
+
+				@Override
+				public FileVisitResult postVisitDirectory(Path dir, IOException exc) {
+					return FileVisitResult.CONTINUE;
+				}
+
+				/** A folder the walk entered is a database folder when hidden and *.db. */
+				private boolean isDataDir(Path dir) {
+					return dir != null && !dir.equals(root) && isDataDirName(dir.getFileName().toString());
+				}
+			});
+		}
+
+		private static boolean isDataDirName(String name) {
+			return LocalFileSystem.isHiddenDirName(name) && name.endsWith(DATA_DIR_EXTENSION);
+		}
+
+		/** A symbolic link met in the walk: followed, as File.isDirectory and File.isFile do. */
+		private static void linked(File link, boolean inDataDir, List<File> found) {
+			if (inDataDir) {
+				if (link.getName().endsWith(LocalBufferFile.PRESAVE_FILE_EXT) && link.isFile()) {
+					found.add(link);
+				}
+				return;
+			}
+			if (link.isDirectory()) {
+				String fname = link.getName();
+				if (!LocalFileSystem.isHiddenDirName(fname)) {
+					legacyDir(link, found);
+				}
+				else if (fname.endsWith(DATA_DIR_EXTENSION)) {
+					legacyDataDir(link, found);
+				}
+			}
+		}
+
+		/** The old recursion, for a folder reached through a symbolic link. */
+		private static void legacyDir(File dir, List<File> found) {
 			File[] files = dir.listFiles();
 			if (files != null) {
 				for (File f : files) {
 					if (f.isDirectory()) {
 						String fname = f.getName();
 						if (!LocalFileSystem.isHiddenDirName(fname)) {
-							cleanupDir(f, beforeNow);
+							legacyDir(f, found);
 						}
 						else if (fname.endsWith(DATA_DIR_EXTENSION)) {
-							LocalBufferFile.cleanupOldPreSaveFiles(f, beforeNow);
+							legacyDataDir(f, found);
 						}
+					}
+				}
+			}
+		}
+
+		private static void legacyDataDir(File dir, List<File> found) {
+			File[] files = dir.listFiles();
+			if (files != null) {
+				for (File f : files) {
+					if (f.getName().endsWith(LocalBufferFile.PRESAVE_FILE_EXT) && f.isFile()) {
+						found.add(f);
 					}
 				}
 			}
