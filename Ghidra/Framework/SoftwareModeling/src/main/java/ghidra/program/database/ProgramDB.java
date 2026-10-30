@@ -490,12 +490,15 @@ public class ProgramDB extends DomainObjectAdapterDB implements Program, ChangeM
 	 * disposable program object that is never saved, checked in, merged or recovery-snapshotted
 	 * and whose change set nobody reads: those are the only readers of the change set.
 	 * {@link #isChanged()} and change events are unaffected. Call it before the first edit.
+	 * The change set object itself stays: it still opens and closes its per-transaction
+	 * bookkeeping (empty, since nothing is recorded) and keeps its own undo stack of empty
+	 * entries; only what it records stops. The headless session does not call this.
 	 */
 	public void disableChangeRecording() {
 		try (ghidra.util.Lock.Closeable c = lock.write()) {
 			changeRecordingDisabled = true;
 			recordChanges = false;
-			((ProgramDBChangeSet) changeSet).clearAll();
+			((ProgramDBChangeSet) changeSet).clearAllAndTags();
 		}
 	}
 

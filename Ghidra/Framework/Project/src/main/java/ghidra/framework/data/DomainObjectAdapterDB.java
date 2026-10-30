@@ -51,6 +51,9 @@ public abstract class DomainObjectAdapterDB extends DomainObjectAdapter implemen
 	 */
 	volatile int undoDepth = NUM_UNDOS;
 
+	/** Hydra: the undo depth every domain object starts with (Ghidra's 50). */
+	public static final int DEFAULT_UNDO_DEPTH = NUM_UNDOS;
+
 	protected DomainObjectDBChangeSet changeSet;
 
 	protected OptionsDB options;
@@ -196,21 +199,25 @@ public abstract class DomainObjectAdapterDB extends DomainObjectAdapter implemen
 	 * the open transaction's pre-images are what a rollback ({@code endTransaction(id, false)})
 	 * restores, and {@link db.buffers.BufferMgr} keeps those only while the current checkpoint
 	 * stays on its list, which needs room for one checkpoint besides the baseline. Only the
-	 * single-object transaction manager honours it; an object sharing a synchronized manager
-	 * keeps the default.
+	 * single-object transaction manager applies it at once; an object sharing a synchronized
+	 * manager keeps the default until it gets its own manager again, which then uses this depth.
+	 * Thread safety: the change is made under the transaction manager's monitor (not the domain
+	 * lock, whose order against that monitor is fixed by endTransaction) and is refused while a
+	 * transaction is open.
 	 *
 	 * @param depth committed transactions to keep, at least 1
 	 * @throws IllegalArgumentException if {@code depth < 1}
+	 * @throws IllegalStateException if a transaction is open
 	 */
 	public void setUndoDepth(int depth) {
 		if (depth < 1) {
 			throw new IllegalArgumentException("undo depth must be at least 1: " + depth);
 		}
-		try (ghidra.util.Lock.Closeable c = lock.write()) {
+		if (transactionMgr instanceof DomainObjectTransactionManager m) {
+			m.applyUndoDepth(depth);
+		}
+		else {
 			undoDepth = depth;
-			if (transactionMgr instanceof DomainObjectTransactionManager m) {
-				m.applyUndoDepth();
-			}
 		}
 	}
 

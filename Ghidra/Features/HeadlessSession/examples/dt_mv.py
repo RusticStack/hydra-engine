@@ -15,15 +15,18 @@
 ##
 """Light overlays (Rust plan rank 1, second step; package mem-views).
 
-    python daemon_tests.py --ghidra <install> --work <dir> --exe A.exe --only mv_flag,mv_identical
+    python daemon_tests.py --ghidra <install> --work <dir> --exe A.exe --only mv_flag,mv_identical,mv_script
 
 An overlay's program object is disposable (never saved, checked in, merged or snapshotted; promote
-replays the overlay's operation log), so with the engine key ``lightOverlays`` (default true) it
-records no change set and keeps one undoable transaction instead of 50. ``isolation:"private"``
+replays the overlay's operation log), so with the engine key ``lightOverlays`` (default false) it
+keeps one undoable transaction instead of 50; change recording stays on. ``isolation:"private"``
 script instances do the same only with ``lightPrivateScripts`` (default false).
 
-* ``mv_flag``: ``info.overlay`` says ``recordsChanges:false, undoDepth:1`` on a default daemon and
-  ``recordsChanges:true, undoDepth:50`` with ``lightOverlays:false``.
+* ``mv_flag``: ``info.overlay`` has ``undoDepth:1`` with ``lightOverlays:true`` and no
+  ``undoDepth`` key on a default daemon (a default reply is identical to before).
+* ``mv_script``: a script on a light overlay that reads ``getChanges()`` (as
+  RecoverClassesFromRTTIScript does) prints the same as on a heavy one, and the overlay goes back
+  to the default undo depth before the script runs.
 * ``mv_identical``: the same operation sequence (one transaction per call, edits of the same
   functions again after more than one transaction, a failing batch that must roll back in the
   middle) on a light and on a heavy overlay gives identical replies, identical decompiles and
@@ -47,7 +50,9 @@ expect_error = dt.expect_error
 N_FUNCS = 12
 MV_OPS = int(os.environ.get("MV_OPS", "150"))
 VOLATILE = {"ms", "openMs", "ageMs", "waitedMs", "heldMs", "queue", "waited", "uptimeMs",
-            "createdAt", "client", "gpr", "tick", "seconds", "recordsChanges", "undoDepth"}
+            "createdAt", "client", "gpr", "tick", "seconds", "undoDepth"}
+LIGHT = {"lightOverlays": True}
+HEAVY = {}  # the default
 
 
 def _scrub(v):
@@ -67,7 +72,7 @@ def _fns(s, **kw):
 def t_mv_flag(c):
     exe = pathlib.Path(c.a.exe).name
     seen = {}
-    for label, engine in (("light", {}), ("heavy", {"lightOverlays": False})):
+    for label, engine in (("light", LIGHT), ("heavy", HEAVY)):
         gpr = c.copy_fixture("projMv-" + label)
         d = c.daemon("mv-flag-" + label, keepWarm=0, engine=engine)
         with d.connect("mv", "tests") as s:
@@ -76,11 +81,60 @@ def t_mv_flag(c):
             fn = _fns(s)[0]
             s.call("comment", overlay="v", address=fn["address"], text="x", type="eol")
             ov = s.call("info", overlay="v")["overlay"]
-            seen[label] = (ov.get("recordsChanges"), ov.get("undoDepth"), ov.get("changed"))
+            seen[label] = ("recordsChanges" in ov, ov.get("undoDepth"), ov.get("changed"))
         d.stop()
     check(seen["light"] == (False, 1, True), f"light overlay: {seen['light']}")
-    check(seen["heavy"] == (True, 50, True), f"heavy overlay: {seen['heavy']}")
-    return f"light {seen['light']}, heavy {seen['heavy']} (recordsChanges, undoDepth, changed)"
+    check(seen["heavy"] == (False, None, True), f"default overlay: {seen['heavy']}")
+    return (f"light {seen['light']}, default {seen['heavy']} "
+            "(has recordsChanges, undoDepth, changed)")
+
+
+MV_CHANGES = """// @category HeadlessSession.Test
+import ghidra.app.script.GhidraScript;
+import ghidra.program.model.address.AddressSetView;
+import ghidra.program.model.listing.CodeUnit;
+import ghidra.program.model.listing.Function;
+
+public class MvChanges extends GhidraScript {
+    @Override protected void run() throws Exception {
+        AddressSetView before = currentProgram.getChanges().getAddressSet();
+        Function f = getFirstFunction();
+        setEOLComment(f.getEntryPoint(), "mv script");
+        AddressSetView after = currentProgram.getChanges().getAddressSet().subtract(before);
+        println("before " + before.getNumAddresses() + " " + before);
+        println("after " + after.getNumAddresses());
+        println("undoDepth " + ((ghidra.program.database.ProgramDB) currentProgram).getUndoDepth());
+    }
+}
+"""
+
+
+def t_mv_script(c):
+    exe = pathlib.Path(c.a.exe).name
+    (c.scripts / "MvChanges.java").write_text(MV_CHANGES)
+    out = {}
+    for label, engine in (("light", LIGHT), ("heavy", HEAVY)):
+        gpr = c.copy_fixture("projMvS-" + label)
+        d = c.daemon("mv-script-" + label, keepWarm=0, engine=engine)
+        with d.connect("mv", "tests") as s:
+            s.call("open_project", path=str(gpr))
+            s.call("open_program", path=exe, overlay="v")
+            fns = _fns(s)[:3]
+            for i, f in enumerate(fns):
+                s.call("comment", overlay="v", address=f["address"], text=f"c{i}", type="plate")
+            pre = s.call("info", overlay="v")["overlay"].get("undoDepth")
+            r = s.call("script", overlay="v", script="MvChanges.java", wait=300000)
+            post = s.call("info", overlay="v")["overlay"].get("undoDepth")
+            out[label] = (pre, r["output"], post)
+        d.stop()
+    lpre, lout, lpost = out["light"]
+    hpre, hout, hpost = out["heavy"]
+    check(lpre == 1 and hpre is None, f"undo depth before the script: light {lpre}, heavy {hpre}")
+    check(lout == hout, f"script output differs:\nlight={lout}\nheavy={hout}")
+    check(lpost is None and hpost is None,
+          f"after a script the overlay is at the default depth: light {lpost}, heavy {hpost}")
+    check("before 0 " not in lout, f"the script saw no earlier changes: {lout}")
+    return f"script output identical light and heavy: {lout.strip()[:200]!r}"
 
 
 def _sequence(c, label, engine):
@@ -140,8 +194,8 @@ def _sequence(c, label, engine):
 
 
 def t_mv_identical(c):
-    light = _sequence(c, "light", {})
-    heavy = _sequence(c, "heavy", {"lightOverlays": False})
+    light = _sequence(c, "light", LIGHT)
+    heavy = _sequence(c, "heavy", HEAVY)
     for k in ("replies", "decompiles", "functions", "info", "promote", "fork"):
         if light[k] != heavy[k]:
             raise dt.Fail(f"{k} differs light vs heavy:\nlight={str(light[k])[:1500]}\n"
@@ -237,7 +291,7 @@ def _memory(c, label, engine):
 
 def t_mv_memory(c):
     res = {}
-    for label, engine in (("heavy", {"lightOverlays": False}), ("light", {})):
+    for label, engine in (("heavy", HEAVY), ("light", LIGHT)):
         res[label] = _memory(c, label, engine)
     c.timings["mv_memory"] = res
     lines = []
@@ -251,4 +305,4 @@ def t_mv_memory(c):
     return "; ".join(lines)
 
 
-TESTS = {"mv_flag": t_mv_flag, "mv_identical": t_mv_identical, "mv_memory": t_mv_memory}
+TESTS = {"mv_flag": t_mv_flag, "mv_identical": t_mv_identical, "mv_script": t_mv_script, "mv_memory": t_mv_memory}

@@ -42,32 +42,45 @@ import ghidra.util.exception.VersionException;
 final class PrivateInstance implements AutoCloseable {
 
 	/**
-	 * Config key (default true): overlays run light ({@link #lighten}). Proven safe: an overlay
-	 * program is a read-only domain object that is never saved, checked in, merged or recovery
-	 * snapshotted; promote replays the overlay's operation log on the target, not its change set;
-	 * nothing in this package or in Hydralysis reads a change set; an overlay is never undone
-	 * (discard edits apply inverse operations), and a failed operation batch still rolls back.
+	 * Config key (default false): overlays run light ({@link #lighten}). An overlay program is a
+	 * read-only domain object that is never saved, checked in, merged or recovery snapshotted;
+	 * promote replays the overlay's operation log on the target; the session never undoes an
+	 * overlay (discard edits apply inverse operations), and a failed operation batch still rolls
+	 * back. An overlay can run a GhidraScript ({@code script} op), which may undo: before one runs
+	 * the overlay goes back to the default undo depth for the rest of its life
+	 * ({@link #unlighten}). Off by default until proven identical on a full build.
 	 */
 	static final String LIGHT_OVERLAYS = "lightOverlays";
 	/**
 	 * Config key (default false): {@code isolation:"private"} script instances run light. Off by
-	 * default because the script is arbitrary code that may read {@code getChangeSet()} or undo.
+	 * default because the script is arbitrary code that may undo more than one transaction.
 	 */
 	static final String LIGHT_PRIVATE_SCRIPTS = "lightPrivateScripts";
 
 	/**
-	 * Makes a disposable program object light: no change set recording (its isChanged() still
-	 * works) and one undoable transaction instead of 50, so buffer pre-images of older
-	 * transactions are released instead of kept in the disk cache. Transaction rollback is
-	 * unaffected. Returns false (and changes nothing) for a program that is not a ProgramDB.
+	 * Makes a disposable program object light: one undoable transaction instead of 50, so buffer
+	 * pre-images of older transactions are released instead of kept in the disk cache (the
+	 * measured gain). Transaction rollback is unaffected. Change recording stays on: scripts read
+	 * {@code getChanges()} (RecoverClassesFromRTTIScript does) and turning it off showed no
+	 * measured gain. Returns false (and changes nothing) for a program that is not a ProgramDB.
+	 * Call it when no transaction is open.
 	 */
 	static boolean lighten(Program p) {
 		if (!(p instanceof ProgramDB db)) {
 			return false;
 		}
-		db.disableChangeRecording();
 		db.setUndoDepth(1);
 		return true;
+	}
+
+	/**
+	 * Undoes {@link #lighten}: back to the default undo depth (history already released stays
+	 * released). No-op for a program that is not light. Call it when no transaction is open.
+	 */
+	static void unlighten(Program p) {
+		if (p instanceof ProgramDB db && db.getUndoDepth() != ProgramDB.DEFAULT_UNDO_DEPTH) {
+			db.setUndoDepth(ProgramDB.DEFAULT_UNDO_DEPTH);
+		}
 	}
 
 	/** What was opened: the program object and what keeps its upgrade cache copy in place. */

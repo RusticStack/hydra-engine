@@ -137,6 +137,48 @@ public class ProgramDBLightViewTest extends AbstractGenericTest {
 	}
 
 	@Test
+	public void testUndoDepthRefusedInsideTransaction() {
+		int tx = p.startTransaction("open");
+		try {
+			p.setUndoDepth(1);
+			fail("setUndoDepth inside a transaction must be refused");
+		}
+		catch (IllegalStateException expected) {
+			assertEquals(50, p.getUndoDepth());
+		}
+		finally {
+			p.endTransaction(tx, true);
+		}
+	}
+
+	@Test
+	public void testLightDepthKeepsChangeRecording() {
+		// what a light overlay does (PrivateInstance.lighten): depth 1 only, getChanges() works
+		p.setUndoDepth(1);
+		comment(0x1010, "x", true);
+		comment(0x1020, "y", true);
+		assertTrue(p.isRecordingChanges());
+		assertTrue(changes().contains(a(0x1010)));
+		assertTrue(changes().contains(a(0x1020)));
+	}
+
+	@Test
+	public void testRestoredDepthKeepsManyUndosAgain() throws Exception {
+		// PrivateInstance.unlighten before an overlay script: later transactions undo as by default
+		p.setUndoDepth(1);
+		comment(0x1000, "a", true);
+		p.setUndoDepth(ProgramDB.DEFAULT_UNDO_DEPTH);
+		assertEquals(50, p.getUndoDepth());
+		for (int i = 0; i < 5; i++) {
+			comment(0x1000, "c" + i, true);
+		}
+		for (int i = 0; i < 4; i++) {
+			p.undo();
+		}
+		assertEquals("c0", comment(0x1000));
+	}
+
+	@Test
 	public void testDefaultDepthKeepsManyUndos() throws Exception {
 		for (int i = 0; i < 5; i++) {
 			comment(0x1000, "c" + i, true);

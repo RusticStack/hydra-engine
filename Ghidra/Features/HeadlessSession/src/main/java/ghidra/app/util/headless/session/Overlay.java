@@ -195,9 +195,10 @@ final class Overlay implements Decompilers, DecompilerGate.Pool {
 		Json.put(o, "stale", generation != base.project.generation);
 		Json.put(o, "error", error);
 		Json.put(o, "changed", program != null && program.isChanged());
-		if (program instanceof ProgramDB db) {
-			// lightOverlays (PrivateInstance.lighten): what this overlay's program object keeps
-			Json.put(o, "recordsChanges", db.isRecordingChanges());
+		if (program instanceof ProgramDB db &&
+			db.getUndoDepth() != ProgramDB.DEFAULT_UNDO_DEPTH) {
+			// lightOverlays (PrivateInstance.lighten): only shown when it differs from the
+			// default, so a default overlay's info is identical to before
 			Json.put(o, "undoDepth", db.getUndoDepth());
 		}
 		return o;

@@ -40,7 +40,7 @@ class DomainObjectTransactionManager extends AbstractTransactionManager {
 	DomainObjectTransactionManager(DomainObjectAdapterDB domainObj) {
 		super();
 		this.domainObj = domainObj;
-		domainObj.dbh.setMaxUndos(NUM_UNDOS);
+		domainObj.dbh.setMaxUndos(domainObj.undoDepth);
 		domainObjAsArray = new DomainObjectAdapterDB[] { domainObj };
 	}
 
@@ -62,10 +62,18 @@ class DomainObjectTransactionManager extends AbstractTransactionManager {
 
 	/**
 	 * Hydra: applies {@link DomainObjectAdapterDB#setUndoDepth(int)} to the database and to the
-	 * undo list, so that both agree on what can be undone.
+	 * undo list, so that both agree on what can be undone. Synchronized like every other method
+	 * that touches the undo and redo lists; refused while a transaction is open, because the open
+	 * transaction's pre-images must stay until it ends.
+	 *
+	 * @param depth the new depth, at least 1 (checked by the caller)
+	 * @throws IllegalStateException if a transaction is open
 	 */
-	void applyUndoDepth() {
-		int depth = domainObj.undoDepth;
+	synchronized void applyUndoDepth(int depth) {
+		if (transaction != null) {
+			throw new IllegalStateException("cannot change the undo depth inside a transaction");
+		}
+		domainObj.undoDepth = depth;
 		domainObj.dbh.setMaxUndos(depth);
 		while (undoList.size() > depth) {
 			undoList.removeFirst();
