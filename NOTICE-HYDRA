@@ -50,6 +50,11 @@ upstream commit 1b9e58a915cf867e106495eaa2a4b18eb4971c9d, outside the HeadlessSe
       An item whose folder holds a newer version than the one it recorded scans its folder again
       when it is opened, and an item whose folder cannot be listed for a moment is kept by a
       refresh instead of being dropped from the project.
+  Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/local/LocalFolderItem.java
+      An item whose property file cannot be read for a moment (another process holds it without
+      read sharing) is kept by a refresh with the properties it read before, instead of being
+      dropped from the project; a property file that can be read and does not parse is still an
+      error. A comment at the top of the file says so.
   Ghidra/Framework/SoftwareModeling/src/main/java/ghidra/app/plugin/processors/sleigh/SleighLanguageFile.java
       The language lock file is created the first time a language needs it instead of for every
       language description at start-up. A comment at the top of the file says so.

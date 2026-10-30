@@ -798,6 +798,12 @@ final class ProjectCommands {
 		if (path.startsWith("/")) {
 			DomainFile f = d.getFile(path);
 			if (f == null) {
+				// dropped while another process held its files (GATE10, A63)? busy, or listed again
+				int slash = path.lastIndexOf('/');
+				f = HeldFiles.recheckMissing("find " + path, d,
+					slash == 0 ? "/" : path.substring(0, slash), path.substring(slash + 1));
+			}
+			if (f == null) {
 				throw new SessionException(SessionException.NOT_FOUND,
 					"no such file in project " + p.id + ": " + path);
 			}
@@ -805,6 +811,13 @@ final class ProjectCommands {
 		}
 		List<DomainFile> found = new ArrayList<>();
 		collectByName(d.getRootFolder(), path, found);
+		if (found.isEmpty() && !path.contains("/")) {
+			// a bare name dropped from the root folder while it was held (GATE10, A63)
+			DomainFile f = HeldFiles.recheckMissing("find " + path, d, "/", path);
+			if (f != null) {
+				found.add(f);
+			}
+		}
 		if (found.size() == 1) {
 			return found.get(0);
 		}

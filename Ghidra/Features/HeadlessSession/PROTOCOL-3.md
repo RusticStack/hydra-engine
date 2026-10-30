@@ -495,8 +495,9 @@ Existing codes and their meanings are unchanged (`SessionException.java:27-51`).
 | `script_changed` | `scriptSha256` does not match the script file | `expected`, `actual`, `script` |
 | `bad_request` with `details.field` | unchanged code; v3 adds `field` and `allowed[]` where the value set is closed (`lane`, `isolation`, `purpose`, `verify`), and `field:"expect"` for `requireExpect` (conditional C13, 3.1) | |
 | `bad_request` with `details.reason:"rk_expired"` | an `rk` whose multi-op entries were partly evicted from the journal (3.4); only a request that carries `rk` (v3) can get it | `rk`, `foundOf`, `expectedOf` |
+| `busy` with `details.reason:"file_held"` | a request of `open_project`, `project`, `list`, `open_program`/`switch`, `save`, `fork_project`, `import`, `refresh`/`reopen` or `prepare_upgrade` failed because another process holds a file or folder of a project with no sharing (Windows: a folder that cannot be listed, a file that cannot be opened). Never `bad_request`, `not_found` or a bare `failed` (A63, 8.15). A **v2** connection gets `busy` with the same details except `reason`, and no `retryAfterMs` (C12) | `path` (what is held), `suggest:"retry"`; `retryAfterMs` 1000 (no hold history); `imported` on an `import` whose program was saved |
 
-`busy` gains `details.reason` (`slot_wait`, `lock_wait`, `lock_queue_full`, `abandoned`) for v3
+`busy` gains `details.reason` (`slot_wait`, `lock_wait`, `lock_queue_full`, `abandoned`; `file_held` by A63) for v3
 (conditional C12). `lock_queue_full` answers any v3 request (revision 6, D39; rev5 limited it to
 requests that carry the v3-only `lane:"quick"`). `cancelled` gains `details.phase` (`queued` for a slot wait, `lock_wait`, `running`)
 and, for the commands listed below, `details.applied`, both for v3 (conditional C11).
@@ -2225,6 +2226,7 @@ first and must pass unchanged on the hydra.4 candidate.
 | V9 | the work-conserving per-key running cap (3.5) applies to **v2** connections too, with the new lane defaults (D40) | a v2 connection that held up to 32 parallel requests and every running slot is held back only while another key waits under its own cap; the order in which one connection's own requests run is unchanged (D18's v2 key `connection id` is kept) | **Visible to v2**: under contention only, measured starvation (claims-audit U2: no per-client running cap; A: a 7th client waited 10.2-10.5 s) | `cc_e3a` `v2_running_cap`: one v2 connection with 32 parallel scripts cannot starve a second connection's script; on an idle daemon nothing changes; and `v2_lane_defaults`: `status.scheduler.long.slots` of a v2 connection equals `max(8, CPUs)`, the one number of the v2 `status` reply that E3a changes (the goldens mask it, D62) (E3a) |
 | V10 | the leave of a plain reader (a client that is neither owner, writer nor overlay holder) takes no exclusive program lock at any user count, and `Session.disconnect` no longer waits 600 s for it (E3c, D63b; the rev5 fast path of 3.5, built once; the owner and writer side is V3, E3b) | no reader of a program waits behind another client's leave or disconnect (today a leave queues the exclusive lock behind the running readers and every new reader waits behind it, measured, 3.5) | **Visible to v2**: it changes how long others wait, no reply shape | `cc_e3c` `reader_leave` (a 1.0.0 client closes its connection while another client's read runs: the next join and script are answered within their `wait`) and `reader_leave_all` (E3c) |
 | V11 | a concurrent `fork_project` to a path that another request is publishing (3.4, D41) answers `conflict` with `details.reason` `fork_in_progress` or `exists`; with the same `rk` the loser returns the winner's result | six simultaneous forks to one destination gave one success and five bare `failed` replies whose message names a `.rep` path (`review-rev6/exp1_fork_race.json`) | **Visible to v2**: only racing requests can see it and `failed` carried no information; the goldens run one request at a time and cannot see it | `cc_e2a` `fork_race_conflict`: six concurrent forks by the stock 1.0.0 client, exactly one success, five `conflict`, no leftover staging folder (E2a) |
+| V12 | a request that failed because another process held a file or folder of the project answers `busy` (A63, 8.15) | `busy` with `details.path` and `suggest:"retry"` where it got `bad_request` ("is not a program (Unknown-File)"), `not_found` or a bare `failed` with the localised system message; after the hold the same request succeeds without a reopen (it used to stay `Unknown-File` or `not_found` until the project was closed) | **Visible to v2**: the old codes told a v2 client that its request was wrong or that the project was damaged, and a v2 client already retries `busy`; `details.reason` and `retryAfterMs` are v3 only (C12) | `dt_held.py` (a v2 and a v3 connection; not a `cc_` test of the stock 1.0.0 client) (GATE10) |
 
 The release identity strings (`hydraVersion`, `buildDate`) change with every release; the goldens mask
 them (`"hydraVersion": "<masked>"`). `health` is a new command, so an old transcript contains none.
@@ -2232,8 +2234,8 @@ The counts D2 refers to: **thirteen reply-shape conditionals, C1 to C13, one per
 3.1**; G5 is the behaviour test of C4 and C5, which are events and `status` entries that the goldens
 cannot see, while the other eleven are reply shapes that the seven v2 scenarios at `--protocol 2`
 check directly (a v2 reply must stay byte-identical); six behaviour gates (G1 and G7 share the
-request-field helper; G2, G3, G4, G6 and G8 are one gate each); eleven declared visible changes (V1 to
-V11; revision 6 adds V8 to V10, revision 7 adds V11).
+request-field helper; G2, G3, G4, G6 and G8 are one gate each); twelve declared visible changes (V1 to
+V12; revision 6 adds V8 to V10, revision 7 adds V11, revision 8.11 adds V12).
 
 ### 5.2 Release notes (R1) must say
 
@@ -4030,6 +4032,67 @@ engine and Hydralysis documents (the site repository is not edited here; its thr
 without the parentheses are the site owner's, S2).
 
 The shipped `docs/release-notes-12.3-hydra.3.md` is not edited.
+
+### 8.15 Revision 8.11: a file held by another process is `busy`, never a client mistake (coordinator-style amendment A63, `w2/GATE10`)
+
+A coordinator-style amendment, recorded on branch `w2/GATE10` (from Hydra `integration/w3` at `bc4004d366`) for finding C of
+release gate 9.17 (soak `pr-vf2`, `D:/Projects/Hydra/_logs/gates/gates-3.md` "Round 2") and the unstructured `fork_project`
+failure of the same fault (decision 2 there). It is numbered A63, the next number after A62 of 8.13 (`w2/GATE2`, not merged
+into this base; this base's last number is A56 of 8.14). Where this section differs from an earlier one, it governs.
+
+**Evidence.** With the handle-holder fault holding agent 3's fork database folder (`~00000000.db`, `GENERIC_READ`, no sharing;
+the window opened 0.2 s before), `open_program` answered `bad_request "/flow_fixture.exe is not a program (Unknown-File)"`
+three times in 1.5 s, and the agent gave up (`agent_setup_failed`). The daemon log shows why: `LocalFolderItem.getFolderItem`
+could not construct the database item (`Database.checkDbDir`: "Database directory not found", the folder cannot be listed)
+and made a `LocalUnknownFolderItem` of it. The same hold on the unfixed candidate, by `examples/dt_held.py`
+(`D:/Projects/Hydra/_logs/gate10/`), also shows: the project keeps that unknown item after the hold, so the same
+`open_program` stays `bad_request` until the project is closed; a held `.prp` file drops the item (`not_found`, also after
+the hold) and, held across a save, makes every later save of the open program fail "File is read-only" (the refresh after
+the save could not read the property file and the project dropped the file, the same mechanism as GATE8's listing case); a
+held `idata/~index.dat` makes `open_project` answer `not_found`; a held version file makes `open_program` fail with the
+localised system message; a held database folder makes `save` fail "IOException: File error during save" and
+`fork_project` fail with the localised message. The messages are localised (Portuguese on the release machine), so nothing
+may be decided from their text.
+
+**A63 (the transient file hold).**
+
+* (a) **The answer.** A request of `open_project`, `project`, `list`, `open_program`/`switch`, `save`, `fork_project`,
+  `import`, `refresh`/`reopen` or `prepare_upgrade` that fails because another process holds a file or folder of a project
+  answers `busy` with `details.path` (what is held) and `suggest:"retry"`; a v3 connection also gets
+  `details.reason:"file_held"` and `error.retryAfterMs` (1000: no hold history is kept). A v2 connection gets `busy` without
+  those two keys (C12; V12 in 5.1). The message ends with the failure as it was. Never `bad_request`, `not_found` or a bare
+  `failed` for a hold. `script`, `analyze` and the edit commands are not mapped (a partly applied script must not be told to
+  retry; edits do not touch files).
+* (b) **What is a hold.** Decided by looking, never by the message: a folder that exists and cannot be listed, or a file that
+  exists and cannot be opened for reading (`S/HeldFiles.held`), checked for the files an exception names (a
+  `FileSystemException`'s files, an absolute path in a message, cut back to the longest existing prefix) and their folders up
+  to the `.rep`, and for the item's own storage (its `~xxxxxxxx.db` folder, `.prp` file and their folder, found through
+  `LocalFileSystem.findItemStorage`). A missing file is not a hold. An access-control denial looks the same and is answered
+  the same way (a limit, not told apart).
+* (c) **Where.** `S/Connection.java` maps a `failed`, `not_found` or `bad_request` that carries a cause, and any unexpected
+  exception, of the commands of (a) (`HeldFiles.translate`). `S/ProgramCommands.java`: a file that is not a program is
+  checked first (`HeldFiles.recheck`): its storage held, or another item file of the project held, is `busy`; an
+  `Unknown-File` item with nothing held has its folder listed again (Ghidra's `GhidraFolder.refreshFolderData`) and the
+  fresh file is used. `S/ProjectCommands.java` `findFile`: a name the file system's index still lists but the project does
+  not (dropped while held) is `busy` while held, else its folder is listed again (`HeldFiles.recheckMissing`; a name that is
+  really absent costs one in-memory index lookup). `S/EditCommands.java` `save`: "File error during save" names no file, so
+  the program's storage is checked too. `S/ImportCommands.java`: an import whose program was saved but cannot be opened yet
+  answers that `busy` with `details.imported`.
+* (d) **After the hold.** The same request succeeds without closing or reopening anything. A refused `fork_project` leaves
+  its source unchanged and nothing of the fork at its destination (no `.gpr`, `.rep`, sidecar or staging folder; its own
+  staging is removed as before). A save refused under a hold is retried by the open program (GATE8's new pre-save).
+* (e) **Ghidra core.** `Ghidra/Framework/FileSystem/.../local/LocalFolderItem.java` `refresh`: a property file that exists
+  and cannot be opened (held) keeps the item with the properties it read before, instead of throwing (which made
+  `GhidraFolderData.fileChanged` drop the file); a property file that opens and does not parse is still an error. It is a
+  new patched core file (NOTICE-HYDRA, `.github/hydra-touched-files.txt`).
+
+Tests: `examples/dt_held.py` `held_open_program` (finding C, v2 and v3, the default and the listing-only hold),
+`held_property_file`, `held_fork_source` (database folder, `.prp`, index), `held_save`, `held_open_project`,
+`held_version_file`, `held_import`. Holds are external (`chaos_lib.HandleHolder` in the test process, D22/D48), taken before
+the request and released after its answer; no sleep. All seven fail on the unfixed candidate (`bc4004d366`:
+`red-unfixed.log`, `red-unfixed-2.log`, `red-unfixed-3.log` in `D:/Projects/Hydra/_logs/gate10/`) with the answers listed
+above; `held_property_file` also fails with the engine change alone, without (e) ("File is read-only" after the release,
+`red-nolfi.log`); all pass with the change.
 
 ### W0
 

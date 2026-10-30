@@ -12,3 +12,5 @@ Ghidra/Framework/SoftwareModeling/src/main/java/ghidra/app/plugin/processors/sle
 # storage integrity (E8)
 Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/db/VersionedDatabase.java
 Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/local/LocalDatabaseItem.java
+# a held property file keeps its item (GATE10)
+Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/local/LocalFolderItem.java

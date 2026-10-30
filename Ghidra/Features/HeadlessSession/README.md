@@ -789,6 +789,17 @@ What the codes mean when two clients meet:
 - **`busy`**: a slot or a lock did not come free within `wait` (default 10 s). `details` names the
   lane or the program, what wanted it, and the holder (client, harness, command) and for how
   long. Retry, or pass a longer `wait`; nothing was queued past the deadline.
+  From 12.3-hydra.4 `busy` also answers a request that failed because **another process holds a
+  file or folder of the project** with no sharing (on Windows a virus scanner, an indexer, a backup
+  or sync tool): `open_project`, `project`, `list`, `open_program`/`switch`, `save`, `fork_project`,
+  `import`, `refresh`/`reopen` and `prepare_upgrade`. `details.path` names what is held and
+  `suggest` is `retry`; protocol 3 adds `details.reason:"file_held"` and `retryAfterMs`. It used to
+  surface as `bad_request` ("is not a program (Unknown-File)"), `not_found` or a bare `failed` with
+  the system's message. After the hold the same request succeeds without a reopen: the project reads
+  the file again. A refused `fork_project` leaves its source unchanged and nothing at its
+  destination; an `import` whose program was saved but cannot be opened yet says so
+  (`details.imported`). An access-control denial looks the same to the engine and is answered the
+  same way (PROTOCOL-3.md 3.3, A63).
 
 All three carry `holderInfo` and `suggest` in `details` (see "Error codes"): who holds it, and
 whether the answer is to retry, to fork, or to open read-only.
