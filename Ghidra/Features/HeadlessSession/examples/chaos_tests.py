@@ -84,15 +84,20 @@ BATCHES = {
                     what="promote_overlay killed: absent, or a fork without the edits, or with them; never partial"),
     "daemon8": dict(script="run_ef.py", argv=["f", "-", "{proj}", "ntfs"], family="daemon8", fs="ntfs",
                     what="the daemon killed with 8 clients on 8 forks"),
+    "publish": dict(script="run_pub.py", argv=["pub", "{proj}", "ntfs"], family="publish", fs="ntfs",
+                    what="a Hydralysis generation publish (views.run_publish_job) killed: CURRENT.log unchanged or fully "
+                         "published, the changeset durable, the next leader applies it exactly once (K5, K12, K16, K17)"),
     "control": dict(script="run_c.py", argv=["ctl", "{proj}", "ntfs"], family="control", fs="ntfs",
                     what="no kill: the harness must report 0 anomalies"),
 }
-#: unanswered kills per batch: the gate (9.15) and the smoke profile. save 200+200, fork 300, daemon8 50 and the 200
-#: promote kills are the numbers of 9.15; `control` = 20 is this runner's own choice (the spec sets no number: it only has
-#: to be a few unkilled iterations that prove the harness reports 0 anomalies when nothing is killed)
+#: unanswered kills per batch: the gate (9.15) and the smoke profile. fork 300, promote 200, publish 200 and daemon8 50 are the
+#: numbers of 9.15; save_ntfs 509 is 8.13: with no ReFS volume (8.12) the "below 0.75% at 95%" wording is reached on NTFS
+#: alone, and 0 failures in n kills bound the rate at 3.84/(n+3.84) (two-sided Wilson, z = 1.96), below 0.75% from n = 509.
+#: save_refs stays in the profile and is named "not testable on the release machine" (8.12). `control` = 20 is this
+#: runner's own choice (the spec sets no number: a few unkilled iterations that prove the harness reports 0 anomalies)
 COUNTS = {
-    "gate": dict(save_ntfs=200, save_refs=200, fork=300, promote=200, daemon8=50, control=20),
-    "smoke": dict(save_ntfs=2, fork=2, promote=1, daemon8=1, control=1),
+    "gate": dict(save_ntfs=509, save_refs=200, fork=300, promote=200, publish=200, daemon8=50, control=20),
+    "smoke": dict(save_ntfs=2, fork=2, promote=1, publish=2, daemon8=1, control=1),
 }
 #: how often the daemon8 wrapper retries an open_project answered `busy` (see ef_busy_main)
 DAEMON8_OPEN_BUSY_RETRIES = 200
@@ -101,24 +106,18 @@ DAEMON8_OPEN_BUSY_RETRIES = 200
 #: designed refusal when eight clients open one project at once; ``lock_wait``/``slot_wait`` a bounded wait that ran
 #: out; ``capacity`` the governor. Anything else, or an answer logged without details, is unexplained
 OPEN_BUSY_REASONS = ("lock_queue_full", "lock_wait", "slot_wait", "capacity")
-#: what the engine-level batches cannot cover and the check that does. A gate profile with any entry here is
-#: INCOMPLETE, never PASS: PASS is unreachable until the VF integration check lifts these (it edits these constants
-#: when it has run the checks they name; the selftest clears them to prove that a complete clean run would be PASS).
-SOFT_GAPS = {
-    "publish_kills": "at least 200 publish and promote_overlay kills: the publish half kills a Hydralysis publish leader; "
-                     "run by the VF integration check. The 200 promote_overlay kills of the `promote` batch count toward "
-                     "that figure but do not satisfy it alone",
-    "oracle_per_kill": "gate 9.15 wants K1-K17 after every kill. This runner runs, per batch and not per kill: oracle.check_k2 "
-                       "over the iteration directories the harness kept (it keeps only anomalous ones, so for a clean batch "
-                       "that check is close to empty) and the K7 orphan-decompiler check (new orphans whose parent is gone). "
-                       "Stand-ins are the harness's own per-iteration classes (CORRUPT_OR_UNOPENABLE, LOSS_OF_ACKED_*, "
-                       "PARTIAL_DEST_VISIBLE, RETRY_BLOCKED, CANONICAL_CHANGED, staging left) and footer.base_unchanged. "
-                       "NOT run after the kills of the save, fork, promote and daemon8 batches: the oracle's K6 and K9 file "
-                       "checks, K7 handles/threads/locks/tmp, K3-K5, K8, K10-K17. They need the leftover trees, which the "
-                       "harness deletes for clean iterations; run by the VF integration check or by a harness change",
-}
-#: gate 9.15 wants every kill followed by the oracle; see SOFT_GAPS["oracle_per_kill"] for what runs here
+#: what the batches cannot cover. A gate profile with any entry here is INCOMPLETE, never PASS (the selftest clears them
+#: to prove that a complete clean run would be PASS). Empty since 8.13: K1-K17 run after every kill (conc/kcheck.py, each
+#: iteration's ``k``), and the publish kills are the ``publish`` batch (conc/run_pub.py)
+SOFT_GAPS: dict = {}
+#: 8.12: the ReFS batch is not testable on the release machine (owner decision 2026-10-30); named, never "passed"
+NOT_TESTABLE = {"save_refs": "not testable on the release machine, owner decision 2026-10-30 (8.12): no ReFS volume"}
+#: the invariants every counted kill must have been checked against (8.13: K1-K17 after every kill)
+K_ALL = ["K%d" % i for i in range(1, 18)]
 BAD_PREFIX_OK = ()      # no anomaly class is tolerated
+#: the harness classes of the state right after a kill, before any sweep (8.13): reported, never counted; what is left
+#: after the sweep is ``LEFT_AFTER_SWEEP`` (counted). The same tuple as ``conc/kcheck.PRE_SWEEP``
+PRE_SWEEP = ("ORPHAN_TMP_LEFT", "REP_WITHOUT_GPR_BEFORE_SWEEP", "SIDECAR_TMP_BEFORE_SWEEP", "GHIDRA_PROBE_BEFORE_OPEN")
 
 
 def wilson_upper(failures: int, n: int, z: float = 1.6448536) -> float:
@@ -161,16 +160,20 @@ def judge_rows(rows: list, family: str) -> dict:
     kills = [r for r in rec if is_kill(r, family)]
     classes: dict = {}
     orphans_before_sweep = 0
+    pre_sweep: dict = {}
     for r in rec:
         for a in r.get("anomalies", []):
             k = a.split(":")[0]
             if k in BAD_PREFIX_OK:
                 continue
-            if k == "ORPHAN_TMP_LEFT":
-                # the harness' own class for a staging folder seen right after the kill, before any fork_project ran:
-                # the sweeper (E2a) removes it on the first fork_project under the parent. Gate 9.15 counts what is
-                # left AFTER that sweep (leftover_fork_tmp_after_retry), so this is reported, not counted.
-                orphans_before_sweep += 1
+            if k in PRE_SWEEP:
+                # 8.13: the state right after the kill, before any sweep: a staging folder, a .rep without its
+                # .gpr, the sidecar's .tmp. The daemon start (and the next fork_project) sweeps them; gate 9.15
+                # counts what is left AFTER the sweep (LEFT_AFTER_SWEEP, leftover_fork_tmp_after_retry), so these
+                # are reported, not counted
+                pre_sweep[k] = pre_sweep.get(k, 0) + 1
+                if k == "ORPHAN_TMP_LEFT":
+                    orphans_before_sweep += 1
                 continue
             classes[k] = classes.get(k, 0) + 1
     answered = len(rec) - len(kills)
@@ -178,20 +181,34 @@ def judge_rows(rows: list, family: str) -> dict:
                      and not r.get("trigger_hit"))
     # the failures that gate 9.15 names, read from the same classes
     unopenable = sum(n for k, n in classes.items() if "UNOPENABLE" in k or "OPEN_ERROR" in k)
-    rep_no_gpr = sum(1 for r in rec if r.get("dest_state") == "rep_only_NO_GPR")
+    # 8.13: a .rep without its .gpr counts when it is still there after the sweep; a .gpr without its .rep at any instant
+    rep_no_gpr = sum(1 for r in rec if any(a.startswith("LEFT_AFTER_SWEEP") and "rep_without_gpr" in a
+                                           for a in r.get("anomalies", [])))
+    gpr_no_rep = sum(1 for r in rec if "GPR_WITHOUT_REP" in r.get("anomalies", []) or
+                     any(a.startswith("K6:gpr_without_rep") for a in r.get("anomalies", [])))
     blocked = classes.get("RETRY_BLOCKED", 0)
     left_rows = [r for r in rec if r.get("leftover_fork_tmp_after_retry")]
     if left_rows:
         classes["STAGING_LEFT_AFTER_SWEEP"] = len(left_rows)
-    leftovers = len(left_rows) + classes.get("FORK_TMP_LEFT_AFTER_CLIENT_KILL", 0)
+    leftovers = len(left_rows) + classes.get("FORK_TMP_LEFT_AFTER_CLIENT_KILL", 0) + classes.get("LEFT_AFTER_SWEEP", 0)
     loss = sum(n for k, n in classes.items() if k.startswith("LOSS_OF") or k.endswith("LOSS_OF_ACKED") or k == "B_LOSS_OR_MIXED")
     failing_iterations = sum(1 for r in rec if [a for a in r.get("anomalies", []) if a.split(":")[0] not in BAD_PREFIX_OK
-                                                 and a.split(":")[0] != "ORPHAN_TMP_LEFT"] or r.get("leftover_fork_tmp_after_retry"))
+                                                 and a.split(":")[0] not in PRE_SWEEP] or r.get("leftover_fork_tmp_after_retry"))
+    # 8.13: K1-K17 after every kill. An iteration without its per-kill oracle (or whose oracle crashed) is not a checked
+    # kill: the batch cannot pass while one is missing
+    k_missing = sum(1 for r in rec if r.get("k_error") or not isinstance(r.get("k"), dict)
+                    or any(k not in r["k"] for k in K_ALL))
+    k_summary = {k: {"ok": 0, "violation": 0, "na": 0} for k in K_ALL}
+    for r in rec:
+        for k, v in (r.get("k") or {}).items():
+            if k in k_summary and isinstance(v, dict):
+                k_summary[k]["na" if "na" in v else ("ok" if v.get("ok") else "violation")] += 1
     return {"iterations": len(rec), "kills": len(kills), "answered_before_kill": answered,
             "unanswered_no_trigger": no_trigger,
             "trigger_hits": sum(1 for r in rec if r.get("trigger_hit")),
             "anomaly_classes": classes, "failing_iterations": failing_iterations,
-            "unopenable": unopenable, "rep_without_gpr": rep_no_gpr, "blocked_retries": blocked,
+            "unopenable": unopenable, "rep_without_gpr": rep_no_gpr, "gpr_without_rep": gpr_no_rep,
+            "blocked_retries": blocked, "pre_sweep_reported": pre_sweep, "k_missing": k_missing, "k_summary": k_summary,
             "leftovers_after_sweep": leftovers, "orphans_before_sweep": orphans_before_sweep, "lost_acknowledged": loss, "harness_errors": len(errs),
             "harness_error_samples": [str(e.get("harness_error"))[-300:] for e in errs[:3]]}
 
@@ -228,6 +245,8 @@ def judge_batch(name: str, spec: dict, want: int, rows: list, footer: dict | Non
         inc.append(f"{got} of the {want} {'iterations' if spec['family'] == 'control' else 'unanswered kills'}")
     if j["harness_errors"]:
         inc.append(f"{j['harness_errors']} iteration(s) failed in the harness")
+    if j["k_missing"]:
+        inc.append(f"{j['k_missing']} iteration(s) without their K1-K17 check (8.13)")
     if exit_code not in (0, None):
         inc.append(f"the harness process exited {exit_code}")
     if footer is None:
@@ -246,6 +265,9 @@ def judge_batch(name: str, spec: dict, want: int, rows: list, footer: dict | Non
 
 #: the "below 0.75% at 95%" wording needs this many counted save kills on each file system (9.15)
 WORDING_MIN_SAVE_KILLS_PER_FS = 200
+#: 8.13: with no ReFS volume (8.12) the wording is reached on NTFS alone: 0 failures in at least this many counted NTFS save
+#: kills, the two-sided 95% Wilson upper bound (z = 1.96, 3.84/(n+3.84)) then below 0.75%
+WORDING_MIN_SAVE_KILLS_NTFS_ALONE = 509
 
 
 def attempt_margin(profile: str, family: str, n: int) -> int:
@@ -267,7 +289,9 @@ def overall(batches: dict, profile: str, missing: dict, overrides=()) -> dict:
     gate = profile == "gate"
     viol = [f"{b}: {x}" for b, r in batches.items() for x in r["violations"]]
     gaps = [f"{b}: {x}" for b, r in batches.items() for x in r["incomplete"]]
-    gaps += [f"{b}: {why}" for b, why in missing.items()]
+    # 8.12: a part the release machine cannot test is named as such; it is neither a gap nor a pass
+    not_testable = {b: why for b, why in missing.items() if b in NOT_TESTABLE and why == NOT_TESTABLE[b]}
+    gaps += [f"{b}: {why}" for b, why in missing.items() if b not in not_testable]
     # a batch of the profile that neither ran nor was named as missing (a harness bug or a bare --only)
     gaps += [f"{b}: not run" for b, n in COUNTS[profile].items() if n > 0 and b not in batches and b not in missing]
     soft = [f"{k}: {v}" for k, v in SOFT_GAPS.items()]
@@ -279,9 +303,11 @@ def overall(batches: dict, profile: str, missing: dict, overrides=()) -> dict:
     for b, r in save_b.items():
         kills_fs[BATCHES[b]["fs"]] = kills_fs.get(BATCHES[b]["fs"], 0) + r["kills"]
     save_clean = all(r["harness_errors"] == 0 and not r["incomplete"] for r in save_b.values())
-    wording = (not overrides and save_fail == 0 and save_clean
-               and kills_fs.get("ntfs", 0) >= WORDING_MIN_SAVE_KILLS_PER_FS
-               and kills_fs.get("refs", 0) >= WORDING_MIN_SAVE_KILLS_PER_FS)
+    both = (kills_fs.get("ntfs", 0) >= WORDING_MIN_SAVE_KILLS_PER_FS
+            and kills_fs.get("refs", 0) >= WORDING_MIN_SAVE_KILLS_PER_FS)
+    ntfs_alone = (kills_fs.get("ntfs", 0) >= WORDING_MIN_SAVE_KILLS_NTFS_ALONE
+                  and wilson_upper(0, kills_fs.get("ntfs", 0), z=1.959964) < 0.0075)
+    wording = not overrides and save_fail == 0 and save_clean and (both or ntfs_alone)
     if viol:
         v = "FAIL"
     elif gaps or (gate and soft):
@@ -295,6 +321,7 @@ def overall(batches: dict, profile: str, missing: dict, overrides=()) -> dict:
     if overrides:
         gaps = gaps + [f"profile overridden, not a gate run: {o}" for o in overrides]
     return {"verdict": v, "violations": viol, "gaps": gaps, "soft_gaps": soft, "profile_overrides": list(overrides),
+            "not_testable": not_testable,
             "save_kills_by_fs": kills_fs,
             "save_kills": save_kills, "save_failures": save_fail,
             "save_wilson_upper_95": round(wilson_upper(save_fail, save_kills), 5) if save_kills else None,
@@ -507,8 +534,7 @@ class Chaos:
                 continue
             spec = BATCHES[b]
             if spec.get("needs_refs") and not self.a.refs_root:
-                missing[b] = ("not run: no ReFS volume (--refs-root unset; HYDRA_REFS_SCRATCH is the usual variable). "
-                              f"{self.counts.get(b, 0)} kills are missing from the 400 save kills")
+                missing[b] = NOT_TESTABLE[b]      # 8.12: no ReFS volume (--refs-root unset)
                 continue
             if self.counts.get(b, 0) <= 0:
                 continue
@@ -538,10 +564,13 @@ def selftest(verbose: bool = True) -> int:
         if not cond:
             bad.append(name)
 
+    k_ok = {k: {"ok": True, "how": "selftest"} for k in K_ALL}
+
     def rows(n, kills=True, anomalies=None, extra=None):
         out = []
         for i in range(n):
-            r = {"i": i, "acked_before_kill": not kills, "anomalies": list(anomalies or []), "trigger_hit": True}
+            r = {"i": i, "acked_before_kill": not kills, "anomalies": list(anomalies or []), "trigger_hit": True,
+                 "k": dict(k_ok)}
             r.update(extra or {})
             out.append(r)
         return out
@@ -560,9 +589,27 @@ def selftest(verbose: bool = True) -> int:
     check("planted: the canonical tree changed: FAIL", r["verdict"] == "FAIL", r)
     r = judge_batch("save_ntfs", save, 10, rows(10, kills=False), {"base_unchanged": True}, 0, clean, True)
     check("an acknowledged operation is not a kill: 0 kills counted", r["kills"] == 0 and r["verdict"] == "INCOMPLETE", r)
-    r = judge_batch("fork", BATCHES["fork"], 5, rows(5, extra={"dest_state": "rep_only_NO_GPR"}, anomalies=["PARTIAL_DEST_VISIBLE:rep_only_NO_GPR"]),
+    # 8.13: a .rep without its .gpr right after the kill is reported; after the sweep it is counted; a .gpr without
+    # its .rep is counted at any instant; the sidecar's .tmp before the sweep is reported
+    r = judge_batch("fork", BATCHES["fork"], 5, rows(5, extra={"dest_state": "rep_only_NO_GPR"},
+                                                    anomalies=["REP_WITHOUT_GPR_BEFORE_SWEEP", "SIDECAR_TMP_BEFORE_SWEEP"]),
                     {"base_unchanged": True}, 0, clean, True)
-    check("planted: a .rep without .gpr after a fork kill is counted", r["rep_without_gpr"] == 5 and r["verdict"] == "FAIL", r)
+    check("8.13: a .rep without .gpr and a sidecar .tmp before the sweep, gone after it: reported, not counted",
+          r["rep_without_gpr"] == 0 and r["verdict"] == "PASS" and r["pre_sweep_reported"] ==
+          {"REP_WITHOUT_GPR_BEFORE_SWEEP": 5, "SIDECAR_TMP_BEFORE_SWEEP": 5}, r)
+    r = judge_batch("fork", BATCHES["fork"], 5, rows(5, extra={"dest_state": "rep_only_NO_GPR"},
+                                                    anomalies=["REP_WITHOUT_GPR_BEFORE_SWEEP",
+                                                               "LEFT_AFTER_SWEEP:dest_after_start_sweep:rep_without_gpr:a.rep"]),
+                    {"base_unchanged": True}, 0, clean, True)
+    check("planted: a .rep without .gpr still there after the sweep is counted (8.13)",
+          r["rep_without_gpr"] == 5 and r["leftovers_after_sweep"] == 5 and r["verdict"] == "FAIL", r)
+    r = judge_batch("fork", BATCHES["fork"], 5, rows(5, anomalies=["GPR_WITHOUT_REP"]), {"base_unchanged": True}, 0, clean, True)
+    check("planted: a .gpr without its .rep at any instant is counted (8.13)", r["gpr_without_rep"] == 5 and r["verdict"] == "FAIL", r)
+    r = judge_batch("save_ntfs", save, 5, rows(4) + [dict(rows(1)[0], k={"K1": {"ok": True}})], {"base_unchanged": True}, 0, clean, True)
+    check("8.13: a kill without all of K1-K17 is not a checked kill: INCOMPLETE",
+          r["verdict"] == "INCOMPLETE" and r["k_missing"] == 1, r)
+    r = judge_batch("save_ntfs", save, 5, rows(5, anomalies=["K7:lock_stale"]), {"base_unchanged": True}, 0, clean, True)
+    check("planted: a per-kill oracle finding fails the batch", r["verdict"] == "FAIL", r)
     r = judge_batch("fork", BATCHES["fork"], 5, rows(5, anomalies=["ORPHAN_TMP_LEFT"], extra={"leftover_fork_tmp_after_retry": []}),
                     {"base_unchanged": True}, 0, clean, True)
     check("a staging folder seen before the sweep and gone after it is reported, not counted",
@@ -671,13 +718,20 @@ def selftest(verbose: bool = True) -> int:
     full = {b: judge_batch(b, BATCHES[b], COUNTS["gate"][b], rows(COUNTS["gate"][b], kills=BATCHES[b]["family"] != "control"),
                            {"base_unchanged": True}, 0, clean, True) for b in COUNTS["gate"]}
     o = overall(full, "gate", {})
-    check("every gate batch complete and clean: still INCOMPLETE, the publish kills belong to the VF check",
-          o["verdict"] == "INCOMPLETE" and o["wording_below_0_75_percent_allowed"] and any("publish" in s for s in o["soft_gaps"]), o)
-    check("0 of 400 save kills: Wilson upper bound 0.67%, below 0.75%", o["save_wilson_upper_95"] is not None and o["save_wilson_upper_95"] < 0.0075, o["save_wilson_upper_95"])
+    check("every gate batch complete and clean (publish and K1-K17 per kill included, 8.13): PASS, wording allowed",
+          o["verdict"] == "PASS" and o["wording_below_0_75_percent_allowed"] and not o["soft_gaps"], o)
+    check("0 of 709 save kills: Wilson upper bound below 0.75%", o["save_wilson_upper_95"] is not None and o["save_wilson_upper_95"] < 0.0075, o["save_wilson_upper_95"])
     part = {b: r for b, r in full.items() if b != "save_refs"}
-    o = overall(part, "gate", {"save_refs": "not run: no ReFS volume"})
-    check("no ReFS volume: the batch is named as missing and the wording is not allowed",
-          o["verdict"] == "INCOMPLETE" and not o["wording_below_0_75_percent_allowed"] and any("save_refs" in g for g in o["gaps"]), o)
+    o = overall(part, "gate", {"save_refs": NOT_TESTABLE["save_refs"]})
+    check("8.12/8.13: no ReFS volume: save_refs named not testable (not a gap, not passed); 509 clean NTFS kills allow the wording",
+          o["verdict"] == "PASS" and o["wording_below_0_75_percent_allowed"] and "save_refs" in o["not_testable"]
+          and not any("save_refs" in g for g in o["gaps"]), o)
+    p508 = dict(part, save_ntfs=judge_batch("save_ntfs", save, 508, rows(508), {"base_unchanged": True}, 0, clean, True))
+    o = overall(p508, "gate", {"save_refs": NOT_TESTABLE["save_refs"]})
+    check("8.13: 508 NTFS save kills alone: the wording is not allowed (3.84/(n+3.84) >= 0.75%)",
+          not o["wording_below_0_75_percent_allowed"], o)
+    o = overall(part, "gate", {"save_refs": "not run: some other reason"})
+    check("a ReFS batch missing for another reason is still a gap", o["verdict"] == "INCOMPLETE", o)
     bad_full = dict(full)
     bad_full["fork"] = judge_batch("fork", BATCHES["fork"], 300, rows(300, anomalies=["RETRY_BLOCKED"]), {"base_unchanged": True}, 0, clean, True)
     o = overall(bad_full, "gate", {})
@@ -703,7 +757,7 @@ def selftest(verbose: bool = True) -> int:
                          rows(n_refs, anomalies=["CORRUPT_OR_UNOPENABLE"] if refs_fail else None),
                          {"base_unchanged": True}, 0, clean, True)
         return {"save_ntfs": a_, "save_refs": b_}
-    check("wording allowed: 200 counted kills on each file system, nothing failed",
+    check("wording allowed: 200 counted kills on each file system, nothing failed (the rule with a ReFS volume)",
           overall(save_pair(200, 200), "gate", {})["wording_below_0_75_percent_allowed"])
     check("wording refused: 399 save kills (199 on NTFS)",
           not overall(save_pair(199, 200), "gate", {})["wording_below_0_75_percent_allowed"])
@@ -812,9 +866,9 @@ def selftest(verbose: bool = True) -> int:
           attempt_margin("gate", "save", 200) == 20 and attempt_margin("gate", "fork", 3) == 2
           and attempt_margin("smoke", "save", 2) == 0 and attempt_margin("gate", "control", 20) == 0
           and attempt_margin("gate", "daemon8", 50) == 0)
-    check("gate counts: 400 save kills, 300 fork, 200 promote, 50 daemon",
-          COUNTS["gate"]["save_ntfs"] + COUNTS["gate"]["save_refs"] == 400 and COUNTS["gate"]["fork"] == 300
-          and COUNTS["gate"]["promote"] == 200 and COUNTS["gate"]["daemon8"] == 50)
+    check("gate counts: 509 NTFS save kills (8.13), 300 fork, 200 promote, 200 publish, 50 daemon",
+          COUNTS["gate"]["save_ntfs"] == 509 and COUNTS["gate"]["save_refs"] == 200 and COUNTS["gate"]["fork"] == 300
+          and COUNTS["gate"]["promote"] == 200 and COUNTS["gate"]["publish"] == 200 and COUNTS["gate"]["daemon8"] == 50)
     print(f"chaos selftest: {'FAILED: ' + str(bad) if bad else 'all checks ok'}")
     return 1 if bad else 0
 

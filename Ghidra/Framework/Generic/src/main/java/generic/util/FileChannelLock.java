@@ -20,6 +20,16 @@ import java.nio.channels.*;
 
 public class FileChannelLock {
 
+	/**
+	 * The attempts of this JVM on a channel lock file take turns on this monitor: the attempt of
+	 * {@link #lock()}, {@link #release()}, and any other short probe of such a file (a
+	 * {@code tryLock} followed by its release, never a wait). A FileChannel lock belongs to the
+	 * whole JVM, so two attempts at once on one file make one of them fail with
+	 * {@link OverlappingFileLockException}, which reads as "another holder"; in turn, that
+	 * exception means a real holder in this JVM.
+	 */
+	public static final Object JVM_TURN = new Object();
+
 	private final File lockFile;
 	private FileOutputStream out;
 	private FileChannel fc;
@@ -37,6 +47,12 @@ public class FileChannelLock {
 	}
 
 	boolean lock() {
+		synchronized (JVM_TURN) {
+			return lockInTurn();
+		}
+	}
+
+	private boolean lockInTurn() {
 		try {
 			out = new FileOutputStream(lockFile, true);
 			fc = out.getChannel();
@@ -56,6 +72,12 @@ public class FileChannelLock {
 	}
 
 	void release() {
+		synchronized (JVM_TURN) {
+			releaseInTurn();
+		}
+	}
+
+	private void releaseInTurn() {
 		if (lock != null) {
 			try {
 				lock.release();

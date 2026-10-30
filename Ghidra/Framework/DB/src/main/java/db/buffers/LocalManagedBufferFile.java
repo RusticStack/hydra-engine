@@ -689,6 +689,7 @@ public class LocalManagedBufferFile extends LocalBufferFile implements ManagedBu
 		int newVersion = version + 1;
 		File newFile = bfMgr.getBufferFile(newVersion);
 		boolean success = false;
+		boolean restartPreSave = false;
 		File closedVersionFile = null;
 		try {
 			if (saveChangeFile != null) {
@@ -751,14 +752,33 @@ public class LocalManagedBufferFile extends LocalBufferFile implements ManagedBu
 				// version survives (the failure is after setReadOnly, so delete() was a no-op) the
 				// version file is the only way to rebuild the previous version and must stay, as
 				// before E12.
-				if (closedVersionFile != null &&
-					(!newFile.equals(saveFile.getFile()) || !newFile.exists())) {
+				boolean noNewVersion = !newFile.equals(saveFile.getFile()) || !newFile.exists();
+				if (closedVersionFile != null && noNewVersion) {
 					closedVersionFile.delete();
+				}
+				// Hydra GATE8: the save file was this file's pre-save, so after a failed commit
+				// nothing was left to save into: canSave() stayed false and every later save of
+				// the open program failed ("File is read-only") until it was closed and opened
+				// again, although the fault (a folder held by another process for a moment) was
+				// gone. When no new version was left behind, this file is still the newest
+				// version and a new pre-save of it makes the next save possible, the way a
+				// cancelled save does (saveCompleted(false)). When the new version survives (a
+				// failure after setReadOnly), it is the newest file: a pre-save of this file would
+				// target its name, so none is started, and the read-only save file, which nothing
+				// uses any more, is closed so that it holds no handle on the new version.
+				if (noNewVersion) {
+					restartPreSave = true;
+				}
+				else if (saveFile.isReadOnly()) {
+					saveFile.dispose();
 				}
 			}
 
 			saveFile = null;
 			saveChangeFile = null;
+			if (restartPreSave) {
+				startPreSave();
+			}
 		}
 		if (!success) {
 			throw new IOException("File error during save");

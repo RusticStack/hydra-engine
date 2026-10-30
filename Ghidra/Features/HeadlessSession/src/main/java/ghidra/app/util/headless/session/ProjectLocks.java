@@ -22,6 +22,8 @@ import java.util.Properties;
 
 import com.google.gson.JsonObject;
 
+import generic.util.FileChannelLock;
+
 import ghidra.framework.model.ProjectLocator;
 
 /**
@@ -52,6 +54,18 @@ final class ProjectLocks {
 			// without its ~ file was left by a process that died
 			return !channelType(lock);
 		}
+		// GATE9: the probe takes its turn with the other attempts of this JVM on channel lock files
+		// (Ghidra's own project lock and unlock, FileChannelLock.JVM_TURN). A FileChannel lock
+		// belongs to the whole JVM: two attempts at once (two forks of one source, or a fork and a
+		// writable open of it) would see each other's lock as an OverlappingFileLockException and
+		// answer "held" for a project nobody holds, or fail the open. The probe is a tryLock (it
+		// never waits), so the turn is short.
+		synchronized (FileChannelLock.JVM_TURN) {
+			return probe(channel);
+		}
+	}
+
+	private static boolean probe(File channel) {
 		try (FileChannel ch = FileChannel.open(channel.toPath(), StandardOpenOption.WRITE)) {
 			FileLock l = ch.tryLock();
 			if (l == null) {

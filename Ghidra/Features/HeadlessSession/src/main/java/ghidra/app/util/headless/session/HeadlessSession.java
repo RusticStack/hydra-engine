@@ -186,6 +186,9 @@ public class HeadlessSession implements GhidraLaunchable {
 		// E9: the governor after the watchdog (admission, the decompiler gate, the guarded sampler)
 		Health.contribute("processJob", ProcessJob::describe); // after E3c's waits (the order is pinned)
 		Governor.start(session);
+		// 8.13: what a killed publisher left in a directory this state directory forked into is
+		// swept before the daemon is ready (a .rep without its .gpr, a staging folder, a sidecar .tmp)
+		ForkSweeper.sweepAtStart();
 		Runtime.getRuntime().addShutdownHook(new Thread(this::removeEndpoint, "session-exit"));
 
 		Connection stdio = null;

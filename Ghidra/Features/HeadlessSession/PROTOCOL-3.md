@@ -495,8 +495,9 @@ Existing codes and their meanings are unchanged (`SessionException.java:27-51`).
 | `script_changed` | `scriptSha256` does not match the script file | `expected`, `actual`, `script` |
 | `bad_request` with `details.field` | unchanged code; v3 adds `field` and `allowed[]` where the value set is closed (`lane`, `isolation`, `purpose`, `verify`), and `field:"expect"` for `requireExpect` (conditional C13, 3.1) | |
 | `bad_request` with `details.reason:"rk_expired"` | an `rk` whose multi-op entries were partly evicted from the journal (3.4); only a request that carries `rk` (v3) can get it | `rk`, `foundOf`, `expectedOf` |
+| `busy` with `details.reason:"file_held"` | a request of `open_project`, `project`, `list`, `open_program`/`switch`, `save`, `fork_project`, `import`, `refresh`/`reopen` or `prepare_upgrade` failed because another process holds a file or folder of a project with no sharing (Windows: a folder that cannot be listed, a file that cannot be opened). Never `bad_request`, `not_found` or a bare `failed` (A63, 8.15). A **v2** connection gets `busy` with the same details except `reason`, and no `retryAfterMs` (C12) | `path` (what is held), `suggest:"retry"`; `retryAfterMs` 1000 (no hold history); `imported` on an `import` whose program was saved |
 
-`busy` gains `details.reason` (`slot_wait`, `lock_wait`, `lock_queue_full`, `abandoned`) for v3
+`busy` gains `details.reason` (`slot_wait`, `lock_wait`, `lock_queue_full`, `abandoned`; `file_held` by A63) for v3
 (conditional C12). `lock_queue_full` answers any v3 request (revision 6, D39; rev5 limited it to
 requests that carry the v3-only `lane:"quick"`). `cancelled` gains `details.phase` (`queued` for a slot wait, `lock_wait`, `running`)
 and, for the commands listed below, `details.applied`, both for v3 (conditional C11).
@@ -2225,6 +2226,7 @@ first and must pass unchanged on the hydra.4 candidate.
 | V9 | the work-conserving per-key running cap (3.5) applies to **v2** connections too, with the new lane defaults (D40) | a v2 connection that held up to 32 parallel requests and every running slot is held back only while another key waits under its own cap; the order in which one connection's own requests run is unchanged (D18's v2 key `connection id` is kept) | **Visible to v2**: under contention only, measured starvation (claims-audit U2: no per-client running cap; A: a 7th client waited 10.2-10.5 s) | `cc_e3a` `v2_running_cap`: one v2 connection with 32 parallel scripts cannot starve a second connection's script; on an idle daemon nothing changes; and `v2_lane_defaults`: `status.scheduler.long.slots` of a v2 connection equals `max(8, CPUs)`, the one number of the v2 `status` reply that E3a changes (the goldens mask it, D62) (E3a) |
 | V10 | the leave of a plain reader (a client that is neither owner, writer nor overlay holder) takes no exclusive program lock at any user count, and `Session.disconnect` no longer waits 600 s for it (E3c, D63b; the rev5 fast path of 3.5, built once; the owner and writer side is V3, E3b) | no reader of a program waits behind another client's leave or disconnect (today a leave queues the exclusive lock behind the running readers and every new reader waits behind it, measured, 3.5) | **Visible to v2**: it changes how long others wait, no reply shape | `cc_e3c` `reader_leave` (a 1.0.0 client closes its connection while another client's read runs: the next join and script are answered within their `wait`) and `reader_leave_all` (E3c) |
 | V11 | a concurrent `fork_project` to a path that another request is publishing (3.4, D41) answers `conflict` with `details.reason` `fork_in_progress` or `exists`; with the same `rk` the loser returns the winner's result | six simultaneous forks to one destination gave one success and five bare `failed` replies whose message names a `.rep` path (`review-rev6/exp1_fork_race.json`) | **Visible to v2**: only racing requests can see it and `failed` carried no information; the goldens run one request at a time and cannot see it | `cc_e2a` `fork_race_conflict`: six concurrent forks by the stock 1.0.0 client, exactly one success, five `conflict`, no leftover staging folder (E2a) |
+| V12 | a request that failed because another process held a file or folder of the project answers `busy` (A63, 8.15) | `busy` with `details.path` and `suggest:"retry"` where it got `bad_request` ("is not a program (Unknown-File)"), `not_found` or a bare `failed` with the localised system message; after the hold the same request succeeds without a reopen (it used to stay `Unknown-File` or `not_found` until the project was closed) | **Visible to v2**: the old codes told a v2 client that its request was wrong or that the project was damaged, and a v2 client already retries `busy`; `details.reason` and `retryAfterMs` are v3 only (C12) | `dt_held.py` (a v2 and a v3 connection; not a `cc_` test of the stock 1.0.0 client) (GATE10) |
 
 The release identity strings (`hydraVersion`, `buildDate`) change with every release; the goldens mask
 them (`"hydraVersion": "<masked>"`). `health` is a new command, so an old transcript contains none.
@@ -2232,8 +2234,8 @@ The counts D2 refers to: **thirteen reply-shape conditionals, C1 to C13, one per
 3.1**; G5 is the behaviour test of C4 and C5, which are events and `status` entries that the goldens
 cannot see, while the other eleven are reply shapes that the seven v2 scenarios at `--protocol 2`
 check directly (a v2 reply must stay byte-identical); six behaviour gates (G1 and G7 share the
-request-field helper; G2, G3, G4, G6 and G8 are one gate each); eleven declared visible changes (V1 to
-V11; revision 6 adds V8 to V10, revision 7 adds V11).
+request-field helper; G2, G3, G4, G6 and G8 are one gate each); twelve declared visible changes (V1 to
+V12; revision 6 adds V8 to V10, revision 7 adds V11, revision 8.11 adds V12).
 
 ### 5.2 Release notes (R1) must say
 
@@ -3950,6 +3952,110 @@ state a ReFS property as tested on this release (6.2 "Copy-on-write is ReFS only
 protection" stay as written, as limits). A gate report names these parts "not testable on the release machine, owner decision
 2026-10-30", never "passed" and never "skipped as green".
 
+### 8.13 Revision 8.9: the fork orphan class, K1-K17 after every kill, the NTFS-only wording, the publish kills (coordinator amendment, `w2/GATE2`)
+
+A coordinator amendment, recorded on branch `w2/GATE2` (from Hydra `integration/w3` at `3c3c100d8b`) during the hydra.4
+release-gate runs, after the first counted 9.15 run. GATE2 is not one of the 52 package ids; like FIX4 (8.11) its edits are
+recorded here as facts, numbered A57 to A62 (after 8.14's A42 to A56), and the matrix is unchanged. Where this section differs from an earlier one, it governs.
+
+**Evidence.** The 330 counted trigger-timed `fork_project` kills of the first gate run (NTFS, candidate `3b8a2f751a`,
+`D:/Projects/Hydra/_logs/gate-crash/gate-run/`, 6 shards of `chaos_tests.py --profile gate`): right after the kill, 12
+destinations held a `.rep` without its `.gpr` (the kill fell between the two renames of D41's publish: `.rep` moved, `.gpr`
+still in the staging folder) and 14 complete forks held a `<name>.fork.json.tmp` (the kill fell in the final sidecar rewrite).
+All 26 were swept by the next `fork_project` under the directory: the retry to the same path succeeded, 0 blocked retries, 0
+left after the sweep; no `.gpr` was ever seen without its `.rep`. The 224 counted NTFS save kills of the same run had 0 failures.
+
+**A57 (the fork orphan).** D41's `.gpr` last stays. Two renames cannot be made atomic on NTFS; a `.rep` without its
+`.gpr` is invisible to Ghidra and is garbage, while a `.gpr` without its `.rep` would be visible and broken, so that order is
+the right one. What must hold instead:
+
+* (a) the sweep that removes such an orphan also runs **at daemon start** and **at `open_project`** of the directory, not
+  only at the next `fork_project`. `S/ForkSweeper.java`: `registerParent` records every directory a `fork_project` stages in
+  (`<stateDir>/fork-parents/<hash>`, before anything is staged); `sweepAtStart` sweeps each recorded directory before the
+  daemon is ready (`S/HeadlessSession.java`) and drops a record whose directory holds no staging folder; `sweepForOpen`
+  sweeps the directory of the project an `open_project` names (`S/ProjectCommands.java`), and never fails the open. The
+  sweep keeps its rules (D41): only what an intent proves is a dead publisher's, never a live one's. A committed fork whose
+  dead publisher left its `<name>.fork.json.tmp` loses that file in the same sweep;
+* (b) a visible project (`.gpr`) is never without its `.rep`, at any instant;
+* (c) after the sweep, 0 orphans.
+
+**When the sweep runs (exhaustive; K6 oracles such as 9.17's read "after the sweep" as "after one of these ran on that
+directory since the kill").** (1) **Daemon start**: before the daemon answers its first request, every directory recorded in
+*that daemon's* state directory (`<stateDir>/fork-parents`) is swept whole; a directory that no `fork_project` of that state
+directory staged in is not recorded, and a daemon with another state directory does not sweep it. A record is dropped at a start
+that finds no staging folder in its directory, so a later leftover there that no staging folder accompanies (the promote
+marker's temporary file of A62) waits for (2) or (3). (2) **`open_project`**, read-only
+or writable: the directory that holds the named `.gpr` (or the named directory) is swept whole, before the open, and a
+failure of the sweep never fails the open. (3) **`fork_project`**: the destination name is swept before the staging, and the
+first `fork_project` of a daemon into a parent directory sweeps that directory whole (D41). Nothing else sweeps: not
+`list_projects`, `project_status`, `close_project`, a timer, or a client's exit. The removal of Ghidra's time probes (A61) is
+not a sweep: it runs only at a writable open, in that project's `.rep`.
+
+Test: `dt_e2a.py` `e2a_sweep_at_start`: (a) a planted dead publisher's `.rep` in a recorded directory is removed by the next
+daemon start with no fork and no open; (b) a dead publisher's sidecar `.tmp` is finished by `open_project`; (c) a daemon killed
+exactly between the two renames, held there by the test hook `ghidra.session.testForkPauseAfterRepMs` of `S/ProjectFork.java`
+(it does nothing without `ghidra.session.testHooks`), leaves a `.rep` alone that the next daemon start removes. It is red on the
+candidate without the change (`3b8a2f751a`, whose fork code `3c3c100d8b` does not change: part (a) fails, the
+daemon start leaves the `.rep`) and green with it (`D:/Projects/Hydra/_logs/gate-crash/e2a-old2.log`, `e2a-new2.log`). The E2a test text and the 9.15 fork row now read "0 `.gpr` without `.rep` at any
+instant; 0 `.rep` without `.gpr` after the sweep (next `fork_project` or daemon start)". The harness (`conc/run_c.py`
+scenario b) records the state right after the kill as pre-sweep classes (`REP_WITHOUT_GPR_BEFORE_SWEEP`,
+`SIDECAR_TMP_BEFORE_SWEEP`, `ORPHAN_TMP_LEFT`: reported, not counted), `GPR_WITHOUT_REP` at any instant (counted), and what is
+left after the daemon start and after the retry (`LEFT_AFTER_SWEEP`: counted).
+
+**A58 (K1-K17 after every kill).** The counted batches run the oracle after every kill, as 9.15 says: new
+`examples/conc/kcheck.py` runs over each iteration folder before it is deleted, after the fresh daemon of the harness's oracle
+(on the same state directory, so after its start-up sweep) and after the retry. Each row of `results.jsonl` carries `k`, one
+result per invariant: checked and holding, a violation (also added to the row's anomalies, so it fails the batch), or `na` with
+the reason when the iteration made no object the invariant is about (K11 and K15 are about Hydralysis views; K12, K16 and K17
+about a lineage: run when one is found, and by the publish batch). `chaos_tests.py` counts an iteration without all seventeen
+results as not checked (the batch cannot pass) and its `SOFT_GAPS` are empty. K17 judges sealed records only: the publish
+leader's marker `publish.leader.json` and files inside a project's `.rep` are plain JSON and are noted, not judged
+(`oracle.NOT_RECORDS`); a record that lost its seal is still a violation (`dt_x0.py`).
+
+**A59 (the wording on NTFS alone).** With no ReFS volume (8.12) the wording "below 0.75% at 95%" is reached on NTFS
+alone: 0 failures in n counted save kills bound the rate at 3.84/(n+3.84) (two-sided Wilson, z = 1.96), below 0.75% from
+n = 509. The gate profile's NTFS save count is 509; the ReFS batch is reported as "not testable on the release machine, owner
+decision 2026-10-30" (8.12), neither a gap nor a pass.
+
+**A60 (the publish kills).** "Publish" in 9.15 is the Hydralysis generation publish (3.12 "Kill during publish": nothing
+published, `CURRENT.log` unchanged, or fully published; D50 counts it apart from the 300 fork-publish kills; GR4). The new
+`publish` batch (`examples/conc/run_pub.py`) kills the publisher process of Hydralysis' own fault harness
+(`tests/test_views.py --worker`, `views.run_publish_job` against Hydralysis' fake daemon, whose effects are on disk), from a
+read-only Hydralysis checkout (`HYDRALYSIS_SRC`), trigger-timed on the lineage folder listing, and runs K1-K17 after each kill
+and after the next leader. At least 200 counted kills; the 200 `promote_overlay` kills are their own batch.
+
+**A61 (the time probe of a killed writable open).** The counted fork batch on the rebased candidate (`b15968514c` plus
+GATE2) found 2 of 330 counted kills (g3fork4/it017, g3fork0/it074) with a complete fork whose data equalled the canonical
+project but whose `.rep/user` (`.rep/versioned`) held an empty `tmp<digits>.tmp` that stayed after the next open. The kill came after the commit point, during the `open` of the
+new fork. Every writable open of a Ghidra project starts `LocalDatabaseItem.CleanupRunnable` for each file system root of the
+`.rep`: it creates an empty `File.createTempFile("tmp", ".tmp", root)` to read the file system's clock, then deletes it; a kill
+in between leaves the file for good. The daemon's writable open (`open_project` writable, and the reopen writable in place)
+now removes empty `tmp<digits>.tmp` files directly in `idata`, `user` and `versioned` before it reads the revision
+(`GhidraProbes`). A read-only open never does (it changes nothing), and removing a live process's probe is harmless to it (its
+`lastModified()` reads 0 and its cleanup removes nothing). Test `e2a_open_probe`: red without it, green with it. The harness
+reports the probe right after a kill as the pre-sweep class `GHIDRA_PROBE_BEFORE_OPEN` and counts one still there after the
+oracle's writable open as `LEFT_AFTER_SWEEP` (K6).
+
+**A62 (the sidecar's temporary file names its writer).** The counted `promote_overlay` batch on the same candidate found 8 of
+480 iterations (218 counted kills) with an `analysis.fork.json.tmp` that the next daemon's sweeps kept (K6 `sidecar_tmp_left`). `promote_overlay`
+rewrites the sidecar of a fork that is already complete (the promote marker, `ProjectFork.markPromote`), after its staging
+folder is gone; a kill between the write of the temporary file and its rename leaves a file no intent names, and the sweeper
+removes only what it can prove dead. `ProjectFork.writeSidecar` now writes `<file>.<pid>.tmp`, and every sweep (daemon start,
+`open_project`, `fork_project`) removes a `<name>.fork.json.<pid>.tmp` or `SEALED.json.<pid>.tmp` whose process is not running
+or started after the file was made (`ForkSweeper.pidOwnsFolder`, the rule of the staging folders). A live writer's file, and
+the `<name>.fork.json.tmp` of an older build that no intent names, are kept. Two processes no longer share one temporary file.
+Test `e2a_sidecar_tmp_writer`: red without it, green with it. The promote scenario of the harness (`run_c.py` d2) now uses the
+8.13 classes of the fork scenario: `.rep` without `.gpr` and the sidecar's temporary file right after a kill are reported
+(`REP_WITHOUT_GPR_BEFORE_SWEEP`, `SIDECAR_TMP_BEFORE_SWEEP`, 3 of the batch were counted as `PARTIAL_DEST_VISIBLE` before), a
+`.gpr` without `.rep` is counted at any instant, and what the oracle's sweeps leave is counted (`LEFT_AFTER_SWEEP`).
+
+| 9.15 part | Now reads |
+|---|---|
+| save | at least 509 NTFS save kills (8.12: the ReFS half not testable) with 0 unopenable and 0 unrepaired |
+| fork | at least 300 `fork_project` kills with 0 blocked retries, 0 `.gpr` without `.rep` at any instant, 0 `.rep` without `.gpr` after the sweep (next `fork_project` or daemon start), 0 leftovers after the sweep |
+| publish | at least 200 Hydralysis publish kills and at least 200 `promote_overlay` kills |
+| every kill | followed by K1-K17 (`kcheck.py`, `run_pub.py`) |
+
 ### 8.14 Revision 8.10: release gate 9.11, hygiene (ownership amendments A42 to A56, the limits of 6.2 in the documents, `w2/GATE6`)
 
 A coordinator amendment, recorded on branch `w2/GATE6` (from Hydra `integration/w3` at `3c3c100d8b`) to close the two open items of
@@ -4030,6 +4136,67 @@ engine and Hydralysis documents (the site repository is not edited here; its thr
 without the parentheses are the site owner's, S2).
 
 The shipped `docs/release-notes-12.3-hydra.3.md` is not edited.
+
+### 8.15 Revision 8.11: a file held by another process is `busy`, never a client mistake (coordinator-style amendment A63, `w2/GATE10`)
+
+A coordinator-style amendment, recorded on branch `w2/GATE10` (from Hydra `integration/w3` at `bc4004d366`) for finding C of
+release gate 9.17 (soak `pr-vf2`, `D:/Projects/Hydra/_logs/gates/gates-3.md` "Round 2") and the unstructured `fork_project`
+failure of the same fault (decision 2 there). It is numbered A63, the next number after A62 of 8.13 (`w2/GATE2`, not merged
+into this base; this base's last number is A56 of 8.14). Where this section differs from an earlier one, it governs.
+
+**Evidence.** With the handle-holder fault holding agent 3's fork database folder (`~00000000.db`, `GENERIC_READ`, no sharing;
+the window opened 0.2 s before), `open_program` answered `bad_request "/flow_fixture.exe is not a program (Unknown-File)"`
+three times in 1.5 s, and the agent gave up (`agent_setup_failed`). The daemon log shows why: `LocalFolderItem.getFolderItem`
+could not construct the database item (`Database.checkDbDir`: "Database directory not found", the folder cannot be listed)
+and made a `LocalUnknownFolderItem` of it. The same hold on the unfixed candidate, by `examples/dt_held.py`
+(`D:/Projects/Hydra/_logs/gate10/`), also shows: the project keeps that unknown item after the hold, so the same
+`open_program` stays `bad_request` until the project is closed; a held `.prp` file drops the item (`not_found`, also after
+the hold) and, held across a save, makes every later save of the open program fail "File is read-only" (the refresh after
+the save could not read the property file and the project dropped the file, the same mechanism as GATE8's listing case); a
+held `idata/~index.dat` makes `open_project` answer `not_found`; a held version file makes `open_program` fail with the
+localised system message; a held database folder makes `save` fail "IOException: File error during save" and
+`fork_project` fail with the localised message. The messages are localised (Portuguese on the release machine), so nothing
+may be decided from their text.
+
+**A63 (the transient file hold).**
+
+* (a) **The answer.** A request of `open_project`, `project`, `list`, `open_program`/`switch`, `save`, `fork_project`,
+  `import`, `refresh`/`reopen` or `prepare_upgrade` that fails because another process holds a file or folder of a project
+  answers `busy` with `details.path` (what is held) and `suggest:"retry"`; a v3 connection also gets
+  `details.reason:"file_held"` and `error.retryAfterMs` (1000: no hold history is kept). A v2 connection gets `busy` without
+  those two keys (C12; V12 in 5.1). The message ends with the failure as it was. Never `bad_request`, `not_found` or a bare
+  `failed` for a hold. `script`, `analyze` and the edit commands are not mapped (a partly applied script must not be told to
+  retry; edits do not touch files).
+* (b) **What is a hold.** Decided by looking, never by the message: a folder that exists and cannot be listed, or a file that
+  exists and cannot be opened for reading (`S/HeldFiles.held`), checked for the files an exception names (a
+  `FileSystemException`'s files, an absolute path in a message, cut back to the longest existing prefix) and their folders up
+  to the `.rep`, and for the item's own storage (its `~xxxxxxxx.db` folder, `.prp` file and their folder, found through
+  `LocalFileSystem.findItemStorage`). A missing file is not a hold. An access-control denial looks the same and is answered
+  the same way (a limit, not told apart).
+* (c) **Where.** `S/Connection.java` maps a `failed`, `not_found` or `bad_request` that carries a cause, and any unexpected
+  exception, of the commands of (a) (`HeldFiles.translate`). `S/ProgramCommands.java`: a file that is not a program is
+  checked first (`HeldFiles.recheck`): its storage held, or another item file of the project held, is `busy`; an
+  `Unknown-File` item with nothing held has its folder listed again (Ghidra's `GhidraFolder.refreshFolderData`) and the
+  fresh file is used. `S/ProjectCommands.java` `findFile`: a name the file system's index still lists but the project does
+  not (dropped while held) is `busy` while held, else its folder is listed again (`HeldFiles.recheckMissing`; a name that is
+  really absent costs one in-memory index lookup). `S/EditCommands.java` `save`: "File error during save" names no file, so
+  the program's storage is checked too. `S/ImportCommands.java`: an import whose program was saved but cannot be opened yet
+  answers that `busy` with `details.imported`.
+* (d) **After the hold.** The same request succeeds without closing or reopening anything. A refused `fork_project` leaves
+  its source unchanged and nothing of the fork at its destination (no `.gpr`, `.rep`, sidecar or staging folder; its own
+  staging is removed as before). A save refused under a hold is retried by the open program (GATE8's new pre-save).
+* (e) **Ghidra core.** `Ghidra/Framework/FileSystem/.../local/LocalFolderItem.java` `refresh`: a property file that exists
+  and cannot be opened (held) keeps the item with the properties it read before, instead of throwing (which made
+  `GhidraFolderData.fileChanged` drop the file); a property file that opens and does not parse is still an error. It is a
+  new patched core file (NOTICE-HYDRA, `.github/hydra-touched-files.txt`).
+
+Tests: `examples/dt_held.py` `held_open_program` (finding C, v2 and v3, the default and the listing-only hold),
+`held_property_file`, `held_fork_source` (database folder, `.prp`, index), `held_save`, `held_open_project`,
+`held_version_file`, `held_import`. Holds are external (`chaos_lib.HandleHolder` in the test process, D22/D48), taken before
+the request and released after its answer; no sleep. All seven fail on the unfixed candidate (`bc4004d366`:
+`red-unfixed.log`, `red-unfixed-2.log`, `red-unfixed-3.log` in `D:/Projects/Hydra/_logs/gate10/`) with the answers listed
+above; `held_property_file` also fails with the engine change alone, without (e) ("File is read-only" after the release,
+`red-nolfi.log`); all pass with the change.
 
 ### W0
 
@@ -4270,7 +4437,7 @@ Surface: sidecar field `state` (every fork ends `complete` here; E2 makes a `gen
 `forkAtomic` (E1 registers the names of 3.13 up front; E2a adds the name to `Advertised` when E1's list does not hold it, A4; enabled here); V11 (5.1: a racing publisher answers `conflict`); no other reply
 change.
 Tests: at least 300 kills (random and trigger-timed) during `fork_project` on NTFS and ReFS: the path is absent or
-complete, never `.rep` alone, never without a sidecar, and a retry to the same path succeeds; no staging folder
+complete, 0 `.gpr` without `.rep` at any instant, 0 `.rep` without `.gpr` after the sweep (next `fork_project` or daemon start, 8.13), never without a sidecar, and a retry to the same path succeeds; no staging folder
 after the next fork; a client-side kill still leaves nothing (0 of 18 measured); the sweeper never touches a path
 whose intent names a live process; `promote_overlay` is untouched (E2); `fork_race_conflict` (V11, `cc_e2a`, the stock 1.0.0 client): six concurrent forks to one
 destination give exactly one success and five `conflict` (`fork_in_progress` or `exists`), no leftover staging folder, the
@@ -5107,7 +5274,7 @@ Fresh state roots; the live daemons (18220, 17936) are never touched; no game-de
 | 9.12 | **Verification gate: red before green, and an oracle that can fail** (D48) | X0's self-test flags every planted violation X1-X5, X7-X11 and tolerates X6; the red table recorded on hydra-3-candidate and `hydra-session-after` reproduces each recorded defect within its range (BP3 refusals 2.5-12.0 s; BP7 all 9 probes; BP8 9,421 ms; BP9 6 of 6; BP10 10.2-10.5 s; BP11 write applied by a dead client; BP14 94 of 114 polls; the version-file poison 12 of 363 and 7 of 95; fork 12 of 162 (its 4 `.rep` without `.gpr` were not reproduced in review, D41); Hydralysis `no_project` with 4 threads); a package's test is accepted as evidence only if it was red on the old build and is green on the new one; a row that does not reproduce is reported, not tuned away. Exit 0 verified |
 | 9.13 | **Non-blocking gate (NB, G-NB)** on the hydra.4 build | B's `s1` (three variants), `s2`, `s4`, `s5`, `s7`, `s11`, `s13` and A's `lanetest` re-run: `waits.foreignBlocked` is 0 for reads of a sealed generation and for view operations (K13); zero refused probes in the variants that refused before; another project's `open_project` during a writable wait in 100 ms or less (9,421 ms before); a 7th client's script, save and fork in 1 s or less with six long scripts running (10.2-10.5 s before); reader throughput under four view writers at least 0.9x the no-writer baseline (shared-mode writers: 0.27x); a dead client's queued write never applied; cancel and disconnect release a lock wait within `cleanupGraceS + abandonWaitS + 1 s`; E3c's enumeration of the 17 `lock_matrix.json` rows has a decision for every row; `s1` (a, b, c) and `reader_leave_no_freeze` are E3c's gate (D63b) and `owner_leave_bounded` is E3b's (D63a); DB-bound reads at 8 clients scale at least 3x **only if E11 is built**. Latency thresholds come from a quiet-machine run (foreign load recorded below 25% CPU), are reproduced twice before they fail, and are report-only on a loaded machine |
 | 9.14 | **Resource gate (G-RES)** | 24 views at `-Xmx256m` end in structured `busy` with 0 `OutOfMemoryError` and a live reaper; 24 views at `-Xmx512m` run; a 100-view probe is refused at `maxViews`; decompiler kill -9, hang and timeout leave other requests unaffected and the next request working; a daemon kill leaves no orphan decompiler or worker, tested with **suspended** decompilers and a no-job control that must show survivors (K7, SP3(b), D60), and the launch outcome of both harness-job variants is as SP3(a) expects (D65); a runaway or deaf script is quarantined and counted, **and a deaf script that ignores cancel and interrupt is killed at its timeout by E7, **on a view with unsaved edits** (the owner saves once, the script sees the edit, a stale read fails the test), its slot and the owner's long cap released, with the worker's start-up and RAM cost recorded (SP10, D64); until these E7 items pass the documents say "bounded and quarantined", not "killed"**; throughput not below the A baselines (9.18) |
-| 9.15 | **Crash gate (G-CRASH)**, counted | with trigger-timed kills (the method of C, X0's library): at least 400 save kills (200 NTFS, 200 ReFS) with 0 unopenable and 0 unrepaired; at least 300 `fork_project` kills with 0 blocked retries, 0 `.rep` without `.gpr`, 0 leftovers after the sweep; at least 200 publish and `promote_overlay` kills; at least 50 daemon kills with 8 clients; every kill followed by K1-K17; Wilson bounds reported, wording "below 0.75% at 95%" after 0 of 400; the canonical hash unchanged. Single-run results of rev5 are replaced by counted ones |
+| 9.15 | **Crash gate (G-CRASH)**, counted | with trigger-timed kills (the method of C, X0's library): at least 400 save kills (200 NTFS, 200 ReFS; with no ReFS volume at least 509 on NTFS, 8.12, 8.13) with 0 unopenable and 0 unrepaired; at least 300 `fork_project` kills with 0 blocked retries, 0 `.gpr` without `.rep` at any instant, 0 `.rep` without `.gpr` after the sweep (next `fork_project` or daemon start), 0 leftovers after the sweep; at least 200 publish (Hydralysis generation publish) and 200 `promote_overlay` kills; at least 50 daemon kills with 8 clients; every kill followed by K1-K17; Wilson bounds reported, wording "below 0.75% at 95%" after 0 of 400 (0 of 509 on NTFS alone, 8.13); the canonical hash unchanged. Single-run results of rev5 are replaced by counted ones |
 | 9.16 | **View-cost gate (G-VIEW)** | Z2's `named_view_cost`: the median of at least 5 runs of the first-edit time at 1, 4 and 12 simultaneous new views, shared base against rebuilt base, NTFS and ReFS, foreign load recorded; the 0.3 to 0.55 s prediction is quoted nowhere until this gate reports; the result decides the spare-view pool (not in the first cut) and `publishBatchMax` (with SP7) |
 | 9.17 | **Chaos and soak gate (G-SOAK)** (replaces 9.5) | harness E6 on X0's library with a ground-truth ledger the harness itself flushes. Workload per agent: reads (decompile, `functions`, xrefs, Hydralysis queries), edits in its view, publish, rebase, analysis in a candidate, deaf and runaway scripts, bulk opens. Faults (each class must fire a minimum count or the run cannot pass): kill -9 of random clients, of the daemon (wait for exit) at random and trigger-timed, of a native decompiler, of a publish leader mid-build; suspend of the daemon and of a client; a client that stops reading its socket; a handle holder during saves; an out-of-memory probe that tries 100 views. **PR lane**: 4 agents x 2 projects, 10 min. **Nightly**: 16 agents x 4 projects, 2 h, at least 150 kills. **Release**: three consecutive green nightly runs on NTFS plus one on ReFS (a fixture under 10 GB on F:, cleaned up), plus **one** run of 24 agents x 6 projects (a KotOR copy, the fixture, imported executables) for at least 4 hours. Pass: zero oracle violations, `waits.foreignBlocked` 0, no unexplained `busy`, no leak. All daemons use fresh state roots under `D:/Projects/Hydra/_logs/<stream>/` and are stopped at the end |
 | 9.18 | **Compatibility and performance (G-COMPAT, G-PERF)** | the seven v2 goldens identical; every row of 5.1 (V1-V11, G1-G8) has its `cc_` test; the 12.1.4-against-12.3 decompile difference (77.124% of 8,616 identical on KotOR; Z7 measured that `maxBadData` 4 does not explain it, 8.6) is **reported, never gated** (owner); an interleaved A/B (A's method) of hydra.3 against hydra.4 at 12 agents: median throughput not below 0.9x and CPU-seconds per function (0.031 to 0.041) within 10% |

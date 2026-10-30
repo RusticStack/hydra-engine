@@ -454,6 +454,11 @@ def check_k6(gpr, kind: str = "fork", base_tree: str | None = None, require_side
         rep.violation("K6", "gpr_without_rep", f"{gpr.name} exists and {rp.name} does not", gpr)
         return rep
     side = gpr.with_name(gpr.stem + ".fork.json")
+    # 8.13: the sidecar's temporary file of a killed writer is gone after the sweep; A62: it is
+    # <name>.fork.json.<pid>.tmp (<name>.fork.json.tmp of an older build)
+    for t in sorted(side.parent.glob(side.name + ".*tmp")):
+        if re.fullmatch(re.escape(side.name) + r"(\.\d+)?\.tmp", t.name):
+            rep.violation("K6", "sidecar_tmp_left", f"{t.name} is next to a complete fork", t)
     if not side.exists():
         if require_sidecar:
             rep.violation("K6", "no_sidecar", "a complete fork without its sidecar", side)
@@ -1014,6 +1019,29 @@ def read_sealed(path):
     return None, "corrupt"
 
 
+#: plain JSON files of a lineage folder that are not sealed records (K17)
+NOT_RECORDS = {"publish.leader.json"}
+
+
+def _not_a_record(p) -> bool:
+    """True for a known non-record (``NOT_RECORDS``, or a file inside a project's ``.rep``) that parses as a JSON object
+    without a ``seal`` and whose ``.bak`` (if any) is no sealed record either. Anything else is judged as a record: a
+    record that lost its seal, or a torn file, is a violation."""
+    pp = pathlib.Path(p)
+    if pp.name not in NOT_RECORDS and not any(x.endswith(".rep") for x in pp.parts[:-1]):
+        return False
+    def obj(x):
+        try:
+            return json.loads(pathlib.Path(x).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+    d = obj(p)
+    if not isinstance(d, dict) or "seal" in d:
+        return False
+    b = obj(str(p) + ".bak")
+    return not (isinstance(b, dict) and "seal" in b)
+
+
 def check_k17(store_dir, log_path=None, rep: Report | None = None) -> Report:
     """K17: every sealed record file validates or falls back to its previous version (``.bak``); a
     ``CURRENT.log`` may have a torn *last* line only (tolerated), never a torn middle."""
@@ -1024,6 +1052,12 @@ def check_k17(store_dir, log_path=None, rep: Report | None = None) -> Report:
             if p.name.endswith(".fork.json") or p.name in ("SEALED.json", "MANIFEST.json", "lineage.json"):
                 continue
             d, how = read_sealed(p)
+            if how == "corrupt" and _not_a_record(p):
+                # 8.13: K17 is about sealed records. Two kinds of plain JSON file live in a lineage folder and are not
+                # records: the publish leader's marker (written by an atomic rename) and a file inside a project's
+                # .rep (program data). Only those, and only while they are whole JSON with no seal, are left out
+                rep.note("K17", "not_a_sealed_record", f"{p.name} is plain JSON with no seal", p)
+                continue
             if how == "corrupt":
                 rep.violation("K17", "record_corrupt", f"{p.name} and its .bak both fail validation", p)
             elif how == "bak":

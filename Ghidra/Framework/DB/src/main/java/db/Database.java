@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+// Hydra Engine: modified from Ghidra's original (see NOTICE-HYDRA).
 package db;
 
 import java.io.*;
@@ -383,6 +384,42 @@ public abstract class Database {
 		}
 	}
 
+	/**
+	 * Hydra GATE8: the scan (with repair) that follows the commit of {@code version}, whose buffer
+	 * file has just been given its final name. On Windows the listing of the folder fails while
+	 * another process holds the folder without read sharing (an indexer, a scanner, a backup
+	 * agent): {@code File.list()} answers null and the scan throws {@code FileNotFoundException}
+	 * although nothing is missing. Thrown here, the commit had already taken effect on disk (the
+	 * new version is the newest file) while this database kept the previous version as current, so
+	 * every later save of the item targeted the existing file name and failed, and every reopen
+	 * opened the previous version again, until the item was rebuilt (a daemon restart): the stuck
+	 * save of soak nightly-1 (G-SOAK 9.17). When the listing fails but the committed file is there,
+	 * the version is recorded without the scan: it is the newest file of the folder (the save
+	 * created it as version current + 1), and the files it replaces are removed by the next scan
+	 * that can list the folder. Any other failure is thrown as before.
+	 * @param version the version that was just committed
+	 * @throws FileNotFoundException if the folder cannot be listed and the version file is absent
+	 */
+	protected void scanAfterCommit(int version) throws FileNotFoundException {
+		try {
+			scanFiles(true);
+		}
+		catch (FileNotFoundException e) {
+			File committed = bfMgr.getBufferFile(version);
+			if (version <= currentVersion || !committed.isFile() || !dbDir.isDirectory()) {
+				throw e;
+			}
+			log.warn(dbDir + ": the folder cannot be listed after the commit of version " +
+				version + " (" + e.getMessage() + "; another process holds it?); version " +
+				version + " is recorded without a scan, older files are removed by a later scan");
+			currentVersion = version;
+			if (!isVersioned) {
+				minVersion = version;
+			}
+			lastModified = committed.lastModified();
+		}
+	}
+
 	private int[] getFileVersions(ArrayList<String> fileList) {
 		ArrayList<Integer> list = new ArrayList<>();
 		Iterator<String> iter = fileList.iterator();
@@ -459,7 +496,7 @@ public abstract class Database {
 					return;
 				}
 
-				scanFiles(true);
+				scanAfterCommit(version);
 
 				if (currentVersion == 0) {
 					throw new FileNotFoundException("Database files not found");

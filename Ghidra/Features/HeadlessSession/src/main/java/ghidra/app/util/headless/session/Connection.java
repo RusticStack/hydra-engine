@@ -298,12 +298,23 @@ final class Connection {
 			exiting = stop; // before the reply: the client may close as soon as it has read it
 		}
 		catch (SessionException e) {
-			resp = error(id, client.v3() ? withCancelDetails(e, cmd, m) : e, t0);
+			// a failure caused by a file another process holds is busy, never a client mistake
+			// (GATE10, A63); every other answer is unchanged
+			SessionException held = HeldFiles.translate(cmd, e);
+			SessionException out = held != null ? held : e;
+			resp = error(id, client.v3() ? withCancelDetails(out, cmd, m) : out, t0);
 		}
 		catch (Throwable t) {
-			Msg.error(this, client.label() + " " + cmd + " failed", t);
-			resp = error(id, new SessionException(SessionException.FAILED,
-				t.getClass().getSimpleName() + ": " + t.getMessage(), null, t), t0);
+			SessionException held = HeldFiles.translate(cmd, t);
+			if (held != null) {
+				Msg.warn(this, client.label() + " " + cmd + ": " + held.getMessage());
+				resp = error(id, held, t0);
+			}
+			else {
+				Msg.error(this, client.label() + " " + cmd + " failed", t);
+				resp = error(id, new SessionException(SessionException.FAILED,
+					t.getClass().getSimpleName() + ": " + t.getMessage(), null, t), t0);
+			}
 		}
 		finally {
 			Caller.leave();

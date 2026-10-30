@@ -53,6 +53,8 @@ final class ProjectCommands {
 	 * a writable request on a writable project, and a read-only request on one, join it.
 	 */
 	JsonElement openProject(Client c, JsonObject req) {
+		// 8.13: a half fork a dead publisher left in this directory is swept before the open
+		ForkSweeper.sweepForOpen(Json.str(req, "path", null));
 		ProjectResolver.Resolved r;
 		String canonical;
 		try {
@@ -228,6 +230,7 @@ final class ProjectCommands {
 
 	private void reopenWritable(Client c, ProjectEntry p, long wait) {
 		ProjectLocator locator = new ProjectLocator(p.resolved.dir().getPath(), p.resolved.name());
+		GhidraProbes.removeStale(p.resolved.dir(), p.resolved.name()); // 8.13 (A61)
 		String rev;
 		try {
 			rev = Revision.of(p.resolved);
@@ -304,6 +307,9 @@ final class ProjectCommands {
 				"Ghidra cannot open this path: " + e.getMessage());
 		}
 		long t0 = System.nanoTime();
+		if (writable) {
+			GhidraProbes.removeStale(r.dir(), r.name()); // 8.13 (A61), before the revision is read
+		}
 		String revision;
 		try {
 			revision = Revision.of(r);
@@ -798,6 +804,12 @@ final class ProjectCommands {
 		if (path.startsWith("/")) {
 			DomainFile f = d.getFile(path);
 			if (f == null) {
+				// dropped while another process held its files (GATE10, A63)? busy, or listed again
+				int slash = path.lastIndexOf('/');
+				f = HeldFiles.recheckMissing("find " + path, d,
+					slash == 0 ? "/" : path.substring(0, slash), path.substring(slash + 1));
+			}
+			if (f == null) {
 				throw new SessionException(SessionException.NOT_FOUND,
 					"no such file in project " + p.id + ": " + path);
 			}
@@ -805,6 +817,13 @@ final class ProjectCommands {
 		}
 		List<DomainFile> found = new ArrayList<>();
 		collectByName(d.getRootFolder(), path, found);
+		if (found.isEmpty() && !path.contains("/")) {
+			// a bare name dropped from the root folder while it was held (GATE10, A63)
+			DomainFile f = HeldFiles.recheckMissing("find " + path, d, "/", path);
+			if (f != null) {
+				found.add(f);
+			}
+		}
 		if (found.size() == 1) {
 			return found.get(0);
 		}
