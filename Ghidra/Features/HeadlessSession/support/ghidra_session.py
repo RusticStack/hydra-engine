@@ -691,19 +691,23 @@ ENV_MAP = {
 }
 
 
-# Code a daemon runs once or rarely, whose C2 (optimising) compiles cost more CPU than they save:
-# javac and the class-file API (a script's first run compiles it), the RELAX NG validator of the
-# language specs (once per language), and the Sleigh preprocessor with ANTLR (the .sla staleness
-# scan at the first load of a language). It still runs compiled by C1 (tier 1, after the usual
-# thresholds), never only interpreted; nothing else changes: the JIT never changes what a method
-# computes. The JDK's XML parser is not listed: every project open still parses XML. Measured on
-# the multi-agent benchmark: C2 compiled more bytecode of javac (62 KB) than of any other package,
-# and javac was the package with the most compiles (3382 of 23100).
+# Code a daemon runs once per language, whose C2 (optimising) compiles cost more CPU than they
+# save: the RELAX NG validator of the language specs and the Sleigh preprocessor with ANTLR (the
+# .sla staleness scan at the first load of a language). It still runs compiled by C1 (tier 1,
+# after the usual thresholds), never only interpreted; nothing else changes: the JIT never changes
+# what a method computes. The JDK's XML parser is not listed: every project open still parses XML.
+# javac and the class-file API are deliberately NOT listed: a long-lived daemon that serves many
+# agents' ad-hoc scripts runs javac again and again, and kept on C1 every compile after warm-up
+# costs more (measured, 1200 distinct compiles in one JVM: +34..60 % CPU for compiles 401-1200,
+# +8..22 % over all of them), and the JDK 24+ class-file API also generates every lambda, proxy
+# and method-handle class for the whole run.
 JIT_ONE_SHOT = [
-    "com/sun/tools/*.*", "com/sun/source/*.*", "jdk/internal/classfile/*.*",
-    "java/lang/classfile/*.*", "com/sun/msv/*.*", "org/iso_relax/*.*",
+    "com/sun/msv/*.*", "org/iso_relax/*.*",
     "ghidra/sleigh/grammar/*.*", "ghidra/pcodeCPort/*.*", "org/antlr/*.*",
 ]
+
+# The JVM option variables, which the launcher passes on to the daemon (env_to_carry).
+JVM_OPTION_VARS = ("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS")
 
 
 _ENGINE_KEY = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,63}")
@@ -802,13 +806,9 @@ class Launch:
         ``<state>/settings/<instance>``, unless ``settingsDir`` is ``shared`` or a JVM option already names
         one. The user's ``Extensions`` are linked into it, so the same modules are found. The option
         travels on the command line, so it also reaches the routes that carry no environment."""
-        mode = str(self.cfg.get("settingsDir") or "auto")
-        if self.instance is None or mode == "shared":
+        root = self._settings_root()
+        if root is None:
             return None
-        if any(a.startswith("-Dapplication.settingsdir=")
-               for a in [*self.props["vmargs"], *(self.cfg.get("vmargs") or [])]):
-            return None
-        root = (self.state / "settings" / self.instance) if mode == "auto" else Path(mode)
         try:
             root.mkdir(parents=True, exist_ok=True)
             self._link_extensions(root)
@@ -907,6 +907,9 @@ class Launch:
         if any(a.startswith("-XX:CompilerDirectivesFile=")
                for a in [*vm, *(self.cfg.get("vmargs") or [])]):
             return []
+        # A directives file named in a JVM option variable would lose to the command line one.
+        if any("-XX:CompilerDirectivesFile=" in (self.env.get(k) or "") for k in JVM_OPTION_VARS):
+            return []
         text = json.dumps([{"match": JIT_ONE_SHOT, "c2": {"Exclude": True}}], indent=1) + "\n"
         d = self.state / "launch"
         f = d / f"jit-one-shot-{hashlib.sha256(text.encode()).hexdigest()[:8]}.json"
@@ -930,8 +933,42 @@ class Launch:
         where = self.cfg.get("classCacheDir")
         if own.is_file() or (isinstance(where, str) and where.strip().lower() == "none"):
             return own
-        shared = Path(where) if where else user_state_root() / "classcache"
-        return shared / f"{key}.json"
+        # Resolved: a relative dir would otherwise follow the cwd of whichever client started
+        # the daemon, and daemons started from different dirs would not share the file.
+        shared = (Path(where).expanduser().resolve() if where
+                  else user_state_root() / "classcache")
+        # The daemon checks the module roots by absolute path, and the user's extension modules
+        # sit below the daemon's own settings dir (linked in by settings_dir_arg): their paths
+        # differ per state dir and instance, so such daemons share the file only with daemons of
+        # the same settings dir (else each would find it stale and replace it for the others).
+        tag = self._extension_root_tag()
+        return shared / (f"{key}-{tag}.json" if tag else f"{key}.json")
+
+    def _settings_root(self) -> Path | None:
+        """The daemon's own settings dir (see ``settings_dir_arg``), or None when it uses the
+        user's (not a daemon, ``settingsDir`` shared, or a JVM option names one)."""
+        mode = str(self.cfg.get("settingsDir") or "auto")
+        if self.instance is None or mode == "shared":
+            return None
+        if any(a.startswith("-Dapplication.settingsdir=")
+               for a in [*self.props["vmargs"], *(self.cfg.get("vmargs") or [])]):
+            return None
+        return (self.state / "settings" / self.instance) if mode == "auto" else Path(mode)
+
+    def _extension_root_tag(self) -> str | None:
+        """A short hash of the daemon's own settings dir when the user has extension modules
+        (which the daemon then finds below that dir); None when the module roots are the same
+        for every daemon of the install."""
+        root = self._settings_root()
+        if root is None:
+            return None
+        try:
+            real = self.install.settings_dir(self.props["vmargs"]) / "Extensions"
+            if not real.is_dir() or not any(p.is_dir() for p in real.iterdir()):
+                return None
+        except OSError:
+            return None
+        return hashlib.sha256(str(root.absolute()).encode()).hexdigest()[:8]
 
     def aot_flavor(self, base_vm: list[str]) -> str:
         """The JVM options an AOT cache must have been recorded with: the JVM refuses a cache made

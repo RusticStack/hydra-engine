@@ -100,14 +100,18 @@ three extra JVMs `LaunchSupport` costs on every start:
   changed means a normal search and a new cache. A state dir that has no cache of its own
   (`<state>/classcache/`) uses the shared one of the install (`classCacheDir`, by default
   `<per-user state root>/classcache/`), so a daemon in a new state dir (another harness, a test, a
-  benchmark run) starts with a hit: measured 6.4 -> 4.2 CPU s per start, 3925 -> 3400 classes,
+  benchmark run) starts with a hit (a relative `classCacheDir` is resolved against the
+  launcher's cwd; when the user has Ghidra extension modules, whose paths lie below each daemon's
+  own settings dir, the file name also carries a hash of that dir): measured 6.4 -> 4.2 CPU s per start, 3925 -> 3400 classes,
   20.6 -> 17.0 MB metaspace.
-- **One-shot code without C2** (`jitOneShot`): javac and the class-file API, the RELAX NG
-  validator of the language specs and the Sleigh preprocessor run once or rarely in a daemon (a
-  script's first compile, a language's first load), but their hot loops made the optimising JIT
-  (C2) compile more bytecode of javac alone than of any Ghidra package. A compiler directives file
+- **One-shot code without C2** (`jitOneShot`): the RELAX NG validator of the language specs and
+  the Sleigh preprocessor with ANTLR run once per language (its first load), but their hot loops
+  draw optimising-JIT (C2) compiles. A compiler directives file
   (`<state>/launch/jit-one-shot-*.json`) keeps them on C1; the JIT never changes what a method
-  computes.
+  computes. javac and the class-file API are not listed: a long-lived daemon serving many agents'
+  scripts compiles again and again, and on C1 each later compile costs more CPU. Off when `vmargs`
+  or a JVM option variable (`JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS`, `_JAVA_OPTIONS`) name a
+  `-XX:CompilerDirectivesFile` (the JVM reads only one).
 - **AOT cache** (JDK 25+): `ghidra_session.py aot [--project <a small project>]` runs a training
   session (start-up, a project, a program, a few decompiles) with `-XX:AOTCacheOutput`; fast-mode
   starts then use it automatically. It is keyed by the JDK, the install and every classpath jar's
@@ -154,7 +158,7 @@ Lowest to highest: defaults, `<state>/config.json`, environment, command-line op
 | `aot` | `GHIDRA_SESSION_AOT` | `auto` | `auto`: use the AOT cache when one exists; `off`. |
 | `classCache` | | `true` | The class search cache. |
 | `classCacheDir` | `GHIDRA_SESSION_CLASS_CACHE_DIR` | `<per-user state root>/classcache` | Where a state dir without its own class search cache finds the shared one; `none`: only the state dir's own. |
-| `jitOneShot` | `GHIDRA_SESSION_JIT_ONE_SHOT` | `true` | No C2 for code a daemon runs once or rarely (javac, spec validation, the Sleigh preprocessor); `false`: the JDK default. Off when `vmargs` name a `-XX:CompilerDirectivesFile`. |
+| `jitOneShot` | `GHIDRA_SESSION_JIT_ONE_SHOT` | `true` | No C2 for code a daemon runs once per language (spec validation, the Sleigh preprocessor); `false`: the JDK default. Off when `vmargs` or a JVM option variable name a `-XX:CompilerDirectivesFile`. |
 | `idleTimeout` | `GHIDRA_SESSION_IDLE_TIMEOUT` | `0` | Seconds without clients before the daemon exits; `0`: stay up. |
 | `keepWarm` | `GHIDRA_SESSION_KEEP_WARM` | `3600` | Seconds an unused read-only program or project stays open, so the next client gets it at once with warm decompilers; `0`: close at once. |
 | `maxQuick` | | CPU count | Concurrent quick requests. |

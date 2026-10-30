@@ -113,6 +113,48 @@ class SharedClassCache(unittest.TestCase):
         la = make_launch(self.root, classCacheDir="none")
         self.assertEqual(self.cache(la)[0], la.state / "classcache" / f"{key}.json")
 
+    def test_relative_dir_is_resolved(self):
+        cwd = os.getcwd()
+        try:
+            os.chdir(self.root)
+            f, key = self.cache(make_launch(self.root, classCacheDir="rel-cache"))
+        finally:
+            os.chdir(cwd)
+        self.assertTrue(f.is_absolute())
+        self.assertEqual(f, (self.root / "rel-cache").resolve() / f"{key}.json")
+
+    def _with_extensions(self, la, user):
+        ext = user / "Extensions"
+        (ext / "MyExt").mkdir(parents=True, exist_ok=True)
+        la.install.settings_dir = lambda _vm: user
+        la.install.name = "Ghidra"
+        la.instance = "inst"
+        la.cfg["settingsDir"] = "auto"
+        return la
+
+    def test_user_extensions_split_the_shared_file_per_settings_dir(self):
+        user = self.root / "appdata" / "ghidra_12.3"
+        a = self._with_extensions(make_launch(self.root, "s1"), user)
+        b = self._with_extensions(make_launch(self.root, "s2"), user)
+        fa, key = self.cache(a)
+        fb, _ = self.cache(b)
+        self.assertNotEqual(fa, fb)
+        self.assertEqual(fa.parent, self.user / "classcache")
+        self.assertTrue(fa.name.startswith(key + "-"))
+        self.assertEqual(fa, self.cache(a)[0])          # stable for one settings dir
+
+    def test_no_user_extensions_share_one_file(self):
+        user = self.root / "appdata" / "ghidra_12.3"
+        (user / "Extensions").mkdir(parents=True)        # empty: no extension modules
+        files = []
+        for s in ("s1", "s2"):
+            la = make_launch(self.root, s)
+            la.install.settings_dir = lambda _vm: user
+            la.install.name = "Ghidra"
+            la.instance, la.cfg["settingsDir"] = "inst", "auto"
+            files.append(self.cache(la)[0])
+        self.assertEqual(files[0], files[1])
+
     def test_off(self):
         argv, _ = make_launch(self.root, classCache=False).command([])
         self.assertEqual(opt(argv, "-Dghidra.session.classCache="), [])
@@ -155,8 +197,12 @@ class JitOneShot(unittest.TestCase):
         self.assertIn("-XX:+UnlockDiagnosticVMOptions", argv[:i])
         d = json.loads(pathlib.Path(files[0]).read_text())
         self.assertEqual(d, [{"match": gs.JIT_ONE_SHOT, "c2": {"Exclude": True}}])
-        for pkg in ("com/sun/tools/", "com/sun/msv/", "ghidra/sleigh/grammar/"):
+        for pkg in ("com/sun/msv/", "ghidra/sleigh/grammar/", "org/antlr/"):
             self.assertIn(pkg + "*.*", d[0]["match"])
+        # javac and the class-file API run again for every new script of a long-lived daemon
+        # (and the class-file API makes every lambda and proxy class on JDK 24+): they keep C2
+        self.assertFalse([m for m in d[0]["match"] if m.startswith((
+            "com/sun/tools", "com/sun/source", "java/lang/classfile", "jdk/internal/classfile"))])
         # nothing of Ghidra's program, database or decompiler code is excluded, nor the XML
         # parser (every project open parses XML) or gson (every reply)
         self.assertFalse([m for m in d[0]["match"] if m.startswith((
@@ -170,6 +216,13 @@ class JitOneShot(unittest.TestCase):
         la = make_launch(self.root, vmargs=["-XX:CompilerDirectivesFile=mine.json"])
         _, files = self.directive(la)
         self.assertEqual(files, ["mine.json"])
+
+    def test_user_directives_in_option_variables_win(self):
+        for var in gs.JVM_OPTION_VARS:
+            la = make_launch(self.root)
+            la.env = {var: "-Xss2m -XX:CompilerDirectivesFile=mine.json"}
+            _, files = self.directive(la)
+            self.assertEqual(files, [], var)
 
     def test_stable_file(self):
         _, a = self.directive(make_launch(self.root))
