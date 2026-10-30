@@ -120,13 +120,19 @@ jobs:
       - name: Package the client (dry run)
         run: .github/scripts/package-client.sh 12.3-hydra.ci "$RUNNER_TEMP/client"
 
-      # the suites job tests this install on runners of its own, each within its own time limit
+      # the suites job tests this install on runners of its own, each within its own time limit. It goes as one
+      # tar: upload-artifact leaves out hidden files and empty directories, and the install has both
+      # (Ghidra/.dbDirLock keeps its packed archives read-only; Ghidra/Extensions is empty)
+      - name: Pack the install
+        if: env.LOCAL_TESTED != 'true'
+        run: tar -cf headless.tar -C build/dist headless
+
       - name: Upload the install
         if: env.LOCAL_TESTED != 'true'
         uses: actions/upload-artifact@v7
         with:
           name: headless-install-${{ matrix.os }}
-          path: build/dist/headless
+          path: headless.tar
           retention-days: 3
           compression-level: 1
 
@@ -183,7 +189,15 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           name: headless-install-${{ matrix.os }}
-          path: install
+          path: pkg
+
+      - name: Unpack the install
+        run: |
+          mkdir install
+          tar -xf pkg/headless.tar -C install --strip-components=1
+          for f in Ghidra/.dbDirLock Ghidra/Extensions Ghidra/application.properties; do
+            [ -e "install/$f" ] || { echo "::error::the unpacked install has no $f"; exit 1; }
+          done
 
       - name: The runner's processors
         working-directory: ${{ env.EX }}

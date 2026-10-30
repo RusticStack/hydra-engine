@@ -784,6 +784,28 @@ def changed_files(base: str) -> list[str]:
     return sorted({l.strip() for l in (out.stdout + wt).splitlines() if l.strip()})
 
 
+def one_cpu_defaults():
+    """``[granted CPUs, DEFAULT_WORKERS, DEFAULT_CORES]`` as printed by a child granted the lowest CPU of this process's
+    mask (a child can only be granted one its parent has), or None where no CPU can be granted at creation."""
+    code = (f"import sys; sys.path.insert(0, {str(HERE)!r}); import run_parallel as r; "
+            "print(r.granted_cpus(), r.DEFAULT_WORKERS, f'{r.DEFAULT_CORES:g}')")
+    if hasattr(os, "sched_getaffinity"):
+        cpu = min(os.sched_getaffinity(0))
+        cmd, pre = [sys.executable, "-c", code], (lambda: os.sched_setaffinity(0, {cpu}))
+    elif os.name == "nt":
+        proc, system = ctypes.c_size_t(), ctypes.c_size_t()
+        k32 = ctypes.windll.kernel32
+        k32.GetCurrentProcess.restype = ctypes.c_void_p
+        if not k32.GetProcessAffinityMask(ctypes.c_void_p(k32.GetCurrentProcess()), ctypes.byref(proc), ctypes.byref(system)):
+            return None
+        mask = f"{proc.value & -proc.value:X}"
+        cmd, pre = ["cmd", "/c", "start", "", "/affinity", mask, "/wait", "/b", sys.executable, "-c", code], None
+    else:
+        return None
+    out = subprocess.run(cmd, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL, preexec_fn=pre)
+    return out.stdout.split() or [out.stderr.strip()[-200:]]
+
+
 def selftest() -> int:
     """``--selftest``: the plan, the merge and the shards of daemon_tests.py (no engine, under a second)."""
     bad = []
@@ -808,6 +830,9 @@ def selftest() -> int:
     g = granted_cpus()
     check(f"granted_cpus: the affinity mask ({g}), at most the machine's {os.cpu_count()}, sizes the defaults",
           1 <= g <= (os.cpu_count() or g) and DEFAULT_WORKERS == max(2, g - 2) and DEFAULT_CORES == DEFAULT_WORKERS)
+    one = one_cpu_defaults()
+    check(f"granted_cpus: a process granted one CPU of this one's sizes 2 workers, 2 cores ({one or 'not checked here'})",
+          one is None or one == ["1", "2", "2"])
     ok = {"status": "pass", "seconds": 1.0, "note": "n"}
     res = {"b@x": dict(ok, test="b@x"), "b@y": dict(ok, test="b@y"), "b@z": dict(ok, test="b@z")}
     m = merge("b", ["b@x", "b@y", "b@z"], res)

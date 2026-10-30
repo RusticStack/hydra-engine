@@ -286,11 +286,12 @@ def _cancel_while_waiting(c, protocol, races, first=0):
     # defaults derive the slots from the CPUs (quick = CPUs, long = max(8, CPUs)), so a 4-CPU host
     # has a cap of 2 and refuses the third with lock_queue_full; 12 slots per lane give a cap of 3
     d = c.daemon(f"e3b-cw{tag}", maxQuick=12, maxLong=12)
-    H = R = X = None
+    H = R = X = M = None
     try:
         H = owner(c, d, gpr, exe, protocol=protocol)
         R = reader(c, d, gpr, exe, "waiter", protocol)
         X = reader(c, d, gpr, exe, "waiter2", protocol)
+        M = c.connect(d, "M", "e3b", 3)       # reads the daemon's wait counters, joins nothing
         fn = bl.first_function(H)
         if protocol == 3:
             sched = H.call("status")["scheduler"]
@@ -298,14 +299,21 @@ def _cancel_while_waiting(c, protocol, races, first=0):
             if cap < 3:
                 raise dt.Fail(f"the daemon reports slots {[sched[k]['slots'] for k in ('quick', 'long')]}"
                               f": a lock admits {cap} waiters, the test needs 3")
-        # (a) three exclusive scripts queue behind the owner's script; the first is cancelled
-        hold = script(c, H, 5000)
-        dt.wait_for(lambda: holds(R, exe), "the holder's script to hold the program", 30)
+        # (a) three exclusive scripts queue behind the owner's script; the first is cancelled. The
+        # holder holds until the test cancels it (no fixed run time), and each waiter is sent once
+        # the daemon counts the one before it on the program lock (``lockWaiters``), so the order
+        # and the cancel's phase do not depend on how fast a loaded host gets there
+        hold = script(c, H, 3600000)
+        dt.wait_for(lambda: holds(R, exe), "the holder's script to hold the program", 120)
+
+        def queued():
+            pg = program(M, exe)
+            return pg.get("lockWaiters") if pg else None
         q = []
         for s_, ms in ((R, 50), (X, 50), (R, 50)):
             q.append((s_, s_.send("script", script=c.script("TestSleep.java"), args=[str(ms)],
-                                  exclusive=True, parallel=True, wait=60000)))
-            time.sleep(0.4)
+                                  exclusive=True, parallel=True, wait=3600000)))
+            dt.wait_for(lambda: queued() == len(q), f"waiter {len(q)} to queue behind the holder", 120)
         t = time.perf_counter()
         q[0][0].call("cancel", target=q[0][1])
         code, det, _ = attempt(c, q[0][0], q[0][1])
@@ -318,6 +326,11 @@ def _cancel_while_waiting(c, protocol, races, first=0):
             dt.check("phase" not in det and "applied" not in det,
                      f"a protocol 2 cancelled grew keys: {det}")
         dt.check(holds(R, exe), "the holder lost the lock")
+        dt.wait_for(lambda: queued() == 2, "the two requests behind it to stay queued", 30)
+        dt.check(holds(R, exe), "the holder was affected by the cancel")
+        H.call("cancel", target=hold)                   # the release the two waiters queue for
+        oh = attempt(c, H, hold)
+        dt.check(oh[0] == "cancelled", f"the holder ended with {oh[0]}, not with its own cancel")
         o2 = attempt(c, q[1][0], q[1][1])
         o3 = attempt(c, q[2][0], q[2][1])
         dt.check(o2[0] == "ok" and o3[0] == "ok", f"the requests behind it: {o2[0]} {o3[0]}")
@@ -325,7 +338,6 @@ def _cancel_while_waiting(c, protocol, races, first=0):
         s3, e3 = times(o3[2]["output"])
         dt.check(s2 and s3 and s2 < s3 and e2 <= s3 + 5,
                  f"the order behind the cancelled request changed: {s2}-{e2}, {s3}-{e3}")
-        dt.check(attempt(c, H, hold)[0] == "ok", "the holder was affected by the cancel")
         # (b) cancels raced against the release
         durs = []
         for _ in range(5):
@@ -367,7 +379,7 @@ def _cancel_while_waiting(c, protocol, races, first=0):
                 f"{races} races{which}: {counts['cancelled']} cancelled {phases or ''}, "
                 f"{counts['ok']} completed, no leak")
     finally:
-        close_all(H, R, X)
+        close_all(H, R, X, M)
         d.stop(force=True)
 
 
