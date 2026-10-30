@@ -55,10 +55,13 @@ final class HostDecompileBackend {
 
 	/**
 	 * The host registers a program as {@code DecompInterface} does with its defaults (no setAction):
-	 * only the set-up {@code ProgramEntry.newDecompiler} uses today is offered.
+	 * only the set-up {@code ProgramEntry.newDecompiler} uses today is offered. The syntax tree
+	 * toggle is not part of the match: the pooled decompilers are text-only since H5 (their one
+	 * consumer reads the C text and signature, printed from the C markup alone), and the host's
+	 * registration (syntax tree on) gives the same C markup plus a tree nobody on this path reads.
 	 */
 	static final boolean SETUP_MATCHES = ProgramEntry.DECOMPILER_C_CODE &&
-		ProgramEntry.DECOMPILER_SYNTAX_TREE && "decompile".equals(ProgramEntry.DECOMPILER_STYLE);
+		"decompile".equals(ProgramEntry.DECOMPILER_STYLE);
 
 	private static final AtomicLong HOSTED = new AtomicLong();
 	private static final AtomicLong FALLBACKS = new AtomicLong();
