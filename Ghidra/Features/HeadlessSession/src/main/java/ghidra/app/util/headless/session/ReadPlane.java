@@ -22,7 +22,7 @@ import java.lang.ref.Cleaner;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.*;
 
 import com.google.gson.JsonElement;
 
@@ -54,6 +54,8 @@ final class ReadPlane {
 	final AtomicLong pages = new AtomicLong();
 	final AtomicLong pageBytes = new AtomicLong();
 	final AtomicLong fallbacks = new AtomicLong();
+	/** Rust tables not yet freed (explicitly on eviction, or by the Cleaner backstop). */
+	final AtomicLong live = new AtomicLong();
 
 	private final MethodHandle ftNew;
 	private final MethodHandle ftPage;
@@ -95,7 +97,7 @@ final class ReadPlane {
 						? Json.of("enabled", false)
 						: Json.of("enabled", true, "library", rp.library, "tables", rp.tables.get(),
 							"pages", rp.pages.get(), "pageBytes", rp.pageBytes.get(), "fallbacks",
-							rp.fallbacks.get()));
+							rp.fallbacks.get(), "live", rp.live.get()));
 			}
 		}
 		return instance;
@@ -165,17 +167,72 @@ final class ReadPlane {
 
 	// ---------------------------------------------------------------- function tables
 
-	/** A function table held in Rust; freed when this object is unreachable. */
+	/**
+	 * A function table held in Rust. Freed by {@link #close} once no page is reading it, or by
+	 * the Cleaner when this object becomes unreachable without a close (whichever comes first;
+	 * exactly once).
+	 */
 	static final class NativeFunctions {
 		final MemorySegment handle;
 		final long weight;
 		/** False when a name holds a lone surrogate: {@code contains} stays on the Java path. */
 		final boolean utf8Exact;
+		/** The owner's reference plus one per page in flight; 0 once freed. */
+		private final AtomicInteger refs = new AtomicInteger(1);
+		private final AtomicBoolean closed = new AtomicBoolean();
+		private final Runnable freer;
 
-		NativeFunctions(MemorySegment handle, long weight, boolean utf8Exact) {
+		NativeFunctions(MemorySegment handle, long weight, boolean utf8Exact, Runnable freer) {
 			this.handle = handle;
 			this.weight = weight;
 			this.utf8Exact = utf8Exact;
+			this.freer = freer;
+		}
+
+		/** False when the table is already freed (the caller takes the Java path). */
+		boolean acquire() {
+			while (true) {
+				int r = refs.get();
+				if (r <= 0) {
+					return false;
+				}
+				if (refs.compareAndSet(r, r + 1)) {
+					return true;
+				}
+			}
+		}
+
+		void releaseRef() {
+			if (refs.decrementAndGet() == 0) {
+				freer.run();
+			}
+		}
+
+		/** Drops the owner's reference: freed now, or when the last page in flight ends. */
+		void close() {
+			if (closed.compareAndSet(false, true)) {
+				releaseRef();
+			}
+		}
+	}
+
+	/** Frees one Rust table exactly once (explicit close or the Cleaner). */
+	private static final class Freer implements Runnable {
+		private final ReadPlane rp;
+		private final long addr;
+		private final AtomicBoolean done = new AtomicBoolean();
+
+		Freer(ReadPlane rp, long addr) {
+			this.rp = rp;
+			this.addr = addr;
+		}
+
+		@Override
+		public void run() {
+			if (done.compareAndSet(false, true)) {
+				rp.free(addr);
+				rp.live.decrementAndGet();
+			}
 		}
 	}
 
@@ -224,10 +281,11 @@ final class ReadPlane {
 				return null;
 			}
 			long w = (long) ftWeight.invokeExact(h);
-			NativeFunctions nf = new NativeFunctions(h, w, exact);
-			long addr = h.address();
-			CLEANER.register(nf, () -> free(addr));
+			Freer freer = new Freer(this, h.address());
+			NativeFunctions nf = new NativeFunctions(h, w, exact, freer);
+			CLEANER.register(nf, freer);
 			tables.incrementAndGet();
+			live.incrementAndGet();
 			return nf;
 		}
 		catch (Throwable t) {
@@ -254,6 +312,9 @@ final class ReadPlane {
 		if (contains != null && (!t.utf8Exact || hasLoneSurrogate(contains))) {
 			fallbacks.incrementAndGet();
 			return null;
+		}
+		if (!t.acquire()) {
+			return null; // dropped by the daemon meanwhile: the Java rows answer
 		}
 		try (Arena a = Arena.ofConfined()) {
 			MemorySegment needle = MemorySegment.NULL;
@@ -289,6 +350,7 @@ final class ReadPlane {
 			return null;
 		}
 		finally {
+			t.releaseRef();
 			java.lang.ref.Reference.reachabilityFence(t);
 		}
 	}
@@ -329,6 +391,16 @@ final class ReadPlane {
 		JsonElement tree() {
 			return com.google.gson.JsonParser
 					.parseString(new String(bytes, StandardCharsets.UTF_8));
+		}
+
+		/**
+		 * The JSON text itself. Gson's own writer cannot write this subclass ({@code Gson.toJson}
+		 * of a tree that holds it throws); {@link Connection#encode} splices the bytes, any other
+		 * writer must use {@link #tree()}.
+		 */
+		@Override
+		public String toString() {
+			return new String(bytes, StandardCharsets.UTF_8);
 		}
 
 		@Override

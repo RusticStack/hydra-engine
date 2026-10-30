@@ -150,7 +150,15 @@ def t_invalidate(c):
         want = [strip_id.sub("", w) for w in _raw_calls(a, la, qs + qs)]
         dt.check(got == want, "after the rename the read plane's lines differ from the Java path")
         dt.check(any("rp_renamed_fn" in g for g in got[4:]), "the renamed function is not listed after the rename")
-        return f"rename: the next listings equal the Java path byte for byte; {_rp(b)}"
+        # edit-then-page cycles: each new program state stores a new table and frees the replaced
+        # one's Rust rows at once (no GC), so the live native tables stay at one for this program
+        for i in range(4):
+            for s, ln in ((a, la), (b, lb)):
+                s.call("rename", address=x, name=f"rp_cycle_{i}")
+                _raw_calls(s, ln, qs[:2] + qs[:2])
+        st = _rp(b)
+        dt.check(st.get("live", 99) <= 1, f"replaced tables still hold Rust rows (live > 1): {st}")
+        return f"rename (parity with the Java path) and 4 edit-then-page cycles, live tables {st.get('live')}; {st}"
     finally:
         e9.close_all(a, b)
         e9.stop(da)

@@ -398,15 +398,23 @@ pub unsafe extern "C" fn hydra_rp_ft_weight(t: *const FunctionTable) -> u64 {
     unsafe { t.as_ref() }.map_or(0, |t| t.weight() as u64)
 }
 
+/// The last render of this thread, and the request it answers when it did not fit the caller's
+/// buffer (the retry then only copies).
+struct PageBuf {
+    buf: Vec<u8>,
+    pending: Option<(usize, Vec<u8>, bool, u64, u64)>,
+}
+
 thread_local! {
-    static PAGE: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+    static PAGE: std::cell::RefCell<PageBuf> =
+        const { std::cell::RefCell::new(PageBuf { buf: Vec::new(), pending: None }) };
 }
 
 /// Renders the `functions` result for (`contains`, `offset`, `limit`) and copies it into
 /// `out[..out_cap]`. Returns the reply's length: when it is larger than `out_cap` nothing usable
-/// was written and the caller calls again with a buffer that large (the render is kept per
-/// thread, so the second call only copies). `contains` is null for no filter. Returns -1 on a null
-/// table.
+/// was written and the caller calls again, on the same thread, with a buffer that large; that
+/// second call for the same table and arguments only copies the render kept by the first.
+/// `contains` is null for no filter. Returns -1 on a null table.
 ///
 /// # Safety
 /// `t` as [`hydra_rp_ft_len`]; `contains` valid for `contains_len` bytes when not null; `out`
@@ -431,17 +439,30 @@ pub unsafe extern "C" fn hydra_rp_ft_page(
         // SAFETY: guaranteed by the caller.
         Some(unsafe { slice_or_empty(contains, contains_len as usize) })
     };
+    let key = (
+        t as *const FunctionTable as usize,
+        needle.map_or_else(Vec::new, <[u8]>::to_vec),
+        needle.is_some(),
+        offset,
+        limit,
+    );
     PAGE.with(|cell| {
-        let mut buf = cell.borrow_mut();
-        t.page(needle, offset as usize, limit as usize, &mut buf);
-        let len = buf.len();
+        let mut pb = cell.borrow_mut();
+        let pb = &mut *pb;
+        if pb.pending.take().as_ref() != Some(&key) {
+            t.page(needle, offset as usize, limit as usize, &mut pb.buf);
+        }
+        let len = pb.buf.len();
         if len as u64 <= out_cap && !out.is_null() {
             // SAFETY: out is valid for out_cap >= len bytes.
-            unsafe { ptr::copy_nonoverlapping(buf.as_ptr(), out, len) };
+            unsafe { ptr::copy_nonoverlapping(pb.buf.as_ptr(), out, len) };
+        } else {
+            pb.pending = Some(key);
+            return len as i64; // kept for the retry
         }
-        if buf.capacity() > (8 << 20) {
+        if pb.buf.capacity() > (8 << 20) {
             // do not keep a huge one-off page alive on this thread
-            *buf = Vec::new();
+            pb.buf = Vec::new();
         }
         len as i64
     })
@@ -488,6 +509,38 @@ mod tests {
             String::from_utf8(v).unwrap(),
             "\"a\\\"b\\\\c\\td\\be\\nf\\rg\\fh\\u0001i\\u001fj\u{7f}k<>&='\\u2028\\u2029\u{e9}\u{1F600}\""
         );
+    }
+
+    #[test]
+    fn retry_copies_the_kept_render() {
+        let t = table(&[("alpha", "00401000", 4, 0), ("beta", "00401010", 8, 1)]);
+        let want = page(&t, Some("a"), 0, 10);
+        let tp: *const FunctionTable = &t;
+        let mut small = [0u8; 4];
+        // SAFETY: t outlives the calls; buffers valid for their lengths.
+        let len = unsafe { hydra_rp_ft_page(tp, b"a".as_ptr(), 1, 0, 10, small.as_mut_ptr(), 4) };
+        assert_eq!(len as usize, want.len());
+        assert!(
+            PAGE.with(|c| c.borrow().pending.is_some()),
+            "the render is kept"
+        );
+        let mut out = vec![0u8; len as usize];
+        // SAFETY: as above.
+        let l2 =
+            unsafe { hydra_rp_ft_page(tp, b"a".as_ptr(), 1, 0, 10, out.as_mut_ptr(), len as u64) };
+        assert_eq!(l2, len);
+        assert_eq!(String::from_utf8(out).unwrap(), want);
+        assert!(
+            PAGE.with(|c| c.borrow().pending.is_none()),
+            "the retry consumed it"
+        );
+        // another request after a miss renders afresh
+        // SAFETY: as above.
+        unsafe { hydra_rp_ft_page(tp, ptr::null(), 0, 0, 10, small.as_mut_ptr(), 4) };
+        let mut o3 = vec![0u8; 4096];
+        // SAFETY: as above.
+        let l3 = unsafe { hydra_rp_ft_page(tp, b"a".as_ptr(), 1, 1, 10, o3.as_mut_ptr(), 4096) };
+        assert_eq!(&o3[..l3 as usize], page(&t, Some("a"), 1, 10).as_bytes());
     }
 
     #[test]

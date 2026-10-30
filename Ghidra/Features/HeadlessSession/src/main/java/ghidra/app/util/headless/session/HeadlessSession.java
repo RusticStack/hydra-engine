@@ -758,6 +758,31 @@ public class HeadlessSession implements GhidraLaunchable {
 			}
 			check("readPlane: reply lines with a Rust result equal Gson's, with every kind of id",
 				lines);
+			// a RawJson in a tree prints as its JSON (toString), never throws
+			JsonElement rj = t.page(null, "FUN_", 3, 7, true);
+			JsonObject wrap = new JsonObject();
+			wrap.add("result", rj);
+			boolean printed;
+			try {
+				printed = rj.toString().equals(Json.GSON.toJson(t.page(null, "FUN_", 3, 7))) &&
+					wrap.get("result").toString().equals(rj.toString());
+			}
+			catch (RuntimeException e) {
+				printed = false;
+			}
+			check("readPlane: a Rust result prints as its JSON text (toString)", printed);
+			// a dropped table frees its Rust rows now (no GC needed); later pages take the Java
+			// path with the same bytes
+			long before = rp.live.get();
+			FunctionTable d = FunctionTable.of(names, entries, sizes, flags);
+			long made = rp.live.get();
+			d.release();
+			long after = rp.live.get();
+			JsonElement late = d.page(null, "FUN_", 3, 7, true);
+			check("readPlane: release frees the Rust table at once (live " + before + " -> " + made +
+				" -> " + after + ") and later pages are Java's, identical",
+				made == before + 1 && after == before && !(late instanceof ReadPlane.RawJson) &&
+					Json.GSON.toJson(late).equals(rj.toString()));
 		}
 
 		/**

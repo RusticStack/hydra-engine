@@ -57,8 +57,11 @@ final class FunctionTable {
 	private final long[] sizes;
 	private final byte[] flags;
 	private final long weight;
-	/** The same rows in the Rust read plane (pages rendered there), or null. */
-	private final ReadPlane.NativeFunctions nat;
+	/**
+	 * The same rows in the Rust read plane (pages rendered there), or null. Exported only when the
+	 * daemon stores this table ({@link #exportNative}), freed when it drops it ({@link #release}).
+	 */
+	private volatile ReadPlane.NativeFunctions nat;
 
 	private FunctionTable(String[] names, String[] entries, long[] sizes, byte[] flags) {
 		this.names = names;
@@ -70,14 +73,42 @@ final class FunctionTable {
 			// a String header and its array header, Latin-1 or UTF-16 bytes
 			w += 56 + 2L * names[i].length() + 56 + entries[i].length();
 		}
-		ReadPlane rp = ReadPlane.get();
-		this.nat = rp == null ? null : rp.functions(names, entries, sizes, flags);
-		this.weight = w + (nat == null ? 0 : nat.weight);
+		// the Java rows only: the budget decides what is stored as before the read plane; the
+		// Rust copy of a stored table is counted apart (health functionTable.nativeBytes)
+		this.weight = w;
 	}
 
-	/** A table of these rows (the self-test's made-up listings). */
+	/** A table of these rows, exported to Rust (the self-test's made-up listings). */
 	static FunctionTable of(String[] names, String[] entries, long[] sizes, byte[] flags) {
-		return new FunctionTable(names, entries, sizes, flags);
+		FunctionTable t = new FunctionTable(names, entries, sizes, flags);
+		t.exportNative();
+		return t;
+	}
+
+	/** Gives this table's rows to the Rust read plane (once; nothing when it is off). */
+	void exportNative() {
+		ReadPlane rp = ReadPlane.get();
+		if (rp != null && nat == null) {
+			nat = rp.functions(names, entries, sizes, flags);
+		}
+	}
+
+	/**
+	 * Frees the Rust copy now (the table was dropped by the daemon): pages already reading it
+	 * finish first, later pages take the Java path. The Cleaner is only the backstop.
+	 */
+	void release() {
+		ReadPlane.NativeFunctions n = nat;
+		if (n != null) {
+			nat = null;
+			n.close();
+		}
+	}
+
+	/** Bytes of the Rust copy (0 when there is none). */
+	long nativeWeight() {
+		ReadPlane.NativeFunctions n = nat;
+		return n == null ? 0 : n.weight;
 	}
 
 	/** True when this table's pages can come from the Rust read plane. */
@@ -138,8 +169,9 @@ final class FunctionTable {
 	 * table is there.
 	 */
 	JsonElement page(Pattern pat, String sub, int offset, int limit, boolean raw) {
-		if (raw && nat != null && pat == null) {
-			ReadPlane.RawJson r = ReadPlane.get().page(nat, sub, offset, limit);
+		ReadPlane.NativeFunctions nf = nat;
+		if (raw && nf != null && pat == null) {
+			ReadPlane.RawJson r = ReadPlane.get().page(nf, sub, offset, limit);
 			if (r != null) {
 				return r;
 			}
@@ -309,10 +341,15 @@ final class FunctionTable {
 				}
 				if (t.weight() > budget) {
 					unstored.incrementAndGet();
-					return t;
+					return t; // answered from the Java rows, never exported to Rust
 				}
+				t.exportNative();
+				FunctionTable old = h.table;
 				h.table = t;
 				h.tableMod = mod;
+				if (old != null && old != t) {
+					old.release();
+				}
 				trim(h);
 				return t;
 			}
@@ -339,26 +376,31 @@ final class FunctionTable {
 				if (total <= budget || oldest == null) {
 					return;
 				}
+				FunctionTable dropped = oldest.table;
 				oldest.table = null;
 				oldest.tableMod = Long.MIN_VALUE;
+				dropped.release();
 				evicted.incrementAndGet();
 			}
 		}
 
 		synchronized JsonObject describe() {
 			long bytes = 0;
+			long nativeBytes = 0;
 			int tables = 0;
 			for (Holder h : holders.values()) {
 				FunctionTable t = h.table;
 				if (t != null) {
 					tables++;
 					bytes += t.weight();
+					nativeBytes += t.nativeWeight();
 				}
 			}
 			JsonObject o = new JsonObject();
 			o.addProperty("budget", budget);
 			o.addProperty("tables", tables);
 			o.addProperty("bytes", bytes);
+			o.addProperty("nativeBytes", nativeBytes);
 			o.addProperty("hits", hits.get());
 			o.addProperty("builds", builds.get());
 			o.addProperty("walks", walks.get());
