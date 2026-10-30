@@ -249,6 +249,27 @@ final class Governor {
 	 * @return true when a collection ran
 	 */
 	private boolean refreshHeap() {
+		return refreshHeap(false);
+	}
+
+	/**
+	 * True when the governor may force a collection to measure the first open of a program (setting
+	 * {@code forcedGc}, default off since PROTOCOL-3.md 8.18): two {@code System.gc()} per first
+	 * open stop every thread of the daemon. Without it the first open is not measured and the
+	 * estimate of 3.11 stays in use; the collection before a refusal is kept either way.
+	 */
+	static boolean measuringGcs() {
+		return Settings.bool("forcedGc", false);
+	}
+
+	/**
+	 * Like {@link #refreshHeap()}; {@code measuring} is a collection made only to measure (the first
+	 * open of a program), which runs only when {@link #measuringGcs()} allows it.
+	 */
+	private boolean refreshHeap(boolean measuring) {
+		if (measuring && !measuringGcs()) {
+			return false;
+		}
 		long now = System.currentTimeMillis();
 		synchronized (this) {
 			if (now - lastForcedGcMs < FORCED_GC_MIN_GAP_MS) {
@@ -520,7 +541,8 @@ final class Governor {
 			// the first open of a program teaches its real cost: a collection now and one after the
 			// open, only when the heap is small enough for a collection to be cheap
 			Runtime rt = Runtime.getRuntime();
-			if (eligible[0] && rt.totalMemory() - rt.freeMemory() < (1L << 30) && refreshHeap()) {
+			if (eligible[0] && rt.totalMemory() - rt.freeMemory() < (1L << 30) &&
+				refreshHeap(true)) {
 				a.gcAtAdmission = afterGcBytes;
 			}
 		}
@@ -810,7 +832,7 @@ final class Governor {
 			return; // the open did not happen (an error): nothing to learn
 		}
 		long after = afterGcBytes;
-		if (refreshHeap()) {
+		if (refreshHeap(true)) {
 			after = afterGcBytes;
 		}
 		long cost = after - a.gcAtAdmission;

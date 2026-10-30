@@ -88,13 +88,17 @@ final class ImportGate {
 		}
 	}
 
+	/** The heap one running import is given by the default {@code maxImports}. */
+	static final long HEAP_PER_IMPORT = 2L << 30;
+
 	/**
-	 * The default {@code maxImports}: one per four CPUs, at least 1 and at most 4. A load holds
-	 * its program in memory (about 0.7 GB of heap for a 25 MB PE, measured) and analysis uses one
-	 * CPU per import, so more than a few at once trades memory for little.
+	 * The default {@code maxImports}: 4, and one per 2 GB of maximum heap, at least 1. A load holds
+	 * its program in memory (about 0.7 GB of heap for a 25 MB PE, measured), so the heap, not the
+	 * CPU count, bounds how many run at once (PROTOCOL-3.md 8.18; it was one per four CPUs, which
+	 * gave a 4-CPU host one import at a time whatever its heap).
 	 */
-	static int defaultPermits(int cpus) {
-		return Math.max(1, Math.min(4, cpus / 4));
+	static int defaultPermits(long maxHeapBytes) {
+		return (int) Math.max(1, Math.min(4, maxHeapBytes / HEAP_PER_IMPORT));
 	}
 
 	/** One user of the gate, waiting or running. Closing it leaves the queue or releases it. */

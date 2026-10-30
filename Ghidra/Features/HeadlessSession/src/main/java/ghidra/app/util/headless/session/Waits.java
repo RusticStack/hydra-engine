@@ -63,7 +63,14 @@ final class Waits {
 		// static helpers
 	}
 
-	/** Lets the session say how many slots a lane has (the cap is {@code max(2, slots / 4)}). */
+	/**
+	 * The default least waiter cap (setting {@code lockWaitersMin}, PROTOCOL-3.md 8.18; it was 2). A
+	 * fixed number, not a share of the CPUs, so that a small host queues as many waiters on one lock
+	 * as a big one, bounded by half the lane (see {@link #cap(int)}).
+	 */
+	static final int DEFAULT_LOCK_WAITERS_MIN = 4;
+
+	/** Lets the session say how many slots a lane has (for {@link #cap(int)}). */
 	static void slots(ToIntFunction<String> slotsOfLane) {
 		Waits.slotsOfLane = slotsOfLane;
 	}
@@ -73,11 +80,25 @@ final class Waits {
 		return COUNTERS.computeIfAbsent(owner, k -> new AtomicInteger());
 	}
 
-	/** At most this many requests may wait on one lock: {@code max(2, slots / 4)} of the request's lane. */
+	/**
+	 * At most this many requests may wait on one lock: {@link #cap(int)} of the request's lane.
+	 */
 	static int cap(RequestMonitor m) {
 		String lane = m == null ? null : m.lane();
 		int slots = slotsOfLane.applyAsInt(lane == null ? "quick" : lane);
-		return Math.max(2, slots / 4);
+		return cap(slots);
+	}
+
+	/**
+	 * The waiter cap of a lane with {@code slots} slots: {@code max(lockWaitersMin, slots / 4)}, at
+	 * most half the lane (at least 2), so that one lock's queue can never take the lane (D39), with
+	 * or without {@code yieldSlots} (not every wait yields its slot, and a waiter takes a slot again
+	 * when it gets the lock). The bound by the lane is what the cap was for; the least value no
+	 * longer shrinks with the CPUs of the host.
+	 */
+	static int cap(int slots) {
+		int least = Math.max(1, Settings.integer("lockWaitersMin", DEFAULT_LOCK_WAITERS_MIN));
+		return Math.min(Math.max(least, slots / 4), Math.max(2, slots / 2));
 	}
 
 	/** True when the request this thread executes speaks protocol 3 (the gate of the v3-only keys). */

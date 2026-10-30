@@ -62,6 +62,11 @@ final class Settings {
 		VALUES.put(key, value);
 	}
 
+	/** Forgets one setting (the self-test, which must leave the settings it was given as they were). */
+	static void remove(String key) {
+		VALUES.remove(key);
+	}
+
 	static boolean has(String key) {
 		return VALUES.containsKey(key);
 	}
