@@ -66,14 +66,11 @@ public class OpTpl {
 			output = null;
 		}
 		else {
-			output = new VarnodeTpl();
-			output.decode(decoder);
+			output = VarnodeTpl.decodeShared(decoder);
 		}
 		ArrayList<Object> inputlist = new ArrayList<>();
 		while (decoder.peekElement() != 0) {
-			VarnodeTpl vn = new VarnodeTpl();
-			vn.decode(decoder);
-			inputlist.add(vn);
+			inputlist.add(VarnodeTpl.decodeShared(decoder));
 		}
 		input = new VarnodeTpl[inputlist.size()];
 		inputlist.toArray(input);

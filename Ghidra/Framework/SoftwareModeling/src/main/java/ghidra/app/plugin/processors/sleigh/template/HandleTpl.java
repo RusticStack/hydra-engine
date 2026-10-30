@@ -107,20 +107,13 @@ public class HandleTpl {
 
 	public void decode(Decoder decoder) throws DecoderException {
 		int el = decoder.openElement(ELEM_HANDLE_TPL);
-		space = new ConstTpl();
-		space.decode(decoder);
-		size = new ConstTpl();
-		size.decode(decoder);
-		ptrspace = new ConstTpl();
-		ptrspace.decode(decoder);
-		ptroffset = new ConstTpl();
-		ptroffset.decode(decoder);
-		ptrsize = new ConstTpl();
-		ptrsize.decode(decoder);
-		temp_space = new ConstTpl();
-		temp_space.decode(decoder);
-		temp_offset = new ConstTpl();
-		temp_offset.decode(decoder);
+		space = ConstTpl.decodeShared(decoder);
+		size = ConstTpl.decodeShared(decoder);
+		ptrspace = ConstTpl.decodeShared(decoder);
+		ptroffset = ConstTpl.decodeShared(decoder);
+		ptrsize = ConstTpl.decodeShared(decoder);
+		temp_space = ConstTpl.decodeShared(decoder);
+		temp_offset = ConstTpl.decodeShared(decoder);
 		decoder.closeElement(el);
 	}
 
