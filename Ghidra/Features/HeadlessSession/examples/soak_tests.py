@@ -581,7 +581,10 @@ def agent_main(spec_path: str) -> int:
             lineage = f"L-soak{idx:02d}"
             led.sent(opid, kind="cand", n=n, path=str(dest))
             t0 = time.perf_counter()
-            g = call("cand_fork", "maint", "fork_project", project=master["id"], path=str(dest), name="Cand",
+            # the master is opened again here: bulk_open's close of the same shared project id closes this
+            # agent's earlier handle of it
+            mo = call("cand_master", "quick", "open_project", path=spec["master"])
+            g = call("cand_fork", "maint", "fork_project", project=mo["id"], path=str(dest), name="Cand",
                      mode="auto", purpose="generation", lineage=lineage, generation=n, wait=600000)
             cp = g.get("project")
             k2 = call("cand_open", "quick", "open_program", path=prog, project=cp, writable=True)["key"]
@@ -1098,7 +1101,10 @@ def judge_hy_store(root, base_names: dict, acked_csids, views: dict, head_names:
             recs = [{**r, "seq": k} for k, r in enumerate(hy_model_records({"records": pend}))]
             keys = all_subjects
             base_v = {(s, "name"): hy_default_name(s, base_names) for s in keys}
-            at = hy_state_at(chain, changesets, base_v, (v.get("base") or {}).get("generation", 0))
+            # a view with no pending record has nothing of its own: Hydralysis reads the head for it (workcopy.reader,
+            # expected_state None), whatever generation its store last rebased onto
+            gen_v = None if v.get("pending") == 0 and not recs else (v.get("base") or {}).get("generation", 0)
+            at = hy_state_at(chain, changesets, base_v, gen_v)
             view_state = {(s, "name"): hy_default_name(s, v.get("names") or {}) for s in keys}
             oracle.check_k8(at, recs, view_state, kid="K8", rep=rep)
     # K1 (engine side): no writable open of a sealed generation in the Hydralysis engine's logs
@@ -3558,6 +3564,16 @@ def selftest(work: pathlib.Path | None = None, verbose: bool = True) -> int:
           "K8:view_differs_from_replay" in rep.codes(), rep.codes())
     rep = hy_judge("k8b", view={"0x100": "hy00x2", "0x200": "hy01x9"})
     check("planted K8: a view that shows another view's unpublished name differs from its replay",
+          "K8:view_differs_from_replay" in rep.codes(), rep.codes())
+    r_, bn, ack, vw, hd = hy_make(base / "hy" / "k8c")
+    (r_ / "overlays" / "vk1.json").write_text(json.dumps(oracle.seal_record({"edits": [], "revision": 3})))
+    vw["h01"] = {"view_key": "vk1", "base": {"lineage": "L-t", "generation": 0}, "pending": 0,
+                 "names": {"0x100": "hy00x1", "0x200": "FUN_200"}}
+    rep = judge_hy_store(r_, bn, ack, vw, hd)
+    check("K8: a view with no pending record, based behind the head, reads the head: clean", rep.ok, rep.codes())
+    vw["h01"]["names"] = {"0x100": "FUN_100", "0x200": "FUN_200"}
+    rep = judge_hy_store(r_, bn, ack, vw, hd)
+    check("planted K8: such a view that shows an older generation than the head",
           "K8:view_differs_from_replay" in rep.codes(), rep.codes())
     rep = hy_judge("k12", acked=("c-1", "c-9"))
     check("planted K12: an acknowledged publish no CURRENT.log line names", "K12:acked_publish_missing" in rep.codes(), rep.codes())
