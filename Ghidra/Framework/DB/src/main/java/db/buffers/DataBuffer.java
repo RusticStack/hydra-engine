@@ -61,6 +61,13 @@ public class DataBuffer implements Buffer, Externalizable {
 	protected byte[] data;
 	private boolean dirty = false;
 	private boolean empty = false;
+	/**
+	 * True while {@link #data} is a page interned by {@link SharedPages}: other buffers (of this
+	 * or another {@link BufferMgr}) may hold the same array, so it is never written. Every
+	 * mutator first takes a private copy ({@link #own}), and a buffer about to be refilled from a
+	 * file drops the array instead ({@link #unshareForOverwrite}).
+	 */
+	private boolean shared = false;
 
 	/**
 	 * Constructor for de-serialization
@@ -97,6 +104,47 @@ public class DataBuffer implements Buffer, Externalizable {
 	 */
 	protected void setData(byte[] data) {
 		this.data = data;
+		this.shared = false;
+	}
+
+	/** Whether the storage array is an interned page shared with other buffers. */
+	boolean isShared() {
+		return shared;
+	}
+
+	/**
+	 * Replaces the storage array with the interned page {@code page}, which holds the same bytes,
+	 * and returns the private array it replaces (the caller may reuse it).
+	 */
+	byte[] shareData(byte[] page) {
+		byte[] old = shared ? null : data;
+		data = page;
+		shared = true;
+		return old;
+	}
+
+	/** Marks the current storage array as interned (it was just published to other buffers). */
+	void markShared() {
+		shared = true;
+	}
+
+	/**
+	 * Before the buffer is refilled from a file: a shared storage array is replaced by
+	 * {@code spare} (or a new array of the same size), without copying its bytes.
+	 */
+	void unshareForOverwrite(byte[] spare) {
+		if (shared) {
+			data = spare != null && spare.length == data.length ? spare : new byte[data.length];
+			shared = false;
+		}
+	}
+
+	/** Copy-on-write: a shared storage array is copied before the first change. */
+	private void own() {
+		if (shared) {
+			data = data.clone();
+			shared = false;
+		}
 	}
 
 	/**
@@ -198,6 +246,7 @@ public class DataBuffer implements Buffer, Externalizable {
 
 	@Override
 	public int put(int offset, byte[] bytes, int dataOffset, int length) {
+		own();
 		dirty = true;
 		System.arraycopy(bytes, dataOffset, data, offset, length);
 		return offset + length;
@@ -205,6 +254,7 @@ public class DataBuffer implements Buffer, Externalizable {
 
 	@Override
 	public int put(int offset, byte[] bytes) {
+		own();
 		dirty = true;
 		System.arraycopy(bytes, 0, data, offset, bytes.length);
 		return offset + bytes.length;
@@ -212,6 +262,7 @@ public class DataBuffer implements Buffer, Externalizable {
 
 	@Override
 	public int putByte(int offset, byte b) {
+		own();
 		dirty = true;
 		data[offset] = b;
 		return ++offset;
@@ -219,6 +270,7 @@ public class DataBuffer implements Buffer, Externalizable {
 
 	@Override
 	public int putInt(int offset, int v) {
+		own();
 		dirty = true;
 		data[offset] = (byte) (v >> 24);
 		data[++offset] = (byte) (v >> 16);
@@ -229,6 +281,7 @@ public class DataBuffer implements Buffer, Externalizable {
 
 	@Override
 	public int putShort(int offset, short v) {
+		own();
 		dirty = true;
 		data[offset] = (byte) (v >> 8);
 		data[++offset] = (byte) v;
@@ -237,6 +290,7 @@ public class DataBuffer implements Buffer, Externalizable {
 
 	@Override
 	public int putLong(int offset, long v) {
+		own();
 		dirty = true;
 		data[offset] = (byte) (v >> 56);
 		data[++offset] = (byte) (v >> 48);
@@ -253,6 +307,7 @@ public class DataBuffer implements Buffer, Externalizable {
 	 * Sets all the values in the buffer to 0;
 	 */
 	public void clear() {
+		own();
 		Arrays.fill(data, (byte) 0);
 	}
 
@@ -265,6 +320,7 @@ public class DataBuffer implements Buffer, Externalizable {
 	 * data access beyond the buffer size.
 	 */
 	public void move(int src, int dest, int length) {
+		own();
 		dirty = true;
 		System.arraycopy(data, src, data, dest, length);
 	}
@@ -279,6 +335,7 @@ public class DataBuffer implements Buffer, Externalizable {
 	 * data access beyond the buffer size.
 	 */
 	public void copy(int offset, DataBuffer buf, int bufOffset, int length) {
+		own();
 		dirty = true;
 		System.arraycopy(buf.data, bufOffset, data, offset, length);
 	}
@@ -373,6 +430,7 @@ public class DataBuffer implements Buffer, Externalizable {
 		empty = in.readBoolean();
 		int len = in.readInt();
 		data = null;
+		shared = false;
 
 		if (len >= 0) {
 			if (len > MAX_BUFFER_SIZE) {

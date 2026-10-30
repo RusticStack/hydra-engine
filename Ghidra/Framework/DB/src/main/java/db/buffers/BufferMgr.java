@@ -80,6 +80,8 @@ public class BufferMgr {
 	private BufferNode cacheHead;
 	private BufferNode cacheTail;
 	private int cacheSize;
+	/** A private page array freed by {@link SharedPages#intern}, reused for the next file read. */
+	private byte[] spareData;
 	private int buffersOnHand;
 	private int lockCount = 0;
 
@@ -619,7 +621,7 @@ public class BufferMgr {
 			if (buffersOnHand < lowWaterMark) {
 				lowWaterMark = buffersOnHand;
 			}
-			return freeBuffers.pop();
+			return privateArray(freeBuffers.pop());
 		}
 
 		// Get oldest buffer node in cache
@@ -634,7 +636,27 @@ public class BufferMgr {
 		unloadCachedNode(oldNode);
 		removeFromCache(oldNode);
 
+		return privateArray(buf);
+	}
+
+	/**
+	 * A recycled buffer is refilled or written next: an interned page it shares is replaced by a
+	 * private array (the spare one when there is one), without copying.
+	 */
+	private DataBuffer privateArray(DataBuffer buf) {
+		if (buf.isShared()) {
+			buf.unshareForOverwrite(spareData);
+			spareData = null;
+		}
 		return buf;
+	}
+
+	/** Interns a page just read from a file ({@link SharedPages}) and keeps the freed array. */
+	private void internPage(DataBuffer buf) {
+		byte[] spare = SharedPages.intern(buf);
+		if (spare != null) {
+			spareData = spare;
+		}
 	}
 
 	/**
@@ -818,6 +840,7 @@ public class BufferMgr {
 				returnFreeBuffer(buf);
 				throw e;
 			}
+			internPage(buf);
 
 			// Create new buffer node at checkpoint 0 (baseline)
 			node = createNewBufferNode(id, baselineCheckpointHead, null);
@@ -914,7 +937,13 @@ public class BufferMgr {
 			if (node.locked || node.empty) {
 				throw new IOException("Invalid or locked buffer");
 			}
-			returnToCache(node, cacheFile.get(getCacheBuffer(), node.diskCacheIndex));
+			DataBuffer buf = cacheFile.get(getCacheBuffer(), node.diskCacheIndex);
+			if (baselineCheckpointHead != null &&
+				node.checkpoint == baselineCheckpointHead.checkpoint) {
+				// a stored page that was evicted (never a changed version): share it again
+				internPage(buf);
+			}
+			returnToCache(node, buf);
 			++cacheMisses;
 		}
 		else {

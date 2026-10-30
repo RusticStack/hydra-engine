@@ -129,7 +129,7 @@ public class BufferFileAdapter implements BufferFile {
 		buf.setEmpty(remoteBuf.isEmpty());
 		buf.setId(remoteBuf.getId());
 		if (remoteBuf.data != null) {
-			buf.data = remoteBuf.data;
+			buf.setData(remoteBuf.data);
 		}
 		return buf;
 	}
