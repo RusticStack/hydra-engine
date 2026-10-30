@@ -489,7 +489,7 @@ public class ConstantPropagationContextEvaluator extends ContextEvaluatorAdapter
 		 * For jump targets, that have no computed reference, add the jump location to a set
 		 * to evaluate as a potential switch statement.
 		 */
-		Reference[] refs = instruction.getReferencesFrom();
+		Reference[] refs = DeferredProgramWrites.referencesFrom(instruction);
 		if (refs.length <= 0 || (refs.length == 1 && refs[0].getReferenceType().isData())) {
 			destSet.addRange(instruction.getMinAddress(), instruction.getMinAddress());
 		}

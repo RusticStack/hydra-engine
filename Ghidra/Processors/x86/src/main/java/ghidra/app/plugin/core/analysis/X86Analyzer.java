@@ -87,6 +87,14 @@ public class X86Analyzer extends ConstantPropagationAnalyzer {
 												SourceType.ANALYSIS);
 										}
 									});
+									// as immediate mode: added only if operand 1 has no reference
+									// (in the program or recorded earlier in this location)
+									if (instr.getOperandReferences(1).length == 0 &&
+										DeferredProgramWrites.pendingOperandAddress(instr,
+											1) == null) {
+										DeferredProgramWrites.noteReferenceAdded(from, refAddr,
+											RefType.DATA, 1);
+									}
 								}
 							}
 						}
