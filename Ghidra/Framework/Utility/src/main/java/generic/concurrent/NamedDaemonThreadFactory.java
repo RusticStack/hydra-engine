@@ -17,6 +17,7 @@ package generic.concurrent;
 
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
+import java.util.function.UnaryOperator;
 
 /**
  * NamedDaemonThreadFactory is a thread factory which forms daemon threads
@@ -27,15 +28,29 @@ public class NamedDaemonThreadFactory implements ThreadFactory {
 
 	private final String name;
 	private ThreadFactory threadFactory;
+	/** Wraps each thread's runnable before the thread is made (identity unless given). */
+	private final UnaryOperator<Runnable> wrap;
 
 	public NamedDaemonThreadFactory(String name) {
+		this(name, UnaryOperator.identity());
+	}
+
+	/**
+	 * A factory whose threads run {@code wrap.apply(r)} instead of {@code r} (GThreadPool: the
+	 * Hydra CPU placement of background threads).
+	 *
+	 * @param name the thread name prefix
+	 * @param wrap applied to each runnable before its thread is made
+	 */
+	NamedDaemonThreadFactory(String name, UnaryOperator<Runnable> wrap) {
 		this.name = name;
+		this.wrap = wrap;
 		threadFactory = Executors.defaultThreadFactory();
 	}
 
 	@Override
 	public Thread newThread(Runnable r) {
-		Thread thread = threadFactory.newThread(r);
+		Thread thread = threadFactory.newThread(wrap.apply(r));
 		thread.setName(name + "-" + thread.getName());
 		thread.setDaemon(true);
 		return thread;

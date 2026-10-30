@@ -174,6 +174,11 @@ final class Connection {
 				reader = null; // close() no longer interrupts this thread
 				Thread.interrupted(); // an interrupt from close() only meant: stop reading
 			}
+			// The client is gone from the moment its input ended, as on the platform reader: a
+			// shutdown sent right after this client closed must not count it as connected while
+			// the release below is still being handed to its own thread.
+			open = false;
+			client.leaving = true;
 			if (Thread.currentThread().isVirtual()) {
 				// the release closes programs and projects (Ghidra DB, lock files) and waits up to
 				// cleanupGraceS + abandonWaitS: it runs on a platform thread, so the virtual
@@ -680,6 +685,8 @@ final class Connection {
 		private static final long EVENT_BYTES_MAX = 1L << 20;
 		private static final int EVENT_COUNT_MAX = 2048;
 		private static final long REPLY_BYTES_MAX = 64L << 20;
+		/** A write unit of the writer: the stall clock restarts after each (the stream's buffer size). */
+		private static final int WRITE_CHUNK = 1 << 16;
 
 		final long stallMs = Math.max(250, Settings.integer("writeStallMs", 5000));
 		private final java.util.ArrayDeque<byte[]> queue = new java.util.ArrayDeque<>();
@@ -806,7 +813,17 @@ final class Connection {
 				}
 				boolean ok = true;
 				try {
-					out.write(b);
+					// in chunks, each one moving the stall clock: writeStallMs is the time without
+					// progress, not the time a large reply takes to a client that reads it slowly.
+					// A virtual writer's socket is non-blocking underneath, so one big write waits
+					// for the reader where a platform thread's blocking send handed the reply to
+					// the kernel; a client that stops reading still stalls one chunk (as before)
+					for (int off = 0; off < b.length; off += WRITE_CHUNK) {
+						out.write(b, off, Math.min(WRITE_CHUNK, b.length - off));
+						synchronized (this) {
+							writing = System.nanoTime();
+						}
+					}
 					out.flush();
 				}
 				catch (IOException e) {

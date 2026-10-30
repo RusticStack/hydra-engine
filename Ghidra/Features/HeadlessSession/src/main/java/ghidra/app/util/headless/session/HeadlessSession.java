@@ -159,8 +159,12 @@ public class HeadlessSession implements GhidraLaunchable {
 		DeferredInit.add("script bundles",
 			() -> GhidraScriptUtil.acquireBundleHostReference().add(scriptDirs, true, true));
 
-		// the lanes are sized from the CPUs the OS grants the process (affinity, job CPU cap)
-		int cpus = HydraCpu.grantedCpus();
+		// the lanes are sized as before (the JVM's processor count), never below the CPUs the OS
+		// grants the process. Lane slots are request concurrency (most of a quick request waits on
+		// locks, the decompiler process or the disk), not CPU work: fewer slots than before refused
+		// readers busy that the old size served (lock waiter cap, chaos_oracle on a host whose
+		// affinity grants 16 of 24 CPUs). The CPU-bound pools use the granted CPUs (HydraCpu).
+		int cpus = Math.max(HydraCpu.grantedCpus(), Runtime.getRuntime().availableProcessors());
 		Msg.info(HeadlessSession.class, "cpu: " + HydraCpu.report());
 		int maxQuick = o.maxQuick > 0 ? o.maxQuick : cpus;
 		// the long default is max(8, CPUs) (D40; it was a quarter of the CPUs, at least 2, and a
@@ -363,9 +367,20 @@ public class HeadlessSession implements GhidraLaunchable {
 		});
 	}
 
+	/** The send buffer of a socket served by virtual I/O threads (see {@link #serveSocket}). */
+	private static final int SEND_BUFFER_BYTES = 8 << 20;
+
 	private void serveSocket(Socket s, String token) {
 		try (s) {
 			s.setTcpNoDelay(true);
+			if (Connection.virtualIo()) {
+				// A virtual writer's socket is non-blocking underneath: only the send buffer is
+				// handed to the kernel and the rest of a reply waits for the client to read. A
+				// platform writer's blocking send on Windows hands the whole reply over, so a
+				// client busy for a few seconds was not dropped by writeStallMs. Give the kernel
+				// room for a large reply again (the buffer is only used while data is pending).
+				s.setSendBufferSize(SEND_BUFFER_BYTES);
+			}
 			s.setKeepAlive(true); // a client that vanishes without a FIN is still released
 			Connection c = new Connection(session,
 				new BufferedInputStream(s.getInputStream(), 1 << 16),
