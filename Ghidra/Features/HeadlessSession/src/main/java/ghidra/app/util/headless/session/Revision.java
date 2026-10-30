@@ -49,10 +49,19 @@ final class Revision {
 
 	/** The revision of the project as saved on disk now, as 16 hex digits. */
 	static String of(ProjectResolver.Resolved r) throws IOException {
+		return of(r, UpgradeCache.sourceFiles(r.gpr().toPath(), r.name()));
+	}
+
+	/**
+	 * {@link #of(ProjectResolver.Resolved)} over a listing already made by
+	 * {@link UpgradeCache#sourceFiles}, so that a caller that walks the project once (a fork) does
+	 * not walk it again; the attributes and the hashed bytes are still read now.
+	 */
+	static String of(ProjectResolver.Resolved r, SortedMap<String, Path> sourceFiles)
+			throws IOException {
 		MessageDigest md = sha256();
 		String state = r.name() + ".rep/" + PROJECT_STATE;
-		for (Map.Entry<String, Path> f : UpgradeCache.sourceFiles(r.gpr().toPath(), r.name())
-				.entrySet()) {
+		for (Map.Entry<String, Path> f : sourceFiles.entrySet()) {
 			if (f.getKey().equals(state)) {
 				continue;
 			}
@@ -81,10 +90,15 @@ final class Revision {
 	 * telling what changed between two revisions.
 	 */
 	static Map<String, String> files(ProjectResolver.Resolved r) throws IOException {
+		return files(r, UpgradeCache.sourceFiles(r.gpr().toPath(), r.name()));
+	}
+
+	/** {@link #files(ProjectResolver.Resolved)} over a listing already made (see {@link #of}). */
+	static Map<String, String> files(ProjectResolver.Resolved r,
+			SortedMap<String, Path> sourceFiles) throws IOException {
 		Map<String, String> out = new java.util.TreeMap<>();
 		String state = r.name() + ".rep/" + PROJECT_STATE;
-		for (Map.Entry<String, Path> f : UpgradeCache.sourceFiles(r.gpr().toPath(), r.name())
-				.entrySet()) {
+		for (Map.Entry<String, Path> f : sourceFiles.entrySet()) {
 			if (f.getKey().equals(state)) {
 				continue;
 			}

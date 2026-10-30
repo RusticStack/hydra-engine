@@ -4249,6 +4249,30 @@ of the post-release performance and Java-to-Rust investigation.
   reader disk I/O and plain CPU count ruled out; the view writers write about 67 KB of old buffer versions per comment and
   spend 48% of their CPU in change tracking of views that are never saved).
 
+### 8.18 Revision 8.14: the per-call cost of `fork_project` (amendment A66, `rust/p2-fork`)
+
+An amendment recorded on branch `rust/p2-fork` (from Hydra `main` at `0dc9777dd0`) under the owner's delegation of
+defaults (2026-10-30). It changes one default (`maintSlots`) and the code path of `fork_project`; the publish order of
+D41, the flush-before-rename rule of E12 (A38) and the replies are unchanged.
+
+**A66.**
+
+* (a) **Per-step timing.** Every `fork_project` logs the time of each step (`sweep`, `admit`, `lock`, `cost`,
+  `revision`, `copy`, `verify`, `recheck`, `force`, `commit`, `complete`, `seal`, `open`). The engine setting
+  `forkTiming` (default false) also returns them as `stepsMs` in the reply; off, the reply is byte-identical.
+* (b) **One walk of the source.** The cost, the revision before the copy and the copy use one listing of the source
+  (`UpgradeCache.sourceFiles`); the revision check after the copy still walks the source again, so a file added,
+  removed or changed during the copy is still a `conflict`.
+* (c) **Files forced side by side.** `forceTree` forces the staged files on a pool of `max(1, CPUs/2)` daemon threads
+  (`-Dghidra.session.forkFlushThreads`) and returns only when every file is forced; a failure is thrown after every
+  flush has ended. Nothing is moved before the whole tree is on the disk, as A38 requires.
+* (d) **Admission per destination.** `ForkSweeper.admit` takes the monitor of its destination (striped, four to eight
+  per CPU) instead of one monitor of the process; for one destination the decision is the same as before (V11).
+* (e) **`maintSlots` default `max(4, CPUs/2)`** (D40 had 4): unchanged up to 8 CPUs.
+* (f) **Measured** (NTFS, 16 CPUs, `kotor` 122 MB master, `mode:"full"`, other suites running on the machine):
+  sequential fork median 404 ms (final-h4) against 219 ms; 4 concurrent forks median 417 / wall 675 ms against
+  316 / 418 ms; 8 concurrent wall 1036 ms against 494 ms. `C:/dev-overflow/hydra-perf/fork/forkbench-*.json`.
+
 ### W0
 
 **X0 (Hydra, L): the oracle, the regression suites and the red table.**

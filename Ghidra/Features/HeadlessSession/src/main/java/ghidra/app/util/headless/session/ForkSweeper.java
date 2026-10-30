@@ -34,8 +34,9 @@ import utilities.util.FileUtilities;
  * The publishers in this process and the lazy sweeper of {@code fork_project} (PROTOCOL-3.md D41,
  * package E2a).
  * <p>
- * <b>Who is publishing.</b> {@link #admit} decides, under one monitor, whether a request may
- * publish a destination: a destination that another request of this process holds, or that
+ * <b>Who is publishing.</b> {@link #admit} decides, under the monitor of the destination (one
+ * of {@link #GATES}, so that requests for other destinations never wait for it), whether a
+ * request may publish a destination: a destination that another request of this process holds, or that
  * another process's live intent names, answers "in progress"; a destination that exists answers
  * "exists"; otherwise the request holds a {@link Claim} until it releases it. The claim keeps
  * racing requests of one daemon from copying the same project six times; across processes the
@@ -115,12 +116,37 @@ final class ForkSweeper {
 	}
 
 	/**
-	 * Decides who publishes {@code <destDir>/<name>}. The in-process claim is taken under a
-	 * monitor together with the checks, so that of six racing requests exactly one claims.
+	 * The monitors of {@link #admit}, one per destination by the hash of its key: a request takes
+	 * only its destination's, so that an admission that reads a slow folder holds up no fork to
+	 * another destination (it was one monitor for the process). Two destinations may share a
+	 * monitor, which costs a wait and never a wrong answer. Four to eight per granted CPU, a power
+	 * of two.
 	 */
-	static synchronized Admission admit(File destDir, String name, String id, String rk)
-			throws IOException {
+	private static final Object[] GATES = new Object[Integer
+			.highestOneBit(Math.max(1, Runtime.getRuntime().availableProcessors()) * 8 - 1)];
+	static {
+		Arrays.setAll(GATES, i -> new Object());
+	}
+
+	/** The monitor of {@link #admit} for the destination {@code key}. */
+	static Object gate(String key) {
+		int h = key.hashCode();
+		return GATES[(h ^ (h >>> 16)) & (GATES.length - 1)];
+	}
+
+	/**
+	 * Decides who publishes {@code <destDir>/<name>}. The in-process claim is taken under the
+	 * destination's monitor together with the checks, so that of six racing requests exactly one
+	 * claims.
+	 */
+	static Admission admit(File destDir, String name, String id, String rk) throws IOException {
 		String key = destDir.getCanonicalPath() + File.separator + name;
+		synchronized (gate(key)) {
+			return admit(key, destDir, name, id, rk);
+		}
+	}
+
+	private static Admission admit(String key, File destDir, String name, String id, String rk) {
 		Claim other = CLAIMS.get(key);
 		if (other != null) {
 			return new Admission(Kind.IN_PROGRESS, null, other.rk,

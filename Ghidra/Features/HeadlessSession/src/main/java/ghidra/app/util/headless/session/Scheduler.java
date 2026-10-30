@@ -35,7 +35,8 @@ import com.google.gson.JsonObject;
  * <li><b>long</b> (analyze, import, script; and, on a protocol 2 connection, save, fork_project,
  * refresh, reopen and promote_overlay): by default {@code max(8, CPUs)} slots;</li>
  * <li><b>maint</b> (protocol 3 only: save, fork_project, refresh, reopen, promote_overlay):
- * {@code maintSlots}, by default 4, so that a commit does not queue behind an analysis.</li>
+ * {@code maintSlots}, by default {@code max(4, CPUs / 2)}, so that a commit does not queue
+ * behind an analysis.</li>
  * </ul>
  * Long work can therefore never take the slots that quick queries need. When a lane is full,
  * waiting requests are admitted <b>round-robin by key</b>: the key is the connection for a
@@ -69,8 +70,14 @@ final class Scheduler {
 	/** The hard maximum of {@code quickScriptMaxS} (3.5). */
 	static final int QUICK_SCRIPT_HARD_MAX_S = 120;
 	static final int QUICK_SCRIPT_DEFAULT_S = 60;
-	/** The lane's default {@code maintSlots} (D40; revision 5 had 2). */
-	static final int DEFAULT_MAINT_SLOTS = 4;
+	/**
+	 * The lane's default {@code maintSlots}: {@code max(4, CPUs / 2)} of the CPUs this process is
+	 * granted (D40 had 4, revision 5 had 2). A fork waits mostly on the disk, so a machine with
+	 * more CPUs runs more of them at once; up to 8 CPUs the default is the 4 of D40.
+	 */
+	static int defaultMaintSlots(int cpus) {
+		return Math.max(4, cpus / 2);
+	}
 	/** The lane's long-lane default is {@code max(8, CPUs)} (D40; revision 5 had CPUs / 4, at least 2). */
 	static int defaultLongSlots(int cpus) {
 		return Math.max(8, cpus);
@@ -175,7 +182,8 @@ final class Scheduler {
 	private final Map<Lane, State> lanes = new EnumMap<>(Lane.class);
 
 	Scheduler(int quickSlots, int longSlots) {
-		this(quickSlots, longSlots, Math.max(1, Settings.integer("maintSlots", DEFAULT_MAINT_SLOTS)));
+		this(quickSlots, longSlots, Math.max(1, Settings.integer("maintSlots",
+			defaultMaintSlots(Runtime.getRuntime().availableProcessors()))));
 	}
 
 	Scheduler(int quickSlots, int longSlots, int maintSlots) {

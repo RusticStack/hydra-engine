@@ -937,9 +937,17 @@ final class UpgradeCache {
 	 */
 	static void copyProject(Path base, String name, Path dest, RequestMonitor m)
 			throws IOException, CancelledException {
+		copyProject(base, name, dest, m,
+			sourceFiles(base.resolve(name + ProjectLocator.getProjectExtension()), name));
+	}
+
+	/**
+	 * {@link #copyProject(Path, String, Path, RequestMonitor)} of the files of a listing already
+	 * made by {@link #sourceFiles} for this project (a fork walks its source once).
+	 */
+	static void copyProject(Path base, String name, Path dest, RequestMonitor m,
+			SortedMap<String, Path> files) throws IOException, CancelledException {
 		Files.createDirectories(dest);
-		Path gpr = base.resolve(name + ProjectLocator.getProjectExtension());
-		SortedMap<String, Path> files = sourceFiles(gpr, name);
 		long total = 0;
 		for (Path p : files.values()) {
 			total += Files.size(p);
