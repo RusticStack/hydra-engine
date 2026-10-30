@@ -963,6 +963,17 @@ public class LocalManagedBufferFile extends LocalBufferFile implements ManagedBu
 				monitorThread.interrupt();
 				monitor = null;
 				monitorThread = null;
+				// Hydra H3: no saver waits any more; back to background copying
+				saverWaiting = false;
+				Thread t = taskThread;
+				if (t != null) {
+					try {
+						t.setPriority(PRESAVE_PRIORITY);
+					}
+					catch (SecurityException e) {
+						// keep the current priority
+					}
+				}
 			}
 			else {
 				monitor.setProgress(curIndex);
@@ -974,9 +985,9 @@ public class LocalManagedBufferFile extends LocalBufferFile implements ManagedBu
 		 * reads of the primary file, nor waits out its initial delay, and runs at normal priority:
 		 * before, a save of a program being read (decompiles) waited 50 ms per buffer, minutes for
 		 * a 64 MB database, because every read of the primary file set the back-off flag again.
-		 * Guarded by preSaveLock.
+		 * Set with preSaveLock held; volatile because the cancel path may clear it without.
 		 */
-		private boolean saverWaiting;
+		private volatile boolean saverWaiting;
 
 		/** Hydra H3: wake the copy when a saver starts waiting. Called with preSaveLock held. */
 		void saverWaiting() {
@@ -1034,8 +1045,20 @@ public class LocalManagedBufferFile extends LocalBufferFile implements ManagedBu
 			catch (InterruptedException e) {
 				checkPreSaveMonitor();
 			}
+			catch (java.nio.channels.ClosedByInterruptException e) {
+				// Hydra H3: the chunk copy uses FileChannel positional I/O, which an interrupt
+				// (cancelTask from close/dispose) ends with this exception and a closed channel
+				// instead of the InterruptedException the per-buffer copy saw. It is a cancel.
+				checkPreSaveMonitor();
+			}
 			catch (Throwable t) {
-				Msg.error(this, t);
+				if (t instanceof IOException && taskThread.isInterrupted()) {
+					// an I/O error caused by the cancel's interrupt (channel closed under us)
+					checkPreSaveMonitor();
+				}
+				else {
+					Msg.error(this, t);
+				}
 			}
 			finally {
 				if (!success) {
@@ -1113,7 +1136,7 @@ public class LocalManagedBufferFile extends LocalBufferFile implements ManagedBu
 		 */
 		private void bulkCopy(LocalBufferFile src, int cnt)
 				throws IOException, InterruptedException {
-			int blockSize = getBufferSize() + 5; // BUFFER_PREFIX_SIZE
+			int blockSize = src.getBlockSize();
 			int perChunk = Math.max(1, PRESAVE_CHUNK_BYTES / blockSize);
 			perChunk = Math.min(perChunk, Math.max(1, cnt));
 			try (java.lang.foreign.Arena arena = java.lang.foreign.Arena.ofConfined()) {
@@ -1125,6 +1148,10 @@ public class LocalManagedBufferFile extends LocalBufferFile implements ManagedBu
 						throw new InterruptedException();
 					}
 					int n = Math.min(perChunk, cnt - curIndex);
+					Runnable hook = preSaveChunkHook;
+					if (hook != null) {
+						hook.run();
+					}
 					preSaveFile.copyBuffersFrom(src, curIndex, n, chunk);
 					curIndex += n;
 				}
@@ -1132,6 +1159,9 @@ public class LocalManagedBufferFile extends LocalBufferFile implements ManagedBu
 		}
 
 	}
+
+	/** Hydra H3: tests only; runs on the pre-save thread before each chunk is copied. */
+	static volatile Runnable preSaveChunkHook;
 
 	/** Hydra H3: copy the pre-save in chunks (true, default) or one buffer at a time (false). */
 	static final boolean BULK_PRESAVE =

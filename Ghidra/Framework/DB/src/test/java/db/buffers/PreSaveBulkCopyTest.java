@@ -185,6 +185,20 @@ public class PreSaveBulkCopyTest extends AbstractGenericTest {
 		assertEquals(1, mgr.getCurrentVersion());
 
 		LocalManagedBufferFile primary = new LocalManagedBufferFile(mgr, true, -1, -1);
+		boolean saved = false;
+		try {
+			saved = progressThenSave(mgr, primary, count);
+		}
+		finally {
+			if (!saved) {
+				// leave nothing open that would stop the next test's setUp from clearing testDir
+				primary.dispose();
+			}
+		}
+	}
+
+	private boolean progressThenSave(Mgr mgr, LocalManagedBufferFile primary, int count)
+			throws Exception {
 		AtomicBoolean stop = new AtomicBoolean();
 		AtomicReference<Throwable> err = new AtomicReference<>();
 		Thread reader = new Thread(() -> {
@@ -202,7 +216,10 @@ public class PreSaveBulkCopyTest extends AbstractGenericTest {
 		}, "reader");
 		reader.start();
 		long expected = (long) (count + 1) * (BUFFER_SIZE + 5);
-		long deadline = System.nanoTime() + 10_000_000_000L;
+		// The original copy makes no progress at all while the primary file is read without
+		// pause (0 bytes, however long); the bound is generous so a machine loaded with other
+		// agents' work does not fail the test.
+		long deadline = System.nanoTime() + 60_000_000_000L;
 		File ps = null;
 		try {
 			while (System.nanoTime() < deadline) {
@@ -236,7 +253,7 @@ public class PreSaveBulkCopyTest extends AbstractGenericTest {
 			System.err.println("DEBUG " + ps + "\n" + sb);
 		}
 		assertTrue("pre-save made no progress while the primary file was read: " + done + " of " +
-			expected + " bytes in 10 s", done >= expected);
+			expected + " bytes in 60 s", done >= expected);
 
 		// the save takes the copy and commits a version equal to the first
 		LocalManagedBufferFile save = primary.getSaveFile(null);
@@ -248,6 +265,11 @@ public class PreSaveBulkCopyTest extends AbstractGenericTest {
 		primary.dispose();
 		save.close();
 		assertEquals(2, mgr.getCurrentVersion());
+		verifySameContents(mgr);
+		return true;
+	}
+
+	private static void verifySameContents(Mgr mgr) throws IOException {
 
 		LocalBufferFile f1 = new LocalBufferFile(mgr.getBufferFile(1), true);
 		LocalBufferFile f2 = new LocalBufferFile(mgr.getBufferFile(2), true);
@@ -281,21 +303,100 @@ public class PreSaveBulkCopyTest extends AbstractGenericTest {
 		v1.close();
 		// as BufferMgr.save does: the save file becomes the source of the next save
 		LocalManagedBufferFile primary = new LocalManagedBufferFile(mgr, true, -1, -1);
-		for (int round = 0; round < 3; round++) {
-			long t0 = System.nanoTime();
-			LocalManagedBufferFile save = primary.getSaveFile(null);
-			long ms = (System.nanoTime() - t0) / 1_000_000L;
-			assertNotNull(save);
-			assertTrue("save waited " + ms + " ms for the pre-save", ms < 5_000);
-			save.setFreeIndexes(primary.getFreeIndexes());
-			save.setParameter("p", 42);
-			primary.saveCompleted(true);
-			primary.dispose();
-			primary = save;
+		try {
+			for (int round = 0; round < 3; round++) {
+				long t0 = System.nanoTime();
+				LocalManagedBufferFile save = primary.getSaveFile(null);
+				long ms = (System.nanoTime() - t0) / 1_000_000L;
+				assertNotNull(save);
+				// generous: a loaded machine must not fail it; a stuck pre-save still does
+				assertTrue("save waited " + ms + " ms for the pre-save", ms < 30_000);
+				save.setFreeIndexes(primary.getFreeIndexes());
+				save.setParameter("p", 42);
+				primary.saveCompleted(true);
+				primary.dispose();
+				primary = save;
+			}
 		}
-		primary.close();
+		finally {
+			primary.close();
+		}
 		assertEquals(4, mgr.getCurrentVersion());
 		assertNull("pre-save files left behind", findPreSave());
+	}
+
+	/**
+	 * Closing a program while its pre-save copies is a cancel, not an error. The chunk copy uses
+	 * FileChannel I/O, which the cancel's interrupt ends with ClosedByInterruptException; the
+	 * per-buffer copy only ever saw InterruptedException. The hook holds the copy just before a
+	 * chunk until the interrupt is pending, so the channel I/O always sees it.
+	 */
+	@Test(timeout = 120_000)
+	public void testCloseDuringChunkCopyIsSilent() throws Exception {
+		Mgr mgr = new Mgr();
+		LocalManagedBufferFile v1 = new LocalManagedBufferFile(BUFFER_SIZE, mgr, -1);
+		fill(v1, 256, 4);
+		v1.close();
+
+		List<String> errors = Collections.synchronizedList(new ArrayList<>());
+		ghidra.util.Msg.setErrorLogger(new ghidra.util.DefaultErrorLogger() {
+			@Override
+			public void error(Object originator, Object message) {
+				errors.add(String.valueOf(message));
+				super.error(originator, message);
+			}
+
+			@Override
+			public void error(Object originator, Object message, Throwable throwable) {
+				errors.add(message + " " + throwable);
+				super.error(originator, message, throwable);
+			}
+		});
+		java.util.concurrent.CountDownLatch inChunk = new java.util.concurrent.CountDownLatch(1);
+		java.util.concurrent.atomic.AtomicInteger chunks =
+			new java.util.concurrent.atomic.AtomicInteger();
+		LocalManagedBufferFile.preSaveChunkHook = () -> {
+			if (chunks.incrementAndGet() < 2) {
+				return; // let one chunk through, so the copy is under way
+			}
+			inChunk.countDown();
+			long end = System.nanoTime() + 60_000_000_000L;
+			while (!Thread.currentThread().isInterrupted() && System.nanoTime() < end) {
+				Thread.onSpinWait();
+			}
+		};
+		try {
+			// the hook runs only in the chunk copy (-Dhydra.presave.bulk=false turns it off)
+			Assume.assumeTrue(LocalManagedBufferFile.BULK_PRESAVE);
+			LocalManagedBufferFile primary = new LocalManagedBufferFile(mgr, true, -1, -1);
+			try {
+				assertTrue("pre-save never reached its second chunk",
+					inChunk.await(60, java.util.concurrent.TimeUnit.SECONDS));
+			}
+			finally {
+				primary.close(); // cancels the pre-save: interrupt, then join
+			}
+			assertEquals("errors logged by the cancel: " + errors, 0, errors.size());
+			assertNull("pre-save files left behind", findPreSave());
+			assertEquals(1, mgr.getCurrentVersion());
+			verifySameContentsAsWritten(mgr);
+		}
+		finally {
+			LocalManagedBufferFile.preSaveChunkHook = null;
+			ghidra.util.Msg.setErrorLogger(new ghidra.util.DefaultErrorLogger());
+		}
+	}
+
+	/** The primary file is intact after the cancelled pre-save. */
+	private static void verifySameContentsAsWritten(Mgr mgr) throws IOException {
+		LocalBufferFile f1 = new LocalBufferFile(mgr.getBufferFile(1), true);
+		try {
+			assertEquals(256, f1.getIndexCount());
+			assertEquals(42, f1.getParameter("p"));
+		}
+		finally {
+			f1.close();
+		}
 	}
 
 	/**

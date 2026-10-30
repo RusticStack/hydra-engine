@@ -806,6 +806,11 @@ public class LocalBufferFile implements BufferFile {
 		}
 	}
 
+	/** Hydra H3: size of one block on disk, buffer plus prefix (sizes the pre-save chunks). */
+	int getBlockSize() {
+		return blockSize;
+	}
+
 	private static final byte[] ZEROS = new byte[4096];
 
 	private static void zero(java.nio.ByteBuffer buf, int off, int len) {
