@@ -36,6 +36,11 @@ public class DecompileAllC extends GhidraScript {
 		d.setSimplificationStyle("decompile");
 		d.openProgram(currentProgram);
 		int n = 0;
+		// distinct native processes used: 1 unless a process was stopped and restarted
+		java.lang.reflect.Field pf = DecompInterface.class.getDeclaredField("decompProcess");
+		pf.setAccessible(true);
+		java.util.Set<Object> processes =
+			java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
 		long t0 = System.nanoTime();
 		try (PrintWriter w = new PrintWriter(new BufferedWriter(new FileWriter(out)))) {
 			for (Function f : currentProgram.getFunctionManager().getFunctions(true)) {
@@ -50,11 +55,13 @@ public class DecompileAllC extends GhidraScript {
 				else {
 					w.println("!! " + r.getErrorMessage());
 				}
+				processes.add(pf.get(d));
 				n++;
 			}
 		}
 		long ms = (System.nanoTime() - t0) / 1000000;
-		println("DECOMPILE_ALL functions=" + n + " ms=" + ms);
+		println("DECOMPILE_ALL functions=" + n + " ms=" + ms + " processes=" +
+			processes.size());
 		d.dispose();
 	}
 }
