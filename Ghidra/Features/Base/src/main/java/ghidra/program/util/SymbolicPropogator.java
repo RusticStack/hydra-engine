@@ -2812,11 +2812,22 @@ public class SymbolicPropogator {
 			final Address refTarget = target;
 			final RefType deferredRefType = refType;
 			final boolean skipIfTargetExists = deferredSkipIfTargetExists;
+			// a pure data reference was checked against instructions above, but instructions
+			// this location disassembled itself are only recorded: check again when applied,
+			// when the writes recorded before this one (as in immediate mode) are in place
+			final boolean recheckPureData = refType.isData() && !refType.isRead() &&
+				!refType.isWrite();
+			final long refWordOffset = wordOffset;
 			// capture locals only (not this propagator): see removeOperandReference above
+			final Program prog = program;
 			final Listing listing = program.getListing();
 			DeferredProgramWrites.run(() -> {
 				Instruction instr = listing.getInstructionAt(fromAddr);
 				if (instr == null) {
+					return;
+				}
+				if (recheckPureData && !pureDataRefAllowed(prog, instr, refWordOffset,
+					deferredRefType, refTarget, listing::getInstructionContaining)) {
 					return;
 				}
 				if (skipIfTargetExists) {
@@ -2891,6 +2902,17 @@ public class SymbolicPropogator {
 	 */
 	private boolean evaluatePureDataRef(Instruction instruction, long wordOffset, RefType refType,
 			Address target) {
+		return pureDataRefAllowed(program, instruction, wordOffset, refType, target,
+			this::getInstructionContaining);
+	}
+
+	/**
+	 * {@link #evaluatePureDataRef} against a given way of finding the instruction containing an
+	 * address (the propagator's cache, or the listing when a deferred write is applied).
+	 */
+	private static boolean pureDataRefAllowed(Program program, Instruction instruction,
+			long wordOffset, RefType refType, Address target,
+			java.util.function.Function<Address, Instruction> instructionContaining) {
 		if (refType.isRead() || refType.isWrite()) {
 			return true;  // not a pure data ref
 		}
@@ -2914,7 +2936,7 @@ public class SymbolicPropogator {
 		// TODO: This should be a speculative constant reference, and then we wouldn't need
 		//       to check containing, or maybe containing would be checked later
 		if (program.getMemory().contains(target)) {
-			Instruction targetInstr = getInstructionContaining(target);
+			Instruction targetInstr = instructionContaining.apply(target);
 			if (targetInstr != null) {
 				// if not at the top of an instruction, don't do it
 				Address disassemblyAddress =
