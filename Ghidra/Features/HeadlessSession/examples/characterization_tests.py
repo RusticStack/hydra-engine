@@ -30,7 +30,10 @@ timings, pids, ports, paths (as ``<WORK>``, ``<INSTALL>``), file-system dependen
 the total size (``bytes``) of a copied project (it depends on the length of the program file IDs
 Ghidra writes into the project, which follows the host's network address and uptime; the masker
 checks that it is a positive int, and ``files`` stays), and revision fingerprints (renumbered by
-first appearance, so equal and different revisions stay visible as such). ``--selftest`` checks the
+first appearance, so equal and different revisions stay visible as such), and the release stamp
+(the install's ``hydra.version``, such as ``12.3-hydra.dev`` or ``12.3-hydra.4``, as
+``<hydra-version>``: in the live replies and in the golden as it is read, so a golden recorded on
+one stamp compares on any). ``--selftest`` checks the
 masker offline. The fixture is two tiny x64 PE files this script writes itself, so the golden
 files carry nothing derived from any real program and do not depend on the Windows version.
 
@@ -236,6 +239,16 @@ PROJECT_TOTAL = ("bytes", "mode")
 CAPACITY_KEYS = ("slots", "cap", "perKeyCap")
 REV = re.compile(r"^[0-9a-f]{16}$")
 ISO_TIME = re.compile(r"^\d{4}-\d\d-\d\dT[\d:.]+Z$")
+# The release stamp (``hydra.version`` of the install: ``12.3-hydra.dev`` for a tree build,
+# ``12.3-hydra.4`` for a release candidate) is not a function of the request: it is masked in the
+# live replies and in the golden as it is read (``release``), so a golden recorded on a tree build
+# compares on a stamped install and the other way round.
+RELEASE_STAMP = re.compile(r"\b\d+\.\d+(?:\.\d+)?-hydra\.(?:dev|\d+)\b")
+
+
+def release(s):
+    """``s`` with every release stamp written as ``<hydra-version>``."""
+    return RELEASE_STAMP.sub("<hydra-version>", s)
 
 
 class Masker:
@@ -251,6 +264,7 @@ class Masker:
                     if "\\" in s:
                         s = re.sub(re.escape(token) + r"[^\s'\",)]*",
                                    lambda m: m.group(0).replace("\\", "/"), s)
+        s = release(s)
         s = re.sub(r"(\d+(?:\.\d+)?) ?ms\b", "<n>ms", s)
         s = re.sub(r"\b\d{10,}\b", "<n>", s)
         return s
@@ -1021,6 +1035,14 @@ def selftest():
 
     check("scheduler slots of 0, negative, bool, float, string, null are errors",
           all(slots_raises(v) for v in (0, -1, True, 2.5, "6", None)) and not slots_raises(6))
+    stamp = "Hydra %s upgrade from 32; backup 6 | headless session"
+    check("release stamps of a tree build and a release mask the same",
+          m({"upgradeStamp": stamp % "12.3-hydra.dev"}) == m({"upgradeStamp": stamp % "12.3-hydra.4"})
+          == {"upgradeStamp": stamp % "<hydra-version>"})
+    check("a golden's stamp reads as the masked one",
+          release('"Hydra 12.3-hydra.dev upgrade"') == '"Hydra <hydra-version> upgrade"')
+    check("versions without the hydra suffix stay",
+          m({"v": "Ghidra 12.3 build 12.3.1"}) == {"v": "Ghidra 12.3 build 12.3.1"})
     print(f"{'FAILED: ' + str(len(bad)) + ' check(s)' if bad else 'all masker checks ok'}")
     return 1 if bad else 0
 
@@ -1143,7 +1165,7 @@ def main():
                 print(f"FAIL {n}: no golden file {g}; run with --record")
                 failed.append(n)
             else:
-                want = g.read_text(encoding="utf-8")
+                want = release(g.read_text(encoding="utf-8"))
                 if want == text:
                     print(f"ok   {n:14s} {len(R.steps):4d} requests identical "
                           f"({time.perf_counter() - t:.0f} s)")

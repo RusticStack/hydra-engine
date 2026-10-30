@@ -206,8 +206,8 @@ stock `analyzeHeadless` import with `-loader-*` arguments applied them; upstream
   benchmark is one function whose size was not recorded; measured by the owner on a KotOR
   executable on 2026-10-27, a warm decompile took 0.7-2.1 ms for a one-byte function and 35-45 ms
   for a 6.7 KB function of 29 basic blocks.
-- **Writes**: they are serialized and never corrupt a program, but are not collision-checked by
-  default: shared writes are last-writer-wins per value, and `expect` is opt-in per call. The
+- **Writes**: they are serialized and never corrupt a program (in the tests listed in the module
+  README), but are not collision-checked by default: shared writes are last-writer-wins per value, and `expect` is opt-in per call. The
   wording "write without stepping on each other" is replaced accordingly (README and module
   README).
 - **Platform and limits** section: releases are Windows x64 only, JDK 25 is required, one daemon
