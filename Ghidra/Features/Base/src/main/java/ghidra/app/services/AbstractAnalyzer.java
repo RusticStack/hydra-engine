@@ -222,6 +222,7 @@ public abstract class AbstractAnalyzer implements Analyzer {
 		return Math.max(1, Math.min(requested, Math.max(1, poolMaxThreads)));
 	}
 
+	/**
 	 * Name of the analyzer option that turns on {@link #runDeferredParallelAddressAnalysis}.
 	 */
 	public static final String DEFERRED_WRITES_OPTION_NAME = "Deferred Ordered Writes";
