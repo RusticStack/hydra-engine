@@ -39,10 +39,12 @@ import ghidra.util.cpu.HydraCpu;
  * read, so {@code cancel} reaches it while it still waits its turn. Responses carry the request's
  * {@code id}; {@code progress} events carry it too.
  * <p>
- * With the setting {@code orderPerScope} (default off, PROTOCOL-3.md 8.18) a protocol 3 connection
- * keeps one ordered lane per caller scope instead of one for the whole connection: the requests of
- * one {@code client}/{@code harness} label still run in the order sent, while the requests of
- * other labels run beside them. Unlabelled requests keep the connection's own lane.
+ * With the setting {@code orderPerScope} (default on since Hydra daemon-async, PROTOCOL-3.md 8.18;
+ * {@code -set orderPerScope=false} restores one lane per connection) a protocol 3 connection keeps
+ * one ordered lane per caller scope instead of one for the whole connection: the requests of one
+ * {@code client}/{@code harness} label still run in the order sent, while the requests of other
+ * labels run beside them, so agents multiplexed over one connection no longer queue behind each
+ * other. Unlabelled requests keep the connection's own lane.
  */
 final class Connection {
 
@@ -327,7 +329,7 @@ final class Connection {
 			return;
 		}
 		// a labelled request of a v3 connection gets its scope's own ordered lane (orderPerScope)
-		String scope = !par && client.v3() && Settings.bool("orderPerScope", false)
+		String scope = !par && client.v3() && Settings.bool("orderPerScope", true)
 				? who.scope()
 				: null;
 		try {
@@ -635,7 +637,7 @@ final class Connection {
 
 	/** Queues a line for the writer thread: events may be dropped, a reply may not (BP23). */
 	void send(JsonObject o) {
-		byte[] bytes = (Json.GSON.toJson(o) + "\n").getBytes(StandardCharsets.UTF_8);
+		byte[] bytes = encode(o);
 		boolean reply = o.has("ok");
 		if (!open && !reply) {
 			return;
@@ -646,6 +648,35 @@ final class Connection {
 		}
 		if (!outbound.offerReply(bytes)) {
 			onStall();
+		}
+	}
+
+	/**
+	 * One reply or event line: {@code o} as JSON plus a newline, in UTF-8. Written by Gson straight
+	 * into a byte buffer (the same writer and settings as {@code GSON.toJson(o)}, so the bytes are
+	 * the same) instead of a String, a second String with the newline and then the bytes: a large
+	 * reply (a function listing, a long decompile) is no longer held three times.
+	 */
+	static byte[] encode(JsonObject o) {
+		LineBuffer buf = new LineBuffer();
+		try (Writer w = new OutputStreamWriter(buf, StandardCharsets.UTF_8)) {
+			Json.GSON.toJson(o, w);
+			w.write('\n');
+		}
+		catch (IOException e) {
+			throw new UncheckedIOException(e); // an in-memory buffer does not fail
+		}
+		return buf.bytes();
+	}
+
+	/** A byte buffer that hands over its array without a copy when it is exactly full. */
+	private static final class LineBuffer extends ByteArrayOutputStream {
+		LineBuffer() {
+			super(256);
+		}
+
+		byte[] bytes() {
+			return count == buf.length ? buf : java.util.Arrays.copyOf(buf, count);
 		}
 	}
 
@@ -851,23 +882,57 @@ final class Connection {
 	private Thread reader;
 
 	private final ByteArrayOutputStream buf = new ByteArrayOutputStream();
+	/**
+	 * What was read from {@link #in} and not yet taken as a line: {@code chunk[pos..lim)}. The
+	 * reader takes whole blocks and scans them for the newline, instead of one synchronized
+	 * {@code read()} call per byte.
+	 */
+	private final byte[] chunk = new byte[1 << 14];
+	private int pos;
+	private int lim;
 
 	/** Reads one line (without its terminator), refusing lines over {@link #MAX_LINE_BYTES}. */
 	private byte[] readLine() throws IOException {
 		buf.reset();
-		int b;
-		while ((b = in.read()) != -1) {
-			if (b == '\n') {
-				return trimCr(buf.toByteArray());
+		while (true) {
+			if (pos == lim) {
+				int n = in.read(chunk, 0, chunk.length);
+				if (n < 0) {
+					return buf.size() > 0 ? trimCr(buf.toByteArray()) : null;
+				}
+				pos = 0;
+				lim = n;
+				continue;
 			}
-			if (buf.size() >= MAX_LINE_BYTES) {
+			int nl = -1;
+			for (int i = pos; i < lim; i++) {
+				if (chunk[i] == '\n') {
+					nl = i;
+					break;
+				}
+			}
+			int end = nl < 0 ? lim : nl;
+			if ((long) buf.size() + (end - pos) > MAX_LINE_BYTES) {
 				send(error(null, new SessionException(SessionException.BAD_REQUEST,
 					"request line longer than " + MAX_LINE_BYTES + " bytes"), 0));
 				throw new IOException("request line too long; connection closed");
 			}
-			buf.write(b);
+			if (nl < 0) {
+				buf.write(chunk, pos, lim - pos);
+				pos = lim;
+				continue;
+			}
+			byte[] line;
+			if (buf.size() == 0) {
+				line = java.util.Arrays.copyOfRange(chunk, pos, nl);
+			}
+			else {
+				buf.write(chunk, pos, nl - pos);
+				line = buf.toByteArray();
+			}
+			pos = nl + 1;
+			return trimCr(line);
 		}
-		return buf.size() > 0 ? trimCr(buf.toByteArray()) : null;
 	}
 
 	private static byte[] trimCr(byte[] b) {

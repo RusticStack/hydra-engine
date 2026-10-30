@@ -92,6 +92,40 @@ final class QueryCommands {
 		JsonArray a = new JsonArray();
 		int seen = 0;
 		boolean truncated = false;
+		if (FunctionIndex.enabled()) {
+			// Hydra (daemon-async): pages are slices of the program state's one shared listing
+			FunctionIndex.Snapshot ix = FunctionIndex.of(prog);
+			int n = ix.size();
+			if (pat == null && sub == null) {
+				int from = (int) Math.min(n, (long) offset);
+				int to = (int) Math.min(n, (long) from + limit);
+				for (int i = from; i < to; i++) {
+					a.add(ix.row(i));
+				}
+				truncated = to < n;
+			}
+			else {
+				for (int i = 0; i < n; i++) {
+					String nm = ix.names[i];
+					if (pat != null && !pat.matcher(nm).find()) {
+						continue;
+					}
+					if (sub != null && !nm.contains(sub)) {
+						continue;
+					}
+					if (seen++ < offset) {
+						continue;
+					}
+					if (a.size() >= limit) {
+						truncated = true;
+						break;
+					}
+					a.add(ix.row(i));
+				}
+			}
+			return Json.of("functions", a, "offset", offset, "returned", a.size(), "truncated",
+				truncated);
+		}
 		for (Function f : prog.getFunctionManager().getFunctions(true)) {
 			String n = f.getName(true);
 			if (pat != null && !pat.matcher(n).find()) {

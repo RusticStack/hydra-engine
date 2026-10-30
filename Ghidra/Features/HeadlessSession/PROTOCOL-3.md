@@ -1166,7 +1166,7 @@ them in the README. No new environment variable is added.
 | `watchdogStallMs` / `starveMs` | 15000 / 30000 | `health` thresholds | E5 |
 | `minXmxMb`, `maxViews`, `maxViewsPerClient`, `heapSoftPct`, `heapHardPct`, `nativeBudgetMb` | 512, 32, 4, 70, 85, 50% of RAM minus `-Xmx` | the governor (3.11) | E9 |
 | `scriptMaxS`, `yieldSlots`, `writeStallMs` | 600, off, 5000 | runaway-script wall budget, the optional slot yield (D39), the stalled-socket disconnect | E4, E3c, E3b |
-| `orderPerScope`, `lockWaitersMin`, `forcedGc` | off, 4 (least 2), on | revision 8.14 (8.18): one ordered lane per caller label of a v3 connection; the least waiter cap of 3.5; the collections that only measure a first open | rust/p2-daemon-sched |
+| `orderPerScope`, `lockWaitersMin`, `forcedGc` | on (was off), 4 (least 2), on | revision 8.14 (8.18): one ordered lane per caller label of a v3 connection; the least waiter cap of 3.5; the collections that only measure a first open | rust/p2-daemon-sched |
 | `viewDiskBudget`, `diskReserve`, `viewIdleEvictS` | 20 GB, `max(5 GB, 5%)`, 600 | disk admission (3.11) and the client-side eviction time | E9, Y5 |
 | `publishBatchMax`, `SYNC_LOCK_S`, `BASE_WAIT_S` | 1, 30, 30 | Hydralysis: changesets per generation, the per-view lock bound, the shared-base wait (4.10) | Y3, Y2 |
 | `generationKeep`, `viewIdleDeleteS`, `viewKeepWarmRecords` | 3, 86400, 1000 (*unmeasured*, set from Z2's replay run, D61) | Hydralysis, retention (OD8, decided): the doctor lists every generation except the newest 3, generation 0, the head, a revert target and any live view's base as removable, and `backend action=backups options.op=remove` deletes one only on `confirm:true`, never automatically (D28); a view idle for 24 h has its fork folder deleted, which loses nothing because the store holds its records (a disposable cache, D43); a view with at least `viewKeepWarmRecords` pending records is never closed by idle time (D61). All three are configurable | Y2, Y5 |
@@ -4258,7 +4258,8 @@ delegation of engine defaults (2026-10-30: defaults and PROTOCOL-3 amendments al
 two defaults and adds three settings (3.7); every change that alters what a client sees is either behind a setting
 that is off by default, or on by default where off is the change (`forcedGc`), or only ever admits more than before.
 
-* (a) **One ordered lane per caller label (S1, S2; BP15 extended).** With `orderPerScope` (default **off**) a protocol 3
+* (a) **One ordered lane per caller label (S1, S2; BP15 extended).** With `orderPerScope` (default **on** since Hydra
+  `rust/t-daemon-async`; it was off) a protocol 3
   connection runs each labelled caller's (`client`/`harness`, 3.5 fair key) non-read requests on that label's own ordered
   lane: one label's requests still run in the order sent, other labels run beside them, unlabelled requests keep the
   connection's single lane, and a protocol 2 connection is unchanged. A label's lane takes a thread of the connection's
@@ -4268,7 +4269,8 @@ that is off by default, or on by default where off is the change (`forcedGc`), o
 ordered requests behind a label that keeps sending; the label lanes share the parallel pool with `parallel:true`
 requests, so with the setting on, a client that also sends many `parallel:true` requests can see BUSY "already runs 32
 parallel requests" sooner. The abandon step of 3.5 (`shutdownNow`) stops the label lanes and drops their queued
-requests as it drops the pools' queues. It is off by default because a client that sends two labels' requests over one connection
+requests as it drops the pools' queues. It was off by default (until `rust/t-daemon-async` turned it on for multi-agent
+clients; `-set orderPerScope=false` restores the old order) because a client that sends two labels' requests over one connection
   today sees them in the order sent; a client that multiplexes independent agents turns it on. `parallel:true` and the
   read class of BP15 are unchanged (the launcher library's `labelled()` view sends `parallel:true` by default, which runs
   a label's requests with no order at all; `orderPerScope` is for a client that wants each label's order kept). Test: `dt_e3b` `scope_order` (both settings).

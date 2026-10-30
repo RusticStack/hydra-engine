@@ -545,21 +545,25 @@ final class ScriptCommands {
 		int cap = (int) Json.num(req, "maxChars", DEFAULT_TEXT_CAP, 1, MAX_TEXT_CAP);
 		StringWriter sw = new StringWriter();
 		PrintWriter pw = new PrintWriter(sw, true);
-		GhidraScript s;
-		synchronized (SCRIPT_COMPILE) {
-			GhidraScriptProvider provider = GhidraScriptUtil.getProvider(src);
-			if (provider == null) {
-				throw new SessionException(SessionException.BAD_REQUEST,
-					"no script provider for " + src.getName());
-			}
-			try {
-				s = provider.getScriptInstance(src, pw);
-			}
-			catch (Exception ex) {
-				pw.flush();
-				throw new SessionException(SessionException.FAILED,
-					"script did not load: " + ex.getMessage(), Json.of("output", sw.toString()),
-					ex);
+		ScriptClasses.Lookup look = ScriptClasses.lookup(src);
+		GhidraScript s = look.instance();
+		if (s == null) {
+			synchronized (SCRIPT_COMPILE) {
+				GhidraScriptProvider provider = GhidraScriptUtil.getProvider(src);
+				if (provider == null) {
+					throw new SessionException(SessionException.BAD_REQUEST,
+						"no script provider for " + src.getName());
+				}
+				try {
+					s = provider.getScriptInstance(src, pw);
+				}
+				catch (Exception ex) {
+					pw.flush();
+					throw new SessionException(SessionException.FAILED,
+						"script did not load: " + ex.getMessage(), Json.of("output", sw.toString()),
+						ex);
+				}
+				look.remember(provider, s);
 			}
 		}
 		s.setScriptArgs(Json.strings(req, "args").toArray(new String[0]));

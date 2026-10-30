@@ -984,11 +984,12 @@ def t_scope_order(c):
     """``orderPerScope`` (PROTOCOL-3.md 8.18). One protocol 3 connection, two labels: ``a`` sends a 4 s
     script and then a short one, ``b`` a short one. With the setting, ``b`` runs beside ``a``'s long
     script and ``a``'s short script still starts only after its long one ended (the order of a label is
-    kept); without it (the default) ``b`` waits behind ``a`` on the connection's one ordered lane."""
+    kept; the default since Hydra daemon-async); with ``orderPerScope=false`` ``b`` waits behind ``a`` on
+    the connection's one ordered lane."""
     prepare(c)
     notes = []
     for on in (False, True):
-        d = c.daemon(f"e3b-so{int(on)}", engine={"orderPerScope": True} if on else None)
+        d = c.daemon(f"e3b-so{int(on)}", engine={"orderPerScope": on})
         X = None
         try:
             X = c.connect(d, "multi", "e3b", 3)
