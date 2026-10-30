@@ -78,6 +78,27 @@ public class MemoryReadConcurrencyTest extends AbstractGenericTest {
 	}
 
 	@Test
+	public void testGetBlockWaitsForBlockReload() throws Exception {
+		MemoryBlock block =
+			mem.createInitializedBlock("test", addr(0x100), 0x50, (byte) 1, TaskMonitor.DUMMY,
+				false);
+		Future<MemoryBlock> lookup;
+		synchronized (mem) {
+			mem.beginBlockReload();
+			try {
+				lookup = executor.submit(() -> mem.getBlock(addr(0x120)));
+				Thread.sleep(200);
+				assertFalse("lookup must not use the snapshot while blocks are reloaded",
+					lookup.isDone());
+			}
+			finally {
+				mem.endBlockReload();
+			}
+		}
+		assertSame(block, lookup.get(TIMEOUT_SECONDS, TimeUnit.SECONDS));
+	}
+
+	@Test
 	public void testFileBytesReadsDoNotWaitOnFileBytesMonitor() throws Exception {
 		int size = MAX_BUFFER_SIZE_FOR_TESTING * 2 + 10;
 		FileBytes fileBytes = createFileBytes("testFile", size);
@@ -178,9 +199,18 @@ public class MemoryReadConcurrencyTest extends AbstractGenericTest {
 		assertSame(block2, mem.getBlock(addr(0x118)));
 		assertSame(block1, mem.getBlock(addr(0x108)));
 
+		MemoryBlock block3 = mem.createInitializedBlock("b3", addr(0x200), 0x10, (byte) 3,
+			TaskMonitor.DUMMY, false);
+
 		MemoryBlock joined = mem.join(block1, block2);
+		// move the cached last block away so the join is checked against the sorted snapshot
+		assertSame(block3, mem.getBlock(addr(0x208)));
 		assertSame(joined, mem.getBlock(addr(0x118)));
+		assertSame(block3, mem.getBlock(addr(0x200)));
 		assertSame(joined, mem.getBlock(addr(0x110)));
+		assertEquals(Arrays.asList(mem.getBlocks()),
+			Arrays.asList(mem.getBlock(addr(0x100)), mem.getBlock(addr(0x200))));
+		mem.removeBlock(block3, TaskMonitor.DUMMY);
 		assertEquals(1, mem.getBlocks().length);
 
 		mem.split(joined, addr(0x110));

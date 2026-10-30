@@ -17,6 +17,7 @@ package ghidra.program.database.mem;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.invoke.VarHandle;
 import java.util.*;
 
 import db.DBHandle;
@@ -59,6 +60,11 @@ public class MemoryMapDB implements Memory, ProgramDBModule {
 
 	// immutable snapshot of blocks used for lock-free address lookups, replaced on change
 	private volatile BlockLookup blockLookup = new BlockLookup(new MemoryBlockDB[0]);
+
+	// Odd while blocks are refreshed in place (reload, move); bumped on outermost start and end
+	// under this monitor.  Lookups overlapping a reload fall back to the monitor.
+	private volatile long blockReloadSeq;
+	private int blockReloadDepth; // guarded by this
 
 	// lazy map of block names to blocks, must be reloaded if blocks are removed or added
 	private HashMap<String, MemoryBlock> nameBlockMap = new HashMap<>();
@@ -173,12 +179,34 @@ public class MemoryMapDB implements Memory, ProgramDBModule {
 
 	private void reloadAll() throws IOException {
 		synchronized (this) {
-			fileBytesAdapter.refresh();
-			adapter.refreshMemory();
-			initializeBlocks();
-			allAddrSet = buildFullMemoryAddressSetView();
+			beginBlockReload();
+			try {
+				fileBytesAdapter.refresh();
+				adapter.refreshMemory();
+				initializeBlocks();
+				allAddrSet = buildFullMemoryAddressSetView();
+			}
+			finally {
+				endBlockReload();
+			}
 		}
 		addrMap.memoryMapChanged(this);
+	}
+
+	/**
+	 * Mark the start of an in-place change to existing block objects.  Caller must hold this
+	 * monitor and call {@link #endBlockReload()} in a finally block.
+	 */
+	void beginBlockReload() {
+		if (blockReloadDepth++ == 0) {
+			blockReloadSeq++;
+		}
+	}
+
+	void endBlockReload() {
+		if (--blockReloadDepth == 0) {
+			blockReloadSeq++;
+		}
 	}
 
 	private synchronized void initializeBlocks() {
@@ -404,14 +432,24 @@ public class MemoryMapDB implements Memory, ProgramDBModule {
 	}
 
 	private MemoryBlock getBlockDB(Address addr) {
-		return blockLookup.getBlock(addr);
+		long seq = blockReloadSeq;
+		if ((seq & 1) == 0) {
+			MemoryBlock block = blockLookup.getBlock(addr);
+			VarHandle.acquireFence(); // order the block reads before the validation
+			if (blockReloadSeq == seq) {
+				return block;
+			}
+		}
+		synchronized (this) {
+			return blockLookup.getBlock(addr);
+		}
 	}
 
 	/**
 	 * Replace the lock-free lookup snapshot with one built from the current {@code blocks} list.
 	 * Must be called whenever the block list is changed.
 	 */
-	private void refreshBlockLookup() {
+	private synchronized void refreshBlockLookup() {
 		List<MemoryBlockDB> tmpBlocks = blocks;
 		blockLookup = new BlockLookup(tmpBlocks == null ? new MemoryBlockDB[0]
 				: tmpBlocks.toArray(new MemoryBlockDB[tmpBlocks.size()]));
@@ -870,8 +908,16 @@ public class MemoryMapDB implements Memory, ProgramDBModule {
 						"Block move conflicts with another existing memory block");
 				}
 				try {
-					memBlock.setStartAddress(newStartAddr);
-					reloadAll();
+					synchronized (this) {
+						beginBlockReload();
+						try {
+							memBlock.setStartAddress(newStartAddr);
+							reloadAll();
+						}
+						finally {
+							endBlockReload();
+						}
+					}
 				}
 				catch (IOException e) {
 					program.dbError(e);
