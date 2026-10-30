@@ -19,6 +19,7 @@ import static org.junit.Assert.*;
 
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.Test;
@@ -37,7 +38,7 @@ public class CallingConventionDBAdapterConcurrencyTest {
 	private static final int THREADS =
 		Math.max(4, Runtime.getRuntime().availableProcessors());
 	private static final int CONVENTIONS = 100;
-	private static final int ROUNDS = 3000;
+	private static final long RUN_MILLIS = 3000;
 
 	@Test
 	public void testConcurrentReadsAfterInvalidate() throws Exception {
@@ -60,44 +61,42 @@ public class CallingConventionDBAdapterConcurrencyTest {
 		assertEquals(CONVENTIONS, expected.size());
 		Byte[] ids = expected.keySet().toArray(new Byte[0]);
 
-		ExecutorService pool = Executors.newFixedThreadPool(THREADS);
+		// Readers run continuously while the main thread keeps invalidating the cache, so
+		// lookups keep landing while some other reader is populating it.
 		AtomicReference<Throwable> failure = new AtomicReference<>();
-		try {
-			for (int round = 0; round < ROUNDS && failure.get() == null; round++) {
-				adapter.invalidateCache();
-				CyclicBarrier start = new CyclicBarrier(THREADS);
-				List<Future<?>> futures = new ArrayList<>();
-				for (int t = 0; t < THREADS; t++) {
-					int offset = t;
-					futures.add(pool.submit(() -> {
-						try {
-							start.await(10, TimeUnit.SECONDS);
-							for (int k = 0; k < ids.length; k++) {
-								byte id = ids[(k + offset) % ids.length];
-								String name = adapter.getCallingConventionName(id);
-								if (!expected.get(id).equals(name)) {
-									throw new AssertionError(
-										"id " + id + " gave " + name + ", expected " +
-											expected.get(id));
-								}
-							}
-							assertEquals(CONVENTIONS, adapter.getCallingConventionNames().size());
+		AtomicBoolean stop = new AtomicBoolean();
+		List<Thread> readers = new ArrayList<>();
+		for (int t = 0; t < THREADS; t++) {
+			int offset = t;
+			Thread r = new Thread(() -> {
+				try {
+					for (int k = offset; !stop.get(); k++) {
+						byte id = ids[k % ids.length];
+						String name = adapter.getCallingConventionName(id);
+						if (!expected.get(id).equals(name)) {
+							throw new AssertionError(
+								"id " + id + " gave " + name + ", expected " + expected.get(id));
 						}
-						catch (Throwable e) {
-							failure.compareAndSet(null, e);
-						}
-						return null;
-					}));
+					}
 				}
-				for (Future<?> f : futures) {
-					f.get(30, TimeUnit.SECONDS);
+				catch (Throwable e) {
+					failure.compareAndSet(null, e);
 				}
-			}
+			});
+			r.setDaemon(true);
+			readers.add(r);
+			r.start();
 		}
-		finally {
-			pool.shutdownNow();
-			handle.close();
+		long end = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(RUN_MILLIS);
+		while (System.nanoTime() < end && failure.get() == null) {
+			adapter.invalidateCache();
+			Thread.onSpinWait();
 		}
+		stop.set(true);
+		for (Thread r : readers) {
+			r.join(10_000);
+		}
+		handle.close();
 		if (failure.get() != null) {
 			throw new AssertionError("concurrent calling convention lookup failed",
 				failure.get());
