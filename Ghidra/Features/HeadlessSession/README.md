@@ -179,6 +179,7 @@ listed. The design text for keys that belong to packages not yet part of the rel
 | `connectionThreads` | virtual | `virtual`: a socket client's reader and writer are virtual threads, so an idle client holds no OS thread (the release of a client that left still runs on a short-lived platform thread, as it closes programs and projects); a bad value is a usage error at launch; `platform`: one platform thread each (the old behaviour). |
 | `laneIdleMs` | 10000 | A client's ordered lane gives its thread back after this long without a request (a new request starts it again, in order). |
 | `scriptMaxS`, `scriptGraceS` | 600, 5 | Wall-clock budget of a script, and the seconds a script that ignores its cancel may run on before it is quarantined. |
+| `decompileCache` | 1/32 of `-Xmx`, at most 256 MB; off below 8 MB | Bytes of `decompile` results kept for unchanged programs, shared by every connection (size-based LRU; `0` turns it off). The key is the program object, its modification number (every change of the program increments it), the function's entry and the decompiler set-up; only completed decompiles are kept, and N callers of one function at once share one decompile. Replies are byte-identical to a fresh decompile (`examples/dt_dc.py`); `health.decompileCache` has the hit, miss, joined and eviction counts. |
 
 #### Stamping a local build
 

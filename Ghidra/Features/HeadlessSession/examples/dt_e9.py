@@ -80,6 +80,9 @@ HERE = pathlib.Path(__file__).resolve().parent
 HOOKS = ["-Dghidra.session.testHooks=true"]
 NO_JOB = HOOKS + ["-Dghidra.session.noProcessJob=true"]
 SWEEP = HOOKS + ["-Dghidra.session.noProcessJob=sweep"]
+# these tests are about the native decompiler processes (faults, hangs, the breaker, the gate): a repeated
+# decompile of an unchanged program must reach a process, so the decompile cache (goal 4) is off for them
+NO_DCACHE = {"decompileCache": 0}
 
 DEAF = """// @category HeadlessSession.Test
 import ghidra.app.script.GhidraScript;
@@ -239,7 +242,15 @@ def t_selftest(c):
             "ok   64 concurrent requests of one client against maxViewsPerClient 2 grant exactly 2",
             "ok   the liveness figure of a guarded thread",
             "ok   a capacity refusal is busy with reason",
-            "ok   the orphan sweep of an install with no decompiler finds none")
+            "ok   the orphan sweep of an install with no decompiler finds none",
+            "ok   decompileCache default: 1/32 of the heap",
+            "ok   decompileCache: 8 callers of one key at once run one decompile",
+            "ok   decompileCache: a later caller of an unchanged program is a hit",
+            "ok   decompileCache: a decompile that did not complete is not stored",
+            "ok   decompileCache: a result whose program changed during the decompile is not stored",
+            "ok   decompileCache: a changed program is decompiled again",
+            "ok   decompileCache: a cancelled waiter stops waiting",
+            "ok   decompileCache: the LRU stays within its budget")
     for w in want:
         dt.check(any(ln.startswith(w) for ln in lines), f"self-test check missing or failed: {w}")
     n = sum(1 for ln in lines if ln.startswith("ok"))
@@ -452,7 +463,7 @@ def t_decompiler_faults(c):
     gpr = c.copy_fixture("e9Flt")
     # the breaker (e9_negative_cache) is out of the way: a function that failed more than three times in a minute
     # would be refused at once and the load would count refusals instead of decompiles
-    d = c.daemon("e9-flt", engine={"decompilerFailLimit": 100000})
+    d = c.daemon("e9-flt", engine={"decompilerFailLimit": 100000, **NO_DCACHE})
     ss = []
     try:
         ss = [c.connect(d, f"load{i}", "e9", 3) for i in range(12)]
@@ -531,7 +542,7 @@ def t_decompiler_hang(c):
     ch = chaos()
     exe = fixture_args(c)
     gpr = c.copy_fixture("e9Hang")
-    d = c.daemon("e9-hang")
+    d = c.daemon("e9-hang", engine=NO_DCACHE)
     A = B = None
     try:
         A = c.connect(d, "hangA", "e9", 3)
@@ -590,7 +601,7 @@ def t_negative_cache(c):
     ch = chaos()
     exe = fixture_args(c)
     gpr = c.copy_fixture("e9Neg")
-    d = c.daemon("e9-neg", engine={"decompilerNegativeS": 6})
+    d = c.daemon("e9-neg", engine={"decompilerNegativeS": 6, **NO_DCACHE})
     s = None
     try:
         s = c.connect(d, "neg", "e9", 3)
@@ -639,7 +650,7 @@ def t_gate(c):
     exe = fixture_args(c)
     gpr = c.copy_fixture("e9Gate")
     # nativeBudgetMb 400 = two permits of 200 MB
-    d = c.daemon("e9-gate", engine={"nativeBudgetMb": 400, "decompilerWaitS": 3})
+    d = c.daemon("e9-gate", engine={"nativeBudgetMb": 400, "decompilerWaitS": 3, **NO_DCACHE})
     ss = []
     try:
         ss = [c.connect(d, f"g{i}", "e9", 3) for i in range(6)]
