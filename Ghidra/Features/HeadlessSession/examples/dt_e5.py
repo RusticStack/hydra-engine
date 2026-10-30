@@ -151,8 +151,10 @@ def t_health_shape(c):
                          f"lane {n} on a quiet daemon: {ln}")
             dt.check(h["pid"] == s.endpoint["pid"], f"pid {h['pid']} vs {s.endpoint['pid']}")
             # 3.13: the figures the other packages' classes contribute
-            dt.check(list(h)[len(CORE):len(CORE) + 4] == ["waits", "leakedWorkers", "leaked",
-                                                          "repairs"], f"contributors {list(h)}")
+            # contributors keep their registration order; other packages' contributors (H4's
+            # scriptCache, which ScriptCommands registers when it loads) may come before these
+            contrib = [k for k in list(h)[len(CORE):] if k in ("waits", "leakedWorkers", "leaked", "repairs")]
+            dt.check(contrib == ["waits", "leakedWorkers", "leaked", "repairs"], f"contributors {list(h)}")
             fb = h["waits"]["foreignBlocked"]
             dt.check(set(fb) == {"total", "lastMinute", "shared"}, f"waits {h['waits']}")
             dt.check(h["leakedWorkers"] == 0 and h["leaked"] == [] and h["repairs"] == [],
