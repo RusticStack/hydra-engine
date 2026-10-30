@@ -333,6 +333,246 @@ final class UpgradeCache {
 		}
 	}
 
+	// ---- writable opens of a fork (H2) ---------------------------------------------------------
+
+	/** Bytes of the start of a version file compared besides its size and time. */
+	private static final int ADOPT_HEAD = 64 * 1024;
+
+	/**
+	 * H2: before an {@code upgrade:true} writable open of an older-format program of a disposable
+	 * fork, gives the fork the upgraded version this cache holds for the fork's source, so that
+	 * the open finds the current format and upgrades nothing.
+	 * <p>
+	 * Without it every fork of the same unchanged source repeats the same in-memory upgrade (for
+	 * a large program most of the open: the symbol table is copied twice). The cache's copy is
+	 * the result of that same upgrade, saved ({@link #upgradeInCopy}); read-only opens already
+	 * serve from it. The fork gets that upgraded database as its next version, exactly as if the
+	 * open had upgraded it and saved: {@code db.<n+1>.gbf} next to its {@code db.<n>.gbf}, which
+	 * a save would then make the previous version. Only when:
+	 * <ul>
+	 * <li>the cache is on, the project is a disposable fork (its sidecar says so; the upgrade gate
+	 * exempts it, so no backup stamp is lost) and the program is in an older format;</li>
+	 * <li>the cache holds a ready copy of the program for the fork's source (its current key);</li>
+	 * <li>the fork's current version is the one the copy was upgraded from: the same version
+	 * number, size, modification time and first {@link #ADOPT_HEAD} bytes as the copy's previous
+	 * version (both are copies of the source's file, made with its attributes), and the copy's
+	 * newest version is the next one.</li>
+	 * </ul>
+	 * The version is copied (a block clone where the file system can), forced to the disk and
+	 * renamed into place (E12), then the project re-reads the item. Anything else, or any error,
+	 * changes nothing: the open upgrades in memory as before, and a build of the source's copy is
+	 * started for the next fork (when none is ready or running).
+	 *
+	 * @return what was done, for the log, or null when the open upgrades in memory
+	 */
+	JsonObject adoptForFork(ProjectEntry p, DomainFile df, RequestMonitor m) {
+		// open (by another program entry of this daemon): its save would make the next version
+		if (!enabled() || df.isVersioned() || df.isLink() || df.isOpen() ||
+			!Settings.bool("forkUpgradeFromCache", true)) {
+			return null;
+		}
+		if (!(p.project.getProjectData() instanceof DefaultProjectData dpd) ||
+			!(dpd.getPrivateFileSystem() instanceof LocalFileSystem fs)) {
+			return null;
+		}
+		JsonObject sc = ProjectFork.readSidecar(p.resolved);
+		if (!ProjectFork.disposable(sc) || !sc.has("source") || !sc.get("source").isJsonObject()) {
+			return null;
+		}
+		String why = olderFormat(dpd, df);
+		if (why == null) {
+			return null;
+		}
+		long t0 = System.nanoTime();
+		Plan plan;
+		try {
+			JsonObject src = sc.getAsJsonObject("source");
+			String gpr = Json.str(src, "gpr", null);
+			String name = Json.str(src, "name", null);
+			if (gpr == null || name == null) {
+				return null;
+			}
+			ProjectResolver.Resolved sr =
+				new ProjectResolver.Resolved(new File(gpr).getAbsoluteFile().getParentFile(), name);
+			if (!sr.gpr().isFile()) {
+				return null;
+			}
+			plan = new Plan(sr, sr.gpr().getCanonicalPath(), df.getPathname(), key(sr), why);
+		}
+		catch (IOException | RuntimeException e) {
+			Msg.debug(this, "upgrade cache: no fork adoption for " + df.getPathname() + ": " + e);
+			return null;
+		}
+		try {
+			JsonObject done = adopt(plan, dpd, fs, p, df, m);
+			if (done != null) {
+				Json.put(done, "ms", (System.nanoTime() - t0) / 1_000_000);
+				return done;
+			}
+		}
+		catch (CancelledException e) {
+			throw Requests.cancelled(m);
+		}
+		catch (IOException | RuntimeException e) {
+			Msg.warn(this, "upgrade cache: could not give the fork " + p.resolved.gpr() + " " +
+				df.getPathname() + " its upgraded copy; it is upgraded in memory: " + e, e);
+		}
+		if (!isReady(plan)) {
+			startBuild(plan); // the next fork of this source finds it
+		}
+		return null;
+	}
+
+	private JsonObject adopt(Plan plan, DefaultProjectData dpd, LocalFileSystem fs, ProjectEntry p,
+			DomainFile df, RequestMonitor m) throws IOException, CancelledException {
+		File dir = new File(root, plan.key());
+		JsonObject entry = readEntry(dir);
+		if (entry == null || !upgraded(entry).contains(plan.path())) {
+			return null;
+		}
+		String gen = entry.get("generation").getAsString();
+		Lease lease = new Lease(plan.key(), gen);
+		try {
+			if (!lease.acquire()) {
+				return null; // being removed
+			}
+			FolderItem item = fs.getItem(df.getParent().getPathname(), df.getName());
+			if (!(item instanceof LocalDatabaseItem dbItem)) {
+				return null;
+			}
+			// the private database's folder and newest version: the file its open reads
+			File newest;
+			db.buffers.LocalManagedBufferFile bf = dbItem.open();
+			try {
+				newest = bf.getFile();
+			}
+			finally {
+				bf.close();
+			}
+			java.util.regex.Matcher vm = newest == null ? null
+					: java.util.regex.Pattern.compile("db\\.(\\d+)\\.gbf").matcher(newest.getName());
+			if (vm == null || !vm.matches()) {
+				return null;
+			}
+			File forkDb = newest.getParentFile();
+			int cur = Integer.parseInt(vm.group(1));
+			Path forkRep = p.resolved.dir().toPath()
+					.resolve(p.resolved.name() + ProjectLocator.getProjectDirExtension());
+			Path rel = forkRep.relativize(forkDb.toPath());
+			if (rel.isAbsolute() || rel.startsWith("..")) {
+				return null;
+			}
+			Path copyDb = new File(new File(dir, gen), "project").toPath()
+					.resolve(plan.resolved().name() + ProjectLocator.getProjectDirExtension())
+					.resolve(rel);
+			Path base = forkDb.toPath().resolve("db." + cur + ".gbf");
+			Path copyBase = copyDb.resolve("db." + cur + ".gbf");
+			Path upgradedVersion = copyDb.resolve("db." + (cur + 1) + ".gbf");
+			Path target = forkDb.toPath().resolve("db." + (cur + 1) + ".gbf");
+			if (!Files.isRegularFile(upgradedVersion) ||
+				Files.exists(copyDb.resolve("db." + (cur + 2) + ".gbf")) || Files.exists(target) ||
+				!sameVersion(base, copyBase)) {
+				return null;
+			}
+			m.checkCancelled();
+			Path tmp = forkDb.toPath().resolve("tmp" + System.nanoTime() + TMP_SUFFIX);
+			boolean placed = false;
+			try {
+				Files.copy(upgradedVersion, tmp, StandardCopyOption.COPY_ATTRIBUTES);
+				ProjectFork.forceFile(tmp); // E12: the content is durable before the name is
+				Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE);
+				placed = true;
+			}
+			finally {
+				if (!placed) {
+					Files.deleteIfExists(tmp);
+				}
+			}
+			// the project re-reads its items (it keeps the version each item scanned)
+			dpd.refresh(true);
+			String still = olderFormat(dpd, df);
+			if (still != null) {
+				// cannot happen with a ready copy; put the fork back as it was
+				Files.deleteIfExists(target);
+				dpd.refresh(true);
+				throw new IOException("the adopted version of " + plan.path() + " is still in an " +
+					"older format (" + still + ")");
+			}
+			// as a save would leave it: the new version and the one before it
+			for (int v = cur - 1; v > 0; v--) {
+				Path old = forkDb.toPath().resolve("db." + v + ".gbf");
+				if (!Files.exists(old)) {
+					break;
+				}
+				try {
+					Files.delete(old);
+				}
+				catch (IOException e) {
+					break; // left for Ghidra's next scan of the folder
+				}
+			}
+			return Json.of("used", true, "reason", plan.why(), "key", plan.key(), "generation", gen,
+				"version", cur + 1);
+		}
+		finally {
+			lease.release();
+		}
+	}
+
+	/**
+	 * After a writable open of an adopted version ({@link #adoptForFork}): leaves the program in
+	 * the state an open that upgraded it in memory leaves it in, changed (so {@code changed},
+	 * {@code save}'s {@code saved}, the unsaved-changes checks of close and fork, and a script's
+	 * {@code save} answer as they did) with nothing to undo. The change rewrites the program's
+	 * stored database version with its own value: no content changes.
+	 */
+	static void markUpgraded(Program program) throws IOException {
+		if (!(program instanceof ghidra.framework.data.DomainObjectAdapterDB dbo)) {
+			return;
+		}
+		int tx = program.startTransaction("upgraded (upgrade cache)");
+		boolean ok = false;
+		try {
+			// the record as it is, written again (DBStringMapAdapter.put skips an equal value)
+			db.Table table = dbo.getDBHandle().getTable("Program");
+			db.DBRecord rec = table == null ? null : table.getRecord(new db.StringField("DB Version"));
+			if (rec != null) {
+				table.putRecord(rec);
+				ok = true;
+			}
+		}
+		finally {
+			program.endTransaction(tx, ok);
+		}
+		program.clearUndo();
+	}
+
+	/** Same size, modification time and first {@link #ADOPT_HEAD} bytes. */
+	static boolean sameVersion(Path a, Path b) throws IOException {
+		if (!Files.isRegularFile(a) || !Files.isRegularFile(b)) {
+			return false;
+		}
+		BasicFileAttributes x = Files.readAttributes(a, BasicFileAttributes.class);
+		BasicFileAttributes y = Files.readAttributes(b, BasicFileAttributes.class);
+		if (x.size() != y.size() ||
+			x.lastModifiedTime().toMillis() != y.lastModifiedTime().toMillis()) {
+			return false;
+		}
+		int n = (int) Math.min(ADOPT_HEAD, x.size());
+		java.nio.ByteBuffer ba = java.nio.ByteBuffer.allocate(n);
+		java.nio.ByteBuffer bb = java.nio.ByteBuffer.allocate(n);
+		try (FileChannel ca = FileChannel.open(a, StandardOpenOption.READ);
+				FileChannel cb = FileChannel.open(b, StandardOpenOption.READ)) {
+			while (ba.hasRemaining() && ca.read(ba) >= 0) {
+				// fill
+			}
+			while (bb.hasRemaining() && cb.read(bb) >= 0) {
+				// fill
+			}
+		}
+		return ba.flip().equals(bb.flip());
+	}
+
 	/** Takes (or counts) a shared lock; false when {@code wait} is false and it is not free. */
 	private boolean acquireUse(String name, boolean wait) throws IOException {
 		synchronized (inUse) {

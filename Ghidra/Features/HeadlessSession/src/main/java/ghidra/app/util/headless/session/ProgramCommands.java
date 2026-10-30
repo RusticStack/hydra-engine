@@ -508,7 +508,25 @@ final class ProgramCommands {
 			}
 			boolean upgrade = Json.bool(req, "upgrade", false);
 			ProjectBackup.UpgradeStamp stamp = upgrade ? upgradeGate(c, e, df, req) : null;
+			JsonObject adopted = null;
+			if (upgrade && stamp == null) {
+				// H2: a fork of a source the upgrade cache holds gets the upgraded version instead
+				// of upgrading in memory (UpgradeCache.adoptForFork: disposable forks only)
+				adopted = s.upgradeCache.adoptForFork(e.project, df, m);
+			}
 			Program program = (Program) df.getDomainObject(e, upgrade, false, m);
+			if (adopted != null) {
+				// opened as an in-memory upgrade leaves it: changed, nothing to undo
+				try {
+					UpgradeCache.markUpgraded(program);
+				}
+				catch (IOException | RuntimeException ex) {
+					program.release(e);
+					throw ex;
+				}
+				Msg.info(s, "opened " + e.key + " of a fork from the upgrade cache's upgraded " +
+					"version " + adopted);
+			}
 			if (stamp != null) {
 				ProjectBackup.remember(e, stamp);
 			}
