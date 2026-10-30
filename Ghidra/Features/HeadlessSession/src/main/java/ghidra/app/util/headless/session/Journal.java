@@ -16,6 +16,8 @@
 package ghidra.app.util.headless.session;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReferenceArray;
 
 import com.google.gson.*;
 
@@ -29,41 +31,80 @@ import com.google.gson.*;
  * in its own transaction), so the journal's order is the order in which the changes reached the
  * program: for any address and kind, the entry with the highest {@code seq} is the value the
  * program holds, until someone reverts it. Keeps the last {@link #CAP} entries.
+ * <p>
+ * <b>Why one ordered log and not one segment per writer.</b> {@code seq} is the program's commit
+ * order (README "journal": {@code seq} (commit order); "the journal complete and ordered, the
+ * program holding each value's last edit"), and {@code discard_edits} walks it newest first across
+ * all clients. The order is made by the program's exclusive lock, which the
+ * commit itself holds, so appending here adds no turn among writers: there is never a second
+ * writer of one program's journal at a time, and every program has its own journal (its own
+ * log). What this class removes is the turn between <i>readers</i> and the writer, and among
+ * readers: before, every read ({@code journal}, {@code byRk}, {@code lastAt}, the
+ * {@code status} fields) took the journal's monitor and scanned the whole deque (O(N), up to
+ * 200,000 entries) while an edit waited for it.
+ * <p>
+ * Now an entry is immutable once appended and is published by a volatile {@code seq}; readers
+ * take no lock. Entries live in a ring of lazily allocated chunks indexed by {@code seq}, so a
+ * read of the entries after {@code since} costs what it returns, {@code byRk} and
+ * {@code lastAt} are O(1) through indexes kept by the writer, and the dropped prefix is implied
+ * by {@code seq - CAP}. A reader that races an eviction checks the slot's {@code seq} and skips
+ * an entry that was dropped meanwhile, exactly as if it had read just after the drop.
  */
 final class Journal {
 
 	static final int CAP = 200_000;
 
-	private final ArrayDeque<JsonObject> entries = new ArrayDeque<>();
-	/** How many entries in {@link #entries} carry each {@code rk}, so a lookup of an unseen one is O(1). */
-	private final Map<String, Integer> rkCount = new HashMap<>();
-	private long seq;
-	private long dropped;
+	/** Entries per ring chunk; chunks are allocated on first use, so a small journal stays small. */
+	private static final int CHUNK = 4096;
+	/** Ring size in slots: more than {@link #CAP}, so a slot is reused only after its entry was dropped. */
+	private static final int CHUNKS = CAP / CHUNK + 2;
+	private static final long RING = (long) CHUNKS * CHUNK;
+
+	/** One appended entry with its {@code seq} beside it, so readers never parse it to check. */
+	private record Slot(long seq, JsonObject e) {
+	}
+
+	private final AtomicReferenceArray<AtomicReferenceArray<Slot>> ring =
+		new AtomicReferenceArray<>(CHUNKS);
+	/** The last appended {@code seq}: the publication point readers synchronise on. */
+	private volatile long seq;
+	/** The {@code seq}s of the held entries of each idempotency key, oldest first. */
+	private final ConcurrentHashMap<String, long[]> rkIndex = new ConcurrentHashMap<>();
+	/** The {@code seq} of the newest entry per (address, field), for {@link #lastAt}. */
+	private final ConcurrentHashMap<String, Long> lastIndex = new ConcurrentHashMap<>();
+	/**
+	 * Appends are one at a time per program anyway (the commit's exclusive lock); this monitor only
+	 * keeps that true if a caller ever journals outside it. Readers never take it.
+	 */
+	private final Object append = new Object();
 
 	/** Records a committed change by {@code c}; returns its {@code seq}. */
-	synchronized long add(Client c, String cmd, JsonObject change) {
+	long add(Client c, String cmd, JsonObject change) {
 		Caller.Identity who = Caller.current(c);
-		JsonObject e = Json.of("seq", ++seq, "at", System.currentTimeMillis(), "client", c.id,
-			"name", who != null ? who.name() : c.name, "harness",
-			who != null ? who.harness() : c.harness, "cmd", cmd);
-		for (Map.Entry<String, JsonElement> f : change.entrySet()) {
-			if (!e.has(f.getKey())) {
-				e.add(f.getKey(), f.getValue());
+		synchronized (append) {
+			long s = seq + 1;
+			JsonObject e = Json.of("seq", s, "at", System.currentTimeMillis(), "client", c.id,
+				"name", who != null ? who.name() : c.name, "harness",
+				who != null ? who.harness() : c.harness, "cmd", cmd);
+			for (Map.Entry<String, JsonElement> f : change.entrySet()) {
+				if (!e.has(f.getKey())) {
+					e.add(f.getKey(), f.getValue());
+				}
 			}
-		}
-		entries.add(e);
-		if (e.has("rk")) {
-			rkCount.merge(e.get("rk").getAsString(), 1, Integer::sum);
-		}
-		if (entries.size() > CAP) {
-			JsonObject old = entries.poll();
-			if (old != null && old.has("rk")) {
-				rkCount.merge(old.get("rk").getAsString(), -1, Integer::sum);
-				rkCount.remove(old.get("rk").getAsString(), 0);
+			if (s > CAP) {
+				evict(s - CAP); // the entry the cap drops now
 			}
-			dropped++;
+			put(s, e);
+			if (e.has("rk")) {
+				rkIndex.merge(e.get("rk").getAsString(), new long[] { s }, Journal::concat);
+			}
+			String k = lastKey(e);
+			if (k != null) {
+				lastIndex.put(k, s);
+			}
+			seq = s; // publish: everything above happens-before a reader that sees s
+			return s;
 		}
-		return seq;
 	}
 
 	/**
@@ -71,42 +112,44 @@ final class Journal {
 	 * {@code comment}), oldest first, as copies. The window is this in-memory journal: an entry
 	 * that was dropped is gone, and so is the whole journal after a restart.
 	 */
-	synchronized List<JsonObject> byRk(String rk) {
+	List<JsonObject> byRk(String rk) {
 		List<JsonObject> out = new ArrayList<>();
-		if (!rkCount.containsKey(rk)) {
+		long[] seqs = rkIndex.get(rk);
+		if (seqs == null) {
 			return out;
 		}
-		for (JsonObject e : entries) {
-			if (e.has("rk") && rk.equals(e.get("rk").getAsString())) {
+		long lo = oldest(seq);
+		for (long s : seqs) {
+			JsonObject e = s >= lo ? get(s) : null;
+			if (e != null) {
 				out.add(e.deepCopy());
 			}
 		}
 		return out;
 	}
 
-	synchronized long seq() {
+	long seq() {
 		return seq;
 	}
 
-	synchronized long dropped() {
-		return dropped;
+	long dropped() {
+		return Math.max(0, seq - CAP);
 	}
 
 	/**
 	 * Entries after {@code after}, of one client (or all when {@code client} is null), at most
 	 * {@code limit}, oldest first.
 	 */
-	synchronized JsonArray since(long after, Integer client, int limit) {
+	JsonArray since(long after, Integer client, int limit) {
 		JsonArray a = new JsonArray();
-		for (JsonObject e : entries) {
-			if (e.get("seq").getAsLong() <= after) {
+		long hi = seq;
+		if (after >= hi) {
+			return a;
+		}
+		for (long s = Math.max(after + 1, oldest(hi)); s <= hi && a.size() < limit; s++) {
+			JsonObject e = get(s);
+			if (e == null || client != null && e.get("client").getAsInt() != client) {
 				continue;
-			}
-			if (client != null && e.get("client").getAsInt() != client) {
-				continue;
-			}
-			if (a.size() >= limit) {
-				break;
 			}
 			a.add(e.deepCopy());
 		}
@@ -114,30 +157,22 @@ final class Journal {
 	}
 
 	/** Entries after {@code after}, newest first (for reverting). */
-	synchronized List<JsonObject> newestFirst(long after) {
+	List<JsonObject> newestFirst(long after) {
 		List<JsonObject> out = new ArrayList<>();
-		Iterator<JsonObject> it = entries.descendingIterator();
-		while (it.hasNext()) {
-			JsonObject e = it.next();
-			if (e.get("seq").getAsLong() <= after) {
-				break;
+		long hi = seq;
+		for (long s = hi, lo = Math.max(after + 1, oldest(hi)); s >= lo; s--) {
+			JsonObject e = get(s);
+			if (e != null) {
+				out.add(e);
 			}
-			out.add(e);
 		}
 		return out;
 	}
 
 	/** The last change of {@code op} kind (rename/label share one) at an address, or null. */
-	synchronized JsonObject lastAt(String address, String field) {
-		Iterator<JsonObject> it = entries.descendingIterator();
-		while (it.hasNext()) {
-			JsonObject e = it.next();
-			if (e.has("address") && address.equals(e.get("address").getAsString()) &&
-				field.equals(fieldOf(e))) {
-				return e;
-			}
-		}
-		return null;
+	JsonObject lastAt(String address, String field) {
+		Long s = lastIndex.get(address + '\n' + field);
+		return s == null ? null : get(s);
 	}
 
 	/** Which value of an address a change touches: {@code name}, {@code comment:<type>}, ... */
@@ -149,5 +184,60 @@ final class Journal {
 				(e.has("type") && !e.get("type").isJsonNull() ? e.get("type").getAsString() : "eol");
 			default -> op;
 		};
+	}
+
+	private static String lastKey(JsonObject e) {
+		return e.has("address") && e.get("address").isJsonPrimitive()
+				? e.get("address").getAsString() + '\n' + fieldOf(e)
+				: null;
+	}
+
+	/** The oldest {@code seq} still held when the newest is {@code hi}. */
+	private static long oldest(long hi) {
+		return Math.max(1, hi - CAP + 1);
+	}
+
+	/** Drops entry {@code s} from the indexes (its slot is reused {@link #RING} entries later). */
+	private void evict(long s) {
+		JsonObject old = get(s);
+		if (old == null) {
+			return;
+		}
+		if (old.has("rk")) {
+			rkIndex.computeIfPresent(old.get("rk").getAsString(), (k, v) -> v[0] != s ? v
+					: v.length == 1 ? null : Arrays.copyOfRange(v, 1, v.length));
+		}
+		String k = lastKey(old);
+		if (k != null) {
+			lastIndex.remove(k, s); // only while s is still the newest of its field
+		}
+	}
+
+	private void put(long s, JsonObject e) {
+		long i = (s - 1) % RING;
+		int c = (int) (i / CHUNK);
+		AtomicReferenceArray<Slot> chunk = ring.get(c);
+		if (chunk == null) {
+			chunk = new AtomicReferenceArray<>(CHUNK);
+			ring.set(c, chunk);
+		}
+		chunk.set((int) (i % CHUNK), new Slot(s, e));
+	}
+
+	/** Entry {@code s}, or null when its slot holds another entry (dropped, or not yet written). */
+	private JsonObject get(long s) {
+		if (s < 1) {
+			return null;
+		}
+		long i = (s - 1) % RING;
+		AtomicReferenceArray<Slot> chunk = ring.get((int) (i / CHUNK));
+		Slot slot = chunk == null ? null : chunk.get((int) (i % CHUNK));
+		return slot != null && slot.seq == s ? slot.e : null;
+	}
+
+	private static long[] concat(long[] a, long[] b) {
+		long[] r = Arrays.copyOf(a, a.length + b.length);
+		System.arraycopy(b, 0, r, a.length, b.length);
+		return r;
 	}
 }
