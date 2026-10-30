@@ -254,7 +254,8 @@ def t_cancel_queued(c):
         hold = script(c, H, 60000)
         dt.wait_for(lambda: holds(R, exe), "the holder's script to hold the program", 30)
         rid = R.send("decompile", address=fn, wait=60000, parallel=True)
-        time.sleep(1.0)
+        dt.wait_for(lambda: (program(H, exe) or {}).get("lockWaiters") == 1,
+                    "the decompile to wait for the program lock", 30)
         t = time.perf_counter()
         R.call("cancel", target=rid)
         code, det, _ = attempt(c, R, rid)
@@ -1091,7 +1092,8 @@ def t_shared_stress_v3(c):
     not asserted: how many there are depends on timing)."""
     exe = prepare(c)
     gpr = c.copy_fixture("e3bStress")
-    d = c.daemon("e3b-stress", keepWarm=0)
+    # the slots are pinned so the waiter cap, max(2, slots/4) = 6, and so the refusals are the same on any CPU count
+    d = c.daemon("e3b-stress", keepWarm=0, maxQuick=24, maxLong=24)
     sessions = []
     try:
         sessions = [c.connect(d, f"agent-{i}", f"harness-{i}", 3) for i in range(4)]

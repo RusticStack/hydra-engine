@@ -912,7 +912,8 @@ def t_registry_state_machine(c):
     exe = prepare(c)
     g1 = c.copy_fixture("e3cRg1")
     g2 = c.copy_fixture("e3cRg2")
-    d = c.daemon("e3c-rg")
+    # the slots are pinned so the waiter cap, max(2, slots/4) = 6, and so the refusals are the same on any CPU count
+    d = c.daemon("e3c-rg", maxQuick=24, maxLong=24)
     clients = []
     try:
         # (1) eight first opens of one project at once: single flight, one project, all joined
@@ -1032,7 +1033,8 @@ def t_project_waiter_caps(c):
                       wait=145000)
         dt.wait_for(lambda: holds(rs[0], exe), "the owner's script to hold the program", 30)
         waiting = [rs[i].send("decompile", address=fn, wait=40000, parallel=True) for i in range(2)]
-        time.sleep(1.0)
+        dt.wait_for(lambda: (program(rs[3], exe) or {}).get("lockWaiters") == 2,
+                    "both waiters to queue behind the owner", 30)
         t = time.perf_counter()
         r3 = bl.timed(c, rs[2], "decompile", address=fn, wait=40000)
         ms = (time.perf_counter() - t) * 1000

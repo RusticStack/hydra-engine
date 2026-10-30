@@ -33,6 +33,8 @@ jobs:
         os: [windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
+    outputs:
+      local_tested: ${{ steps.record.outputs.local_tested }}
     defaults:
       run:
         shell: bash
@@ -44,10 +46,11 @@ jobs:
           fetch-depth: 0
 
       # The long suites ran locally (D:/Projects/Hydra/_logs, run_parallel on 22 cores) on the commit named in
-      # .github/local-test-record.json. They (daemon_tests, contract_tests) are skipped here when every change from that commit to this one is a
-      # document (*.md), a workflow file (.github/) or the record itself; any other change runs them on the runner as before.
+      # .github/local-test-record.json. They (the suites job below) are skipped when every change from that commit to this one is a
+      # document (*.md), a workflow file (.github/) or the record itself; any other change runs them on runners as before.
       # The build, the smoke test and the client packaging always run.
       - name: Check the local test record
+        id: record
         run: |
           rec=.github/local-test-record.json
           skip=false
@@ -61,6 +64,7 @@ jobs:
             fi
           fi
           echo "LOCAL_TESTED=$skip" >> "$GITHUB_ENV"
+          echo "local_tested=$skip" >> "$GITHUB_OUTPUT"
           echo "Long suites covered by the local record: $skip" >> "$GITHUB_STEP_SUMMARY"
           [ -f "$rec" ] && cat "$rec" >> "$GITHUB_STEP_SUMMARY" || true
 
@@ -113,21 +117,18 @@ jobs:
           --ghidra "$GHIDRA_INSTALL" --work "$RUNNER_TEMP/smoke"
           --binary "$BIN_A" --binary "$BIN_B"
 
-      - name: daemon_tests.py
-        if: env.LOCAL_TESTED != 'true'
-        run: >
-          python Ghidra/Features/HeadlessSession/examples/daemon_tests.py
-          --ghidra "$GHIDRA_INSTALL" --work "$RUNNER_TEMP/daemon"
-          --exe "$BIN_A" --dll "$BIN_DLL"
-
-      - name: contract_tests.py
-        if: env.LOCAL_TESTED != 'true'
-        run: >
-          python Ghidra/Features/HeadlessSession/examples/contract_tests.py
-          --ghidra "$GHIDRA_INSTALL" --work "$RUNNER_TEMP/contract"
-
       - name: Package the client (dry run)
         run: .github/scripts/package-client.sh 12.3-hydra.ci "$RUNNER_TEMP/client"
+
+      # the suites job tests this install on runners of its own, each within its own time limit
+      - name: Upload the install
+        if: env.LOCAL_TESTED != 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: headless-install-${{ matrix.os }}
+          path: build/dist/headless
+          retention-days: 3
+          compression-level: 1
 
       - name: Upload the daemon logs
         if: failure()
@@ -136,8 +137,108 @@ jobs:
           name: session-logs-${{ matrix.os }}
           path: |
             ${{ runner.temp }}/smoke/**/*.log
-            ${{ runner.temp }}/daemon/**/*.log
+          if-no-files-found: ignore
+
+  # The engine suites on the standard 4 vCPU runner: every suite job on its own runner within its own 90 minutes,
+  # testing the install the headless job built. daemon_tests runs through run_parallel.py, which sizes its workers
+  # from the logical processors the runner grants (granted_cpus), in slices: the tests are split by their recorded
+  # cost, so the slices together run every test once. A test that fails is run again alone; --strict makes a
+  # failure that only happens under load a failure too.
+  suites:
+    name: ${{ matrix.suite }} (${{ matrix.os }})
+    needs: headless
+    if: needs.headless.outputs.local_tested != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest]
+        suite: [daemon 1/3, daemon 2/3, daemon 3/3, contract, client_compat, characterization p2, characterization p3]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      GHIDRA_INSTALL: ${{ github.workspace }}/install
+      EX: Ghidra/Features/HeadlessSession/examples
+      LEGACY: ${{ github.workspace }}/Ghidra/Features/HeadlessSession/examples/fixtures/legacy-12.1.4/legacy.gpr
+      BIN_A: C:/Windows/System32/choice.exe
+      BIN_DLL: C:/Windows/System32/version.dll
+      SUITE: ${{ matrix.suite }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Read the JDK version
+        run: echo "JDK_VER=$(awk -F'=' '$1=="application.java.min" {print $2}' Ghidra/application.properties | tr -d '\r')" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ env.JDK_VER }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: headless-install-${{ matrix.os }}
+          path: install
+
+      - name: The runner's processors
+        working-directory: ${{ env.EX }}
+        run: >
+          python -c "import os, run_parallel as rp; print(f'granted CPUs {rp.granted_cpus()} of {os.cpu_count()};
+          run_parallel workers {rp.DEFAULT_WORKERS}')" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # --min-commit-gb: the default (10 GB) is sized for a 64 GB machine; a 16 GB runner starts a test while 3 GB of
+      # commit are left. Seed and result caches would not outlive the runner.
+      - name: daemon_tests.py (one slice)
+        if: startsWith(matrix.suite, 'daemon ')
+        run: >
+          python "$EX/run_parallel.py" --ghidra "$GHIDRA_INSTALL"
+          --scratch "$RUNNER_TEMP/rp/scratch" --logs "$RUNNER_TEMP/rp/logs"
+          --slice "${SUITE#daemon }" --strict --min-commit-gb 3 --seed-cache none --no-result-cache
+          daemon_tests.py -- --exe "$BIN_A" --dll "$BIN_DLL" --legacy-project "$LEGACY"
+
+      - name: contract_tests.py
+        if: matrix.suite == 'contract'
+        run: python "$EX/contract_tests.py" --ghidra "$GHIDRA_INSTALL" --work "$RUNNER_TEMP/contract"
+
+      - name: client_compat_tests.py
+        if: matrix.suite == 'client_compat'
+        run: >
+          python "$EX/client_compat_tests.py" --ghidra "$GHIDRA_INSTALL" --work "$RUNNER_TEMP/compat"
+          --exe "$BIN_A" --dll "$BIN_DLL" --legacy-project "$LEGACY"
+          --report "$RUNNER_TEMP/compat-report.json"
+
+      # the repository's golden set (masked protocol replies of two tiny generated PE files): byte-identical or a failure
+      - name: characterization_tests.py (protocol 2)
+        if: matrix.suite == 'characterization p2'
+        run: python "$EX/characterization_tests.py" --ghidra "$GHIDRA_INSTALL" --work "$RUNNER_TEMP/golden2"
+
+      - name: characterization_tests.py (protocol 3)
+        if: matrix.suite == 'characterization p3'
+        run: >
+          python "$EX/characterization_tests.py" --ghidra "$GHIDRA_INSTALL" --work "$RUNNER_TEMP/golden3"
+          --protocol 3 --require-v3
+
+      - name: Name the logs
+        if: failure()
+        run: echo "LOG_NAME=$(echo "$SUITE" | tr ' /' '--')" >> "$GITHUB_ENV"
+
+      - name: Upload the logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: suite-logs-${{ env.LOG_NAME }}-${{ matrix.os }}
+          path: |
+            ${{ runner.temp }}/rp/logs/**
+            ${{ runner.temp }}/rp/scratch/**/*.log
             ${{ runner.temp }}/contract/**/*.log
+            ${{ runner.temp }}/compat/**/*.log
+            ${{ runner.temp }}/compat-report.json
+            ${{ runner.temp }}/golden*/**/*.log
           if-no-files-found: ignore
 
   full:

@@ -67,7 +67,26 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 COSTS = HERE / "suite-costs.json"
 DEFAULT_COST_S = 25.0
-DEFAULT_WORKERS = 22
+
+
+def granted_cpus() -> int:
+    """The logical processors this process may run on: its affinity mask, not the machine's count. A CI runner or a
+    run started with ``start /affinity`` has fewer than ``os.cpu_count()`` says (on Windows ``os.cpu_count`` and,
+    before ``-X cpu_count``, ``os.process_cpu_count`` both report the whole machine)."""
+    if hasattr(os, "sched_getaffinity"):
+        return max(1, len(os.sched_getaffinity(0)))
+    if os.name == "nt":
+        proc, system = ctypes.c_size_t(), ctypes.c_size_t()
+        k32 = ctypes.windll.kernel32
+        k32.GetCurrentProcess.restype = ctypes.c_void_p
+        if k32.GetProcessAffinityMask(ctypes.c_void_p(k32.GetCurrentProcess()), ctypes.byref(proc), ctypes.byref(system)) and proc.value:
+            return bin(proc.value).count("1")
+    return os.cpu_count() or 1
+
+
+#: tests at once and their core budget: the granted logical processors less 2 for the runner, the OS and the seed
+#: (22 on the 24-thread machine the costs were measured on, 2 on a 4-vCPU CI runner)
+DEFAULT_WORKERS = max(2, granted_cpus() - 2)
 #: processes on the machine above which no new test is started. Measured on the 24-thread, 64 GB Windows 11 machine
 #: this was written on: 1,100 small JVMs at once (1,419 processes on the machine) all started, so the process count
 #: itself is not what failed earlier runs with 0xC0000142 (STATUS_DLL_INIT_FAILED); this is only a guard.
@@ -84,7 +103,7 @@ DEFAULT_HEAVY_SLOTS = 8
 #: (2.1-2.4 s, 2.1-2.3 s, 1.8-1.9 s). Runtime.availableProcessors() is left alone: the engine sizes its lanes by it.
 LEAN_THREADS = "-XX:ParallelGCThreads=2 -XX:ConcGCThreads=1 -XX:CICompilerCount=2"
 LEAN_JIT = "-XX:TieredStopAtLevel=1"     # not for the heavy tests: imports and analysis ran about 2x slower on C1 only
-DEFAULT_CORES = 22.0     # core demand of the tests running at once (light 1, heavy 2; measured: 11 tests kept 13 of 24 logical processors busy on average), 2 left over
+DEFAULT_CORES = float(DEFAULT_WORKERS)     # core demand of the tests running at once (light 1, heavy 2; measured: 11 tests kept 13 of 24 logical processors busy on average), 2 left over
 SEED_KEEP = 3           # seeds kept in --seed-cache (one per engine build)
 GOOD = ("pass", "skipped")
 
@@ -103,6 +122,20 @@ def plan(names: list[str], shards: dict, costs: dict) -> list[str]:
     """The tasks (tests, or the shards of a sharded test), longest first; a test keeps its place among equals."""
     tasks = [t for n in names for t in ([f"{n}@{s}" for s in shards[n]] if n in shards else [n])]
     return sorted(tasks, key=lambda t: -task_cost(t, costs, shards))
+
+
+def slice_names(names: list[str], shards: dict, costs: dict, k: int, n: int) -> list[str]:
+    """Slice ``k`` (1-based) of ``n``: the tests split longest first onto the least loaded of ``n`` slices (a sharded
+    test stays whole, its cost the sum of its shards), each slice in suite order. Every test is in exactly one slice and
+    the split depends only on the names and the costs, so ``n`` CI jobs that each run one slice run the whole suite."""
+    def cost(t):
+        return sum(task_cost(x, costs, shards) for x in plan([t], shards, costs))
+    load, picked = [0.0] * n, [set() for _ in range(n)]
+    for t in sorted(names, key=lambda t: (-cost(t), names.index(t))):
+        j = load.index(min(load))
+        load[j] += cost(t)
+        picked[j].add(t)
+    return [t for t in names if t in picked[k - 1]]
 
 
 def lpt_estimate(costs: list[float], workers: int) -> float:
@@ -769,6 +802,12 @@ def selftest() -> int:
     check("plan: longest first (recorded shard cost, else the test's cost shared, else 25 s)",
           t == ["b@y", "b@x", "b@z", "c", "a"] and task_cost("b@x", costs, shards) == 30.0 and task_cost("c", costs, shards) == 25.0)
     check("lpt: bound is the longest task", lpt_estimate([50, 30, 30, 25, 10], 16) == 50 and lpt_estimate([3, 3, 3], 1) == 9)
+    sl = [slice_names(names, shards, costs, k, 2) for k in (1, 2)]
+    check("slice: 2 slices hold every test once, a sharded test whole, longest first onto the least loaded",
+          sl == [["b"], ["a", "c"]] and slice_names(names, shards, costs, 1, 1) == names)
+    g = granted_cpus()
+    check(f"granted_cpus: the affinity mask ({g}), at most the machine's {os.cpu_count()}, sizes the defaults",
+          1 <= g <= (os.cpu_count() or g) and DEFAULT_WORKERS == max(2, g - 2) and DEFAULT_CORES == DEFAULT_WORKERS)
     ok = {"status": "pass", "seconds": 1.0, "note": "n"}
     res = {"b@x": dict(ok, test="b@x"), "b@y": dict(ok, test="b@y"), "b@z": dict(ok, test="b@z")}
     m = merge("b", ["b@x", "b@y", "b@z"], res)
@@ -925,6 +964,8 @@ def main() -> int:
     ap.add_argument("--task-timeout", dest="task_timeout", type=float, default=1200,
                     help="seconds a test process may run before it is killed (a PROBLEM; default 1200)")
     ap.add_argument("--names", default="", help="comma-separated tests instead of asking the script for --list")
+    ap.add_argument("--slice", default=None, metavar="K/N",
+                    help="run slice K of N (1-based): the tests split by cost so that N runs, one per slice, run each once")
     ap.add_argument("--affected", action="store_true",
                     help="only the tests test-map.json maps the changed files to (git diff --name-only <base>...HEAD and the "
                          "working tree), plus the smoke set; the whole suite when a changed file is core or unmapped")
@@ -987,6 +1028,14 @@ def main() -> int:
             t, _, s = line.partition("@")
             if t in names and s:
                 shards.setdefault(t, []).append(s)
+    if a.slice:
+        k, _, n = a.slice.partition("/")
+        if not (k.isdigit() and n.isdigit() and 1 <= int(k) <= int(n)):
+            sys.exit(f"--slice {a.slice}: want K/N with 1 <= K <= N")
+        whole = len(names)
+        names = slice_names(names, shards, costs, int(k), int(n))
+        shards = {t: v for t, v in shards.items() if t in names}
+        print(f"slice {a.slice}: {len(names)} of {whole} tests", flush=True)
     tasks = plan(names, shards, costs)
     est = lpt_estimate([task_cost(t, costs, shards) for t in tasks],
                        min(a.workers, int(a.cores / a.light_cores)) if a.cores and a.light_cores else a.workers)

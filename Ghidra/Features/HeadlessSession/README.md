@@ -1311,7 +1311,10 @@ python examples/run_all.py --ghidra <install> --scratch <dir> --logs <dir> [--on
   `suite-costs.json`'s `daemon_tests.py#heavy` list; `--full-jvm` turns this off), and each test process has its
   own Ghidra settings dir (`XDG_CONFIG_HOME`): with the user's one shared, every daemon contends for its OSGi bundle
   cache and a script request took seconds instead of milliseconds.
-* The queue starts a test while the running ones' core demand stays within `--cores` (default 22; a test counts
+* `--workers` and `--cores` default to the logical processors the process is granted (its affinity mask, not the
+  machine's count) less 2: 22 on a 24-thread machine, 2 on a 4 vCPU CI runner. `--slice K/N` runs slice K of N: the
+  tests are split by their recorded cost, a sharded test kept whole, so N runs (the CI jobs) run every test once.
+* The queue starts a test while the running ones' core demand stays within `--cores` (a test counts
   `--light-cores` 1, a heavy one `--heavy-cores` 2, and at most `--heavy-slots` heavy ones run), the machine has
   `--min-commit-gb` of commit left (Windows refuses new processes, exit 0xC0000142, when the commit runs out) and
   fewer than `--max-procs` processes. `<logs>/machine.csv` has the busy cores, the running tests and the commit
