@@ -84,7 +84,7 @@ public final class HostDecompiler {
 	/** Native runs per decompile before falling back (each but the last learns its misses). */
 	public static final int MAX_ROUNDS = Math.max(1, Integer.getInteger(ROUNDS_PROPERTY, DEFAULT_ROUNDS));
 
-	private static final int ABI_VERSION = 2;
+	private static final int ABI_VERSION = 3;
 	private static final int OK = 0;
 	private static final int MISSES = 1;
 
@@ -147,15 +147,106 @@ public final class HostDecompiler {
 					ADDRESS, ADDRESS, ADDRESS));
 			free = l.downcallHandle(lookup.findOrThrow("hydra_dhost_free"),
 				FunctionDescriptor.ofVoid(ADDRESS));
+			submit = l.downcallHandle(lookup.findOrThrow("hydra_dhost_submit"),
+				FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_LONG, JAVA_LONG));
+			completions = l.downcallHandle(lookup.findOrThrow("hydra_dhost_completions"),
+				FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, JAVA_LONG));
 			this.threads = threads;
-			// platform threads make the blocking downcall, so no virtual thread's carrier is pinned
-			calls = Executors.newFixedThreadPool(Math.max(2, threads * 2), r -> {
-				Thread t = new Thread(r, "decomp-host-call");
-				t.setDaemon(true);
-				return t;
-			});
+			int cap;
+			try {
+				cap = (int) l.downcallHandle(lookup.findOrThrow("hydra_dhost_queue_capacity"),
+					FunctionDescriptor.of(JAVA_INT)).invokeExact();
+			}
+			catch (Throwable t) {
+				cap = 0;
+			}
+			slots = new Semaphore(Math.max(1, cap));
+			if (ASYNC) {
+				// the caller's thread exports and waits on a future (a virtual thread unmounts);
+				// one platform thread drains the host's completion queue for every request
+				calls = null;
+				Thread.ofPlatform().daemon().name("decomp-host-completions").start(this::drain);
+			}
+			else {
+				// platform threads make the blocking downcall, so no virtual thread's carrier is pinned
+				calls = Executors.newFixedThreadPool(Math.max(2, threads * 2), r -> {
+					Thread t = new Thread(r, "decomp-host-call");
+					t.setDaemon(true);
+					return t;
+				});
+			}
+		}
+
+		final MethodHandle submit;
+		final MethodHandle completions;
+		/** Bounds the runs queued or running in the host (its queue capacity). */
+		final Semaphore slots;
+		final AtomicLong tickets = new AtomicLong();
+		final ConcurrentHashMap<Long, Pending> pending = new ConcurrentHashMap<>();
+
+		/** The completion thread: takes finished runs and completes their futures. */
+		private void drain() {
+			final long size = 48;	// struct Completion (snapshot.rs)
+			final int batch = 64;
+			MemorySegment buf = Arena.global().allocate(size * batch, 8);
+			while (true) {
+				int n;
+				try {
+					n = (int) completions.invokeExact(buf, (long) batch, 1000L);
+				}
+				catch (Throwable t) {
+					Msg.error(HostDecompiler.class, "decompile host completions: " + t, t);
+					return;
+				}
+				for (int i = 0; i < n; i++) {
+					long b = i * size;
+					long ticket = buf.get(JAVA_LONG, b);
+					MemorySegment out = buf.get(ADDRESS, b + 8);
+					long outlen = buf.get(JAVA_LONG, b + 16);
+					MemorySegment miss = buf.get(ADDRESS, b + 24);
+					long misslen = buf.get(JAVA_LONG, b + 32);
+					long answered = Integer.toUnsignedLong(buf.get(JAVA_INT, b + 40));
+					int rc = buf.get(JAVA_INT, b + 44);
+					slots.release();
+					Pending p = pending.remove(ticket);
+					Run r = null;
+					Throwable err = null;
+					try {
+						r = decodeRun(this, rc, out, outlen, miss, misslen, answered);
+					}
+					catch (Throwable t) {
+						err = t;
+					}
+					if (p != null) {
+						try {
+							if (err != null) {
+								p.future.completeExceptionally(err);
+							}
+							else {
+								p.future.complete(r);
+							}
+						}
+						finally {
+							p.gen.release(this);
+						}
+					}
+				}
+			}
 		}
 	}
+
+	/** A run submitted to the host: its future and the generation it keeps open. */
+	private record Pending(CompletableFuture<Run> future, Gen gen) {
+	}
+
+	/**
+	 * {@code hydra.decomp.host.async} (default true): runs are submitted to the host's bounded
+	 * queue and completed by one thread; false: one platform thread per request makes a blocking
+	 * downcall (the step 6 path).
+	 */
+	static final boolean ASYNC =
+		Boolean.parseBoolean(System.getProperty("hydra.decomp.host.async", "true"));
+	private static final int BUSY = 4;
 
 	private static volatile Object lib;	// a Lib, or the String reason it is unavailable
 
@@ -267,6 +358,11 @@ public final class HostDecompiler {
 			}
 			inflight++;
 			return true;
+		}
+
+		/** Keeps the store open for a submitted run; the caller already holds an acquire. */
+		synchronized void pin() {
+			inflight++;
 		}
 
 		void release(Lib l) {
@@ -702,30 +798,91 @@ public final class HostDecompiler {
 			MemorySegment answered = a.allocate(JAVA_LONG);
 			int rc = (int) l.decompile.invokeExact(g.store, as, (long) addr.length, out, outlen,
 				miss, misslen, answered);
-			ANSWERED.add(answered.get(JAVA_LONG, 0));
-			byte[] o = take(l, out.get(ADDRESS, 0), outlen.get(JAVA_LONG, 0));
-			byte[] m = take(l, miss.get(ADDRESS, 0), misslen.get(JAVA_LONG, 0));
-			List<byte[]> misses = new ArrayList<>();
-			List<byte[]> fed = new ArrayList<>();
-			ByteBuffer mb = ByteBuffer.wrap(m).order(java.nio.ByteOrder.LITTLE_ENDIAN);
-			while (mb.remaining() >= 4) {
-				int n = mb.getInt();
-				if (n < 0 || n > mb.remaining()) {
-					break;
-				}
-				byte[] q = new byte[n];
-				mb.get(q);
-				if (misses.size() == fed.size()) {
-					misses.add(q);	// records alternate: the query, then the answer fed for it
-				}
-				else {
-					fed.add(q);
-				}
+			return decodeRun(l, rc, out.get(ADDRESS, 0), outlen.get(JAVA_LONG, 0),
+				miss.get(ADDRESS, 0), misslen.get(JAVA_LONG, 0), answered.get(JAVA_LONG, 0));
+		}
+		finally {
+			NATIVE_NANOS.add(System.nanoTime() - t0);
+			ROUNDS.increment();
+		}
+	}
+
+	/** Takes (and frees) the buffers of a finished native run. */
+	private static Run decodeRun(Lib l, int rc, MemorySegment out, long outlen, MemorySegment miss,
+			long misslen, long answered) throws Throwable {
+		ANSWERED.add(answered);
+		byte[] o = take(l, out, outlen);
+		byte[] m = take(l, miss, misslen);
+		List<byte[]> misses = new ArrayList<>();
+		List<byte[]> fed = new ArrayList<>();
+		ByteBuffer mb = ByteBuffer.wrap(m).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+		while (mb.remaining() >= 4) {
+			int n = mb.getInt();
+			if (n < 0 || n > mb.remaining()) {
+				break;
 			}
-			if (fed.size() < misses.size()) {
-				fed.add(new byte[0]);
+			byte[] q = new byte[n];
+			mb.get(q);
+			if (misses.size() == fed.size()) {
+				misses.add(q);	// records alternate: the query, then the answer fed for it
 			}
-			return new Run(rc, o, misses, fed);
+			else {
+				fed.add(q);
+			}
+		}
+		if (fed.size() < misses.size()) {
+			fed.add(new byte[0]);
+		}
+		return new Run(rc, o, misses, fed);
+	}
+
+	/**
+	 * One native run through the host's bounded queue: the caller's thread waits on a future (a
+	 * virtual thread unmounts; no platform thread is held per request) until the completion thread
+	 * posts the run. A full queue (another user of the library) takes the blocking downcall.
+	 * @param deadline {@link System#nanoTime} by which the run must be done (0: none)
+	 * @throws TimeoutException past the deadline (the run finishes unseen; its completion releases
+	 * the generation)
+	 */
+	private static Run runAsync(Lib l, Gen g, byte[] addr, long deadline) throws Throwable {
+		long t0 = System.nanoTime();
+		if (deadline != 0) {
+			if (!l.slots.tryAcquire(Math.max(0, deadline - t0), TimeUnit.NANOSECONDS)) {
+				throw new TimeoutException();
+			}
+		}
+		else {
+			l.slots.acquire();
+		}
+		long ticket = l.tickets.incrementAndGet();
+		CompletableFuture<Run> fut = new CompletableFuture<>();
+		g.pin();
+		l.pending.put(ticket, new Pending(fut, g));
+		int rc;
+		try (Arena a = Arena.ofConfined()) {
+			rc = (int) l.submit.invokeExact(g.store, segment(a, addr), (long) addr.length, ticket);
+		}
+		catch (Throwable t) {
+			rc = -100;
+		}
+		if (rc != OK) {
+			l.pending.remove(ticket);
+			l.slots.release();
+			g.release(l);
+			if (rc == BUSY) {
+				return run(l, g, addr);
+			}
+			return new Run(rc, ("host submit refused: " + rc).getBytes(StandardCharsets.UTF_8),
+				List.of(), List.of());
+		}
+		try {
+			if (deadline == 0) {
+				return fut.get();
+			}
+			return fut.get(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
+		}
+		catch (ExecutionException e) {
+			throw e.getCause();
 		}
 		finally {
 			NATIVE_NANOS.add(System.nanoTime() - t0);
@@ -800,11 +957,36 @@ public final class HostDecompiler {
 		if (!g.acquire()) {
 			return Outcome.fallback("generation retired");
 		}
+		if (ASYNC) {
+			long deadline = timeoutSecs > 0
+					? System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSecs) | 1
+					: 0;
+			try {
+				return hosted(l, g, f, options, deadline);
+			}
+			catch (TimeoutException e) {
+				return Outcome.fallback("host run over the timeout");	// the run finishes unseen
+			}
+			catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				return Outcome.fallback("interrupted");
+			}
+			catch (VirtualMachineError e) {
+				throw e;
+			}
+			catch (Throwable c) {
+				Msg.error(HostDecompiler.class, "decompile host: " + c, c);
+				return Outcome.fallback("host error: " + c);
+			}
+			finally {
+				g.release(l);
+			}
+		}
 		Future<Outcome> fut;
 		try {
 			fut = l.calls.submit(() -> {
 				try {
-					return hosted(l, g, f, options);
+					return hosted(l, g, f, options, 0);
 				}
 				catch (Exception | Error e) {
 					throw e;
@@ -838,8 +1020,8 @@ public final class HostDecompiler {
 		}
 	}
 
-	private static Outcome hosted(Lib l, Gen g, Function f, DecompileOptions options)
-			throws Throwable {
+	private static Outcome hosted(Lib l, Gen g, Function f, DecompileOptions options,
+			long deadline) throws Throwable {
 		DecompileSnapshot a = g.borrow();
 		try {
 			a.setFunction(f);
@@ -848,7 +1030,10 @@ public final class HostDecompiler {
 			prefetch(l, g, a, f, addr);
 			EXPORT_NANOS.add(System.nanoTime() - t0);
 			for (int round = 1; round <= MAX_ROUNDS; round++) {
-				Run r = run(l, g, addr);
+				if (deadline != 0 && System.nanoTime() - deadline >= 0) {
+					throw new TimeoutException();
+				}
+				Run r = ASYNC ? runAsync(l, g, addr, deadline) : run(l, g, addr);
 				if (r.rc() == MISSES && r.out().length > 0 && exactRun(a, r)) {
 					// every miss was fed its real answer: the run is the process path's run
 					EXACT_RUNS.increment();
@@ -910,6 +1095,10 @@ public final class HostDecompiler {
 		Object l = lib;
 		m.put("library", l == null ? "not loaded" : l instanceof String s ? s : "loaded");
 		m.put("workers", l instanceof Lib lb ? lb.threads : 0);
+		m.put("submission", ASYNC ? "async" : "blocking");
+		if (l instanceof Lib lb && ASYNC) {
+			m.put("queued", lb.pending.size());
+		}
 		m.put("hosted", HOSTED.sum());
 		m.put("fallback", FALLBACKS.sum());
 		Map<String, Long> reasons = new TreeMap<>();

@@ -106,3 +106,70 @@ fn unusable_store_fails_cleanly_on_every_worker() {
     unsafe { hydra_dhost_store_close(h) };
     hydra_dhost_release_workers();
 }
+
+#[test]
+fn async_submit_posts_every_run_once_with_its_ticket() {
+    let n = hydra_dhost_start(3);
+    assert_eq!(n, 3);
+    assert_eq!(hydra_dhost_queue_capacity(), 24, "8 runs per worker");
+    let addr = [0x20u8, 0x21];
+    // SAFETY: a null store is refused before anything is queued.
+    let rc = unsafe { hydra_dhost_submit(null_mut(), addr.as_ptr() as *const c_char, 2, 1) };
+    assert_eq!(rc, FAILED);
+
+    let h = store("not a processor spec either");
+    assert!(!h.is_null());
+    let mut want = std::collections::BTreeSet::new();
+    for t in 100..112u64 {
+        // SAFETY: live store, kept open until every completion is taken; addr copied.
+        let rc = unsafe { hydra_dhost_submit(h, addr.as_ptr() as *const c_char, 2, t) };
+        assert_eq!(rc, OK, "12 runs fit the bound of 24");
+        want.insert(t);
+    }
+    let mut got = std::collections::BTreeSet::new();
+    let mut buf = vec![
+        Completion {
+            ticket: 0,
+            out: null_mut(),
+            outlen: 0,
+            misses: null_mut(),
+            misseslen: 0,
+            answered: 0,
+            rc: -9,
+        };
+        5
+    ];
+    let t0 = std::time::Instant::now();
+    while got.len() < want.len() {
+        assert!(t0.elapsed().as_secs() < 120, "completions did not arrive");
+        // SAFETY: buf holds 5 entries.
+        let k = unsafe { hydra_dhost_completions(buf.as_mut_ptr(), buf.len(), 1000) };
+        assert!((0..=5).contains(&k));
+        for c in &buf[..k as usize] {
+            assert!(got.insert(c.ticket), "ticket {} posted twice", c.ticket);
+            assert!(c.rc == FAILED || c.rc == MISSES, "rc {}", c.rc);
+            if c.rc == FAILED {
+                assert!(
+                    !c.out.is_null() && c.outlen > 0,
+                    "a failure carries its message"
+                );
+            }
+            // SAFETY: buffers handed over by the completion, freed once.
+            unsafe {
+                hydra_dhost_free(c.out);
+                hydra_dhost_free(c.misses);
+            }
+        }
+    }
+    assert_eq!(got, want);
+    // SAFETY: buf holds 5 entries; nothing is in flight, so this times out empty.
+    let k = unsafe { hydra_dhost_completions(buf.as_mut_ptr(), buf.len(), 20) };
+    assert_eq!(k, 0);
+    assert_eq!(
+        std::mem::size_of::<Completion>(),
+        48,
+        "the layout the JVM binds"
+    );
+    // SAFETY: closed once, every completion taken.
+    unsafe { hydra_dhost_store_close(h) };
+}

@@ -45,7 +45,12 @@ import ghidra.util.Msg;
  */
 final class HostDecompileBackend {
 
-	/** {@code host} turns the backend on; anything else (the default {@code process}) keeps it off. */
+	/**
+	 * {@code host} turns the backend on; anything else (the default {@code process}) keeps it off.
+	 * rust/t-host measured it as the default (KotOR 8,616 identical) and kept it opt-in: on the
+	 * multi-agent benchmark a cold host decompile (export + native runs) is slower than the process
+	 * path and the in-process Architectures raise peak memory (DESIGN.md, "t-host").
+	 */
 	static final String PROPERTY = "hydra.decomp.backend";
 
 	/**

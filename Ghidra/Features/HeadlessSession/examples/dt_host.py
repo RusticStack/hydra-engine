@@ -14,7 +14,9 @@
 # limitations under the License.
 ##
 """The callback-free decompile backend (Rust plan goal 1, step 6: ``HostDecompiler.java`` and the
-snapshot Architecture of ``hydra-decomp-host``), switched on with ``-Dhydra.decomp.backend=host``.
+snapshot Architecture of ``hydra-decomp-host``), switched on with ``-Dhydra.decomp.backend=host``
+(default off). Runs are submitted asynchronously (bounded queue, one completion thread) unless
+``-Dhydra.decomp.host.async=false``.
 
     python daemon_tests.py --ghidra <install> --work <dir> --exe A.exe --dll B.dll --only host_identical,...
 
@@ -26,6 +28,10 @@ snapshot Architecture of ``hydra-decomp-host``), switched on with ``-Dhydra.deco
   shows the new name and equals the process daemon's reply after the same rename.
 * ``host_concurrent``: 8 clients decompile the same 30 functions at once on the host daemon: every reply
   equals the process daemon's.
+* ``host_default``: a daemon with no settings reports no backend; with ``-Dhydra.decomp.backend=host`` it
+  runs the host with asynchronous submission (the default submission), replies equal to the process.
+* ``host_concurrent_blocking``: ``host_concurrent`` with ``-Dhydra.decomp.host.async=false`` (the step 6
+  path: one platform thread per request, blocking downcall).
 """
 import pathlib
 import sys
@@ -50,6 +56,7 @@ def _mod(name):
 e9 = _mod("dt_e9")
 ENGINE = {"decompileCache": 0}
 HOST = ["-Dhydra.decomp.backend=host"]
+PROC = []                                   # the default: the decompile process
 
 
 def _fns(s, n):
@@ -62,11 +69,11 @@ def _backend(s):
     return s.call("status").get("decompileBackend") or {}
 
 
-def _pair(c, tag, writable=False):
+def _pair(c, tag, writable=False, host=None):
     exe = e9.fixture_args(c)
     ga, gb = c.copy_fixture(f"host{tag}A"), c.copy_fixture(f"host{tag}B")
-    da = c.daemon(f"host-{tag}-proc", engine=ENGINE)
-    db = c.daemon(f"host-{tag}-host", engine=ENGINE, vmargs=HOST)
+    da = c.daemon(f"host-{tag}-proc", engine=ENGINE, vmargs=PROC)
+    db = c.daemon(f"host-{tag}-host", engine=ENGINE, vmargs=HOST if host is None else host)
     return exe, ga, gb, da, db
 
 
@@ -129,8 +136,8 @@ def t_invalidate(c):
         e9.stop(db)
 
 
-def t_concurrent(c):
-    exe, ga, gb, da, db = _pair(c, "cc")
+def t_concurrent(c, tag="cc", host=None, submission="async"):
+    exe, ga, gb, da, db = _pair(c, tag, host=host)
     a = None
     ss = []
     try:
@@ -159,7 +166,9 @@ def t_concurrent(c):
         dt.check(not bad, f"concurrent host replies differ from the process at {bad[:5]}")
         st = _backend(ss[0])
         dt.check(st.get("hostedCount", 0) > 0, f"nothing was hosted: {st}")
-        return (f"8 clients x {len(fns)} functions equal the process; hosted {st.get('hostedCount')}, "
+        sub = (st.get("host") or {}).get("submission")
+        dt.check(sub == submission, f"submission {sub}, expected {submission}")
+        return (f"{submission}: 8 clients x {len(fns)} functions equal the process; hosted {st.get('hostedCount')}, "
                 f"fell back {st.get('fallbackCount')}")
     finally:
         e9.close_all(a, *ss)
@@ -167,7 +176,36 @@ def t_concurrent(c):
         e9.stop(db)
 
 
+def t_default(c):
+    exe, ga, gb, da, db = _pair(c, "def")
+    a = b = None
+    try:
+        a, b = c.connect(da, "a", "host", 3), c.connect(db, "b", "host", 3)
+        e9.open_view(c, a, ga, exe)
+        e9.open_view(c, b, gb, exe)
+        dt.check(not _backend(a), "a daemon with no settings reports a decompile backend")
+        fns = _fns(b, 5)
+        dt.check(all(b.call("decompile", address=x) == a.call("decompile", address=x) for x in fns),
+                 "default replies differ from the process path")
+        st = _backend(b)
+        dt.check(st.get("backend") == "host", f"-Dhydra.decomp.backend=host has no host backend: {st}")
+        host = st.get("host") or {}
+        dt.check(host.get("submission") == "async", f"the default submission is not async: {host}")
+        dt.check(st.get("hostedCount", 0) > 0, f"nothing was hosted: {st}")
+        return f"default off; host on: async submission; hosted {st.get('hostedCount')} of {len(fns)}"
+    finally:
+        e9.close_all(a, b)
+        e9.stop(da)
+        e9.stop(db)
+
+
+def t_concurrent_blocking(c):
+    return t_concurrent(c, "ccb", HOST + ["-Dhydra.decomp.host.async=false"], "blocking")
+
+
 TESTS = {
+    "host_default": t_default,
+    "host_concurrent_blocking": t_concurrent_blocking,
     "host_identical": t_identical,
     "host_invalidate": t_invalidate,
     "host_concurrent": t_concurrent,
