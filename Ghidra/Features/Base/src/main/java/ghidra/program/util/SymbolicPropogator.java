@@ -986,7 +986,7 @@ public class SymbolicPropogator {
 						// even if we don't know the destination, branch to any jump
 						// references already on the branch indirect
 						vContext.propogateResults(true);
-						Reference[] flowRefs = instruction.getReferencesFrom();
+						Reference[] flowRefs = DeferredProgramWrites.referencesFrom(instruction);
 						for (Reference flowRef : flowRefs) {
 							RefType referenceType = flowRef.getReferenceType();
 							if (referenceType.isComputed() && referenceType.isJump()) {
@@ -1031,7 +1031,8 @@ public class SymbolicPropogator {
 								}
 								// if the value didn't get changed, then the real value isn't in here, don't make a reference
 								if (target != null) {
-									Reference[] refs = instruction.getReferencesFrom();
+									Reference[] refs =
+										DeferredProgramWrites.referencesFrom(instruction);
 									// make sure we aren't replacing a read ref with a call to the same place
 									if (refs.length <= 0 ||
 										!refs[0].getToAddress().equals(target)) {
@@ -1072,7 +1073,8 @@ public class SymbolicPropogator {
 							}
 							func = getFunctionAt(target);
 							if (func == null && ptype == PcodeOp.CALLIND) {
-								Reference[] refs = instruction.getReferencesFrom();
+								Reference[] refs =
+									DeferredProgramWrites.referencesFrom(instruction);
 								if (refs != null && refs.length > 0) {
 									Reference firstRef = refs[0];
 									if (firstRef.getReferenceType().isData() ||
@@ -2428,7 +2430,7 @@ public class SymbolicPropogator {
 		if (!instr.contains(lastSetAddr)) {
 			instr = getInstructionContaining(lastSetAddr);
 		}
-		Reference[] refs = instr.getReferencesFrom();
+		Reference[] refs = DeferredProgramWrites.referencesFrom(instr);
 		boolean found = false;
 		for (Reference ref : refs) {
 			Address refAddr = ref.getToAddress();
@@ -2449,6 +2451,7 @@ public class SymbolicPropogator {
 							in.removeOperandReference(rmOpIndex, refAddr);
 						}
 					});
+					DeferredProgramWrites.noteReferenceRemoved(from, refAddr, rmOpIndex);
 				}
 				else {
 					instr.removeOperandReference(ref.getOperandIndex(), refAddr);
@@ -2592,6 +2595,7 @@ public class SymbolicPropogator {
 				containingAddr = addr;
 			}
 			if (program.getReferenceManager().hasReferencesTo(addr) ||
+				DeferredProgramWrites.hasPendingReferenceTo(addr) ||
 				program.getSymbolTable().getPrimarySymbol(addr) != null) {
 				symbolTargetCnt++;
 				symbolTarget = addr;
@@ -2726,7 +2730,8 @@ public class SymbolicPropogator {
 					// allow flow references to memory not in program
 					//   program could be located in the wrong place, or other flow issues
 					if (!refType.isFlow() &&
-						!program.getReferenceManager().hasReferencesTo(target)) {
+						!program.getReferenceManager().hasReferencesTo(target) &&
+						!DeferredProgramWrites.hasPendingReferenceTo(target)) {
 						return null;
 					}
 				}
@@ -2792,7 +2797,8 @@ public class SymbolicPropogator {
 					opIndex = -1;
 				}
 				// if is external, and any refs, just throw the ref on the mnemonic
-				if (target.isExternalAddress() && instruction.getReferencesFrom().length != 0) {
+				if (target.isExternalAddress() &&
+					DeferredProgramWrites.referencesFrom(instruction).length != 0) {
 					opIndex = -1;
 				}
 			}
@@ -2806,11 +2812,22 @@ public class SymbolicPropogator {
 			final Address refTarget = target;
 			final RefType deferredRefType = refType;
 			final boolean skipIfTargetExists = deferredSkipIfTargetExists;
+			// a pure data reference was checked against instructions above, but instructions
+			// this location disassembled itself are only recorded: check again when applied,
+			// when the writes recorded before this one (as in immediate mode) are in place
+			final boolean recheckPureData = refType.isData() && !refType.isRead() &&
+				!refType.isWrite();
+			final long refWordOffset = wordOffset;
 			// capture locals only (not this propagator): see removeOperandReference above
+			final Program prog = program;
 			final Listing listing = program.getListing();
 			DeferredProgramWrites.run(() -> {
 				Instruction instr = listing.getInstructionAt(fromAddr);
 				if (instr == null) {
+					return;
+				}
+				if (recheckPureData && !pureDataRefAllowed(prog, instr, refWordOffset,
+					deferredRefType, refTarget, listing::getInstructionContaining)) {
 					return;
 				}
 				if (skipIfTargetExists) {
@@ -2828,6 +2845,9 @@ public class SymbolicPropogator {
 						SourceType.ANALYSIS);
 				}
 			});
+			// later read-backs in this location must see it, as they saw the immediate write
+			DeferredProgramWrites.noteReferenceAdded(fromAddr, refTarget, deferredRefType,
+				refOpIndex);
 		}
 		else if (opIndex == Reference.MNEMONIC) {
 			instruction.addMnemonicReference(target, refType, SourceType.ANALYSIS);
@@ -2882,6 +2902,17 @@ public class SymbolicPropogator {
 	 */
 	private boolean evaluatePureDataRef(Instruction instruction, long wordOffset, RefType refType,
 			Address target) {
+		return pureDataRefAllowed(program, instruction, wordOffset, refType, target,
+			this::getInstructionContaining);
+	}
+
+	/**
+	 * {@link #evaluatePureDataRef} against a given way of finding the instruction containing an
+	 * address (the propagator's cache, or the listing when a deferred write is applied).
+	 */
+	private static boolean pureDataRefAllowed(Program program, Instruction instruction,
+			long wordOffset, RefType refType, Address target,
+			java.util.function.Function<Address, Instruction> instructionContaining) {
 		if (refType.isRead() || refType.isWrite()) {
 			return true;  // not a pure data ref
 		}
@@ -2905,7 +2936,7 @@ public class SymbolicPropogator {
 		// TODO: This should be a speculative constant reference, and then we wouldn't need
 		//       to check containing, or maybe containing would be checked later
 		if (program.getMemory().contains(target)) {
-			Instruction targetInstr = getInstructionContaining(target);
+			Instruction targetInstr = instructionContaining.apply(target);
 			if (targetInstr != null) {
 				// if not at the top of an instruction, don't do it
 				Address disassemblyAddress =
@@ -2934,9 +2965,17 @@ public class SymbolicPropogator {
 
 		for (int i = 0; i < numOperands; i++) {
 			int opType = instruction.getOperandType(i);
+			// deferred mode: a reference recorded on this operand earlier in this location is
+			// the operand's primary reference for getOperandType/getAddress in immediate mode
+			Address pendingOpAddr = DeferredProgramWrites.pendingOperandAddress(instruction, i);
+			if (pendingOpAddr != null && (pendingOpAddr.isMemoryAddress() ||
+				pendingOpAddr.isExternalAddress() || pendingOpAddr.isStackAddress())) {
+				opType |= OperandType.ADDRESS;
+			}
 
 			if ((opType & OperandType.ADDRESS) != 0) {
-				Address opAddr = instruction.getAddress(i);
+				Address opAddr =
+					pendingOpAddr != null ? pendingOpAddr : instruction.getAddress(i);
 				if (opAddr != null && opAddr.getAddressableWordOffset() == wordOffset) {
 					opIndex = i;
 					break;

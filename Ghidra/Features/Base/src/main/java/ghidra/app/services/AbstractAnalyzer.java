@@ -228,7 +228,7 @@ public abstract class AbstractAnalyzer implements Analyzer {
 	public static final String DEFERRED_WRITES_OPTION_NAME = "Deferred Ordered Writes";
 	public static final String DEFERRED_WRITES_OPTION_DESCRIPTION =
 		"Workers collect their program writes per location and the writes are applied in " +
-			"ascending location order after all workers finish, so results do not depend on " +
+			"the order the locations are queued after all workers finish, so results do not depend on " +
 			"Max Threads or thread timing (results can differ from the immediate-write mode). " +
 			"Offered only by analyzers whose worker writes are all deferred.";
 
@@ -251,10 +251,15 @@ public abstract class AbstractAnalyzer implements Analyzer {
 	 * Every location is analyzed by a worker with a {@link DeferredProgramWrites} collector
 	 * open, so no worker writes to the program while others read it; every worker sees the
 	 * program as it was before this call. After all workers finish, the calling thread walks
-	 * the locations in ascending address order; a location whose address is already covered
-	 * by the result of an earlier applied location is dropped (the ordered form of the
-	 * "already analyzed" skip), otherwise its writes are applied and its result added.
-	 * The returned set and the program changes are therefore the same for any thread count.
+	 * the locations in the iteration order of {@code locations}, which is the order
+	 * {@link #runParallelAddressAnalysis} queues them and so the order in which it processes
+	 * them at one thread; a location whose address is already covered by the result of an
+	 * earlier applied location is dropped (the ordered form of the "already analyzed" skip),
+	 * otherwise its writes are applied and its result added. That order depends only on the
+	 * set (for a {@code HashSet<Address>}, on its contents and insertion order), so the
+	 * returned set and the program changes are the same for any thread count, and they match
+	 * the immediate mode at one thread except where a worker would have read another
+	 * location's writes.
 	 *
 	 * @param program program
 	 * @param locations points to analyze
@@ -277,8 +282,9 @@ public abstract class AbstractAnalyzer implements Analyzer {
 			return appliedSet;
 		}
 
+		// the queue order of runParallelAddressAnalysis (not sorted: sorting changed which of two
+		// locations writing the same item wins compared with the immediate mode at one thread)
 		final List<Address> ordered = new ArrayList<>(locations);
-		Collections.sort(ordered);
 
 		final ConcurrentHashMap<Address, LocationDelta> deltas = new ConcurrentHashMap<>();
 
@@ -316,7 +322,7 @@ public abstract class AbstractAnalyzer implements Analyzer {
 
 		monitor.checkCancelled();
 
-		// apply in ascending location order on this (the analysis) thread
+		// apply in queue order on this (the analysis) thread
 		for (Address loc : ordered) {
 			monitor.checkCancelled();
 			LocationDelta delta = deltas.remove(loc);

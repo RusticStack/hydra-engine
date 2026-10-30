@@ -33,8 +33,9 @@ import ghidra.util.task.TaskMonitorAdapter;
 /**
  * Deferred, ordered program writes for the parallel per-location analyzers (constant
  * propagation, stack variables): workers never see each other's writes, the writes are
- * applied in ascending location order, the "already covered" skip is decided in that order,
- * and the outcome is the same for 1, 2 and 8 threads.
+ * applied in the iteration order of the locations (the queue order of the immediate mode),
+ * the "already covered" skip is decided in that order, and the outcome is the same for 1, 2
+ * and 8 threads.
  */
 public class DeferredParallelAddressAnalysisTest {
 
@@ -89,22 +90,23 @@ public class DeferredParallelAddressAnalysisTest {
 		}
 	}
 
+	/** Iteration order deliberately not ascending: writes must follow it, not address order. */
 	private static Set<Address> locations() {
-		Set<Address> locs = new HashSet<>();
-		for (long off = 0x100; off <= 0x1000; off += 0x100) {
+		Set<Address> locs = new LinkedHashSet<>();
+		for (long off = 0x1000; off >= 0x100; off -= 0x100) {
 			locs.add(a(off));
 		}
-		locs.add(a(0x205)); // inside the result of 0x200: dropped by the ordered skip
+		locs.add(a(0x205)); // inside the result of 0x200 (applied before it): dropped
 		locs.add(a(0x50));
 		return locs;
 	}
 
 	private static List<Long> expectedOrder() {
 		List<Long> expected = new ArrayList<>();
-		expected.add(0x50L);
-		for (long off = 0x100; off <= 0x1000; off += 0x100) {
+		for (long off = 0x1000; off >= 0x100; off -= 0x100) {
 			expected.add(off);
 		}
+		expected.add(0x50L);
 		return expected;
 	}
 
