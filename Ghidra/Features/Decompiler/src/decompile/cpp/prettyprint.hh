@@ -689,7 +689,7 @@ private:
   int4 numspaces;		///< Number of spaces in a whitespace token (\e tokenbreak)
   int4 size;			///< Number of content characters or other size information
   int4 count;			///< Associated id (for matching begin/end pairs)
-  static int4 countbase;	///< Static counter for uniquely assigning begin/end pair ids.
+  static thread_local int4 countbase;	///< Static counter for uniquely assigning begin/end pair ids.
 public:
   TokenSplit(void) { }		///< Constructor
 

@@ -119,7 +119,7 @@ void IfcAddpath::execute(istream &s)
   SleighArchitecture::specpaths.addDir2Path(newpath);
 }
 
-static string savefile;
+static thread_local string savefile;
 
 void IfcSave::execute(istream &s)
 

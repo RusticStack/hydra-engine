@@ -1,0 +1,19 @@
+# Rust workspace for the Hydra decompiler host (plan rank 12, D10). Kept separate from
+# Ghidra/Framework/HydraNative so the two packages can merge without Cargo.toml conflicts;
+# it can become a member of that workspace later.
+[workspace]
+resolver = "3"
+members = ["crates/hydra-decomp-host"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "Apache-2.0"
+publish = false
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[profile.release]
+codegen-units = 1

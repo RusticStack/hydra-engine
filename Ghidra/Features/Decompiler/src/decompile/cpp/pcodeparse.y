@@ -21,7 +21,9 @@
 namespace ghidra {
 
 extern int pcodelex(void);
-static PcodeSnippet *pcode;
+// Hydra (D10): parser state is thread_local. After regenerating the .cc with bison, also mark the generated
+// globals yychar, yylval, yynerrs and the extern yylval declaration thread_local (see the checked-in .cc).
+static thread_local PcodeSnippet *pcode;
 extern int pcodeerror(const char *str );
 %}
 

@@ -359,7 +359,7 @@ void EmitMarkup::setPackedOutput(bool val)
     encoder = new XmlEncode(*s);
 }
 
-int4 TokenSplit::countbase = 0;
+thread_local int4 TokenSplit::countbase = 0;
 
 /// Emit markup or content corresponding to \b this token on a low-level emitter.
 /// The API method matching the token type is called, feeding it content contained in
