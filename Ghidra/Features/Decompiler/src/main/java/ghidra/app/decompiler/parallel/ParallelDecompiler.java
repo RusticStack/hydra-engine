@@ -16,12 +16,14 @@
 package ghidra.app.decompiler.parallel;
 
 import java.util.*;
+import java.util.concurrent.ExecutionException;
 import java.util.function.Consumer;
 
 import generic.concurrent.*;
 import ghidra.app.util.DecompilerConcurrentQ;
 import ghidra.program.model.address.AddressSetView;
 import ghidra.program.model.listing.*;
+import ghidra.util.Msg;
 import ghidra.util.cpu.HydraCpu;
 import ghidra.util.task.TaskMonitor;
 
@@ -37,6 +39,15 @@ import ghidra.util.task.TaskMonitor;
  * function is the same callback with the same decompiler pool, so every result is the same; the
  * methods that return a list return it in the iterator's order instead of completion order.
  * {@link #decompileFunctionsInOrder} always uses the pipeline and delivers in iterator order.
+ * <p>
+ * Errors and cancel keep the queue path's behaviour: a callback failure is thrown wrapped in an
+ * {@link ExecutionException}, as the queue's results do; the list methods run every function and
+ * throw a callback failure at the end (here the first in iterator order, not in completion
+ * order); the consumer method stops at the first callback failure
+ * (cancelling the decompiles still running) and throws it, while an exception from the consumer
+ * is logged and stops the work without being thrown, as {@link DecompilerConcurrentQ} does; a
+ * cancelled monitor makes them return normally with the results of the functions that finished
+ * (a list method's list is then partial).
  * <p>
  * Workers ({@code hydra.decompiler.pipeline.workers}): {@code pool} (the default: the size of
  * the shared pool, i.e. today's concurrency, from the CPUs the OS grants through
@@ -134,11 +145,24 @@ public class ParallelDecompiler {
 		if (Boolean.getBoolean(PIPELINE_PROPERTY)) {
 			Objects.requireNonNull(resultsConsumer);
 			monitor.initialize(max);
-			pipeline(callback, false, true).run(functions, (i, f, r) -> {
-				if (r != null) {
-					resultsConsumer.accept(r);
-				}
-			}, monitor);
+			try {
+				pipeline(callback, false, true).run(functions, (i, f, r) -> {
+					if (r != null) {
+						try {
+							resultsConsumer.accept(r);
+						}
+						catch (Throwable t) {
+							// as DecompilerConcurrentQ's result listener: log, stop, do not throw
+							Msg.error(ParallelDecompiler.class,
+								"Unexpected exception getting Decompiler result", t);
+							throw new ConsumerFailed();
+						}
+					}
+				}, monitor);
+			}
+			catch (ConsumerFailed e) {
+				// logged above; the running decompiles were cancelled and have finished
+			}
 			return;
 		}
 		boolean collectResults = false; // the client will process results as they arrive
@@ -191,9 +215,11 @@ public class ParallelDecompiler {
 	 * functions there are; a slow consumer (or a slow function at the head) holds back the
 	 * enumeration, not the workers' queued work.
 	 *
-	 * <p>The first exception from the callback or the consumer stops the work (no further
-	 * function is started) and is thrown once the running decompiles have finished.  A cancelled
-	 * monitor stops the work and returns normally.
+	 * <p>The first exception from the callback or the consumer stops the work: no further
+	 * function is started, the decompiles still running are cancelled, and the exception is thrown
+	 * once they have returned.  Unlike {@code decompileFunctions} with a consumer, an exception
+	 * from the consumer is thrown, not only logged.  A cancelled monitor stops the work and
+	 * returns normally.
 	 *
 	 * <p><strong>This method will wait for all processing before returning.</strong>
 	 *
@@ -243,7 +269,17 @@ public class ParallelDecompiler {
 		int workers = pool.getMaxThreadCount();
 		int perWorker = Integer.getInteger(PIPELINE_WINDOW_PROPERTY,
 			ordered ? ORDERED_WINDOW_PER_WORKER : WINDOW_PER_WORKER);
-		return new BoundedPipeline<>(callback, pool.getExecutor(), workers,
+		// a callback failure reaches the caller as an ExecutionException, as through a
+		// ConcurrentQ (its QResult keeps the Future's ExecutionException)
+		QCallback<Function, R> wrapped = (f, m) -> {
+			try {
+				return callback.process(f, m);
+			}
+			catch (Exception e) {
+				throw new ExecutionException(e);
+			}
+		};
+		return new BoundedPipeline<>(wrapped, pool.getExecutor(), workers,
 			workers * Math.max(1, perWorker), ordered, stopOnError);
 	}
 
@@ -302,6 +338,13 @@ public class ParallelDecompiler {
 	public static <R> ChunkingParallelDecompiler<R> createChunkingParallelDecompiler(
 			QCallback<Function, R> callback, TaskMonitor monitor) {
 		return new ChunkingParallelDecompiler<>(callback, monitor);
+	}
+
+	/** Stops the pipeline after a consumer failure that was already logged. */
+	private static final class ConsumerFailed extends Exception {
+		ConsumerFailed() {
+			super(null, null, false, false);
+		}
 	}
 
 	private ParallelDecompiler() {

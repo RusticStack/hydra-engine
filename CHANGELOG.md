@@ -33,7 +33,10 @@ example `12.3-hydra.1`); its tag is `v` and the version. Releases are on
   from the granted CPUs with the cap of 10; `granted` is every CPU `HydraCpu` reports, uncapped);
   window per worker: `-Dhydra.decompiler.pipeline.window` (4, or 128 when ordered). New
   `ParallelDecompiler.decompileFunctionsInOrder` streams results in iterator order with bounded
-  memory, whatever the flag.
+  memory, whatever the flag. Errors and cancel behave as on the queue path (a consumer exception
+  is logged and stops the work, not thrown; a stop cancels the decompiles still running; a
+  cancelled monitor returns the finished results); `decompileFunctionsInOrder` throws a consumer
+  exception.
 - A constant propagation Max Threads value above the analysis pool size runs with the whole
   pool (`AbstractAnalyzer.clampThreadCount`) instead of silently dropping to one thread
   (`ConstantPropagationAnalyzer.runAddressAnalysis`), and the Max Threads option is no longer

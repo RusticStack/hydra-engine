@@ -20,8 +20,8 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import ghidra.util.task.TaskMonitor;
-import ghidra.util.task.WrappingTaskMonitor;
+import ghidra.util.exception.CancelledException;
+import ghidra.util.task.*;
 
 /**
  * A three-stage pipeline: the calling thread takes items from an {@link Iterator}
@@ -48,6 +48,14 @@ import ghidra.util.task.WrappingTaskMonitor;
  * running see the cancel through their monitor; results of items that ran are still handed to
  * the sink (skipped items have none), and {@link #run} returns normally, as {@link ConcurrentQ}
  * does for a cancelled monitor.  No callback is still running when {@link #run} returns.
+ * <p>
+ * <b>Aborting running items.</b>  When the pipeline stops because of a sink error, a callback
+ * error with {@code stopOnError}, an interrupt of the calling thread or an iterator or executor
+ * failure, the items still running are cancelled too, as {@link ConcurrentQ#dispose()} does: the
+ * monitor each callback got reports itself cancelled (to {@code isCancelled()} and
+ * {@code checkCancelled()}) and its cancel listeners are called, so a callback that watches its
+ * monitor (a decompile does) ends early.  The caller's monitor is not cancelled.  {@link #run}
+ * still waits for those callbacks to return.
  * <p>
  * <b>Progress.</b>  The caller's monitor gets the number of finished items as its progress (its
  * maximum is raised when more items than it allows were taken, like {@link ConcurrentQ}).  Each
@@ -124,8 +132,8 @@ public final class BoundedPipeline<I, R> {
 	 * @param sink the consumer of the results, called on the calling thread
 	 * @param monitor the monitor for cancellation and progress
 	 * @return counts from the run
-	 * @throws InterruptedException if the calling thread is interrupted (the workers are stopped
-	 *         and drained first)
+	 * @throws InterruptedException if the calling thread is interrupted (the running items are
+	 *         aborted, see the class comment, and waited for first)
 	 * @throws Exception the first callback error (see the class comment) or a sink error
 	 */
 	public Stats run(Iterator<I> items, Sink<I, R> sink, TaskMonitor monitor)
@@ -138,7 +146,7 @@ public final class BoundedPipeline<I, R> {
 		BlockingQueue<Done<I, R>> done = new LinkedBlockingQueue<>();
 		AtomicBoolean stop = new AtomicBoolean();
 		AtomicInteger active = new AtomicInteger();
-		TaskMonitor taskMonitor = new TaskScopeMonitor(outer);
+		TaskScopeMonitor taskMonitor = new TaskScopeMonitor(outer);
 		int maxActive = 0;
 
 		long taken = 0;          // items read from the iterator and queued
@@ -182,12 +190,15 @@ public final class BoundedPipeline<I, R> {
 					finished++;
 					outer.setProgress(finished);
 					if (d.error != null && !(d.error instanceof CancellationException)) {
-						if (d.index < callbackErrorIndex) {
+						// once aborted, items fail because of the abort: keep the error that
+						// caused it
+						if (d.index < callbackErrorIndex && !taskMonitor.isAborted()) {
 							callbackError = d.error;
 							callbackErrorIndex = d.index;
 						}
 						if (stopOnError) {
 							stop.set(true);
+							taskMonitor.abort();
 						}
 					}
 					if (ordered) {
@@ -196,7 +207,7 @@ public final class BoundedPipeline<I, R> {
 					else {
 						delivered++;
 						if (d.deliverable() && sinkError == null) {
-							sinkError = deliver(sink, d, stop);
+							sinkError = deliver(sink, d, stop, taskMonitor);
 						}
 					}
 					d = done.poll();
@@ -207,7 +218,7 @@ public final class BoundedPipeline<I, R> {
 						nextIndex++;
 						delivered++;
 						if (head.deliverable() && sinkError == null) {
-							sinkError = deliver(sink, head, stop);
+							sinkError = deliver(sink, head, stop, taskMonitor);
 						}
 					}
 				}
@@ -224,6 +235,9 @@ public final class BoundedPipeline<I, R> {
 		}
 		finally {
 			stop.set(true);
+			if (interrupted != null || sinkError != null) {
+				taskMonitor.abort();
+			}
 			// items still queued are dropped here; the ones a worker holds are waited for, so
 			// no callback outlives this call
 			boolean wasInterrupted = false;
@@ -257,27 +271,31 @@ public final class BoundedPipeline<I, R> {
 		return new Stats(taken, finished, delivered, maxActive, window, maxOutstanding);
 	}
 
-	private Exception deliver(Sink<I, R> sink, Done<I, R> d, AtomicBoolean stop) {
+	private Exception deliver(Sink<I, R> sink, Done<I, R> d, AtomicBoolean stop,
+			TaskScopeMonitor taskMonitor) {
 		try {
 			sink.accept(d.index, d.item, d.result);
 			return null;
 		}
 		catch (Exception e) {
 			stop.set(true);
+			taskMonitor.abort();
 			return e;
 		}
 	}
 
 	/**
-	 * Starts worker loops (up to {@code workers}, and no more than there are queued items).  A
-	 * loop runs items until the queue is empty and then returns its thread to the pool, so an
+	 * Called once for each item queued: starts one more worker loop unless {@code workers} loops
+	 * are already active (those take the item when they finish their current one).  So there are
+	 * never more loops than items queued, and a busy loop is not counted as room for the new item.
+	 * A loop runs items until the queue is empty and then returns its thread to the pool, so an
 	 * idle pipeline holds no pool thread.
 	 */
 	private void startWorkers(Queue<Work<I>> input, BlockingQueue<Done<I, R>> done,
 			AtomicBoolean stop, AtomicInteger active, TaskMonitor taskMonitor) {
 		while (true) {
 			int a = active.get();
-			if (a >= workers || a >= input.size()) {
+			if (a >= workers || input.isEmpty()) {
 				return;
 			}
 			if (active.compareAndSet(a, a + 1)) {
@@ -288,6 +306,7 @@ public final class BoundedPipeline<I, R> {
 					active.decrementAndGet();
 					throw e;
 				}
+				return;
 			}
 		}
 	}
@@ -340,11 +359,56 @@ public final class BoundedPipeline<I, R> {
 	/**
 	 * The monitor each callback gets: cancellation, cancel listeners and messages go to the
 	 * caller's monitor; progress values are ignored (the pipeline reports progress itself), and
-	 * a callback cannot clear the caller's cancel.
+	 * a callback cannot clear the caller's cancel.  {@link #abort()} cancels this monitor only (not
+	 * the caller's), for the running callbacks, and calls their cancel listeners.
 	 */
 	private static final class TaskScopeMonitor extends WrappingTaskMonitor {
+		private final AtomicBoolean aborted = new AtomicBoolean();
+		private final Set<CancelledListener> scopeListeners = new CopyOnWriteArraySet<>();
+
 		TaskScopeMonitor(TaskMonitor delegate) {
 			super(delegate);
+		}
+
+		void abort() {
+			if (aborted.compareAndSet(false, true)) {
+				for (CancelledListener l : scopeListeners) {
+					l.cancelled();
+				}
+			}
+		}
+
+		boolean isAborted() {
+			return aborted.get();
+		}
+
+		@Override
+		public synchronized boolean isCancelled() {
+			return aborted.get() || super.isCancelled();
+		}
+
+		@Override
+		public void checkCancelled() throws CancelledException {
+			if (aborted.get()) {
+				throw new CancelledException();
+			}
+			super.checkCancelled();
+		}
+
+		@Override
+		public synchronized void addCancelledListener(CancelledListener listener) {
+			super.addCancelledListener(listener);
+			scopeListeners.add(listener);
+			if (aborted.get()) {
+				// added while or after abort() ran: it may not have seen this listener
+				listener.cancelled();
+			}
+		}
+
+		@Override
+		public synchronized void removeCancelledListener(CancelledListener listener) {
+			super.removeCancelledListener(listener);
+			scopeListeners.remove(listener);
 		}
 
 		@Override

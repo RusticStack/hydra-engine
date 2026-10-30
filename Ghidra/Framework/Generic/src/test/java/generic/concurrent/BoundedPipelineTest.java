@@ -373,6 +373,147 @@ public class BoundedPipelineTest {
 	}
 
 	@Test
+	public void testWindowEqualToWorkersRunsEveryWorkerAtOnce() throws Exception {
+		// each callback waits until all 8 are running: with window == workers that only happens
+		// when a new loop is started for every queued item while the other loops are busy
+		int workers = 8;
+		CountDownLatch allRunning = new CountDownLatch(workers);
+		AtomicInteger timedOut = new AtomicInteger();
+		BoundedPipeline<Integer, Integer> p = new BoundedPipeline<>((item, m) -> {
+			if (item < workers) {
+				allRunning.countDown();
+				if (!allRunning.await(5, TimeUnit.SECONDS)) {
+					timedOut.incrementAndGet();
+				}
+			}
+			return item;
+		}, pool, workers, workers, true, true);
+		BoundedPipeline.Stats st = p.run(range(40).iterator(), (i, item, r) -> {
+			// consume
+		}, TaskMonitor.DUMMY);
+		assertEquals(0, timedOut.get());
+		assertEquals(workers, st.workers());
+	}
+
+	/** A callback that blocks until its monitor is cancelled (or 10 s pass), like a decompile. */
+	private static QCallback<Integer, Integer> blocksUntilCancelled(AtomicInteger listenerCalls,
+			AtomicInteger sawCancel) {
+		return (item, m) -> {
+			if (item == 0) {
+				return item;
+			}
+			CountDownLatch cancelled = new CountDownLatch(1);
+			ghidra.util.task.CancelledListener l = () -> {
+				listenerCalls.incrementAndGet();
+				cancelled.countDown();
+			};
+			m.addCancelledListener(l);
+			try {
+				if (cancelled.await(10, TimeUnit.SECONDS) && m.isCancelled()) {
+					sawCancel.incrementAndGet();
+				}
+				return item;
+			}
+			finally {
+				m.removeCancelledListener(l);
+			}
+		};
+	}
+
+	@Test
+	public void testSinkErrorCancelsRunningCallbacks() throws Exception {
+		AtomicInteger listenerCalls = new AtomicInteger();
+		AtomicInteger sawCancel = new AtomicInteger();
+		TaskMonitorAdapter monitor = new TaskMonitorAdapter(true);
+		BoundedPipeline<Integer, Integer> p = new BoundedPipeline<>(
+			blocksUntilCancelled(listenerCalls, sawCancel), pool, 4, 16, true, true);
+		long start = System.nanoTime();
+		try {
+			p.run(range(100).iterator(), (i, item, r) -> {
+				Thread.sleep(200); // let items 1..3 start and block
+				throw new java.io.IOException("sink");
+			}, monitor);
+			fail();
+		}
+		catch (java.io.IOException e) {
+			assertEquals("sink", e.getMessage());
+		}
+		long ms = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+		assertTrue("run() waited " + ms + " ms for callbacks it should have cancelled", ms < 5000);
+		assertTrue(listenerCalls.get() >= 1);
+		assertEquals(listenerCalls.get(), sawCancel.get());
+		assertFalse("the caller's monitor is not cancelled", monitor.isCancelled());
+	}
+
+	@Test
+	public void testInterruptCancelsRunningCallbacks() throws Exception {
+		AtomicInteger listenerCalls = new AtomicInteger();
+		AtomicInteger sawCancel = new AtomicInteger();
+		BoundedPipeline<Integer, Integer> p = new BoundedPipeline<>(
+			blocksUntilCancelled(listenerCalls, sawCancel), pool, 4, 16, false, true);
+		Thread caller = Thread.currentThread();
+		Thread interrupter = new Thread(() -> {
+			try {
+				Thread.sleep(300);
+			}
+			catch (InterruptedException e) {
+				return;
+			}
+			caller.interrupt();
+		});
+		interrupter.start();
+		long start = System.nanoTime();
+		try {
+			p.run(range(100).iterator(), (i, item, r) -> {
+				// consume
+			}, TaskMonitor.DUMMY);
+			fail();
+		}
+		catch (InterruptedException e) {
+			// expected
+		}
+		finally {
+			interrupter.join();
+			Thread.interrupted();
+		}
+		long ms = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+		assertTrue("run() waited " + ms + " ms for callbacks it should have cancelled", ms < 5000);
+		assertTrue(listenerCalls.get() >= 1);
+	}
+
+	@Test
+	public void testStopOnErrorCancelsRunningAndThrowsTheCause() throws Exception {
+		// item 3 fails while the items before it block; they are cancelled and fail with
+		// CancelledException at lower indexes, but the error thrown is the one that stopped the run
+		CountDownLatch othersRunning = new CountDownLatch(3);
+		BoundedPipeline<Integer, Integer> p = new BoundedPipeline<>((item, m) -> {
+			if (item == 3) {
+				othersRunning.await(5, TimeUnit.SECONDS);
+				throw new IllegalArgumentException("bad");
+			}
+			othersRunning.countDown();
+			long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+			while (System.nanoTime() < end) {
+				m.checkCancelled();
+				Thread.sleep(5);
+			}
+			return item;
+		}, pool, 4, 16, true, true);
+		long start = System.nanoTime();
+		try {
+			p.run(range(100).iterator(), (i, item, r) -> {
+				// consume
+			}, TaskMonitor.DUMMY);
+			fail();
+		}
+		catch (IllegalArgumentException e) {
+			assertEquals("bad", e.getMessage());
+		}
+		long ms = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+		assertTrue("run() waited " + ms + " ms for callbacks it should have cancelled", ms < 5000);
+	}
+
+	@Test
 	public void testEmptySource() throws Exception {
 		BoundedPipeline<Integer, Integer> p =
 			new BoundedPipeline<>((item, m) -> item, pool, 4, 16, true, true);
