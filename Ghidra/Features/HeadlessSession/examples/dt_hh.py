@@ -96,6 +96,12 @@ STRIP = {
 }
 
 
+#: the release the engine sources are compiled at (Ghidra/application.properties): H3's pre-save
+#: uses java.lang.foreign.Arena, a preview API under --release 21
+JAVA_RELEASE = next((ln.split("=", 1)[1].strip() for ln in (REPO / "Ghidra" / "application.properties")
+                     .read_text(encoding="utf-8").splitlines()
+                     if ln.startswith("application.java.compiler=")), "21")
+
 def _windows():
     if os.name != "nt":
         raise dt.Skipped("the hold is a Windows sharing-mode handle")
@@ -123,7 +129,7 @@ def unfixed_install(c, tag, parts):
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_text(text, encoding="utf-8")
         files.append(str(f))
-    r = subprocess.run([e8.jdk_tool("javac"), "-nowarn", "--release", "21", "-encoding", "UTF-8",
+    r = subprocess.run([e8.jdk_tool("javac"), "-nowarn", "--release", JAVA_RELEASE, "-encoding", "UTF-8",
                         "-cp", e8.install_jars(dst), "-d", str(dst / "Ghidra" / "patch"), *files],
                        capture_output=True, text=True, timeout=600)
     dt.check(r.returncode == 0, f"javac of the unfixed classes failed: {r.stdout}{r.stderr}")
