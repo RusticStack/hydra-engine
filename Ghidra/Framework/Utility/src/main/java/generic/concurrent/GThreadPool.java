@@ -215,8 +215,9 @@ public class GThreadPool {
 	 * ({@link HydraCpu#place(HydraCpu.Role)}); elsewhere this is the plain named daemon factory.
 	 */
 	private static ThreadFactory backgroundThreads(String name) {
-		ThreadFactory f = new NamedDaemonThreadFactory(name);
-		return r -> f.newThread(HydraCpu.placed(HydraCpu.Role.BACKGROUND, r));
+		// still a NamedDaemonThreadFactory (not a lambda around one): its shape is what the pool
+		// always had, for code and tests that look into the executor's factory
+		return new NamedDaemonThreadFactory(name, r -> HydraCpu.placed(HydraCpu.Role.BACKGROUND, r));
 	}
 
 	private class GThreadPoolExecutor extends ThreadPoolExecutor {
