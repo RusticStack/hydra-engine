@@ -134,6 +134,7 @@ model {
 						include "string_ghidra.cc"
 						include "signature.cc"
 						include "signature_ghidra.cc"
+						include "hydra_alloc.cc"		// Windows: mimalloc as operator new/delete (../mimalloc)
 		         //       include "callgraph.cc"			// uncomment for debug
 		         //       include "ifacedecomp.cc"			// uncomment for debug
 		         //       include "ifaceterm.cc"			// uncomment for debug
@@ -146,9 +147,17 @@ model {
 		            }
 					exportedHeaders {
 						srcDir "src/decompile/cpp"
+						srcDir "src/decompile/mimalloc/include"	// hydra_alloc.cc
 					}
 				} // end cpp				
 			} // end sources
+			binaries {
+				all{ b ->
+					if (b.toolChain in VisualCpp) {
+						b.linker.args "advapi32.lib"	// mimalloc (hydra_alloc.cc): large-page privilege lookup
+					}
+				}
+			} // end binaries.all (decompile)
 		} // end decompile
 		
 		sleigh(NativeExecutableSpec) {
