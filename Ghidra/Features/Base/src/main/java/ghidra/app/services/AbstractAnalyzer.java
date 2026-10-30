@@ -192,18 +192,10 @@ public abstract class AbstractAnalyzer implements Analyzer {
 					}
 				};
 				
-				// bound check thread limit	
-				if (maxThreads > pool.getMaxThreadCount()) {
-					maxThreads = pool.getMaxThreadCount();
-				}
-				if (maxThreads < 1) {
-					maxThreads = 1;
-				}
-				
 				// @formatter:off
 				ConcurrentQ<Address, AddressSetView> queue = new ConcurrentQBuilder<Address, AddressSetView>()
 					.setThreadPool(pool)
-					.setMaxInProgress(maxThreads)
+					.setMaxInProgress(clampThreadCount(maxThreads, pool.getMaxThreadCount()))
 					.setMonitor(monitor)
 					.build(callback);
 				// @formatter:on
@@ -214,5 +206,17 @@ public abstract class AbstractAnalyzer implements Analyzer {
 			
 				return analyzedSet;
 			}
+
+	/**
+	 * Bounds a requested analysis thread count to what a pool can run: a request above the
+	 * pool's size runs with the whole pool, a request below one runs with one thread.
+	 * 
+	 * @param requested the requested number of threads (an analyzer's Max Threads option)
+	 * @param poolMaxThreads the maximum thread count of the pool the work runs on
+	 * @return the number of threads to use, between 1 and {@code poolMaxThreads}
+	 */
+	public static int clampThreadCount(int requested, int poolMaxThreads) {
+		return Math.max(1, Math.min(requested, Math.max(1, poolMaxThreads)));
+	}
 
 }

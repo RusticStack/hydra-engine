@@ -452,8 +452,27 @@ public class SystemUtilities {
 	 * @return the default pool size.
 	 */
 	public static int getDefaultThreadPoolSize() {
+		return getDefaultThreadPoolSize(Runtime.getRuntime().availableProcessors(),
+			getCPUOverride(), getCPUCoreLimit());
+	}
 
-		Integer cpuOverride = getCPUOverride();
+	/**
+	 * Computes the default size of a <b>CPU processing bound</b> thread pool.
+	 * <p>
+	 * The size follows the processors the OS grants this process
+	 * ({@link Runtime#availableProcessors()} honours affinity masks and container quotas).
+	 * There is no fixed upper bound: Ghidra used to cap pools at 10 threads, which left most
+	 * of a larger machine idle.  The {@code cpu.core.override} and {@code cpu.core.limit}
+	 * system properties still apply.
+	 *
+	 * @param availableProcessors the processors granted to this process
+	 * @param cpuOverride the exact size to use ({@code cpu.core.override}), or null
+	 * @param cpuCoreLimit the most cores to use ({@code cpu.core.limit}), or null
+	 * @return the default pool size.
+	 */
+	static int getDefaultThreadPoolSize(int availableProcessors, Integer cpuOverride,
+			Integer cpuCoreLimit) {
+
 		if (cpuOverride != null) {
 			return cpuOverride;
 		}
@@ -465,23 +484,9 @@ public class SystemUtilities {
 		// extra thread over the number of cores so that you can maximize usage while context
 		// switching is taking place.
 		//
-		int numProcessors = Math.max(1, Runtime.getRuntime().availableProcessors() + 1);
-
-		//
-		// We enforce an upper bound here.  There is likely diminishing returns with
-		// more threads, and if there are too many, other resource limits can be hit.
-		//
-		// Note: the user can still override this with the tool option *for GUI usage*.
-		//       Users can set the system property cpu.core.override to specify an exact
-		//       value to use for non-GUI usage.
-		//
-		if (numProcessors > 10) {
-			// TODO: This bound is fairly arbitrary, probably could be made even lower
-			numProcessors = 10;
-		}
+		int numProcessors = Math.max(1, availableProcessors + 1);
 
 		// Note:  this serves only to limit the number of cores possible, not to increase
-		Integer cpuCoreLimit = getCPUCoreLimit();
 		if (cpuCoreLimit == null) {
 			return numProcessors;
 		}
