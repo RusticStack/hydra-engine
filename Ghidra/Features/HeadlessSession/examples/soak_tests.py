@@ -3728,6 +3728,32 @@ def selftest(work: pathlib.Path | None = None, verbose: bool = True) -> int:
     viol, _ = judge_hy_rows(hrows + [{**stale, "op": "hy_decompile"}, {**redo}])
     check("planted: stale_view on a read is a violation (reads answer from the working copy; only mutations are refused)",
           any(k == "hy_unexpected_error" and "hy_decompile:stale_view" in d for k, d in viol), viol)
+    class Clock:
+        def __init__(self):
+            self.t = 1000.0
+
+        def now(self):
+            return self.t
+
+        def sleep(self, d):
+            self.t += d
+    ck = Clock()
+    done_at = 1003.0          # decided 3 s after the stop (the GATE11 soak-pr2 case: decided after the agents gave up)
+    poll = lambda c: ({"changeset": {"state": "done", "outcome": "applied", "generation": 9}} if ck.t >= done_at  # noqa: E731
+                      else {"changeset": {"state": "publish_pending"}, "queue": {"leader": "x"}})
+    w = soak_hy.await_decision(poll, lambda c: c, "c-1", 2000.0, lambda: True, clock=ck.now, sleep=ck.sleep)
+    check("H-agent: a publish in flight at the stop is awaited until decided, not reported publish_undecided",
+          w["outcome"] == "applied" and w["past_stop"] and w["generation"] == 9, w)
+    ck.t, done_at = 1000.0, 1e9
+    w = soak_hy.await_decision(poll, lambda c: c, "c-1", 2000.0, lambda: True, clock=ck.now, sleep=ck.sleep, grace_s=10)
+    check("planted: a publish never decided within the stop grace is still undecided (a violation)",
+          w["outcome"] is None and w["past_stop"] and 1009.0 <= ck.t <= 1011.0, (w, ck.t))
+    ck.t, n_re = 1000.0, []
+    lpoll = lambda c: {"changeset": {"state": "publish_pending"}, "queue": {}} if not n_re else         {"changeset": {"state": "done", "outcome": "applied", "generation": 2}}  # noqa: E731
+    w = soak_hy.await_decision(lpoll, lambda c: n_re.append(c) or c, "c-2", 1100.0, lambda: False, clock=ck.now,
+                               sleep=ck.sleep)
+    check("H-agent: a leaderless changeset is published again (same csid) and then decided",
+          w["outcome"] == "applied" and w["restarts"] == 1 and n_re == ["c-2"] and not w["past_stop"], w)
     check("H-agent redoes an edit on stale_view (master_generation_changed) only",
           soak_hy.is_stale_master(E("stale_view", "x", {"error": "stale_view", "stale": "master_generation_changed"}))
           and not soak_hy.is_stale_master(E("stale_view", "x", {"stale": "base_missing"}))

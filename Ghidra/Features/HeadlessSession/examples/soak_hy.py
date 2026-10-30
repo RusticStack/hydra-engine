@@ -93,6 +93,49 @@ def rebase_options(err, revision) -> dict:
     return {"kind": "rebase", "expect_revision": revision()}
 
 
+#: how long a publish that is in flight when the run stops is still awaited (the supervisor waits 240 s for the
+#: H-agents): its changeset is decided by its leader; giving up at the stop reported publish_undecided for a
+#: publish that Hydralysis then decided (GATE11 soak-pr2: both done/ records exist, written after the stop)
+STOP_GRACE_S = 120.0
+
+
+def await_decision(poll, republish, csid, deadline, stopped, grace_s=STOP_GRACE_S, clock=time.time, sleep=time.sleep,
+                   leaderless_s=6.0) -> dict:
+    """Polls a changeset until it is decided: ``{"outcome", "generation", "changeset", "restarts", "csid",
+    "past_stop"}``; ``outcome`` None when it was not decided by DEADLINE (or GRACE_S after STOPPED() first held).
+    A changeset that no job leads for LEADERLESS_S (its leader was killed) is published again (``republish(csid)``
+    returns the csid, the same one when the records are reused: views.run_publish_job)."""
+    restarts, no_leader_since, stop_at = 0, None, None
+    cs = {}
+    while True:
+        now = clock()
+        if stop_at is None and stopped():
+            stop_at = now
+            deadline = min(deadline, now + grace_s) if deadline > now else now + grace_s
+        if now >= deadline:
+            break
+        q = poll(csid)
+        cs = q.get("changeset") or {}
+        if cs.get("state") == "done":
+            return {"outcome": cs.get("outcome"), "generation": cs.get("generation"), "changeset": cs,
+                    "restarts": restarts, "csid": csid, "past_stop": stop_at is not None}
+        if cs.get("state") == "unknown":
+            return {"outcome": "unknown", "generation": None, "changeset": cs, "restarts": restarts, "csid": csid,
+                    "past_stop": stop_at is not None}
+        leading = (q.get("queue") or {}).get("leader")
+        if cs.get("state") == "publish_pending" and not leading:
+            no_leader_since = no_leader_since or clock()
+            if clock() - no_leader_since > leaderless_s:
+                restarts += 1
+                csid = republish(csid)
+                no_leader_since = None
+        else:
+            no_leader_since = None
+        sleep(0.5)
+    return {"outcome": None, "generation": None, "changeset": cs, "restarts": restarts, "csid": csid,
+            "past_stop": stop_at is not None}
+
+
 def is_stale_master(err) -> bool:
     """The documented edit/publish race: ``stale_view`` with ``stale: master_generation_changed``."""
     det = err.payload if isinstance(err.payload, dict) else {}
@@ -269,42 +312,26 @@ def cmd_agent(spec: dict) -> int:
         p = call("hy_publish_seal", "type_edit", kind="publish", expect_revision=revision(), confirm_one_way_upgrade=True,
                  **{"as": me})
         csid = p.get("csid")
-        restarts = 0
-        no_leader_since = None
-        outcome, gen, cs = None, None, {}
-        deadline = min(time.time() + spec.get("publish_wait_s", 300), spec["deadline"] + 60)
-        while time.time() < deadline and not stop_file.exists():
-            q = ask("status", show="queue", csid=csid, **{"as": me})
-            cs = q.get("changeset") or {}
-            if cs.get("state") == "done":
-                outcome, gen = cs.get("outcome"), cs.get("generation")
-                break
-            if cs.get("state") == "unknown":
-                outcome = "unknown"
-                break
-            leading = (q.get("queue") or {}).get("leader")
-            if cs.get("state") == "publish_pending" and not leading:
-                no_leader_since = no_leader_since or time.time()
-                if time.time() - no_leader_since > 6:
-                    # no job drives the changeset (its leader was killed): publishing the same records again reuses
-                    # the changeset and starts a job that leads the queue (views.run_publish_job)
-                    restarts += 1
-                    again = call("hy_publish_restart", "type_edit", kind="publish", expect_revision=revision(),
-                                 confirm_one_way_upgrade=True, **{"as": me})
-                    row("hy_publish_restart_reused", t0, again.get("csid") == csid, None if again.get("csid") == csid
-                        else "new_csid", csid=csid, got=again.get("csid"), reused=again.get("reused"))
-                    csid = again.get("csid") or csid
-                    no_leader_since = None
-            else:
-                no_leader_since = None
-            time.sleep(0.5)
+
+        def republish(cur):
+            again = call("hy_publish_restart", "type_edit", kind="publish", expect_revision=revision(),
+                         confirm_one_way_upgrade=True, **{"as": me})
+            row("hy_publish_restart_reused", t0, again.get("csid") == cur, None if again.get("csid") == cur
+                else "new_csid", csid=cur, got=again.get("csid"), reused=again.get("reused"))
+            return again.get("csid") or cur
+
+        w = await_decision(lambda c: ask("status", show="queue", csid=c, **{"as": me}), republish, csid,
+                           min(time.time() + spec.get("publish_wait_s", 300), spec["deadline"] + 60), stop_file.exists)
+        outcome, gen, cs, restarts, csid = w["outcome"], w["generation"], w["changeset"], w["restarts"], w["csid"]
         if outcome in PUBLISH_DONE:
             # applied or rebased: a new generation holds the records; converged or skipped: the head already held them
             led.ack(opid, kind="hypublish", k=npub, csid=csid, generation=gen, outcome=outcome)
-            row("hy_publish", t0, True, csid=csid, generation=gen, outcome=outcome, restarts=restarts)
+            row("hy_publish", t0, True, csid=csid, generation=gen, outcome=outcome, restarts=restarts,
+                waited_past_stop=w["past_stop"])
             state["dirty"] = False
         else:
-            row("hy_publish", t0, False, outcome or "publish_undecided", csid=csid, restarts=restarts, changeset=cs)
+            row("hy_publish", t0, False, outcome or "publish_undecided", csid=csid, restarts=restarts, changeset=cs,
+                waited_past_stop=w["past_stop"])
 
     def op_rebase():
         call("hy_rebase", "type_edit", kind="rebase", expect_revision=revision(), **{"as": me})
