@@ -791,8 +791,16 @@ final class ProjectFork {
 	 * Windows cannot open a folder as a channel, so there it does nothing and the order of the
 	 * names rests on the file system (directory-entry model J of {@code dt_e12.py}, an assumption
 	 * nothing measures). Never throws.
+	 * <p>
+	 * On Windows it returns at once: the open always failed there ({@code AccessDeniedException},
+	 * PROTOCOL-3.md E12 row "syncDirectory() is a no-op on this Windows machine"), so the call was
+	 * a failed open plus an exception with its stack trace per folder of every forced tree and
+	 * nothing reached the disk. Skipping it removes those syscalls and changes no durability.
 	 */
 	static void syncDirectory(Path dir) {
+		if (WINDOWS) {
+			return;
+		}
 		try (java.nio.channels.FileChannel ch =
 			java.nio.channels.FileChannel.open(dir, StandardOpenOption.READ)) {
 			ch.force(true);
