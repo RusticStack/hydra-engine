@@ -644,6 +644,10 @@ DEFAULTS = {
     "mode": "fast",          # fast (app class loader, AOT-capable) | standard (GhidraClassLoader)
     "aot": "auto",           # auto (use the cache when it exists) | off
     "classCache": True,      # reuse the class search result while the classpath is unchanged
+    "classCacheDir": None,   # where a state dir without its own class search cache finds the shared
+                             # one; None: <per-user state root>/classcache | "none": own file only
+    "jitOneShot": True,      # no C2 (optimising JIT) for code a daemon runs once or rarely: javac,
+                             # spec validation, the Sleigh preprocessor (JIT_ONE_SHOT); C1 only
     "idleTimeout": 0,        # seconds without clients before the daemon exits; 0: stay up
     "keepWarm": 3600,        # seconds an unused read-only program stays open; 0: close at once
     "maxQuick": 0,           # concurrent quick requests (decompile, ...); 0: CPU count
@@ -679,9 +683,31 @@ ENV_MAP = {
     "GHIDRA_SESSION_FORK_COPY_LIMIT_MB": ("forkCopyLimitMb", int),
     "GHIDRA_SESSION_SINGLETON": ("singleton", str),
     "GHIDRA_SESSION_SETTINGS_DIR": ("settingsDir", str),
+    "GHIDRA_SESSION_CLASS_CACHE_DIR": ("classCacheDir", str),
+    "GHIDRA_SESSION_JIT_ONE_SHOT": ("jitOneShot", lambda v: v.strip().lower() not in
+                                    ("0", "false", "off", "no")),
     "GHIDRA_SESSION_HEAP_CHECK": ("heapCheck", lambda v: v.strip().lower() not in
                                   ("0", "false", "off", "no")),
 }
+
+
+# Code a daemon runs once per language, whose C2 (optimising) compiles cost more CPU than they
+# save: the RELAX NG validator of the language specs and the Sleigh preprocessor with ANTLR (the
+# .sla staleness scan at the first load of a language). It still runs compiled by C1 (tier 1,
+# after the usual thresholds), never only interpreted; nothing else changes: the JIT never changes
+# what a method computes. The JDK's XML parser is not listed: every project open still parses XML.
+# javac and the class-file API are deliberately NOT listed: a long-lived daemon that serves many
+# agents' ad-hoc scripts runs javac again and again, and kept on C1 every compile after warm-up
+# costs more (measured, 1200 distinct compiles in one JVM: +34..60 % CPU for compiles 401-1200,
+# +8..22 % over all of them), and the JDK 24+ class-file API also generates every lambda, proxy
+# and method-handle class for the whole run.
+JIT_ONE_SHOT = [
+    "com/sun/msv/*.*", "org/iso_relax/*.*",
+    "ghidra/sleigh/grammar/*.*", "ghidra/pcodeCPort/*.*", "org/antlr/*.*",
+]
+
+# The JVM option variables, which the launcher passes on to the daemon (env_to_carry).
+JVM_OPTION_VARS = ("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS")
 
 
 _ENGINE_KEY = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,63}")
@@ -780,13 +806,9 @@ class Launch:
         ``<state>/settings/<instance>``, unless ``settingsDir`` is ``shared`` or a JVM option already names
         one. The user's ``Extensions`` are linked into it, so the same modules are found. The option
         travels on the command line, so it also reaches the routes that carry no environment."""
-        mode = str(self.cfg.get("settingsDir") or "auto")
-        if self.instance is None or mode == "shared":
+        root = self._settings_root()
+        if root is None:
             return None
-        if any(a.startswith("-Dapplication.settingsdir=")
-               for a in [*self.props["vmargs"], *(self.cfg.get("vmargs") or [])]):
-            return None
-        root = (self.state / "settings" / self.instance) if mode == "auto" else Path(mode)
         try:
             root.mkdir(parents=True, exist_ok=True)
             self._link_extensions(root)
@@ -880,6 +902,78 @@ class Launch:
                     return True
         return False
 
+    def jit_args(self, vm: list[str]) -> list[str]:
+        """The JIT directive of ``jitOneShot`` (see ``JIT_ONE_SHOT``): a compiler directives file
+        in ``<state>/launch`` that excludes those classes from C2 only. Nothing when it is off or
+        when the JVM options already name a directives file (the JVM reads only one)."""
+        if not self.cfg.get("jitOneShot", True):
+            return []
+        if any(a.startswith("-XX:CompilerDirectivesFile=")
+               for a in [*vm, *(self.cfg.get("vmargs") or [])]):
+            return []
+        # A directives file named in a JVM option variable would lose to the command line one.
+        if any("-XX:CompilerDirectivesFile=" in (self.env.get(k) or "") for k in JVM_OPTION_VARS):
+            return []
+        text = json.dumps([{"match": JIT_ONE_SHOT, "c2": {"Exclude": True}}], indent=1) + "\n"
+        d = self.state / "launch"
+        f = d / f"jit-one-shot-{hashlib.sha256(text.encode()).hexdigest()[:8]}.json"
+        try:
+            if not f.is_file():
+                d.mkdir(parents=True, exist_ok=True)
+                write_shared(f, text, same_ok=True)
+        except OSError:
+            return []                   # the daemon then compiles everything, as before
+        return ["-XX:+UnlockDiagnosticVMOptions", f"-XX:CompilerDirectivesFile={f}"]
+
+    def class_cache_file(self, key: str) -> Path:
+        """The class search cache file of a daemon: the state dir's own one when it exists, else
+        the shared one in ``classCacheDir`` (default ``<per-user state root>/classcache``). The
+        result of ``ClassSearcher`` depends only on the install and classpath (``key``), and the
+        daemon checks the size and time of every input before it trusts the file (a stale one is
+        a miss and is replaced atomically), so one file serves every state dir: a daemon in a new
+        state dir (a new harness, a test, a benchmark run) starts with a hit instead of walking
+        every jar again and running the start-up initializers it would otherwise defer."""
+        own = self.state / "classcache" / f"{key}.json"
+        where = self.cfg.get("classCacheDir")
+        if own.is_file() or (isinstance(where, str) and where.strip().lower() == "none"):
+            return own
+        # Resolved: a relative dir would otherwise follow the cwd of whichever client started
+        # the daemon, and daemons started from different dirs would not share the file.
+        shared = (Path(where).expanduser().resolve() if where
+                  else user_state_root() / "classcache")
+        # The daemon checks the module roots by absolute path, and the user's extension modules
+        # sit below the daemon's own settings dir (linked in by settings_dir_arg): their paths
+        # differ per state dir and instance, so such daemons share the file only with daemons of
+        # the same settings dir (else each would find it stale and replace it for the others).
+        tag = self._extension_root_tag()
+        return shared / (f"{key}-{tag}.json" if tag else f"{key}.json")
+
+    def _settings_root(self) -> Path | None:
+        """The daemon's own settings dir (see ``settings_dir_arg``), or None when it uses the
+        user's (not a daemon, ``settingsDir`` shared, or a JVM option names one)."""
+        mode = str(self.cfg.get("settingsDir") or "auto")
+        if self.instance is None or mode == "shared":
+            return None
+        if any(a.startswith("-Dapplication.settingsdir=")
+               for a in [*self.props["vmargs"], *(self.cfg.get("vmargs") or [])]):
+            return None
+        return (self.state / "settings" / self.instance) if mode == "auto" else Path(mode)
+
+    def _extension_root_tag(self) -> str | None:
+        """A short hash of the daemon's own settings dir when the user has extension modules
+        (which the daemon then finds below that dir); None when the module roots are the same
+        for every daemon of the install."""
+        root = self._settings_root()
+        if root is None:
+            return None
+        try:
+            real = self.install.settings_dir(self.props["vmargs"]) / "Extensions"
+            if not real.is_dir() or not any(p.is_dir() for p in real.iterdir()):
+                return None
+        except OSError:
+            return None
+        return hashlib.sha256(str(root.absolute()).encode()).hexdigest()[:8]
+
     def aot_flavor(self, base_vm: list[str]) -> str:
         """The JVM options an AOT cache must have been recorded with: the JVM refuses a cache made
         with another garbage collector, object header layout or compressed-pointer mode, and then
@@ -933,7 +1027,9 @@ class Launch:
             else:
                 info["aot"] = None
             if self.cfg.get("classCache", True):
-                vm.append(f"-Dghidra.session.classCache={self.state / 'classcache' / key}.json")
+                cc = self.class_cache_file(key)
+                vm.append(f"-Dghidra.session.classCache={cc}")
+                info["classCacheFile"] = str(cc)
         else:
             head = ["-cp", str(self.install.utility_jar)]
             main = ["ghidra.Ghidra", MAIN_CLASS]
@@ -946,6 +1042,7 @@ class Launch:
         heap = self.heap()
         vm += [f"-Xmx{heap}", f"-Xms{self.cfg.get('minHeap') or '128m'}"]
         vm += self.gc_args()
+        vm += self.jit_args(vm)
         # stdout is the protocol channel; the JVM's own log (an AOT cache that does not match,
         # GC warnings) goes to stdout unless told otherwise.
         vm += ["-Xlog:disable", "-Xlog:all=warning:stderr", "-Djava.awt.headless=true"]
