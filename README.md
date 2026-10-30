@@ -23,7 +23,7 @@ Several agents work in it at the same time, on several projects (tested with up 
   <a href="https://github.com/RusticStack/hydra-engine/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/RusticStack/hydra-engine/ci.yml?branch=main&style=flat-square&label=CI" alt="CI status"></a>
   <img src="https://img.shields.io/badge/CI-Windows-2A2A30?style=flat-square" alt="CI runs on Windows">
   <img src="https://img.shields.io/badge/JDK-25-2A2A30?style=flat-square" alt="JDK 25">
-  <img src="https://img.shields.io/badge/Python-3.10%2B_stdlib_only-2A2A30?style=flat-square" alt="Python 3.10 or later, standard library only">
+  <img src="https://img.shields.io/badge/Python-3.13%2B_stdlib_only-2A2A30?style=flat-square" alt="Python 3.13 or later, standard library only">
   <img src="https://img.shields.io/badge/based_on-Ghidra_12.3_DEV-2A2A30?style=flat-square" alt="Based on Ghidra 12.3 DEV">
 </p>
 
@@ -144,7 +144,7 @@ Several at once (same machine; the module README has the method):
 - **Windows x64 only, for releases.** Each release has `hydra-engine-<version>-win_x86_64.zip`.
   CI and the tests run on Windows. No Linux or macOS claim is made: the source may build there,
   but nothing is tested on them.
-- **JDK 25 is required** (`application.java.min`), and Python 3.10 or later for the launcher.
+- **JDK 25 is required** (`application.java.min`), and Python 3.13 or later for the launcher.
 - **One daemon per state directory**, which is per user unless you set `GHIDRA_SESSION_HOME`
   (or an instance name); a second daemon for the same one exits.
 - **`fork_project` is a block clone only on ReFS** (Windows 11 24H2 or later, for example a Dev
@@ -230,7 +230,7 @@ quickest way to put it to work.
 
 ## Quick start
 
-You need a JDK 25 and Python 3.10 or later.
+You need a JDK 25 and Python 3.13 or later.
 
 **With your AI.** Once Hydralysis is published (see its status above), paste this into Claude
 Code, Codex, OpenCode or Qoder. It installs
@@ -316,7 +316,7 @@ with gs.connect(client="my-tool", harness="claude-code") as s:   # joins the dae
   is a generic Ghidra front end; the tools belong to the client.
 
 **Through Hydralysis** (private, no release yet; renamed from RusticRE). By hand, from a checkout of
-[Hydralysis](https://github.com/RusticStack/Hydralysis) (Python 3.11 or later), with
+[Hydralysis](https://github.com/RusticStack/Hydralysis) (Python 3.13 or later), with
 `HYDRALYSIS_ROOT` set to a directory for its engine, prepared projects, evidence and logs:
 
 ```bash

@@ -58,6 +58,7 @@ import argparse
 import contextlib
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import pathlib
@@ -536,9 +537,32 @@ def t_concurrent_classpath_write(c: Ctx):
     return f"{threads * rounds} thread writers over {rounds} keys, {len(procs)} processes x 200"
 
 
+def t_python_version_gate(c: Ctx):
+    """The launcher refuses a Python older than 3.13 with a clear message and a non-zero exit,
+    and accepts 3.13 and later (a faked ``sys.version_info``)."""
+    n = c.new
+    check(n.PYTHON_MIN == (3, 13), f"PYTHON_MIN {n.PYTHON_MIN}")
+    for ok in ((3, 13, 0, "final", 0), (3, 14, 2, "final", 0), (4, 0, 0, "alpha", 1)):
+        check(n.python_version_problem(ok) is None, f"{ok} refused")
+        n.check_python_version(ok)
+    msg = n.python_version_problem((3, 12, 9, "final", 0))
+    check(msg == "Hydra Engine's launcher needs Python 3.13 or later; this is 3.12", f"{msg!r}")
+    for old in ((3, 10, 0, "final", 0), (3, 12, 9, "final", 0), (2, 7, 18, "final", 0)):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            try:
+                n.check_python_version(old)
+            except SystemExit as e:
+                check(e.code not in (0, None), f"{old}: exit code {e.code}")
+            else:
+                raise Fail(f"{old} was accepted")
+        check("needs Python 3.13 or later; this is %d.%d" % old[:2] in err.getvalue(), err.getvalue())
+    return "3.13+ accepted; 3.12, 3.10 and 2.7 refused with exit 2"
+
+
 OFFLINE = {"stock_vendored", "new_client_identity", "fake_v2_server", "fake_v3_server",
            "protocol_below_range", "check_compatible", "endpoint_overlap", "engine_config",
-           "loader", "concurrent_classpath_write"}
+           "loader", "concurrent_classpath_write", "python_version_gate"}
 
 
 # ---- tests against the real engine ----------------------------------------------------------
@@ -617,7 +641,7 @@ def t_engine_setting_command(c: Ctx):
 TESTS = {n: globals()["t_" + n] for n in (
     "stock_vendored", "new_client_identity", "fake_v2_server", "fake_v3_server",
     "protocol_below_range", "check_compatible", "endpoint_overlap", "engine_config", "loader",
-    "concurrent_classpath_write",
+    "concurrent_classpath_write", "python_version_gate",
     "real_engine_new_starts", "real_engine_stock_starts", "engine_setting_command")}
 REGISTRY = dict(TESTS)   # test name -> fn(ctx): the tests above and those of the cc_*.py files
 ONLINE_OK = set(OFFLINE)  # names that may run with --offline

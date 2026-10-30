@@ -15,7 +15,7 @@
 ##
 """Launcher, daemon manager and client for the Ghidra headless session.
 
-Standard library only, Python 3.10+, any OS. No launch.bat, launch.sh or shell is involved: this
+Standard library only, Python 3.13+, any OS. No launch.bat, launch.sh or shell is involved: this
 file finds a JDK, reads Ghidra's own ``support/launch.properties`` and module layout, and starts
 the session JVM itself.
 
@@ -93,6 +93,29 @@ import threading
 import time
 import uuid
 from pathlib import Path
+
+#: The oldest Python this launcher runs on.
+PYTHON_MIN = (3, 13)
+
+
+def python_version_problem(version_info=None):
+    """The message for a Python older than ``PYTHON_MIN``, or None when this one is new enough."""
+    v = sys.version_info if version_info is None else version_info
+    if tuple(v[:2]) >= PYTHON_MIN:
+        return None
+    return (f"Hydra Engine's launcher needs Python {PYTHON_MIN[0]}.{PYTHON_MIN[1]} or later; "
+            f"this is {v[0]}.{v[1]}")
+
+
+def check_python_version(version_info=None):
+    """Exits with status 2 and a clear message when this Python is older than ``PYTHON_MIN``."""
+    problem = python_version_problem(version_info)
+    if problem:
+        print(f"error: {problem}", file=sys.stderr)
+        raise SystemExit(2)
+
+
+check_python_version()
 
 #: The newest protocol this client speaks: the value its ``hello`` asks for.
 PROTOCOL = 3
