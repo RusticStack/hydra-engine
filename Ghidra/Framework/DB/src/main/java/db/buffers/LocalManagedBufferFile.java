@@ -148,7 +148,11 @@ public class LocalManagedBufferFile extends LocalBufferFile implements ManagedBu
 	 * operation is performed on this file.  If the pre-save process is running,
 	 * setting true will cause the pre-save to backoff for a short period.
 	 */
-	private boolean preSaveBackoff = false;
+	// Hydra H3: volatile, set without preSaveLock: every read of the primary file took that lock,
+	// and a program read without pause kept the pre-save thread, which needs the lock between
+	// steps, from getting it. A set lost between the pre-save's read and clear of the flag only
+	// skips one back-off.
+	private volatile boolean preSaveBackoff = false;
 
 	/**
 	 * <code>preSaveLock</code> is used to arbitrate access to the preSaveBackoff flag.
@@ -306,9 +310,7 @@ public class LocalManagedBufferFile extends LocalBufferFile implements ManagedBu
 			}
 		}
 
-		synchronized (preSaveLock) {
-			preSaveBackoff = true;
-		}
+		preSaveBackoff = true;
 
 		return super.get(buf, index);
 	}
@@ -906,7 +908,11 @@ public class LocalManagedBufferFile extends LocalBufferFile implements ManagedBu
 			preSaveFile = new LocalManagedBufferFile(psFile, getBufferSize());
 
 			taskThread = new Thread(this, "Pre-Save");
-			taskThread.setPriority(Thread.MIN_PRIORITY);
+			// Hydra H3: below normal, not the lowest. On Windows MIN_PRIORITY is
+			// THREAD_PRIORITY_LOWEST, which a machine busy with other agents' work starves for
+			// seconds at a time (seen: 10 s without a step), so the copy, now a few 1 MB chunks
+			// of cheap I/O, was still not done when the save came.
+			taskThread.setPriority(PRESAVE_PRIORITY);
 			taskThread.start();
 		}
 
@@ -924,8 +930,9 @@ public class LocalManagedBufferFile extends LocalBufferFile implements ManagedBu
 
 		void waitForTask(TaskMonitor taskMonitor) throws CancelledException {
 			if (taskThread.isAlive()) {
-				if (taskMonitor != null) {
-					synchronized (preSaveLock) {
+				synchronized (preSaveLock) {
+					saverWaiting();
+					if (taskMonitor != null) {
 						taskMonitor.initialize(maxIndex);
 						taskMonitor.setProgress(curIndex);
 						this.monitor = taskMonitor;
@@ -963,41 +970,64 @@ public class LocalManagedBufferFile extends LocalBufferFile implements ManagedBu
 		}
 
 		/**
+		 * Hydra H3: a saver blocks on this task. From then on the copy no longer backs off for
+		 * reads of the primary file, nor waits out its initial delay, and runs at normal priority:
+		 * before, a save of a program being read (decompiles) waited 50 ms per buffer, minutes for
+		 * a 64 MB database, because every read of the primary file set the back-off flag again.
+		 * Guarded by preSaveLock.
+		 */
+		private boolean saverWaiting;
+
+		/** Hydra H3: wake the copy when a saver starts waiting. Called with preSaveLock held. */
+		void saverWaiting() {
+			saverWaiting = true;
+			preSaveLock.notifyAll();
+			Thread t = taskThread;
+			if (t != null) {
+				try {
+					t.setPriority(Thread.NORM_PRIORITY);
+				}
+				catch (SecurityException e) {
+					// keep the low priority
+				}
+			}
+		}
+
+		/**
+		 * Wait up to {@code ms} unless a saver is waiting (and stop waiting as soon as one is).
+		 * Called with preSaveLock held.
+		 */
+		private void pause(long ms) throws InterruptedException {
+			long end = System.nanoTime() + ms * 1_000_000L;
+			long left;
+			while (!saverWaiting && (left = end - System.nanoTime()) > 0) {
+				preSaveLock.wait(Math.max(1, left / 1_000_000L));
+			}
+		}
+
+		/**
 		 * Perform pre-save of sourceFile to preSaveFile.
 		 * The preSaveFile is changed to null if an error occurs.
 		 */
 		@Override
 		public void run() {
 
-			DataBuffer buf = new DataBuffer(getBufferSize());
 			boolean success = false;
 			try {
 				// Initial delay
-				Thread.sleep(100);
+				synchronized (preSaveLock) {
+					pause(100);
+				}
 
 				// Copy non-empty buffers only
 				// Remaining content established by BuffermMgr.saveAs()
 				int cnt = srcFile.getIndexCount();
 				maxIndex = cnt - 1;
-				for (curIndex = 0; curIndex < cnt; curIndex++) {
-					while (true) {
-						synchronized (preSaveLock) {
-							// Check for canceled task
-							checkPreSaveMonitor();
-							if (taskThread.isInterrupted()) {
-								return;
-							}
-							// Continue to back-off while primary buffer file instance is in use
-							if (!preSaveBackoff) {
-								break;
-							}
-							preSaveBackoff = false;
-						}
-						// Back-off a little
-						Thread.sleep(50);
-					}
-					srcFile.get(buf, curIndex);
-					preSaveFile.put(buf, curIndex);
+				if (BULK_PRESAVE && srcFile instanceof LocalBufferFile src) {
+					bulkCopy(src, cnt);
+				}
+				else {
+					bufferCopy(cnt);
 				}
 				success = true;
 			}
@@ -1030,7 +1060,90 @@ public class LocalManagedBufferFile extends LocalBufferFile implements ManagedBu
 			}
 		}
 
+		/**
+		 * Back off while the primary file is being read, unless a saver waits.
+		 * @param bounded Hydra H3: back off at most once (50 ms) before this step. The original
+		 * waited until 50 ms passed with no read of the primary file, so a program read without a
+		 * pause (decompiles of many agents) kept its pre-save from making any progress at all, and
+		 * the next save waited for the whole copy. One pause per chunk of about 1 MB still leaves
+		 * the disk to the primary file, at no more than 20 MB/s of copy.
+		 * @return false if the task was cancelled
+		 */
+		private boolean backOff(boolean bounded) throws InterruptedException {
+			while (true) {
+				synchronized (preSaveLock) {
+					// Check for canceled task
+					checkPreSaveMonitor();
+					if (taskThread.isInterrupted()) {
+						return false;
+					}
+					// Continue to back-off while primary buffer file instance is in use
+					if (!preSaveBackoff || saverWaiting) {
+						preSaveBackoff = false;
+						return true;
+					}
+					preSaveBackoff = false;
+					// Back-off a little
+					pause(50);
+					if (bounded) {
+						checkPreSaveMonitor();
+						return !taskThread.isInterrupted();
+					}
+				}
+			}
+		}
+
+		/** The original copy, one get/put per buffer (-Dhydra.presave.bulk=false). */
+		private void bufferCopy(int cnt) throws IOException, InterruptedException {
+			DataBuffer buf = new DataBuffer(getBufferSize());
+			for (curIndex = 0; curIndex < cnt; curIndex++) {
+				if (!backOff(false)) {
+					throw new InterruptedException();
+				}
+				srcFile.get(buf, curIndex);
+				preSaveFile.put(buf, curIndex);
+			}
+		}
+
+		/**
+		 * Hydra H3: the same copy in chunks of about 1 MB (whole blocks), one positional read and
+		 * one write each, into one off-heap buffer freed when the copy ends. The pre-save file is
+		 * byte for byte the one {@link #bufferCopy} writes (see
+		 * {@link LocalBufferFile#copyBuffersFrom}); the back-off and cancel checks run per chunk.
+		 */
+		private void bulkCopy(LocalBufferFile src, int cnt)
+				throws IOException, InterruptedException {
+			int blockSize = getBufferSize() + 5; // BUFFER_PREFIX_SIZE
+			int perChunk = Math.max(1, PRESAVE_CHUNK_BYTES / blockSize);
+			perChunk = Math.min(perChunk, Math.max(1, cnt));
+			try (java.lang.foreign.Arena arena = java.lang.foreign.Arena.ofConfined()) {
+				java.nio.ByteBuffer chunk =
+					arena.allocate((long) perChunk * blockSize, 4096).asByteBuffer();
+				curIndex = 0;
+				while (curIndex < cnt) {
+					if (!backOff(true)) {
+						throw new InterruptedException();
+					}
+					int n = Math.min(perChunk, cnt - curIndex);
+					preSaveFile.copyBuffersFrom(src, curIndex, n, chunk);
+					curIndex += n;
+				}
+			}
+		}
+
 	}
+
+	/** Hydra H3: copy the pre-save in chunks (true, default) or one buffer at a time (false). */
+	static final boolean BULK_PRESAVE =
+		!"false".equalsIgnoreCase(System.getProperty("hydra.presave.bulk"));
+
+	/** Hydra H3: priority of the pre-save thread (default 3, below normal; 1 was the original). */
+	static final int PRESAVE_PRIORITY = Math.max(Thread.MIN_PRIORITY,
+		Math.min(Thread.NORM_PRIORITY, Integer.getInteger("hydra.presave.priority", 3)));
+
+	/** Hydra H3: size of one pre-save chunk, rounded down to whole blocks (default 1 MiB). */
+	static final int PRESAVE_CHUNK_BYTES =
+		Math.max(4096, Integer.getInteger("hydra.presave.chunkBytes", 1 << 20));
 
 	/**
 	 * <code>LocalManagedOutputBlockStream</code> extends <code>LocalOutputBlockStream</code>
