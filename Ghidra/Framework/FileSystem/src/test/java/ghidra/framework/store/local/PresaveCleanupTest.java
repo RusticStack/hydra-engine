@@ -18,8 +18,8 @@ package ghidra.framework.store.local;
 import static org.junit.Assert.*;
 
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
-import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -42,7 +42,9 @@ public class PresaveCleanupTest {
 	private static File file(File dir, String name, long mtime) throws IOException {
 		dir.mkdirs();
 		File f = new File(dir, name);
-		Files.write(f.toPath(), new byte[] { 1, 2, 3 });
+		try (FileOutputStream out = new FileOutputStream(f)) {
+			out.write(new byte[] { 1, 2, 3 });
+		}
 		assertTrue(f.setLastModified(mtime));
 		return f;
 	}

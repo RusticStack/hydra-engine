@@ -22,6 +22,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
@@ -963,7 +964,15 @@ public class LocalDatabaseItem extends LocalFolderItem implements DatabaseItem {
 			File root = r.root();
 			List<File> found = new ArrayList<>();
 			if (root.isDirectory()) {
-				collect(root.toPath(), found);
+				try {
+					collect(root.toPath(), found);
+				}
+				catch (InvalidPathException e) {
+					// a name java.nio refuses on this platform (on Windows, one that ends in a
+					// space or a dot) that java.io accepts: the old recursion, which takes it
+					found.clear();
+					legacyDir(root, found);
+				}
 			}
 			if (found.isEmpty()) {
 				return;
