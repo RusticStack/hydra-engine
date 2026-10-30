@@ -281,13 +281,22 @@ def _cancel_while_waiting(c, protocol, races, first=0):
     exe = prepare(c)
     tag = f"{protocol}-{first}" if first else f"{protocol}"
     gpr = c.copy_fixture(f"e3bCw{tag}")
-    d = c.daemon(f"e3b-cw{tag}")
-    H = R = None
+    # three requests wait on one lock: the protocol 3 cap max(2, slots/4) must admit them. The
+    # defaults derive the slots from the CPUs (quick = CPUs, long = max(8, CPUs)), so a 4-CPU host
+    # has a cap of 2 and refuses the third with lock_queue_full; 12 slots per lane give a cap of 3
+    d = c.daemon(f"e3b-cw{tag}", maxQuick=12, maxLong=12)
+    H = R = X = None
     try:
         H = owner(c, d, gpr, exe, protocol=protocol)
         R = reader(c, d, gpr, exe, "waiter", protocol)
         X = reader(c, d, gpr, exe, "waiter2", protocol)
         fn = bl.first_function(H)
+        if protocol == 3:
+            sched = H.call("status")["scheduler"]
+            cap = max(2, min(sched[k]["slots"] for k in ("quick", "long")) // 4)
+            if cap < 3:
+                raise dt.Fail(f"the daemon reports slots {[sched[k]['slots'] for k in ('quick', 'long')]}"
+                              f": a lock admits {cap} waiters, the test needs 3")
         # (a) three exclusive scripts queue behind the owner's script; the first is cancelled
         hold = script(c, H, 5000)
         dt.wait_for(lambda: holds(R, exe), "the holder's script to hold the program", 30)
@@ -357,7 +366,7 @@ def _cancel_while_waiting(c, protocol, races, first=0):
                 f"{races} races{which}: {counts['cancelled']} cancelled {phases or ''}, "
                 f"{counts['ok']} completed, no leak")
     finally:
-        close_all(H, R)
+        close_all(H, R, X)
         d.stop(force=True)
 
 
