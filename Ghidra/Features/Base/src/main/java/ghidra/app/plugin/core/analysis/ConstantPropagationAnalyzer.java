@@ -357,15 +357,10 @@ public class ConstantPropagationAnalyzer extends AbstractAnalyzer {
 			}
 		};
 
-		// bound check thread limit
-		if (maxThreadCount > pool.getMaxThreadCount() || maxThreadCount < 1) {
-			maxThreadCount = 1;
-		}
-
 		// @formatter:off
 		ConcurrentQ<Address, AddressSetView> queue = new ConcurrentQBuilder<Address, AddressSetView>()
 			.setThreadPool(pool)
-			.setMaxInProgress(maxThreadCount)
+			.setMaxInProgress(clampThreadCount(maxThreadCount, pool.getMaxThreadCount()))
 			.setMonitor(monitor)
 			.build(callback);
 		// @formatter:on
