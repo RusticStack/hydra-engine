@@ -93,6 +93,9 @@ PROFILES = {
     "pr": dict(agents=4, projects=2, duration_s=600, gate=True, watcher_s=0.05, round_s=60),
     "nightly": dict(agents=16, projects=4, duration_s=7200, gate=True, watcher_s=0.1, round_s=120),
     "release": dict(agents=24, projects=6, duration_s=14400, gate=True, watcher_s=0.1, round_s=180),
+    # owner decision 2026-10-30 (PROTOCOL-3 8.16): the hydra.4 soak is the PR lane plus ONE 30-minute run at the release
+    # size (24 agents x 6 projects, NTFS); its fault minimums are the release ones scaled by duration (scaled_minimums)
+    "release30": dict(agents=24, projects=6, duration_s=1800, gate=True, watcher_s=0.1, round_s=180),
 }
 
 #: fault classes, in the order of the spec (9.17); ``needs`` names what must be present to run one
@@ -124,8 +127,25 @@ VF_MIN_FAULTS = {
     "nightly": dict(kill_publish_leader=10, k11p_probe=3),
     "release": dict(kill_publish_leader=20, k11p_probe=4),
 }
+
+
+def scaled_minimums(mins: dict, factor: float) -> dict:
+    """Fault minimums scaled by a duration ratio, each rounded UP and never below 1 (8.16: release x 1800/14400)."""
+    import math
+    from fractions import Fraction
+    f = Fraction(factor)
+    return {c: max(1, math.ceil(n * f)) for c, n in mins.items()}
+
+
+#: 8.16: release30 = the release minimums x 1800/14400 = 1/8, rounded up: kill_client 250 -> 32, kill_daemon_random
+#: 40 -> 5, kill_daemon_trigger 40 -> 5, kill_decompiler 80 -> 10, suspend_daemon 30 -> 4, suspend_client 30 -> 4,
+#: stalled_reader 20 -> 3, handle_holder 24 -> 3, backup_lane 8 -> 1, oom_probe_100_views 6 -> 1;
+#: kill_publish_leader 20 -> 3, k11p_probe 4 -> 1
+RELEASE30_FACTOR = (PROFILES["release30"]["duration_s"], PROFILES["release"]["duration_s"])
+MIN_FAULTS["release30"] = scaled_minimums(MIN_FAULTS["release"], RELEASE30_FACTOR[0] / RELEASE30_FACTOR[1])
+VF_MIN_FAULTS["release30"] = scaled_minimums(VF_MIN_FAULTS["release"], RELEASE30_FACTOR[0] / RELEASE30_FACTOR[1])
 #: H-agents (Hydralysis processes) per profile
-HY_AGENTS = {"smoke": 2, "pr": 2, "nightly": 4, "release": 6}
+HY_AGENTS = {"smoke": 2, "pr": 2, "nightly": 4, "release": 6, "release30": 6}
 #: what the engine-level runner cannot do and the packages that provide it (listed, never faked)
 #: (each is run by the Hydralysis lane when it is on; without it they are named gaps)
 UNAVAILABLE_FAULTS = {
@@ -3184,6 +3204,14 @@ def selftest(work: pathlib.Path | None = None, verbose: bool = True) -> int:
     nightly_hits = {c: n for c, n in MIN_FAULTS["nightly"].items()}
     kills = sum(nightly_hits.get(c, 0) for c in KILL_CLASSES)
     check("nightly minimums sum to at least 150 kills", kills >= 150, kills)
+    check("release30 (8.16): 24x6 for 1800 s, minimums = release x 1/8 rounded up",
+          PROFILES["release30"]["agents"] == 24 and PROFILES["release30"]["projects"] == 6
+          and PROFILES["release30"]["duration_s"] == 1800 and PROFILES["release30"]["gate"]
+          and MIN_FAULTS["release30"] == dict(kill_client=32, kill_daemon_random=5, kill_daemon_trigger=5, kill_decompiler=10,
+                                              suspend_daemon=4, suspend_client=4, stalled_reader=3, handle_holder=3,
+                                              backup_lane=1, oom_probe_100_views=1)
+          and VF_MIN_FAULTS["release30"] == dict(kill_publish_leader=3, k11p_probe=1) and HY_AGENTS["release30"] == 6,
+          (MIN_FAULTS["release30"], VF_MIN_FAULTS["release30"]))
     check("release minimums are not below the nightly ones", all(MIN_FAULTS["release"][c] >= MIN_FAULTS["nightly"][c] for c in MIN_FAULTS["nightly"]))
     v = verdict_of("smoke", r, dict(MIN_FAULTS["smoke"]), wl, feats_ok, [], None, None, set(), plants_expected=["K2:", "K9:"])
     check("planted violations: a plant the run did not catch is named", v["plants_missing"] == ["K9:"] and v["plants_all_caught"] is False, v)
