@@ -128,7 +128,7 @@ def unfixed_install(c, tag):
     f = c.work / f"src-{tag}" / LOCK_REL.split("/src/main/java/")[1]
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_text(text, encoding="utf-8")
-    r = subprocess.run([e8.jdk_tool("javac"), "-nowarn", "--release", "21", "-encoding", "UTF-8",
+    r = subprocess.run([e8.jdk_tool("javac"), "-nowarn", "--release", e8.JAVA_RELEASE, "-encoding", "UTF-8",
                         "-cp", e8.install_jars(dst), "-d", str(dst / "Ghidra" / "patch"), str(f)],
                        capture_output=True, text=True, timeout=600)
     dt.check(r.returncode == 0, f"javac of the unfixed class failed: {r.stdout}{r.stderr}")

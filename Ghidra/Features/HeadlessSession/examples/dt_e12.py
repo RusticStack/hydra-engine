@@ -115,6 +115,12 @@ import daemon_tests as dt
 
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parents[3]
+
+#: the release the engine sources are compiled at (Ghidra/application.properties): H3's pre-save
+#: uses java.lang.foreign.Arena, a preview API under --release 21
+JAVA_RELEASE = next((ln.split("=", 1)[1].strip() for ln in (REPO / "Ghidra" / "application.properties")
+                     .read_text(encoding="utf-8").splitlines()
+                     if ln.startswith("application.java.compiler=")), "21")
 DB_REL = "Ghidra/Framework/DB/src/main/java/db/buffers/"
 DBDB_REL = "Ghidra/Framework/DB/src/main/java/db/Database.java"
 FORK_REL = ("Ghidra/Features/HeadlessSession/src/main/java/ghidra/app/util/headless/session/"
@@ -636,7 +642,7 @@ def install_jars(install):
 
 def javac(cp, out, files):
     out.mkdir(parents=True, exist_ok=True)
-    r = subprocess.run([jdk_tool("javac"), "-nowarn", "--release", "21", "-encoding", "UTF-8",
+    r = subprocess.run([jdk_tool("javac"), "-nowarn", "--release", JAVA_RELEASE, "-encoding", "UTF-8",
                         "-cp", cp, "-d", str(out), *map(str, files)], capture_output=True, text=True)
     dt.check(r.returncode == 0, f"javac failed: {r.stdout[-1500:]}{r.stderr[-1500:]}")
 

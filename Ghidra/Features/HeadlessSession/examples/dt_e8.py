@@ -85,6 +85,12 @@ import daemon_tests as dt
 
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parents[3]
+
+#: the release the engine sources are compiled at (Ghidra/application.properties): H3's pre-save
+#: uses java.lang.foreign.Arena, a preview API under --release 21
+JAVA_RELEASE = next((ln.split("=", 1)[1].strip() for ln in (REPO / "Ghidra" / "application.properties")
+                     .read_text(encoding="utf-8").splitlines()
+                     if ln.startswith("application.java.compiler=")), "21")
 LMBF_REL = "Ghidra/Framework/DB/src/main/java/db/buffers/LocalManagedBufferFile.java"
 MAGIC = bytes.fromhex("2f30312c34292c2a")
 VER = re.compile(r"db\.(\d+)\.gbf$")
@@ -446,7 +452,7 @@ def mutant_install(c, tag, variant, pause_ms=PAUSE_MS):
     (srcdir / "db" / "buffers").mkdir(parents=True)
     f = srcdir / "db" / "buffers" / "LocalManagedBufferFile.java"
     f.write_text(text, encoding="utf-8")
-    r = subprocess.run([jdk_tool("javac"), "-nowarn", "--release", "21", "-encoding", "UTF-8",
+    r = subprocess.run([jdk_tool("javac"), "-nowarn", "--release", JAVA_RELEASE, "-encoding", "UTF-8",
                         "-cp", install_jars(dst), "-d", str(dst / "Ghidra" / "patch"), str(f)],
                        capture_output=True, text=True)
     dt.check(r.returncode == 0, f"javac of the test-only class failed: {r.stdout}{r.stderr}")
@@ -779,7 +785,7 @@ def probe(c, install, *args, props=()):
         src.parent.mkdir(parents=True, exist_ok=True)
         src.write_text(PROBE, encoding="utf-8")
         classes.mkdir(parents=True, exist_ok=True)
-        r = subprocess.run([jdk_tool("javac"), "-nowarn", "--release", "21", "-encoding", "UTF-8",
+        r = subprocess.run([jdk_tool("javac"), "-nowarn", "--release", JAVA_RELEASE, "-encoding", "UTF-8",
                             "-cp", install_jars(install), "-d", str(classes), str(src)],
                            capture_output=True, text=True)
         dt.check(r.returncode == 0, f"javac of the probe failed: {r.stdout}{r.stderr}")
