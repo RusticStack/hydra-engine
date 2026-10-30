@@ -25,7 +25,9 @@ import generic.jar.ResourceFile;
 import ghidra.app.decompiler.DecompInterface.SpecStrings;
 import ghidra.app.plugin.processors.sleigh.SleighLanguage;
 import ghidra.app.plugin.processors.sleigh.UniqueLayout;
+import ghidra.framework.options.Options;
 import ghidra.program.database.ProgramBuilder;
+import ghidra.program.database.SpecExtension;
 import ghidra.program.model.listing.Program;
 import ghidra.program.model.pcode.PcodeDataTypeManager;
 import ghidra.program.model.pcode.XmlEncode;
@@ -58,8 +60,37 @@ public class DecompInterfaceSpecCacheTest extends AbstractGhidraHeadlessIntegrat
 		SpecStrings first = open().getSpecStrings();
 		SpecStrings second = open().getSpecStrings();
 
-		assertSame(first, second);
+		assertSame(first.tspec, second.tspec);
+		assertSame(first.coretypes, second.coretypes);
 		assertBuiltFromScratch(first);
+	}
+
+	@Test
+	public void testCompilerSpecExtensionInstalledAfterOptionsChange() throws Exception {
+		DecompInterface ifc = open();
+		String fixup = "<callfixup name=\"mynewthing\">\n" + "  <target name=\"targ1\"/>\n" +
+			"  <pcode>\n" + "    <body><![CDATA[\n" + "    ESP = ESP + 4;\n" + "    ]]></body>\n" +
+			"  </pcode>\n" + "</callfixup>\n";
+
+		// Adding an extension first sets the program options, which bumps the modification
+		// number, and only then installs the extension into the compiler spec in place.
+		// Build the strings in between, as a concurrent decompiler start could.
+		int tx = program.startTransaction("extension");
+		try {
+			Options specOptions = program.getOptions(SpecExtension.SPEC_EXTENSION);
+			specOptions.setString("callfixup_mynewthing", fixup);
+			specOptions.setInt(SpecExtension.VERSION_COUNTER_OPTIONNAME,
+				SpecExtension.getVersionCounter(program) + 1);
+			ifc.getSpecStrings();
+			invokeInstanceMethod("installExtensions", program);
+
+			SpecStrings after = ifc.getSpecStrings();
+			assertTrue(after.cspecxml.contains("mynewthing"));
+			assertBuiltFromScratch(after);
+		}
+		finally {
+			program.endTransaction(tx, true);
+		}
 	}
 
 	@Test

@@ -50,6 +50,7 @@ import ghidra.util.timer.GTimerMonitor;
 public class DecompileProcess {
 	
 	private static boolean errorDisplayed = false; // launch failure previously displayed
+	private static final long LAUNCH_WAIT_MS = 200; // an exit this soon after start is a launch failure
 
 	//	public static DecompileProcess decompProcess = null;
 	private final static LongAdder BYTES_CALLBACKS = new LongAdder();
@@ -70,6 +71,7 @@ public class DecompileProcess {
 	private Runtime runtime = Runtime.getRuntime();
 	private String[] exepath; // Path to the decompiler executable
 	private Runnable timeoutRunnable;
+	private long launchTime; // System.nanoTime() when the process was last started
 
 	// Note: volatile for variables modified when we shutdown, potential from different thread
 	private volatile Process nativeProcess;
@@ -151,8 +153,9 @@ public class DecompileProcess {
 		statusGood = false;
 		
 		try {
+			launchTime = System.nanoTime();
 			nativeProcess = launch();
-			
+
 			// No wait for the process to load: an executable that cannot run on this system
 			// exits without answering, which the registerProgram handshake detects
 			nativeIn = nativeProcess.getInputStream();
@@ -201,9 +204,10 @@ public class DecompileProcess {
 	}
 
 	/**
-	 * Called when the registerProgram handshake fails.  If the process has exited without
-	 * being disposed, it failed to launch: report it as setup would have and mark this
-	 * process as a startup failure.
+	 * Called when the registerProgram handshake fails.  If the process exited, without being
+	 * disposed, within the time setup used to wait for it, it failed to launch: report it as
+	 * setup would have and mark this process as a startup failure.  A later exit is a crash
+	 * while handling the handshake and is left to the caller as before.
 	 * @param exc is the exception from the handshake
 	 * @throws IOException describing the launch failure, if the process failed to launch
 	 */
@@ -212,9 +216,13 @@ public class DecompileProcess {
 		if (process == null || disposestate != DisposeState.NOT_DISPOSED) {
 			return;
 		}
+		long elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - launchTime);
+		if (elapsed > LAUNCH_WAIT_MS) {
+			return;
+		}
 		try {
 			// The pipe can break slightly before the process is reported as exited
-			if (!process.waitFor(200, TimeUnit.MILLISECONDS)) {
+			if (!process.waitFor(LAUNCH_WAIT_MS, TimeUnit.MILLISECONDS)) {
 				return;
 			}
 		}
@@ -228,7 +236,8 @@ public class DecompileProcess {
 		finally {
 			disposestate = DisposeState.DISPOSED_ON_STARTUP_FAILURE;
 			nativeProcess = null;
-			process.destroy();
+			// dispose() no longer runs for this process, so close its pipes here
+			DecompilerDisposer.dispose(process, nativeOut, nativeIn);
 		}
 		throw new IOException("Decompiler process failed to launch (see log for details)", exc);
 	}

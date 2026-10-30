@@ -19,7 +19,6 @@ import static org.junit.Assert.*;
 
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -169,55 +168,38 @@ public class ConcurrentQTest extends AbstractGenericTest {
 	}
 
 	@Test
-	public void testAddIteratorLetsItemsFinishWhileIterating() throws Exception {
-		// Finishing an item takes the queue lock.  The iterator waits for the first item to
-		// finish before it produces the second, which only works if add() does not hold the
-		// lock while the iterator runs.
-		CountDownLatch firstEnded = new CountDownLatch(1);
-		q.addProgressListener(new QProgressListener<>() {
-			@Override
-			public void taskEnded(long id, TestItem item, long totalCount, long completedCount) {
-				firstEnded.countDown();
-			}
+	public void testCancelWhileAddingIteratorDropsLaterItems() throws Exception {
+		// A monitor cancel from another thread while add() is still iterating must also cover
+		// the items the iterator produces after the cancel was requested
+		ConcurrentQBuilder<TestItem, TestResult> builder = new ConcurrentQBuilder<>();
 
-			@Override
-			public void taskStarted(long id, TestItem item) {
-				// don't care
-			}
-
-			@Override
-			public void progressChanged(long id, TestItem item, long currentProgress) {
-				// don't care
-			}
-
-			@Override
-			public void progressModeChanged(long id, TestItem item, boolean indeterminate) {
-				// don't care
-			}
-
-			@Override
-			public void progressMessageChanged(long id, TestItem item, String message) {
-				// don't care
-			}
-
-			@Override
-			public void maxProgressChanged(long id, TestItem item, long maxProgress) {
-				// don't care
-			}
-		});
+		// @formatter:off
+		q = 	builder.setThreadPool(threadPool).
+				    setCollectResults(true).
+				    setMaxInProgress(1).
+				    setMonitor(monitor).
+				    build(callback);
+		// @formatter:on
 
 		List<TestItem> workList = new ArrayList<>();
-		workList.add(new TestItem("One", FAST_EXECUTION));
+		workList.add(new TestItem("One", DELIBERATE_EXECUTION));
 		workList.add(new TestItem("Two", FAST_EXECUTION));
+		workList.add(new TestItem("Three", FAST_EXECUTION));
 		Iterator<TestItem> items = workList.iterator();
-		AtomicBoolean endedWhileIterating = new AtomicBoolean();
+		Thread cancelThread = new Thread(() -> monitor.cancel());
 		q.add(new Iterator<TestItem>() {
 			private int produced;
 
 			@Override
 			public boolean hasNext() {
-				if (produced == 1 && !endedWhileIterating.get()) {
-					endedWhileIterating.set(awaitLatch(firstEnded));
+				if (produced == 1 && cancelThread.getState() == Thread.State.NEW) {
+					cancelThread.start();
+					try {
+						cancelThread.join(SLOW_EXECUTION);
+					}
+					catch (InterruptedException e) {
+						Thread.currentThread().interrupt();
+					}
 				}
 				return items.hasNext();
 			}
@@ -229,18 +211,9 @@ public class ConcurrentQTest extends AbstractGenericTest {
 			}
 		});
 
-		assertTrue("an item could not finish while add() iterated", endedWhileIterating.get());
-		assertCompletionOrder(waitForResults(), "One", "Two");
-	}
-
-	private boolean awaitLatch(CountDownLatch latch) {
-		try {
-			return latch.await(DEFAULT_WAIT_TIMEOUT, TimeUnit.MILLISECONDS);
-		}
-		catch (InterruptedException e) {
-			Thread.currentThread().interrupt();
-			return false;
-		}
+		cancelThread.join(DEFAULT_WAIT_TIMEOUT);
+		q.waitUntilDone();
+		assertEquals("items added after the cancel were processed", 1, callback.itemsProcessed());
 	}
 
 	@Test

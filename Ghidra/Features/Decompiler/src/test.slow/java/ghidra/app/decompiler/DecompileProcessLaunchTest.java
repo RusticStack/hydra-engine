@@ -77,7 +77,24 @@ public class DecompileProcessLaunchTest extends AbstractGhidraHeadlessIntegratio
 		DecompileProcess decompProcess = new ScriptedDecompileProcess(process);
 
 		assertLaunchFails(decompProcess);
-		assertTrue(process.destroyed);
+		waitForCondition(() -> process.destroyed, "the failed process was not destroyed");
+	}
+
+	@Test
+	public void testProcessExitingLateInHandshakeIsNotStartupFailure() throws Exception {
+		// Started fine, then exits while handling registerProgram, after the launch wait
+		ScriptedProcess process = new ScriptedProcess(new byte[0], 1, 500);
+		DecompileProcess decompProcess = new ScriptedDecompileProcess(process);
+
+		try {
+			decompProcess.registerProgram(null, "", "", "", "", program);
+			fail("registerProgram succeeded on a process that exited");
+		}
+		catch (IOException e) {
+			assertEquals("Decompiler process died", e.getMessage());
+		}
+		assertFalse(decompProcess.isReady());
+		assertEquals(DisposeState.NOT_DISPOSED, decompProcess.getDisposeState());
 	}
 
 	private void assertLaunchFails(DecompileProcess decompProcess) throws Exception {
@@ -119,7 +136,27 @@ public class DecompileProcessLaunchTest extends AbstractGhidraHeadlessIntegratio
 		private int timedWaits;
 
 		ScriptedProcess(byte[] answer, int aliveChecks) {
-			this.in = new ByteArrayInputStream(answer);
+			this(answer, aliveChecks, 0);
+		}
+
+		ScriptedProcess(byte[] answer, int aliveChecks, long answerDelayMs) {
+			this.in = new ByteArrayInputStream(answer) {
+				private boolean delayed;
+
+				@Override
+				public synchronized int read() {
+					if (!delayed) {
+						delayed = true;
+						try {
+							Thread.sleep(answerDelayMs);
+						}
+						catch (InterruptedException e) {
+							Thread.currentThread().interrupt();
+						}
+					}
+					return super.read();
+				}
+			};
 			this.aliveChecks = aliveChecks;
 		}
 
