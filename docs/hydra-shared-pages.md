@@ -11,7 +11,14 @@ three quarters of what an overlay costs (heap class histogram: `byte[]` 35.6 MB 
 - When a `BufferMgr` reads a page from its source file (or reloads an unchanged stored page from its cache file), the
   page is looked up by its bytes (vectorised `Arrays.hashCode`, then `Arrays.equals`). When some other buffer already
   holds an equal page, this buffer takes that array and its own array is kept as a spare for the next read.
-  Otherwise its array becomes the shared copy.
+  Otherwise the first view to read a content only records a *sighting* (hash, a token for its `BufferMgr`, a weak
+  reference) and keeps its array private; when a second view reads the same content, that view's array becomes the
+  shared copy, and every later view takes it. So a page that only one view reads (every page of a single-program
+  session, and a view's re-reads after eviction) costs no copy-on-write on its first change and no fresh array when
+  its buffer is recycled: single-view editing and analysis allocate as in Ghidra. The cost on a read is one
+  `Arrays.hashCode` over the page (about 3 us for 16 KB on the bench machine under load, against a file read of
+  the same page; about 4 ms per KotOR overlay in total). An array freed by a hit also serves the next new cache
+  buffer, not only the next recycled one.
 - A shared array is never written. `DataBuffer` copies it before its first change (copy-on-write in every mutator)
   and drops it, without copying, before the buffer is refilled from a file (`unshareForOverwrite`; `BufferMgr`
   recycles cache buffers through `privateArray`, and `LocalBufferFile.get` checks too).

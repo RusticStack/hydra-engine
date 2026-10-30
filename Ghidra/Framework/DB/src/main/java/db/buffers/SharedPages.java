@@ -55,16 +55,28 @@ public final class SharedPages {
 	private static final LongAdder HITS = new LongAdder();
 	private static final LongAdder MISSES = new LongAdder();
 	private static final LongAdder COLLISIONS = new LongAdder();
+	private static final LongAdder SIGHTINGS = new LongAdder();
 
 	private SharedPages() {
 	}
 
+	/**
+	 * A table entry. A <em>sighting</em> ({@code shared == false}) only records that one view read a
+	 * page with this hash: its array stays private to that view and is never handed out, so a
+	 * page that a single view reads costs no copy-on-write and no fresh array on eviction. When a
+	 * second view reads the same content, its array is published ({@code shared == true}) and
+	 * every later view takes it.
+	 */
 	private static final class PageRef extends WeakReference<byte[]> {
 		final int hash;
+		final long owner;
+		final boolean shared;
 
-		PageRef(byte[] page, int hash) {
+		PageRef(byte[] page, int hash, long owner, boolean shared) {
 			super(page, QUEUE);
 			this.hash = hash;
+			this.owner = owner;
+			this.shared = shared;
 		}
 	}
 
@@ -79,16 +91,19 @@ public final class SharedPages {
 	}
 
 	/**
-	 * Interns the page {@code buf} was just filled with: when an equal page is held elsewhere,
-	 * {@code buf} takes it and the private array it held is returned for reuse; otherwise the
-	 * buffer's array becomes the shared copy (and is marked shared, so it is never written in
-	 * place) and null is returned. Empty buffers, buffers without data and buffers that already
-	 * share a page are left alone.
+	 * Interns the page {@code buf} was just filled with. When an equal page is already published,
+	 * {@code buf} takes it and the private array it held is returned for reuse. When only a
+	 * sighting of the hash exists and it came from another view, the buffer's array becomes the
+	 * published copy (marked shared, so it is never written in place). On the first sighting, or
+	 * when the same view reads the page again, the page stays private and only the sighting is
+	 * recorded. Empty buffers, buffers without data and buffers that already share a page are
+	 * left alone.
 	 *
 	 * @param buf a buffer that was just read from a file and that no one else uses yet
+	 * @param owner a token identifying the view (the {@link BufferMgr}) that read it
 	 * @return a spare private array of the same size, or null
 	 */
-	static byte[] intern(DataBuffer buf) {
+	static byte[] intern(DataBuffer buf, long owner) {
 		if (!enabled || buf.isEmpty() || buf.isShared()) {
 			return null;
 		}
@@ -100,7 +115,7 @@ public final class SharedPages {
 		int h = Arrays.hashCode(data) * 31 + data.length;
 		PageRef ref = TABLE.get(h);
 		byte[] page = ref != null ? ref.get() : null;
-		if (page != null) {
+		if (page != null && ref.shared) {
 			if (page != data && page.length == data.length && Arrays.equals(page, data)) {
 				HITS.increment();
 				return buf.shareData(page);
@@ -108,12 +123,25 @@ public final class SharedPages {
 			COLLISIONS.increment(); // a different page with the same hash: stays private
 			return null;
 		}
-		buf.markShared(); // before it is published: from now on it is copied before a change
-		PageRef mine = new PageRef(data, h);
-		boolean published = ref == null ? TABLE.putIfAbsent(h, mine) == null
+		if (page != null && ref.owner == owner) {
+			return null; // the same view reads it again: still a single reader, stays private
+		}
+		boolean publish = page != null; // a second view reads this content
+		if (publish) {
+			buf.markShared(); // before it is published: from now on it is copied before a change
+		}
+		PageRef mine = new PageRef(data, h, owner, publish);
+		boolean stored = ref == null ? TABLE.putIfAbsent(h, mine) == null
 				: TABLE.replace(h, ref, mine);
-		if (published) {
-			MISSES.increment();
+		if (publish) {
+			if (stored) {
+				MISSES.increment();
+			}
+			// when another thread won the race the array is still marked shared: it is only copied
+			// before its next change, which is safe
+		}
+		else if (stored) {
+			SIGHTINGS.increment();
 		}
 		return null;
 	}
@@ -131,9 +159,14 @@ public final class SharedPages {
 		return HITS.sum();
 	}
 
-	/** Pages published as the first copy of their content. */
+	/** Pages published as the shared copy of their content (read by a second view). */
 	public static long misses() {
 		return MISSES.sum();
+	}
+
+	/** First sightings: pages one view read, kept private until a second view reads them. */
+	public static long sightings() {
+		return SIGHTINGS.sum();
 	}
 
 	/** Pages left private because another page had the same hash. */

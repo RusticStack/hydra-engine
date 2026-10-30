@@ -102,6 +102,7 @@ public class SharedPagesTest extends AbstractGenericTest {
 
 	@Test
 	public void testViewsShareOneCopyOfEachPage() throws IOException {
+		readAll(view()); // the first reader keeps private pages; the second publishes them
 		BufferMgr a = view();
 		BufferMgr b = view();
 		BufferMgr c = view();
@@ -117,6 +118,7 @@ public class SharedPagesTest extends AbstractGenericTest {
 
 	@Test
 	public void testChangeInOneViewIsNotSeenByAnother() throws IOException {
+		readAll(view());
 		BufferMgr a = view();
 		BufferMgr b = view();
 		for (int i = 0; i < COUNT; i++) {
@@ -144,6 +146,63 @@ public class SharedPagesTest extends AbstractGenericTest {
 		assertTrue(a.undo(false));
 		assertArrayEquals(content[3], bytes(a, 3));
 		assertArrayEquals(content[17], bytes(a, 17));
+	}
+
+	private void readAll(BufferMgr m) throws IOException {
+		for (int i = 0; i < COUNT; i++) {
+			assertArrayEquals(content[i], bytes(m, i));
+		}
+	}
+
+	private boolean isShared(BufferMgr m, int id) throws IOException {
+		DataBuffer buf = m.getBuffer(id);
+		try {
+			return buf.isShared();
+		}
+		finally {
+			m.releaseBuffer(buf);
+		}
+	}
+
+	/**
+	 * A page that only one view reads (also after eviction and reload) stays private: no
+	 * copy-on-write on its first change and no fresh array when its buffer is recycled. The second
+	 * view to read it publishes it and the third takes the published copy.
+	 */
+	@Test
+	public void testSingleReaderKeepsPagesPrivate() throws Exception {
+		// content no other test used, so no page published by an earlier test can match
+		BufferMgr mgr = new BufferMgr(BUFFER_SIZE, 64 * 1024, 10);
+		Random r = new Random(System.nanoTime());
+		for (int i = 0; i < COUNT; i++) {
+			DataBuffer buf = mgr.createBuffer();
+			byte[] b = new byte[mgr.getBufferSize()];
+			r.nextBytes(b);
+			buf.put(0, b);
+			mgr.releaseBuffer(buf);
+		}
+		File own = new File(testDir, "single.bf");
+		mgr.saveAs(new LocalBufferFile(own, mgr.getBufferSize()), true, null);
+		mgr.dispose();
+
+		BufferMgr a = new BufferMgr(new LocalBufferFile(own, true), 4 * BUFFER_SIZE, 10);
+		mgrs.add(a);
+		for (int round = 0; round < 2; round++) { // the small cache evicts: the 2nd round reloads
+			for (int i = 0; i < COUNT; i++) {
+				assertFalse("single reader, page " + i + " round " + round, isShared(a, i));
+			}
+		}
+		BufferMgr b = new BufferMgr(new LocalBufferFile(own, true));
+		mgrs.add(b);
+		BufferMgr c = new BufferMgr(new LocalBufferFile(own, true));
+		mgrs.add(c);
+		long hits0 = SharedPages.hits();
+		for (int i = 0; i < COUNT; i++) {
+			byte[] pb = array(b, i);
+			assertSame("page " + i, pb, array(c, i));
+			assertTrue(isShared(b, i));
+		}
+		assertTrue(SharedPages.hits() - hits0 >= COUNT);
 	}
 
 	@Test

@@ -82,6 +82,10 @@ public class BufferMgr {
 	private int cacheSize;
 	/** A private page array freed by {@link SharedPages#intern}, reused for the next file read. */
 	private byte[] spareData;
+	/** Identifies this view to {@link SharedPages} (a page one view reads twice stays private). */
+	private final long viewToken = NEXT_VIEW_TOKEN.incrementAndGet();
+	private static final java.util.concurrent.atomic.AtomicLong NEXT_VIEW_TOKEN =
+		new java.util.concurrent.atomic.AtomicLong();
 	private int buffersOnHand;
 	private int lockCount = 0;
 
@@ -612,6 +616,11 @@ public class BufferMgr {
 		if (cacheSize < maxCacheSize) {
 			++cacheSize;
 			lowWaterMark = cacheSize;
+			byte[] spare = spareData;
+			if (spare != null && spare.length == cacheFile.getBufferSize()) {
+				spareData = null; // an array freed by a shared page: no new allocation
+				return new DataBuffer(spare);
+			}
 			return new DataBuffer(cacheFile.getBufferSize());
 		}
 
@@ -653,7 +662,7 @@ public class BufferMgr {
 
 	/** Interns a page just read from a file ({@link SharedPages}) and keeps the freed array. */
 	private void internPage(DataBuffer buf) {
-		byte[] spare = SharedPages.intern(buf);
+		byte[] spare = SharedPages.intern(buf, viewToken);
 		if (spare != null) {
 			spareData = spare;
 		}
