@@ -1,0 +1,63 @@
+/* ###
+ * IP: GHIDRA
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ * 
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+apply from: "$rootProject.projectDir/gradle/distributableGhidraModule.gradle"
+apply plugin: 'eclipse'
+
+eclipse.project.name = 'Framework HydraNative'
+
+/*****************************************************************************************
+ * hydra_native: the Rust library (crates/hydra-native, a cdylib with a C ABI) that Java calls
+ * through the foreign function API (ghidra.util.HydraCpu in module Utility).
+ *
+ * cargoBuild builds it with the toolchain pinned in rust-toolchain.toml and the dependencies
+ * pinned in Cargo.lock (--locked); buildNatives puts the library where Ghidra's natives go
+ * (build/os/<platform>, shipped as os/<platform>). Cargo is found on the PATH, or set CARGO.
+ *****************************************************************************************/
+def platform = rootProject.getCurrentPlatformName()
+def cargoDir = file('build/cargo')
+def library = System.mapLibraryName('hydra_native')
+
+task cargoBuild(type: Exec) {
+	group = 'Hydra'
+	description = 'Builds hydra_native with cargo (release). [Ghidra/Framework/HydraNative/build.gradle]'
+	workingDir projectDir
+	executable System.getenv('CARGO') ?: 'cargo'
+	args 'build', '--release', '--locked'
+	environment 'CARGO_TARGET_DIR', cargoDir.path
+	inputs.files(fileTree(projectDir) {
+		include 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/**', 'crates/**'
+		exclude '**/build/**'
+	})
+	outputs.file "${cargoDir}/release/${library}"
+}
+
+task "buildNatives_${platform}"(type: Copy) {
+	group = 'Hydra'
+	description = "Copies hydra_native to build/os/${platform}. [Ghidra/Framework/HydraNative/build.gradle]"
+	from cargoBuild
+	into "build/os/${platform}"
+}
+
+task buildNatives {
+	group = 'Hydra'
+	description = 'Builds hydra_native for the current platform. [Ghidra/Framework/HydraNative/build.gradle]'
+	dependsOn "buildNatives_${platform}"
+}
+
+// The install's os/<platform> is copied from build/os/<platform> (distributableGhidraModule.gradle)
+rootProject.tasks.named("assembleDistribution_${platform}") {
+	dependsOn buildNatives
+}

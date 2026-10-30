@@ -21,3 +21,8 @@ apply from: "$rootProject.projectDir/gradle/javadoc.gradle"
 apply plugin: 'eclipse'
 
 eclipse.project.name = 'Framework Utility'
+
+test {
+	// HydraCpuTest calls hydra_native, built by module HydraNative, through the foreign function API
+	dependsOn ':HydraNative:buildNatives'
+}

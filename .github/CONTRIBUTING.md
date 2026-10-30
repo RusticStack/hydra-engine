@@ -26,8 +26,10 @@ sync" below.
 
 You need a JDK (the version is `application.java.min` in `Ghidra/application.properties`; JDK 25
 for `main`), Python 3.10 or later, and for the native parts (the decompiler, demanglers) a C/C++
-toolchain: Visual Studio Build Tools on Windows, GCC or Clang on Linux and macOS. Gradle comes
-from the wrapper.
+toolchain: Visual Studio Build Tools on Windows, GCC or Clang on Linux and macOS. The Rust core
+(`Ghidra/Framework/HydraNative`) needs `cargo` from [rustup](https://rustup.rs) on the `PATH`; its
+`rust-toolchain.toml` and `Cargo.lock` pin the toolchain and the crates, which the first build
+downloads. Gradle comes from the wrapper.
 
 ```sh
 # once: download the build dependencies into dependencies/
