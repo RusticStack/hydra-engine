@@ -1,0 +1,20 @@
+##VERSION: 2.0
+##MODULE IP: Apache License 2.0
+.cargo/config.toml||GHIDRA||||END|
+Cargo.lock||GHIDRA||||END|
+Cargo.toml||GHIDRA||||END|
+Module.manifest||GHIDRA||||END|
+PROFILES.md||GHIDRA||||END|
+README.md||GHIDRA||||END|
+crates/hydra-native/Cargo.toml||GHIDRA||||END|
+crates/hydra-native/examples/cpu.rs||GHIDRA||||END|
+crates/hydra-native/src/cpuid.rs||GHIDRA||||END|
+crates/hydra-native/src/lib.rs||GHIDRA||||END|
+crates/hydra-native/src/limits.rs||GHIDRA||||END|
+crates/hydra-native/src/os/linux.rs||GHIDRA||||END|
+crates/hydra-native/src/os/mod.rs||GHIDRA||||END|
+crates/hydra-native/src/os/sysfs.rs||GHIDRA||||END|
+crates/hydra-native/src/os/windows.rs||GHIDRA||||END|
+crates/hydra-native/src/profile.rs||GHIDRA||||END|
+crates/hydra-native/src/topology.rs||GHIDRA||||END|
+rust-toolchain.toml||GHIDRA||||END|

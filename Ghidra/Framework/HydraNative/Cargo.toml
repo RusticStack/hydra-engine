@@ -1,0 +1,25 @@
+[workspace]
+resolver = "3"
+members = ["crates/hydra-native"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+libc = "0.2.191"
+windows-sys = "0.61.2"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"

@@ -1,0 +1,5 @@
+# Linked into os/<platform>/hydra_native (each is "MIT OR Apache-2.0"; Cargo.lock pins the versions)
+MODULE FILE INFO: rust/std-1.99.1 NO_HASH Apache License 2.0
+MODULE FILE INFO: crates.io/libc-0.2.191 NO_HASH Apache License 2.0
+MODULE FILE INFO: crates.io/windows-link-0.2.1 NO_HASH Apache License 2.0
+MODULE FILE INFO: crates.io/windows-sys-0.61.2 NO_HASH Apache License 2.0

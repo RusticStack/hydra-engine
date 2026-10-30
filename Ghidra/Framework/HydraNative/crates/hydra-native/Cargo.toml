@@ -1,0 +1,27 @@
+[package]
+name = "hydra-native"
+description = "Hydra Engine native core: granted CPUs, CPU identification and tuning profiles behind a C ABI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "hydra_native"
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies.windows-sys]
+workspace = true
+features = [
+	"Win32_Foundation",
+	"Win32_System_JobObjects",
+	"Win32_System_SystemInformation",
+	"Win32_System_Threading",
+]
