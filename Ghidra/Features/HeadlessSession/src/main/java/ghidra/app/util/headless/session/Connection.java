@@ -66,18 +66,55 @@ final class Connection {
 		this.onShutdown = onShutdown;
 		this.client = session.connect(transport, launcher, this::send);
 		this.client.authenticated = token == null;
-		this.worker = Executors.newSingleThreadExecutor(r -> {
-			Thread t = new Thread(r, "session-" + client.label().replace(' ', '-'));
-			t.setDaemon(true);
-			return t;
-		});
+		// The ordered lane: at most one thread, FIFO, so one client's requests still run in the
+		// order sent. Its thread ends after laneIdleMs without work (it used to live as long as
+		// the connection), so an idle client holds no lane thread (Goal 2, async I/O).
+		ThreadPoolExecutor lane = new ThreadPoolExecutor(1, 1, laneIdleMs(), TimeUnit.MILLISECONDS,
+			new LinkedBlockingQueue<>(), r -> {
+				Thread t = new Thread(r, "session-" + client.label().replace(' ', '-'));
+				t.setDaemon(true);
+				return t;
+			});
+		lane.allowCoreThreadTimeOut(true);
+		this.worker = lane;
 		this.parallel = new ThreadPoolExecutor(0, MAX_PARALLEL, 30, TimeUnit.SECONDS,
 			new SynchronousQueue<>(), r -> {
 				Thread t = new Thread(r, "session-" + client.label().replace(' ', '-') + "-p");
 				t.setDaemon(true);
 				return t;
 			});
-		this.outbound = new Outbound();
+		this.outbound = new Outbound(virtualIo() && "socket".equals(transport));
+	}
+
+	/**
+	 * Whether a socket connection's reader and writer run on virtual threads ({@code -set
+	 * connectionThreads=virtual}, the default; {@code platform} restores one platform thread
+	 * each). They only wait on the socket and on monitors (which no longer pin a carrier since
+	 * JDK 24, JEP 491) and run no native or FFM code, so an idle client costs no platform thread.
+	 * Requests never run on them except the inline ones ({@code ping}, {@code status},
+	 * {@code cancel}, {@code health}) and the authenticating {@code hello}, as before.
+	 */
+	static boolean virtualIo() {
+		String v = Settings.string("connectionThreads", "virtual").trim();
+		return switch (v) {
+			case "virtual" -> true;
+			case "platform" -> false;
+			default -> throw new IllegalArgumentException(
+				"-set connectionThreads=" + v + ": not virtual or platform");
+		};
+	}
+
+	/** How long an idle ordered lane keeps its thread ({@code -set laneIdleMs}, default 10 s). */
+	static long laneIdleMs() {
+		return Math.max(1, Settings.integer("laneIdleMs", 10_000));
+	}
+
+	/** A thread for a connection's socket I/O: virtual unless {@link #virtualIo()} says not. */
+	static Thread ioThread(String name, Runnable body) {
+		Thread t = virtualIo() ? Thread.ofVirtual().name(name).unstarted(body)
+				: Thread.ofPlatform().name(name).daemon(true).unstarted(body);
+		t.start();
+		return t;
 	}
 
 	Client client() {
@@ -86,6 +123,9 @@ final class Connection {
 
 	/** Reads until end of input, then releases what the client held. */
 	void run() {
+		synchronized (readerGuard) {
+			reader = Thread.currentThread();
+		}
 		try {
 			byte[] line;
 			while (open && (line = readLine()) != null) {
@@ -98,6 +138,10 @@ final class Connection {
 			}
 		}
 		finally {
+			synchronized (readerGuard) {
+				reader = null; // close() no longer interrupts this thread
+				Thread.interrupted(); // an interrupt from close() only meant: stop reading
+			}
 			open = false;
 			client.leaving = true;
 			// cancel first: the worker must not finish a long request for a client that is gone;
@@ -485,9 +529,12 @@ final class Connection {
 
 		private final java.util.concurrent.ScheduledFuture<?> watch;
 
-		Outbound() {
-			thread = new Thread(this, "session-" + client.label().replace(' ', '-') + "-out");
-			thread.setDaemon(true);
+		Outbound(boolean virtual) {
+			String name = "session-" + client.label().replace(' ', '-') + "-out";
+			// a virtual writer parks in a socket write instead of holding a platform thread; the
+			// stdio writer (a file write would hold the carrier anyway) stays a platform thread
+			thread = virtual ? Thread.ofVirtual().name(name).unstarted(this)
+					: Thread.ofPlatform().name(name).daemon(true).unstarted(this);
 			thread.start();
 			watch = STALL_WATCH.scheduleWithFixedDelay(() -> {
 				if (writerStalled()) {
@@ -546,6 +593,13 @@ final class Connection {
 			}
 			catch (InterruptedException e) {
 				Thread.currentThread().interrupt();
+			}
+		}
+
+		/** Wakes a virtual writer parked in a socket write (the connection is closing). */
+		void interruptIfVirtual() {
+			if (thread.isVirtual()) {
+				thread.interrupt();
 			}
 		}
 
@@ -611,7 +665,20 @@ final class Connection {
 		catch (IOException e) {
 			// already closed
 		}
+		// A virtual reader or writer parked in a socket operation is woken by an interrupt at
+		// once (the socket is closed under it); a platform one ignores it, as before. Without it
+		// a closed connection could wait for the poller to notice before it is released.
+		synchronized (readerGuard) {
+			if (reader != null && reader.isVirtual()) {
+				reader.interrupt();
+			}
+		}
+		outbound.interruptIfVirtual();
 	}
+
+	private final Object readerGuard = new Object();
+	/** The thread in {@link #run()}'s read loop, null once it left it. */
+	private Thread reader;
 
 	private final ByteArrayOutputStream buf = new ByteArrayOutputStream();
 
