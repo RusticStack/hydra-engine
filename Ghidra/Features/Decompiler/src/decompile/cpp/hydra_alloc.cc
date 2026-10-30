@@ -66,6 +66,12 @@
 extern "C" void hydra_alloc_idle(void)
 {
 #if defined(_WIN32) && !defined(HYDRA_NO_MIMALLOC)
+  static bool purgeSet = false;
+  if (!purgeSet) {
+    // Decommit freed pages as soon as they are free, not 10 ms later from inside a later allocation.
+    mi_option_set(mi_option_purge_delay, 0);
+    purgeSet = true;
+  }
   mi_collect(true);
 #endif
 }
