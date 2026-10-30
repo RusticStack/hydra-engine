@@ -20,6 +20,7 @@ import static ghidra.program.model.pcode.ElementId.*;
 
 import java.io.*;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.LongAdder;
 
 import ghidra.program.model.address.Address;
 import ghidra.program.model.lang.InjectPayload;
@@ -51,6 +52,8 @@ public class DecompileProcess {
 	private static boolean errorDisplayed = false; // launch failure previously displayed
 
 	//	public static DecompileProcess decompProcess = null;
+	private final static LongAdder BYTES_CALLBACKS = new LongAdder();
+
 	private final static byte[] command_start = { 0, 0, 1, 2 };
 	private final static byte[] command_end = { 0, 0, 1, 3 };
 	private final static byte[] query_response_start = { 0, 0, 1, 8 };
@@ -878,7 +881,16 @@ public class DecompileProcess {
 		write(query_response_end);
 	}
 
+	/**
+	 * @return the number of getBytes callbacks answered by all decompiler processes in this JVM
+	 * (Hydra: measures what the byte snapshot avoids)
+	 */
+	public static long getBytesCallbackCount() {
+		return BYTES_CALLBACKS.sum();
+	}
+
 	private void getBytes() throws IOException, DecoderException {
+		BYTES_CALLBACKS.increment();
 		int el = paramDecoder.openElement(ELEM_ADDR);
 		Address addr = AddressXML.decodeFromAttributes(paramDecoder);
 		int size = (int) paramDecoder.readSignedInteger(ATTRIB_SIZE);
