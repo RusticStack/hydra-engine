@@ -118,7 +118,14 @@ three extra JVMs `LaunchSupport` costs on every start:
   size and time, so an update or another JDK just runs without it until you rebuild it, and by the
   JVM options a cache must match (the garbage collector, compact object headers, compressed
   pointers, which a heap of 32 GiB or more turns off): the JVM refuses a cache recorded with other
-  ones and silently runs without it, so each set gets its own file.
+  ones and silently runs without it, so each set gets its own file. The cache is looked for in
+  `<state>/aot` and then in the shared store (`aotDir`, by default `<per-user state dir>/aot`),
+  so `aot --shared`, run once per install, serves the daemons of every harness's state dir, which
+  also map the same file. Rebuild it after every install or re-stamp: `fast_install` hard-links
+  jars between installs, so re-stamping one changes the jar times of all of them, and their caches
+  stop matching. `aot --shared` removes stale caches from the store (beyond the 8 newest, or
+  unused for 14 days); while a daemon has the cache mapped, Windows refuses to replace it and the
+  existing file (same key, same inputs) is kept.
 - **Deferred start-up:** what no query needs is started on a background thread once the session
   is ready: the language service (every program open needs it), the default TLS context (master
   loads every trusted CA certificate of the OS and of Java for it) and the OSGi framework that
@@ -135,7 +142,7 @@ three extra JVMs `LaunchSupport` costs on every start:
 | `version` | Prints this client's `CLIENT_VERSION`, protocol and release (no daemon needed). |
 | `serve` | Runs the daemon in the foreground (for a service manager). |
 | `stdio [ARGS...]` | A private session on this process's stdin/stdout; no daemon, no socket. |
-| `aot [--project P] [--program X]` | Builds the AOT cache. |
+| `aot [--project P] [--program X] [--shared]` | Builds the AOT cache (in `<state>/aot`; `--shared`: in the shared store, for every state dir). |
 | `command [ARGS...]` | Prints the Java command line it would run. |
 | `config` | Prints the effective configuration, JDK and install. |
 
@@ -150,12 +157,15 @@ Lowest to highest: defaults, `<state>/config.json`, environment, command-line op
 |---|---|---|---|
 | `java` | `GHIDRA_SESSION_JAVA_HOME` | discovered | JDK home. |
 | `maxHeap` | `GHIDRA_SESSION_MAXMEM` | a quarter of RAM, 2-31 GiB | `-Xmx`. G1 only takes what it needs and returns idle memory. |
-| `minHeap` | | `128m` | `-Xms` (it was `512m`; G1 never shrinks below it). |
+| `minHeap` | | `64m` | `-Xms`: the heap starts small and grows as the work needs (G1 returns the unused part when idle). |
 | `gc` | `GHIDRA_SESSION_GC` | `g1` | `g1` (with string deduplication, periodic uncommit and `MinHeapFreeRatio=15`/`MaxHeapFreeRatio=40`), `zgc`, `parallel`, `default`. |
+| `gcTimeRatio` | | `0` | G1 `-XX:GCTimeRatio`; `0`: the JDK's (12). `4` keeps the heap nearer what is live, at more GC time; opt-in (no CPU gain measured). |
+| `jitThreads` | `GHIDRA_SESSION_JIT_THREADS` | `-1` | `-XX:CICompilerCount`; `-1`: the JDK's choice; `0`: a quarter of the CPUs this process may use (its affinity), 2 to 4; `n`: n. Opt-in: fewer compiler threads slow warm-up under load. |
 | `vmargs` | `GHIDRA_SESSION_VMARGS` (space-separated) | `[]` | Extra JVM options, last. |
 | `tmpdir` | `GHIDRA_SESSION_TMPDIR` | the JVM's | `java.io.tmpdir`: where Ghidra keeps unsaved database buffers. Put it on a fast disk with room. |
 | `mode` | `GHIDRA_SESSION_MODE` | `fast` | `fast` or `standard` (above). |
 | `aot` | `GHIDRA_SESSION_AOT` | `auto` | `auto`: use the AOT cache when one exists; `off`. |
+| `aotDir` | `GHIDRA_SESSION_AOT_DIR` | `<per-user state dir>/aot` | The shared AOT store, searched after `<state>/aot`, also for an explicit `--state` or `GHIDRA_SESSION_HOME`; `none`: only `<state>/aot` (the test runners set this, so their fresh state dirs stay isolated). |
 | `classCache` | | `true` | The class search cache. |
 | `classCacheDir` | `GHIDRA_SESSION_CLASS_CACHE_DIR` | `<per-user state root>/classcache` | Where a state dir without its own class search cache finds the shared one; `none`: only the state dir's own. |
 | `jitOneShot` | `GHIDRA_SESSION_JIT_ONE_SHOT` | `true` | No C2 for code a daemon runs once per language (spec validation, the Sleigh preprocessor); `false`: the JDK default. Off when `vmargs` or a JVM option variable name a `-XX:CompilerDirectivesFile`. |

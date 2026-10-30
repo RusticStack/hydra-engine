@@ -37,7 +37,7 @@ Command line::
     python ghidra_session.py stop [--force]    stop the daemon
     python ghidra_session.py serve             run the daemon in the foreground
     python ghidra_session.py stdio [ARGS...]   a private session on stdin/stdout (no daemon)
-    python ghidra_session.py aot [--project P] build the JVM's AOT cache (faster cold start)
+    python ghidra_session.py aot [--project P] [--shared]  build the JVM's AOT cache (faster cold start)
     python ghidra_session.py command           print the java command line it would run
     python ghidra_session.py config            print the effective configuration
 
@@ -539,6 +539,12 @@ def state_dir(explicit: str | None = None) -> Path:
         return Path(explicit).resolve()
     if os.environ.get("GHIDRA_SESSION_HOME"):
         return Path(os.environ["GHIDRA_SESSION_HOME"]).resolve()
+    return user_state_dir()
+
+
+def user_state_dir() -> Path:
+    """The per-user default state dir (what ``state_dir`` gives without an explicit dir or
+    ``GHIDRA_SESSION_HOME``)."""
     if IS_WINDOWS:
         base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
         return Path(base) / "GhidraSession"
@@ -625,6 +631,45 @@ def heap_bytes(text) -> int | None:
         return None
 
 
+def _windows_affinity_cpus() -> int | None:
+    """Windows: the CPUs in this process's affinity mask (``os.process_cpu_count`` ignores it
+    there and returns the machine's count). None when the machine has more than one processor
+    group (over 64 CPUs: the mask covers only one group) or the call fails."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        if k32.GetActiveProcessorGroupCount() > 1:
+            return None
+        proc, system = ctypes.c_size_t(), ctypes.c_size_t()
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        k32.GetProcessAffinityMask.argtypes = [wintypes.HANDLE, ctypes.POINTER(ctypes.c_size_t),
+                                               ctypes.POINTER(ctypes.c_size_t)]
+        if not k32.GetProcessAffinityMask(k32.GetCurrentProcess(), ctypes.byref(proc),
+                                          ctypes.byref(system)):
+            return None
+        return bin(proc.value).count("1") or None
+    except (OSError, AttributeError):
+        return None
+
+
+def granted_cpus() -> int:
+    """The CPUs this process may run on: its affinity mask (Windows, one processor group), its
+    affinity / CPU set (``os.process_cpu_count``, ``sched_getaffinity``); else the machine's count."""
+    if IS_WINDOWS:
+        n = _windows_affinity_cpus()
+        if n:
+            return n
+    f = getattr(os, "process_cpu_count", None)
+    if f:
+        n = f()
+        if n:
+            return n
+    with contextlib.suppress(AttributeError, OSError):
+        return len(os.sched_getaffinity(0))
+    return os.cpu_count() or 1
+
+
 def default_max_heap() -> str:
     """A quarter of physical memory, between 2 GiB and 32 GiB (compressed-oops limit)."""
     mem = physical_memory_bytes()
@@ -637,12 +682,21 @@ def default_max_heap() -> str:
 DEFAULTS = {
     "java": None,            # JDK home (else discovered)
     "maxHeap": None,         # -Xmx; None: default_max_heap()
-    "minHeap": "128m",       # -Xms (was 512m: a floor G1 never shrinks below, held by every daemon)
+    "minHeap": "64m",        # -Xms: the heap starts small and grows as the work needs (to maxHeap);
+                             # G1 gives the unused part back after an idle periodic collection
     "gc": "g1",              # g1 | zgc | parallel | default (the JDK's choice)
+    "gcTimeRatio": 0,        # G1: -XX:GCTimeRatio n (heap grows when GC takes over 1/(1+n) of the
+                             # time; the JDK's 12 grows it at 8 %); 0: the JDK's. Opt-in: 4 kept
+                             # less heap but showed no CPU gain in the bench (see gc_args)
+    "jitThreads": -1,        # -XX:CICompilerCount; -1: the JDK's choice (from the CPUs the JVM may
+                             # use; about 12 with 24); 0: a quarter of the CPUs this process may
+                             # use, 2..4; n: n (at least 2). Opt-in (see jit_thread_args)
     "vmargs": [],            # extra JVM options, appended last
     "tmpdir": None,          # java.io.tmpdir: where Ghidra keeps unsaved database buffers
     "mode": "fast",          # fast (app class loader, AOT-capable) | standard (GhidraClassLoader)
     "aot": "auto",           # auto (use the cache when it exists) | off
+    "aotDir": None,          # the shared AOT store, searched after <state>/aot; None: <per-user
+                             # state dir>/aot; "none": only <state>/aot (see Launch.aot_file)
     "classCache": True,      # reuse the class search result while the classpath is unchanged
     "classCacheDir": None,   # where a state dir without its own class search cache finds the shared
                              # one; None: <per-user state root>/classcache | "none": own file only
@@ -672,9 +726,11 @@ ENV_MAP = {
     "GHIDRA_SESSION_JAVA_HOME": ("java", str),
     "GHIDRA_SESSION_MAXMEM": ("maxHeap", str),
     "GHIDRA_SESSION_GC": ("gc", str),
+    "GHIDRA_SESSION_JIT_THREADS": ("jitThreads", int),
     "GHIDRA_SESSION_TMPDIR": ("tmpdir", str),
     "GHIDRA_SESSION_MODE": ("mode", str),
     "GHIDRA_SESSION_AOT": ("aot", str),
+    "GHIDRA_SESSION_AOT_DIR": ("aotDir", str),
     "GHIDRA_SESSION_IDLE_TIMEOUT": ("idleTimeout", int),
     "GHIDRA_SESSION_KEEP_WARM": ("keepWarm", int),
     "GHIDRA_SESSION_UPGRADE_CACHE": ("upgradeCache", lambda v: v.strip().lower() not in
@@ -846,14 +902,34 @@ class Launch:
             # set (G1's defaults, 40/70, let it stay 70 % free): with many daemons and agents on one
             # machine the committed memory is what runs out (multi-agent benchmark, minHeap 128m
             # and these ratios: mean committed -32 %, peak -18 %, the same replies).
+            # GCTimeRatio (opt-in, gcTimeRatio): the JDK's 12 grows the heap whenever GC takes
+            # more than 8 % of the time; 4 stays nearer what is live but showed no CPU gain in
+            # the multi-agent bench, so the default is the JDK's.
+            ratio = int(self.cfg.get("gcTimeRatio") or 0)
             return ["-XX:+UseG1GC", "-XX:+UseStringDeduplication",
                     "-XX:G1PeriodicGCInterval=300000", "-XX:MinHeapFreeRatio=15",
-                    "-XX:MaxHeapFreeRatio=40"]
+                    "-XX:MaxHeapFreeRatio=40"] + (
+                        [f"-XX:GCTimeRatio={ratio}"] if ratio > 0 else [])
         if gc == "zgc":
             return ["-XX:+UseZGC", "-XX:ZUncommitDelay=300"]
         if gc == "parallel":
             return ["-XX:+UseParallelGC"]
         return []
+
+    def jit_thread_args(self) -> list[str]:
+        """``-XX:CICompilerCount``: the JDK sizes its JIT compiler threads from all the machine's
+        CPUs (12 with 24), and every daemon, test or headless JVM on the machine compiles its
+        start-up at once with that many; each C2 thread also holds its own arena (150 MB at the
+        peak of the multi-agent bench). ``jitThreads`` 0 uses a quarter of the CPUs this process
+        may use, 2 to 4, leaving the CPUs to the agents' requests; it is opt-in (default -1, the
+        JDK's choice) because under heavy load it slowed warm-up and the bench saw connect
+        timeouts with it, with no measured CPU gain."""
+        n = int(self.cfg.get("jitThreads") or 0)
+        if n < 0:
+            return []
+        if n == 0:
+            n = max(2, min(4, granted_cpus() // 4))
+        return [f"-XX:CICompilerCount={max(2, n)}"]
 
     def key(self, classpath: list[str]) -> str:
         """Identity of this JVM + classpath: names the AOT cache and the class search cache."""
@@ -990,6 +1066,32 @@ class Launch:
                 if shaping.match(a)] + [f"coops={size < 32 << 30}"]
         return hashlib.sha256("|".join(opts).encode()).hexdigest()[:8]
 
+    def aot_dirs(self) -> list[Path]:
+        """Where an AOT cache is looked for, in order: the state dir's own ``aot``, then the shared
+        store (``aotDir``; by default ``<per-user state dir>/aot``). A cache is named by the JDK, the
+        install, its classpath and the shaping JVM options (``aotKey``), never by the state dir, so
+        every state dir (one per harness: Hydralysis, an MCP server, a test) can use the one
+        cache trained once per install instead of training its own or starting without one; the
+        JVMs then also map the same file, whose read-only pages the OS shares between them."""
+        dirs = [self.state / "aot"]
+        shared = self.cfg.get("aotDir")
+        if shared is None:
+            shared = user_state_dir() / "aot"
+        elif str(shared).strip().lower() in ("", "none", "off"):
+            return dirs
+        shared = Path(shared)
+        if shared.resolve() != dirs[0].resolve():
+            dirs.append(shared)
+        return dirs
+
+    def aot_file(self, aot_key: str) -> Path | None:
+        """The AOT cache for ``aot_key`` (first of ``aot_dirs``), or None."""
+        for d in self.aot_dirs():
+            f = d / f"{aot_key}.aot"
+            if f.is_file():
+                return f
+        return None
+
     def command(self, app_args: list[str], *, aot_output: Path | None = None,
                 use_aot: bool = True) -> tuple[list[str], dict]:
         """(argv, info). Fast mode passes the classpath through an @argfile in the state dir."""
@@ -1017,11 +1119,12 @@ class Launch:
             head = [f"@{argfile}"]
             main = [FAST_MAIN_CLASS]
             info["aotKey"] = aot_key = f"{key}-{self.aot_flavor(vm)}"
-            aot_file = self.state / "aot" / f"{aot_key}.aot"
+            aot_file = (self.aot_file(aot_key)
+                        if aot_output is None and use_aot and self.cfg["aot"] == "auto" else None)
             if aot_output is not None:
                 vm.append(f"-XX:AOTCacheOutput={aot_output}")
                 info["aot"] = "training"
-            elif use_aot and self.cfg["aot"] == "auto" and aot_file.is_file():
+            elif aot_file is not None:
                 vm += [f"-XX:AOTCache={aot_file}", f"-Dghidra.session.aot={aot_file}"]
                 info["aot"] = str(aot_file)
             else:
@@ -1040,9 +1143,10 @@ class Launch:
         if not self.grants_native_access(vm + list(self.cfg.get("vmargs") or [])):
             vm.append("--enable-native-access=ALL-UNNAMED")
         heap = self.heap()
-        vm += [f"-Xmx{heap}", f"-Xms{self.cfg.get('minHeap') or '128m'}"]
+        vm += [f"-Xmx{heap}", f"-Xms{self.cfg.get('minHeap') or '64m'}"]
         vm += self.gc_args()
         vm += self.jit_args(vm)
+        vm += self.jit_thread_args()
         # stdout is the protocol channel; the JVM's own log (an AOT cache that does not match,
         # GC warnings) goes to stdout unless told otherwise.
         vm += ["-Xlog:disable", "-Xlog:all=warning:stderr", "-Djava.awt.headless=true"]
@@ -2453,23 +2557,28 @@ def connect(client: str = "", harness: str = "", ghidra: str | None = None,
 # ---- AOT cache ------------------------------------------------------------------------------
 
 def build_aot(ghidra: str | None, state: str | None, project: str | None,
-              program: str | None, log=print, **cfg_overrides) -> Path:
+              program: str | None, log=print, shared: bool = False, **cfg_overrides) -> Path:
     """A training run: starts a private session with ``-XX:AOTCacheOutput``, exercises start-up,
     a project, a program and the decompiler, and exits, which writes the cache. Later fast-mode
-    launches with the same JDK and classpath load it."""
+    launches with the same JDK and classpath load it. ``shared``: the cache goes to the shared
+    store (``Launch.aot_dirs``), where the daemons of every state dir find it, instead of
+    ``<state>/aot``."""
     st = state_dir(state)
     ensure_state(st)
     cfg = load_config(st, dict(cfg_overrides, mode="fast"))
     launch = Launch(Install.locate(ghidra), cfg, st)
     argv, info = launch.command([], use_aot=False)
     key = info["aotKey"]
-    out = st / "aot" / f"{key}.aot"
+    dirs = launch.aot_dirs()
+    if shared and len(dirs) < 2:
+        raise LaunchError("aot --shared: aotDir is none, so there is no shared AOT store")
+    out = (dirs[-1] if shared else st / "aot") / f"{key}.aot"
     out.parent.mkdir(parents=True, exist_ok=True)
     # Two training runs at once must not write (or rename) one another's output file.
     tmp = out.with_name(f"{out.stem}.{os.getpid()}-{uuid.uuid4().hex[:12]}.building")
     argv, info = launch.command([], aot_output=tmp)
     t0 = time.perf_counter()
-    errlog = st / "aot" / f"{key}.log"
+    errlog = out.with_suffix(".log")
     with open(errlog, "wb") as ef:
         proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=ef,
                                 env=launch.env, text=True, encoding="utf-8", bufsize=1)
@@ -2508,9 +2617,67 @@ def build_aot(ghidra: str | None, state: str | None, project: str | None,
         proc.communicate(timeout=1800)
     if not tmp.is_file():
         raise LaunchError(f"the JVM wrote no AOT cache (exit {proc.returncode}); see {errlog}")
-    os.replace(tmp, out)
+    try:
+        install_aot(tmp, out, log)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
     log(f"AOT cache {out} ({out.stat().st_size >> 20} MiB) in {time.perf_counter() - t0:.1f} s")
+    if shared:
+        prune_aot_store(out.parent, keep={out.stem}, log=log)
     return out
+
+
+def install_aot(tmp: Path, out: Path, log=print):
+    """Moves a new cache into place. On Windows the rename fails while a running daemon (of any
+    state dir, with the shared store) has the old file mapped; the same key means the same JDK,
+    install, classpath and options, so the cache already there serves as well and is kept."""
+    try:
+        os.replace(tmp, out)
+    except PermissionError:
+        if not out.is_file():
+            raise
+        log(f"AOT cache {out} is in use by a running JVM; kept it (same key, same inputs)")
+
+
+AOT_STORE_KEEP = 8                     # newest caches kept in the shared store
+AOT_STORE_MAX_AGE_S = 14 * 24 * 3600   # older unused caches are removed
+AOT_BUILDING_MAX_AGE_S = 24 * 3600     # an abandoned training run's temp file
+
+
+def prune_aot_store(store: Path, keep: set[str] = frozenset(), log=print,
+                    now: float | None = None) -> list[Path]:
+    """Removes stale caches from the shared AOT store: a re-stamp or reinstall changes a jar's
+    time (and with hard-linked installs, of every install sharing it), so its old cache is never
+    matched again. Keeps ``keep`` (stems) and, of the others, the ``AOT_STORE_KEEP`` newest that
+    were written or used within ``AOT_STORE_MAX_AGE_S``; a cache still mapped by a running JVM cannot be removed on Windows
+    and stays until a later prune. Returns what was removed."""
+    now = time.time() if now is None else now
+    removed = []
+    caches = []
+    for f in store.glob("*.aot"):
+        with contextlib.suppress(OSError):
+            st = f.stat()
+            caches.append((max(st.st_mtime, st.st_atime), f))
+    caches.sort(reverse=True)
+    for i, (t, f) in enumerate(caches):
+        if f.stem in keep or i < AOT_STORE_KEEP and now - t < AOT_STORE_MAX_AGE_S:
+            continue
+        try:
+            f.unlink()
+        except OSError:
+            continue
+        removed.append(f)
+        with contextlib.suppress(OSError):
+            f.with_suffix(".log").unlink()
+    for f in store.glob("*.building"):
+        with contextlib.suppress(OSError):
+            if now - f.stat().st_mtime > AOT_BUILDING_MAX_AGE_S:
+                f.unlink()
+                removed.append(f)
+    if removed:
+        log(f"AOT store {store}: removed {len(removed)} stale file(s)")
+    return removed
 
 
 # ---- command line ---------------------------------------------------------------------------
@@ -2551,6 +2718,8 @@ def main(argv=None) -> int:
     p = sub.add_parser("aot", help="build the AOT cache with a training run")
     p.add_argument("--project", help="a project to exercise (opened read-only)")
     p.add_argument("--program", help="the program in it to open (default: the first)")
+    p.add_argument("--shared", action="store_true", help="write the cache to the shared AOT store "
+                   "(every state dir's daemons use it) instead of <state>/aot")
     p = sub.add_parser("command", help="print the java command line")
     p.add_argument("args", nargs=argparse.REMAINDER)
     sub.add_parser("config", help="print the effective configuration")
@@ -2584,7 +2753,7 @@ def main(argv=None) -> int:
             argv_, _ = launch.command(a.args)
             return subprocess.call(argv_, env=launch.env)
         if a.action == "aot":
-            build_aot(a.ghidra, a.state, a.project, a.program, **over)
+            build_aot(a.ghidra, a.state, a.project, a.program, shared=a.shared, **over)
             return 0
         if a.action == "serve":
             ensure_state(st)

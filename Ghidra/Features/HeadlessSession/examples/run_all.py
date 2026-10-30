@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 import time
@@ -43,6 +44,8 @@ WHOLE_COST = {"smoke": 64.0, "char2": 42.0, "char3": 45.0, "contract": 19.0}
 
 
 def main() -> int:
+    # Fresh state dirs in every suite: not the user's shared AOT store (see daemon_tests.main).
+    os.environ.setdefault("GHIDRA_SESSION_AOT_DIR", "none")
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--ghidra", required=True)
     ap.add_argument("--scratch", required=True)
