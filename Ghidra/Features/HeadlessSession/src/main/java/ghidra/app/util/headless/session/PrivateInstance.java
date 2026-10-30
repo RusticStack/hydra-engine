@@ -19,6 +19,7 @@ import java.io.IOException;
 import java.util.concurrent.locks.Lock;
 
 import ghidra.framework.model.DomainFile;
+import ghidra.program.database.ProgramDB;
 import ghidra.program.model.listing.Program;
 import ghidra.util.exception.CancelledException;
 import ghidra.util.exception.VersionException;
@@ -39,6 +40,48 @@ import ghidra.util.exception.VersionException;
  * instance) and the upgrade cache view and lease, even when the script failed.
  */
 final class PrivateInstance implements AutoCloseable {
+
+	/**
+	 * Config key (default false): overlays run light ({@link #lighten}). An overlay program is a
+	 * read-only domain object that is never saved, checked in, merged or recovery snapshotted;
+	 * promote replays the overlay's operation log on the target; the session never undoes an
+	 * overlay (discard edits apply inverse operations), and a failed operation batch still rolls
+	 * back. An overlay can run a GhidraScript ({@code script} op), which may undo: before one runs
+	 * the overlay goes back to the default undo depth for the rest of its life
+	 * ({@link #unlighten}). Off by default until proven identical on a full build.
+	 */
+	static final String LIGHT_OVERLAYS = "lightOverlays";
+	/**
+	 * Config key (default false): {@code isolation:"private"} script instances run light. Off by
+	 * default because the script is arbitrary code that may undo more than one transaction.
+	 */
+	static final String LIGHT_PRIVATE_SCRIPTS = "lightPrivateScripts";
+
+	/**
+	 * Makes a disposable program object light: one undoable transaction instead of 50, so buffer
+	 * pre-images of older transactions are released instead of kept in the disk cache (the
+	 * measured gain). Transaction rollback is unaffected. Change recording stays on: scripts read
+	 * {@code getChanges()} (RecoverClassesFromRTTIScript does) and turning it off showed no
+	 * measured gain. Returns false (and changes nothing) for a program that is not a ProgramDB.
+	 * Call it when no transaction is open.
+	 */
+	static boolean lighten(Program p) {
+		if (!(p instanceof ProgramDB db)) {
+			return false;
+		}
+		db.setUndoDepth(1);
+		return true;
+	}
+
+	/**
+	 * Undoes {@link #lighten}: back to the default undo depth (history already released stays
+	 * released). No-op for a program that is not light. Call it when no transaction is open.
+	 */
+	static void unlighten(Program p) {
+		if (p instanceof ProgramDB db && db.getUndoDepth() != ProgramDB.DEFAULT_UNDO_DEPTH) {
+			db.setUndoDepth(ProgramDB.DEFAULT_UNDO_DEPTH);
+		}
+	}
 
 	/** What was opened: the program object and what keeps its upgrade cache copy in place. */
 	record Loaded(Program program, SessionProject view, UpgradeCache.Lease lease, long openMs) {
@@ -120,6 +163,9 @@ final class PrivateInstance implements AutoCloseable {
 		int ignored = unsavedEdits(e);
 		PrivateInstance pi = new PrivateInstance(null, rev, ignored);
 		pi.loaded = load(cache, e, pi, m);
+		if (Settings.bool(LIGHT_PRIVATE_SCRIPTS, false)) {
+			lighten(pi.loaded.program());
+		}
 		return pi;
 	}
 

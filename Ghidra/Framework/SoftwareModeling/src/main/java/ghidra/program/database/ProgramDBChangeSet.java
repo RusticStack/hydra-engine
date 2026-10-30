@@ -367,6 +367,16 @@ class ProgramDBChangeSet implements ProgramChangeSet, DomainObjectDBChangeSet {
 		clearUndo();
 	}
 
+	/**
+	 * Hydra: {@link #clearAll()} plus the function tag sets, under this change set's monitor
+	 * (for {@link ProgramDB#disableChangeRecording()}).
+	 */
+	synchronized void clearAllAndTags() {
+		clearAll();
+		changedTagIds.clear();
+		addedTagIds.clear();
+	}
+
 	void clearAll() {
 		changedAddrsSinceCheckout.clear();
 		changedRegAddrsSinceCheckout.clear();

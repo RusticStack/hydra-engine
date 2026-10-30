@@ -192,6 +192,8 @@ final class OverlayCommands {
 					case "script" -> {
 						ResourceFile src = findScript(Json.str(req, "script"));
 						m.deadline(Json.num(req, "timeout", 0, 0, 7 * 86_400));
+						// a script may undo: give it the default undo history (lightOverlays)
+						PrivateInstance.unlighten(o.program);
 						yield withOverlay(o,
 							s.scripts.runOverlayScript(c, src, req, p.project, o.program, m));
 					}
@@ -328,6 +330,9 @@ final class OverlayCommands {
 		ProgramEntry e = o.base;
 		PrivateInstance.Loaded l = PrivateInstance.load(s.upgradeCache, e, o, m);
 		Program prog = l.program();
+		if (Settings.bool(PrivateInstance.LIGHT_OVERLAYS, false)) {
+			PrivateInstance.lighten(prog);
+		}
 		o.view = l.view();
 		o.lease = l.lease();
 		o.program = prog;

@@ -25,6 +25,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
 import ghidra.app.decompiler.DecompInterface;
+import ghidra.program.database.ProgramDB;
 import ghidra.program.model.listing.Program;
 
 /**
@@ -194,6 +195,12 @@ final class Overlay implements Decompilers, DecompilerGate.Pool {
 		Json.put(o, "stale", generation != base.project.generation);
 		Json.put(o, "error", error);
 		Json.put(o, "changed", program != null && program.isChanged());
+		if (program instanceof ProgramDB db &&
+			db.getUndoDepth() != ProgramDB.DEFAULT_UNDO_DEPTH) {
+			// lightOverlays (PrivateInstance.lighten): only shown when it differs from the
+			// default, so a default overlay's info is identical to before
+			Json.put(o, "undoDepth", db.getUndoDepth());
+		}
 		return o;
 	}
 }
