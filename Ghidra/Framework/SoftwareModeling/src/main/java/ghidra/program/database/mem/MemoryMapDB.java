@@ -68,7 +68,8 @@ public class MemoryMapDB implements Memory, ProgramDBModule {
 
 	// Hydra: immutable copy of the initialized bytes at one modification number that serves byte
 	// reads instead of the database buffers; dropped on any memory change (see MemoryReadSnapshot)
-	private volatile MemoryReadSnapshot readSnapshot;
+	private final java.util.concurrent.atomic.AtomicReference<MemoryReadSnapshot> readSnapshot =
+		new java.util.concurrent.atomic.AtomicReference<>();
 
 	// lazy map of block names to blocks, must be reloaded if blocks are removed or added
 	private HashMap<String, MemoryBlock> nameBlockMap = new HashMap<>();
@@ -189,11 +190,7 @@ public class MemoryMapDB implements Memory, ProgramDBModule {
 	 * @param snapshot the snapshot, or null to drop the current one
 	 */
 	public void setReadSnapshot(MemoryReadSnapshot snapshot) {
-		MemoryReadSnapshot old;
-		synchronized (this) {
-			old = readSnapshot;
-			readSnapshot = snapshot;
-		}
+		MemoryReadSnapshot old = readSnapshot.getAndSet(snapshot);
 		if (old != null && old != snapshot) {
 			old.detached();
 		}
@@ -205,11 +202,8 @@ public class MemoryMapDB implements Memory, ProgramDBModule {
 	 * @return true if it was installed and is now dropped (its {@code detached()} was called)
 	 */
 	public boolean clearReadSnapshot(MemoryReadSnapshot snapshot) {
-		synchronized (this) {
-			if (snapshot == null || readSnapshot != snapshot) {
-				return false;
-			}
-			readSnapshot = null;
+		if (snapshot == null || !readSnapshot.compareAndSet(snapshot, null)) {
+			return false;
 		}
 		snapshot.detached();
 		return true;
@@ -219,23 +213,28 @@ public class MemoryMapDB implements Memory, ProgramDBModule {
 	 * @return the installed read snapshot, or null
 	 */
 	public MemoryReadSnapshot getReadSnapshot() {
-		return readSnapshot;
+		return readSnapshot.get();
 	}
 
 	private void dropReadSnapshot() {
-		if (readSnapshot != null) {
+		if (readSnapshot.get() != null) {
 			setReadSnapshot(null);
 		}
 	}
 
 	/**
 	 * @return the read snapshot to serve a read from: installed and written at the program's
-	 * current modification number; otherwise null
+	 * current modification number; otherwise null. A snapshot whose generation is older than the
+	 * program (a change that is not a memory change, for example a label) can never be served
+	 * again, since modification numbers only grow, so it is dropped here and its file released.
 	 */
 	MemoryReadSnapshot activeReadSnapshot() {
-		MemoryReadSnapshot snapshot = readSnapshot;
-		if (snapshot == null || program == null ||
-			snapshot.getGeneration() != program.getModificationNumber()) {
+		MemoryReadSnapshot snapshot = readSnapshot.get();
+		if (snapshot == null || program == null) {
+			return null;
+		}
+		if (snapshot.getGeneration() != program.getModificationNumber()) {
+			clearReadSnapshot(snapshot);
 			return null;
 		}
 		return snapshot;
@@ -714,6 +713,7 @@ public class MemoryMapDB implements Memory, ProgramDBModule {
 			checkBlockSize(length, true);
 
 			program.checkExclusiveAccess();
+			dropReadSnapshot();	// before the blocks change, not only after
 			if (monitor != null && is != null) {
 				is = new MonitoredInputStream(is, monitor);
 			}
@@ -757,6 +757,7 @@ public class MemoryMapDB implements Memory, ProgramDBModule {
 		try (Closeable c = lock.write()) {
 			checkBlockSize(length, true);
 			program.checkExclusiveAccess();
+			dropReadSnapshot();	// before the blocks change, not only after
 			checkFileBytesRange(fileBytes, offset, length);
 
 			if (overlay && !start.getAddressSpace().isOverlaySpace()) {
@@ -807,6 +808,7 @@ public class MemoryMapDB implements Memory, ProgramDBModule {
 			checkBlockSize(size, false);
 
 			program.checkExclusiveAccess();
+			dropReadSnapshot();	// before the blocks change, not only after
 
 			if (overlay && !start.getAddressSpace().isOverlaySpace()) {
 				start = createOverlaySpace(name, start, size);
@@ -838,6 +840,7 @@ public class MemoryMapDB implements Memory, ProgramDBModule {
 		try (Closeable c = lock.write()) {
 			checkBlockSize(length, false);
 			program.checkExclusiveAccess();
+			dropReadSnapshot();	// before the blocks change, not only after
 			mappedAddress.addNoWrap((length - 1) / 8);// just to check if length fits in address space
 			if (overlay && !start.getAddressSpace().isOverlaySpace()) {
 				start = createOverlaySpace(name, start, length);
@@ -878,6 +881,7 @@ public class MemoryMapDB implements Memory, ProgramDBModule {
 		try (Closeable c = lock.write()) {
 			checkBlockSize(length, false);
 			program.checkExclusiveAccess();
+			dropReadSnapshot();	// before the blocks change, not only after
 			byteMappingScheme.getMappedSourceAddress(mappedAddress, length - 1); // source fit check
 			if (overlay && !start.getAddressSpace().isOverlaySpace()) {
 				start = createOverlaySpace(name, start, length);
@@ -919,6 +923,7 @@ public class MemoryMapDB implements Memory, ProgramDBModule {
 		try (Closeable c = lock.write()) {
 			checkBlockSize(length, block.isInitialized());
 			program.checkExclusiveAccess();
+			dropReadSnapshot();	// before the blocks change, not only after
 			checkRange(start, length);
 			try {
 				Address mappedAddr = null;
@@ -961,6 +966,7 @@ public class MemoryMapDB implements Memory, ProgramDBModule {
 			LockException {
 		try (Closeable c = lock.write()) {
 			program.checkExclusiveAccess();
+			dropReadSnapshot();	// before the blocks change, not only after
 			checkBlock(block);
 			MemoryBlockDB memBlock = (MemoryBlockDB) block;
 
@@ -1010,6 +1016,7 @@ public class MemoryMapDB implements Memory, ProgramDBModule {
 	public void split(MemoryBlock block, Address addr) throws MemoryBlockException, LockException {
 		try (Closeable c = lock.write()) {
 			program.checkExclusiveAccess();
+			dropReadSnapshot();	// before the blocks change, not only after
 			checkBlock(block);
 			MemoryBlockDB memBlock = (MemoryBlockDB) block;
 			if (!memBlock.contains(addr)) {
@@ -1086,6 +1093,7 @@ public class MemoryMapDB implements Memory, ProgramDBModule {
 			throws MemoryBlockException, LockException {
 
 		program.checkExclusiveAccess();
+		dropReadSnapshot();	// before the blocks change, not only after
 
 		checkBlockForJoining(block1);
 		checkBlockForJoining(block2);
@@ -1125,6 +1133,7 @@ public class MemoryMapDB implements Memory, ProgramDBModule {
 		try (Closeable c = lock.write()) {
 			checkBlock(uninitializedBlock);
 			program.checkExclusiveAccess();
+			dropReadSnapshot();	// before the blocks change, not only after
 			if (uninitializedBlock.isInitialized()) {
 				throw new IllegalArgumentException(
 					"Only an Uninitialized Block may be converted to an Initialized Block");
@@ -1157,6 +1166,7 @@ public class MemoryMapDB implements Memory, ProgramDBModule {
 			throws MemoryBlockException, LockException {
 		try (Closeable c = lock.write()) {
 			program.checkExclusiveAccess();
+			dropReadSnapshot();	// before the blocks change, not only after
 			checkBlock(initializedBlock);
 			if (!initializedBlock.isInitialized()) {
 				throw new IllegalArgumentException(
@@ -1674,6 +1684,7 @@ public class MemoryMapDB implements Memory, ProgramDBModule {
 	public void removeBlock(MemoryBlock block, TaskMonitor monitor) throws LockException {
 		try (Closeable c = lock.write()) {
 			program.checkExclusiveAccess();
+			dropReadSnapshot();	// before the blocks change, not only after
 			checkBlock(block);
 			MemoryBlockDB memBlock = (MemoryBlockDB) block;
 

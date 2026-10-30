@@ -21,14 +21,15 @@ import java.io.ByteArrayInputStream;
 import java.nio.file.Files;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.*;
 
 import org.junit.*;
 
 import ghidra.program.database.ProgramBuilder;
 import ghidra.program.database.ProgramDB;
 import ghidra.program.database.mem.FileBytes;
+import ghidra.program.database.mem.MemoryReadSnapshot;
+import ghidra.program.model.address.AddressSpace;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.listing.Program;
 import ghidra.program.model.mem.*;
@@ -181,8 +182,13 @@ public class MappedProgramSnapshotTest extends AbstractGhidraHeadlessIntegration
 		builder.tx(() -> program.getSymbolTable()
 				.createLabel(builder.addr("0x1000"), "lbl", SourceType.USER_DEFINED));
 		long served = snapshot.servedReads();
+		java.nio.file.Path file = snapshot.getPath();
 		List<String> after = readAll(program);
 		assertEquals("a newer generation is never served", served, snapshot.servedReads());
+		assertNull("an older generation is dropped on the first read",
+			program.getMemory().getReadSnapshot());
+		assertTrue("and its mapping and file released", snapshot.isUnmapped());
+		assertFalse(Files.exists(file));
 		snapshot.close();
 		snapshot = null;
 		assertEquals(after, readAll(program));
@@ -240,5 +246,155 @@ public class MappedProgramSnapshotTest extends AbstractGhidraHeadlessIntegration
 			decompilerLease.releaseLease();
 		}
 		assertFalse(Files.exists(snapshot.getPath()));
+	}
+
+	/**
+	 * A snapshot that serves nothing and records, when it is dropped, what the database held at
+	 * that moment: the byte at {@code 0x1004} and whether the {@code .rodata} block still exists.
+	 */
+	private final class RecordingSnapshot implements MemoryReadSnapshot {
+		private final long generation = program.getModificationNumber();
+		final AtomicInteger drops = new AtomicInteger();
+		volatile String byteSeen;
+		volatile Boolean blockSeen;
+
+		@Override
+		public long getGeneration() {
+			return generation;
+		}
+
+		@Override
+		public boolean read(AddressSpace space, long offset, byte[] dest, int destIndex,
+				int length) {
+			return false;
+		}
+
+		@Override
+		public void detached() {
+			if (drops.incrementAndGet() == 1) {
+				Memory memory = program.getMemory();
+				byteSeen = attempt(() -> Byte.toString(memory.getByte(builder.addr("0x1004"))));
+				blockSeen = memory.getBlock(builder.addr("0x2000")) != null;
+			}
+		}
+	}
+
+	@Test
+	public void testWriteDropsTheSnapshotBeforeTheBytesChange() throws Exception {
+		Memory memory = program.getMemory();
+		byte before = memory.getByte(builder.addr("0x1004"));
+		RecordingSnapshot rec = new RecordingSnapshot();
+		program.getMemory().setReadSnapshot(rec);
+		builder.tx(() -> memory.setByte(builder.addr("0x1004"), (byte) (before + 1)));
+		assertEquals(1, rec.drops.get());
+		assertEquals("dropped while the database still held the old byte", Byte.toString(before),
+			rec.byteSeen);
+		assertNull(program.getMemory().getReadSnapshot());
+	}
+
+	@Test
+	public void testUndoAndRedoDropTheSnapshotBeforeTheDatabaseChanges() throws Exception {
+		Memory memory = program.getMemory();
+		byte before = memory.getByte(builder.addr("0x1004"));
+		byte changed = (byte) (before + 1);
+		builder.tx(() -> memory.setByte(builder.addr("0x1004"), changed));
+
+		RecordingSnapshot rec = new RecordingSnapshot();
+		program.getMemory().setReadSnapshot(rec);
+		program.undo();
+		assertEquals(1, rec.drops.get());
+		assertEquals("dropped before the undo changed the database", Byte.toString(changed),
+			rec.byteSeen);
+		assertEquals(before, memory.getByte(builder.addr("0x1004")));
+
+		RecordingSnapshot rec2 = new RecordingSnapshot();
+		program.getMemory().setReadSnapshot(rec2);
+		program.redo();
+		assertEquals(1, rec2.drops.get());
+		assertEquals("dropped before the redo changed the database", Byte.toString(before),
+			rec2.byteSeen);
+		assertEquals(changed, memory.getByte(builder.addr("0x1004")));
+	}
+
+	@Test
+	public void testRemoveBlockDropsTheSnapshotBeforeTheBlockGoes() throws Exception {
+		Memory memory = program.getMemory();
+		MemoryBlock rodata = memory.getBlock(builder.addr("0x2000"));
+		RecordingSnapshot rec = new RecordingSnapshot();
+		program.getMemory().setReadSnapshot(rec);
+		builder.tx(() -> memory.removeBlock(rodata, TaskMonitor.DUMMY));
+		assertNull(memory.getBlock(builder.addr("0x2000")));
+		assertEquals(1, rec.drops.get());
+		assertEquals("dropped while the block still existed", Boolean.TRUE, rec.blockSeen);
+	}
+
+	/**
+	 * Readers run on the mapping while another thread writes: every read returns the bytes of the
+	 * previous or the new write, and never the old bytes once the write has returned.
+	 */
+	@Test
+	public void testReadersDuringAWriteNeverSeeOldBytesAfterIt() throws Exception {
+		Memory memory = program.getMemory();
+		Address at = builder.addr("0x1080");
+		int n = 64;
+		builder.tx(() -> memory.setBytes(at, new byte[n]));
+		ExecutorService pool = Executors.newFixedThreadPool(4);
+		try {
+			for (int round = 0; round < 20; round++) {
+				int value = round;
+				snapshot = MappedProgramSnapshot.attach(program);
+				assertNotNull("round " + round, snapshot);
+				AtomicInteger published = new AtomicInteger(value);
+				AtomicBoolean stop = new AtomicBoolean();
+				AtomicReference<String> bad = new AtomicReference<>();
+				CountDownLatch started = new CountDownLatch(4);
+				List<Future<?>> futures = new ArrayList<>();
+				for (int t = 0; t < 4; t++) {
+					boolean byteByByte = (t & 1) != 0;
+					futures.add(pool.submit(() -> {
+						started.countDown();
+						byte[] buf = new byte[n];
+						while (!stop.get()) {
+							int p = published.get();
+							try {
+								if (byteByByte) {
+									for (int i = 0; i < n; i++) {
+										buf[i] = memory.getByte(at.add(i));
+									}
+								}
+								else {
+									memory.getBytes(at, buf);
+								}
+							}
+							catch (MemoryAccessException e) {
+								bad.compareAndSet(null, e.toString());
+							}
+							for (byte b : buf) {
+								if ((b & 0xff) < p || (b & 0xff) > value + 1) {
+									bad.compareAndSet(null, "read " + (b & 0xff) + " after " + p);
+								}
+							}
+						}
+					}));
+				}
+				started.await();
+				byte[] next = new byte[n];
+				Arrays.fill(next, (byte) (value + 1));
+				builder.tx(() -> memory.setBytes(at, next));
+				published.set(value + 1);
+				Thread.sleep(5);
+				stop.set(true);
+				for (Future<?> f : futures) {
+					f.get(1, TimeUnit.MINUTES);
+				}
+				assertNull("round " + round, bad.get());
+				assertNull(program.getMemory().getReadSnapshot());
+				assertTrue(snapshot.isUnmapped());
+				snapshot = null;
+			}
+		}
+		finally {
+			pool.shutdownNow();
+		}
 	}
 }

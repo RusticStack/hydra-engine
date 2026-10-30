@@ -547,6 +547,14 @@ public abstract class DomainObjectAdapterDB extends DomainObjectAdapter implemen
 	}
 
 	/**
+	 * Called just before an undo or redo changes the database (Hydra), so that state copied from
+	 * the current database contents can be dropped before it goes stale. Does nothing by default.
+	 */
+	protected void beforeUndoRedo() {
+		// nothing by default
+	}
+
+	/**
 	 * Indicates that this domain object has been restored to a completely different state due
 	 * to a transaction undo/redo/rollback or a database merge operation.
 	 */

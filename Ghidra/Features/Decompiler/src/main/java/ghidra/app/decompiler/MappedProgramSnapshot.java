@@ -260,26 +260,12 @@ public final class MappedProgramSnapshot implements MemoryReadSnapshot {
 		if (s < 0 || length <= 0) {
 			return false;
 		}
-		long[] st = starts[s];
-		int lo = 0;
-		int hi = st.length - 1;
-		int found = -1;
-		while (lo <= hi) {	// last region whose start <= offset (unsigned)
-			int mid = (lo + hi) >>> 1;
-			if (Long.compareUnsigned(st[mid], offset) <= 0) {
-				found = mid;
-				lo = mid + 1;
-			}
-			else {
-				hi = mid - 1;
-			}
-		}
+		int found = regionOf(s, offset);
 		if (found < 0) {
 			return false;
 		}
-		long rel = offset - st[found];
-		long regionLength = lengths[s][found];
-		if (Long.compareUnsigned(rel, regionLength) >= 0 || length > regionLength - rel) {
+		long rel = offset - starts[s][found];
+		if (length > lengths[s][found] - rel) {
 			return false;
 		}
 		if (!acquire()) {
@@ -294,6 +280,52 @@ public final class MappedProgramSnapshot implements MemoryReadSnapshot {
 		}
 		served.increment();
 		return true;
+	}
+
+	@Override
+	public int readByte(AddressSpace space, long offset) {
+		int s = spaceIndex(space);
+		if (s < 0) {
+			return -1;
+		}
+		int found = regionOf(s, offset);
+		if (found < 0 || !acquire()) {
+			return -1;
+		}
+		int b;
+		try {
+			b = segment.get(ValueLayout.JAVA_BYTE,
+				dataOffsets[s][found] + (offset - starts[s][found])) & 0xff;
+		}
+		finally {
+			releaseRef();
+		}
+		served.increment();
+		return b;
+	}
+
+	/**
+	 * @return the index of the region of space index {@code s} that holds {@code offset}, or -1
+	 */
+	private int regionOf(int s, long offset) {
+		long[] st = starts[s];
+		int lo = 0;
+		int hi = st.length - 1;
+		int found = -1;
+		while (lo <= hi) {	// last region whose start <= offset (unsigned)
+			int mid = (lo + hi) >>> 1;
+			if (Long.compareUnsigned(st[mid], offset) <= 0) {
+				found = mid;
+				lo = mid + 1;
+			}
+			else {
+				hi = mid - 1;
+			}
+		}
+		if (found < 0 || Long.compareUnsigned(offset - st[found], lengths[s][found]) >= 0) {
+			return -1;
+		}
+		return found;
 	}
 
 	private int spaceIndex(AddressSpace space) {

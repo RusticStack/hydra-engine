@@ -24,8 +24,11 @@ import ghidra.program.model.address.AddressSpace;
  * instead of the database buffers (Hydra).
  * <p>
  * The memory map consults the snapshot only while the program's modification number equals
- * {@link #getGeneration()}, and drops it on any memory change (bytes, blocks, undo/redo), so a
- * snapshot is never used for a program state it was not written for. A read the snapshot cannot
+ * {@link #getGeneration()}, and drops it before any memory change alters the database: before
+ * bytes are written, before a block is created, moved, split, joined, converted or removed, and
+ * before an undo or redo. After the drop no read starts on the snapshot; a read that started
+ * before it may still complete from it and returns the bytes as they were before that change,
+ * like a database read that completed just before it. A read the snapshot cannot
  * serve whole returns false and the memory map reads the database as before; implementations must
  * therefore hold exactly the bytes {@link MemoryBlockDB#getBytes} returns for every address they
  * claim, and must be safe for concurrent reads from any number of threads.
@@ -49,6 +52,18 @@ public interface MemoryReadSnapshot {
 	 * or is closed (nothing is guaranteed about {@code dest} then and the caller reads again)
 	 */
 	boolean read(AddressSpace space, long offset, byte[] dest, int destIndex, int length);
+
+	/**
+	 * Read one byte at {@code offset} of {@code space}, if the snapshot holds it.
+	 * @param space the address space
+	 * @param offset the byte offset in the space
+	 * @return the byte as an unsigned value (0-255), or -1 if the snapshot does not hold it or is
+	 * closed (the caller reads the database then)
+	 */
+	default int readByte(AddressSpace space, long offset) {
+		byte[] one = new byte[1];
+		return read(space, offset, one, 0, 1) ? one[0] & 0xff : -1;
+	}
 
 	/**
 	 * Called once when the memory map drops this snapshot (a memory change, or a replacement by

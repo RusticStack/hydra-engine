@@ -33,6 +33,7 @@ import java.util.concurrent.locks.Lock;
 
 import com.google.gson.*;
 
+import ghidra.app.decompiler.MappedProgramSnapshot;
 import ghidra.framework.model.*;
 import ghidra.program.model.listing.*;
 import ghidra.program.util.GhidraProgramUtilities;
@@ -884,11 +885,7 @@ final class ProgramCommands {
 	}
 
 	/**
-	 * Releases {@link ProgramEntry#program} and, when it came from the upgrade cache, closes the
-	 * view of the copy it came from. Held: its exclusive lock.
-	 */
-	/**
-	 * Hydra ({@value ghidra.app.decompiler.MappedProgramSnapshot#ENABLE_PROPERTY}, default off):
+	 * Hydra ({@value MappedProgramSnapshot#ENABLE_PROPERTY}, default off):
 	 * serve the byte reads of a program opened read-only from its memory-mapped sealed generation
 	 * instead of the database buffers. The bytes are the same (the memory map drops the snapshot on
 	 * any change); a program that gets none reads the database as before. Held: its exclusive lock.
@@ -896,11 +893,11 @@ final class ProgramCommands {
 	 */
 	private void attachSnapshotReads(ProgramEntry e, Program program) {
 		detachSnapshotReads(e);
-		if (!ghidra.app.decompiler.MappedProgramSnapshot.isEnabled() || program == null) {
+		if (!MappedProgramSnapshot.isEnabled() || program == null) {
 			return;
 		}
 		long t0 = System.nanoTime();
-		e.snapshotReads = ghidra.app.decompiler.MappedProgramSnapshot.attach(program);
+		e.snapshotReads = MappedProgramSnapshot.attach(program);
 		if (e.snapshotReads != null) {
 			Msg.info(s, "snapshot reads for " + e.key + " from " + e.snapshotReads.getPath() +
 				" (generation " + e.snapshotReads.getGeneration() + ", " +
@@ -909,13 +906,17 @@ final class ProgramCommands {
 	}
 
 	private static void detachSnapshotReads(ProgramEntry e) {
-		ghidra.app.decompiler.MappedProgramSnapshot snap = e.snapshotReads;
+		MappedProgramSnapshot snap = e.snapshotReads;
 		e.snapshotReads = null;
 		if (snap != null) {
 			snap.close();
 		}
 	}
 
+	/**
+	 * Releases {@link ProgramEntry#program} and, when it came from the upgrade cache, closes the
+	 * view of the copy it came from. Held: its exclusive lock.
+	 */
 	void releaseProgramObject(ProgramEntry e) {
 		detachSnapshotReads(e);
 		try {

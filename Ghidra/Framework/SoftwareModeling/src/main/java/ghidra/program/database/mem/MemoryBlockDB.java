@@ -435,10 +435,10 @@ public class MemoryBlockDB implements MemoryBlock {
 	public byte getByte(long offset) throws MemoryAccessException {
 		MemoryReadSnapshot snapshot = memMap.activeReadSnapshot();
 		if (snapshot != null && offset >= 0 && offset < length) {
-			byte[] one = new byte[1];
-			if (snapshot.read(startAddress.getAddressSpace(), startAddress.getOffset() + offset,
-				one, 0, 1)) {
-				return one[0];
+			int b = snapshot.readByte(startAddress.getAddressSpace(),
+				startAddress.getOffset() + offset);	// no allocation per byte
+			if (b >= 0) {
+				return (byte) b;
 			}
 		}
 		SubMemoryBlock subBlock = getSubBlock(offset);
