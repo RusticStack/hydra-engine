@@ -772,7 +772,9 @@ def t_oracle_live_engine(c):
 def t_chaos_engine_injectors(c):
     """On a live daemon: the native decompiler below it can be found, suspended and killed (the request
     that used it fails alone and the pool respawns), a dropped connection (a reset, no goodbye) is a dead
-    client the daemon forgets, and a suspended decompiler is seen as an orphan by K7 once the daemon is dead."""
+    client the daemon forgets, and a suspended decompiler is seen as an orphan by K7 once the daemon is dead.
+    The daemon runs without its Job Object (test hooks plus noProcessJob, as E9's no-job control): with the job
+    (hydra.4, E9) the kill of the daemon also kills the suspended decompiler, so there would be no orphan for K7."""
     src = src_project(c)
     if not src or not src.is_file():
         return "NOT RUN: no --project (an analysed project .gpr)"
@@ -780,7 +782,7 @@ def t_chaos_engine_injectors(c):
     if work.exists():
         shutil.rmtree(work)
     gpr = make_project_copy(src, work / "proj")
-    d = c.daemon("x0chaos")
+    d = c.daemon("x0chaos", vmargs=["-Dghidra.session.testHooks=true", "-Dghidra.session.noProcessJob=true"])
     out = {}
     with d.connect("x0", "dt_x0") as s:
         pid = s.hello["pid"]
