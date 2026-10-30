@@ -438,7 +438,7 @@ def gs_capability_order():
     return ["errorNext", "expectAll", "idempotency", "laneHint", "maintLane", "queueInfo",
             "cancelWait", "forkReport", "format", "backup", "upgradeGate", "scriptIsolation",
             "scriptSha256", "attemptedChanges", "health", "identity", "seal",
-            "forkAtomic"]
+            "forkAtomic", "admission"]   # admission: E9, amendment A35 (after forkAtomic)
 
 
 def self_test(c, *flags, engine=None):

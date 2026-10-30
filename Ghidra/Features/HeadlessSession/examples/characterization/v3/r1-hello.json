@@ -1,0 +1,291 @@
+{
+ "scenario": "r1-hello",
+ "protocol": 3,
+ "steps": [
+  {
+   "step": 1,
+   "who": "a",
+   "cmd": "hello",
+   "request": {
+    "client": "r1-a",
+    "harness": "r1-h",
+    "clientVersion": "9.9.9",
+    "protocol": 3
+   },
+   "response": {
+    "id": 2,
+    "ok": true,
+    "result": {
+     "protocol": 3,
+     "minClient": "<masked>",
+     "hydraVersion": "<masked>",
+     "ghidraVersion": "<masked>",
+     "installId": "<masked>",
+     "startedAt": "<masked>",
+     "ghidra": "<masked>",
+     "install": "<masked>",
+     "java": "<masked>",
+     "pid": "<masked>",
+     "uptimeMs": "<masked>",
+     "listen": {
+      "host": "<masked>",
+      "port": "<masked>"
+     },
+     "launch": "<masked>",
+     "keepWarmS": 600,
+     "memory": {
+      "usedMb": "<masked>",
+      "committedMb": "<masked>",
+      "maxMb": "<masked>"
+     },
+     "protocolMin": 2,
+     "protocolMax": 3,
+     "capabilities": {
+      "errorNext": 1,
+      "expectAll": 1,
+      "idempotency": 1,
+      "laneHint": 1,
+      "maintLane": 1,
+      "queueInfo": 1,
+      "cancelWait": 1,
+      "forkReport": 1,
+      "format": 1,
+      "backup": 1,
+      "upgradeGate": 1,
+      "scriptIsolation": 2,
+      "scriptSha256": 1,
+      "attemptedChanges": 1,
+      "health": 1,
+      "identity": 1,
+      "seal": 1,
+      "forkAtomic": 1,
+      "admission": 1
+     },
+     "limits": {
+      "maxQuick": 4,
+      "maxLong": 2,
+      "maxMaint": "<config>",
+      "maxImports": 2,
+      "quickScriptMaxS": "<config>",
+      "cleanupGraceS": "<config>",
+      "abandonWaitS": "<config>",
+      "maxRunningPerKey": "<config>",
+      "minXmxMb": "<masked>",
+      "maxViews": "<config>",
+      "maxViewsPerClient": "<config>",
+      "heapSoftPct": "<config>",
+      "heapHardPct": "<config>",
+      "nativeBudgetMb": "<masked>",
+      "viewDiskBudget": "<config>",
+      "diskReserve": "<config>",
+      "decompilerIdleS": "<config>",
+      "decompilerWaitS": "<config>",
+      "decompilerFailLimit": "<config>",
+      "decompilerNegativeS": "<config>"
+     },
+     "policy": {
+      "requireBackupForUpgrade": true,
+      "requireExpect": false
+     },
+     "paths": "<masked>",
+     "platform": "<masked>",
+     "analysisIdentity": "<masked>",
+     "projects": [],
+     "client": 1
+    },
+    "ms": "<masked>"
+   }
+  },
+  {
+   "step": 2,
+   "who": "a",
+   "cmd": "status",
+   "request": {},
+   "response": {
+    "id": 3,
+    "ok": true,
+    "result": {
+     "protocol": 3,
+     "minClient": "<masked>",
+     "hydraVersion": "<masked>",
+     "ghidraVersion": "<masked>",
+     "installId": "<masked>",
+     "startedAt": "<masked>",
+     "ghidra": "<masked>",
+     "install": "<masked>",
+     "java": "<masked>",
+     "pid": "<masked>",
+     "uptimeMs": "<masked>",
+     "listen": {
+      "host": "<masked>",
+      "port": "<masked>"
+     },
+     "launch": "<masked>",
+     "keepWarmS": 600,
+     "memory": {
+      "usedMb": "<masked>",
+      "committedMb": "<masked>",
+      "maxMb": "<masked>"
+     },
+     "protocolMin": 2,
+     "protocolMax": 3,
+     "capabilities": {
+      "errorNext": 1,
+      "expectAll": 1,
+      "idempotency": 1,
+      "laneHint": 1,
+      "maintLane": 1,
+      "queueInfo": 1,
+      "cancelWait": 1,
+      "forkReport": 1,
+      "format": 1,
+      "backup": 1,
+      "upgradeGate": 1,
+      "scriptIsolation": 2,
+      "scriptSha256": 1,
+      "attemptedChanges": 1,
+      "health": 1,
+      "identity": 1,
+      "seal": 1,
+      "forkAtomic": 1,
+      "admission": 1
+     },
+     "limits": {
+      "maxQuick": 4,
+      "maxLong": 2,
+      "maxMaint": "<config>",
+      "maxImports": 2,
+      "quickScriptMaxS": "<config>",
+      "cleanupGraceS": "<config>",
+      "abandonWaitS": "<config>",
+      "maxRunningPerKey": "<config>",
+      "minXmxMb": "<masked>",
+      "maxViews": "<config>",
+      "maxViewsPerClient": "<config>",
+      "heapSoftPct": "<config>",
+      "heapHardPct": "<config>",
+      "nativeBudgetMb": "<masked>",
+      "viewDiskBudget": "<config>",
+      "diskReserve": "<config>",
+      "decompilerIdleS": "<config>",
+      "decompilerWaitS": "<config>",
+      "decompilerFailLimit": "<config>",
+      "decompilerNegativeS": "<config>"
+     },
+     "policy": {
+      "requireBackupForUpgrade": true,
+      "requireExpect": false
+     },
+     "paths": "<masked>",
+     "platform": "<masked>",
+     "analysisIdentity": "<masked>",
+     "projects": [],
+     "you": 1,
+     "programs": [],
+     "clients": [
+      {
+       "id": 1,
+       "name": "r1-a",
+       "harness": "r1-h",
+       "transport": "socket",
+       "launcher": false,
+       "clientVersion": "9.9.9",
+       "activeProject": null,
+       "active": null,
+       "connectedMs": "<masked>",
+       "projects": [],
+       "programs": [],
+       "running": [],
+       "requests": []
+      }
+     ],
+     "overlays": [],
+     "scheduler": {
+      "quick": {
+       "slots": "<masked>",
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 0,
+       "everQueued": 0,
+       "backgroundQueued": 0,
+       "oldestWaitMs": "<masked>",
+       "longestRunningMs": "<masked>",
+       "starving": false,
+       "perKeyCap": "<masked>",
+       "perKey": []
+      },
+      "long": {
+       "slots": "<masked>",
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 0,
+       "everQueued": 0,
+       "backgroundQueued": 0,
+       "oldestWaitMs": "<masked>",
+       "longestRunningMs": "<masked>",
+       "starving": false,
+       "perKeyCap": "<masked>",
+       "perKey": []
+      },
+      "maint": {
+       "slots": "<masked>",
+       "inUse": 0,
+       "queued": 0,
+       "running": [],
+       "waiting": [],
+       "admitted": 0,
+       "everQueued": 0,
+       "backgroundQueued": 0,
+       "oldestWaitMs": "<masked>",
+       "longestRunningMs": "<masked>",
+       "starving": false,
+       "perKeyCap": "<masked>",
+       "perKey": []
+      }
+     },
+     "imports": {
+      "maxImports": 2,
+      "holder": null,
+      "running": [],
+      "queue": [],
+      "history": {
+       "count": 0,
+       "completed": 0,
+       "meanMs": null,
+       "msPerMb": null,
+       "peakRunning": 0
+      }
+     },
+     "waits": {
+      "foreignBlocked": {
+       "total": 0,
+       "lastMinute": 0,
+       "shared": 0
+      },
+      "singleFlightOpen": 0,
+      "contended": 0,
+      "lockWaitP99Ms": null
+     },
+     "projectStates": [],
+     "youAre": {
+      "client": "r1-a",
+      "harness": "r1-h",
+      "labelled": false
+     },
+     "upgradeCache": {
+      "enabled": true,
+      "dir": "<WORK>/state/upgrade-cache",
+      "buildsStarted": 0,
+      "builds": []
+     },
+     "deferredInitMs": "<masked>"
+    },
+    "ms": "<masked>"
+   }
+  }
+ ]
+}

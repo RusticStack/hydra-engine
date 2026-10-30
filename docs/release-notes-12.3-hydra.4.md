@@ -24,7 +24,7 @@ the test that passed for it. Where the test has not been run, the row says so.
   | V2 | import wait fix: no ten-second `busy` after the front of the queue; one budget for an explicit `wait` | `cc_e3a` `import_wait`, `import_wait_explicit` |
   | V3 | bounded release of a dead client (`cleanupGraceS`, `abandonWaitS`) | `cc_e3b` `dead_client_lock_wait`, `owner_leave_bounded` |
   | V4 | a request for a program held by an abandoned request answers `busy` at once | `cc_e3b` `abandoned_holder` |
-  | V5 | `cancel` and a `timeout` end a lock wait | `cc_e3b` `cancel_while_waiting` |
+  | V5 | `cancel` and a `timeout` end a request-bound lock wait (program, project, an overlay's request lock site); the overlay lifecycle waits (open, rebuild, drop, promote) are untimed and not ended (limit L2) | `cc_e3b` `cancel_while_waiting` |
   | V6 | `protocolMin`, `protocolMax` in the endpoint file and the `ready` event | `cc_e1` (first test) |
   | V7 | the sidecar of every `fork_project` gains `purpose` and `disposable` | `cc_e2` `fork_sidecar` |
   | V8 | a sealed project refuses every writable path | `cc_e2` `sealed_refusal`, `candidate_then_seal` |
@@ -53,7 +53,7 @@ branch), so every gate result is open.
 | # | Guarantee (6.1 wording, shortened) | Test that can fail | Gate result at preparation |
 |---|---|---|---|
 | GR1 | master, generations and uninvolved projects are not written; hydra.4 refuses every writable path of a sealed project (an accident guard, not a security boundary) | K1/K9 in every chaos iteration; `cc_e2` `sealed_refusal`, `candidate_then_seal`; `dt_e2` `seal_union` | not run by R1 (needs VF) |
-| GR2 | corruption can touch only a disposable, unpublished artefact; a candidate generation is verified before it becomes head; a kill during a save does not leave an unopenable newest version | K2, K3, K6; 300 candidate-save kills; 400 save kills (200 NTFS, 200 ReFS); planted X1 | not run by R1; the ReFS half is skipped on this machine (no ReFS volume, `HYDRA_REFS_SCRATCH` unset), so it cannot be stated as passed here |
+| GR2 | corruption can touch only a disposable, unpublished artefact; a candidate generation is verified before it becomes head; a kill during a save does not leave an unopenable newest version | K2, K3, K6; 300 candidate-save kills; 400 save kills (200 NTFS, 200 ReFS); planted X1 | not run by R1; the ReFS half is not testable on the release machine, owner decision 2026-10-30 (PROTOCOL-3.md 8.12): nothing about ReFS is stated, and the row cannot be stated as passed |
 | GR6 | no client's request waits on a lock another client holds, outside the residual list of 3.9 | K13 and the reruns of B's `s1`, `s2`, `s4`, `s5`, `s7`, `s11`, `s13` | red-table rows BP4, BP5, BP6 were still red at the last landing report (8.8); not run by R1 |
 | GR7 | a client crash never harms the daemon or other clients, and a dead client's queued write is never applied | K10; B `s4_dead` S4b; C scenario e | not run by R1 |
 | GR8 | at the configured budgets the daemon answers `busy` instead of running out of memory | `-Xmx256m` / `-Xmx512m` runs, K14 | needs the governor package (E9), absent from the tree |
@@ -61,7 +61,17 @@ branch), so every gate result is open.
 | GR10 | a fork path is absent or complete, and no staging artefact survives the next sweep | K6; at least 300 kills during `fork_project` | not run by R1 |
 | GR11 | a killed daemon is recoverable without manual repair, and operations in one project never change or delay another | K8, K9, K10; B's `s5`/`s13` | not run by R1 |
 
-"A deaf script is killed" may be written only after the E7 items of 9.14 pass; E7 is absent from the tree.
+"A deaf script is killed" may be written only after the E7 items of 9.14 pass; E7 is in the tree and its 9.14 items passed on the candidate (gate run 2026-10-30), while 9.14 as a whole waits on its throughput item.
+
+## 2a. Limits the release states (PROTOCOL-3.md 6.2)
+
+Every limit of PROTOCOL-3.md 6.2 is stated, one by one, in the module README, "Limits of 12.3-hydra.4 and
+protocol 3" (L1 to L19 and R6.1 to R6.11), and summarised in the `Limits` item of `CHANGELOG.md`. The
+published notes carry that summary: a script that ignores cancel is bounded and quarantined, not stopped,
+until gate 9.14 passes as a whole; the overlay lifecycle waits are not cancel-aware; Windows x64 and JDK 25
+only, no Linux or macOS claim; no power-cut test; nothing about ReFS is tested for this release (NTFS is the
+release file system); the upgrade gate and the backup check are guards against accidents, not a security
+boundary.
 
 ## 3. What each passing test flips in the claims audit (8.3)
 

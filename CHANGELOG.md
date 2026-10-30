@@ -70,8 +70,10 @@ guarantees that hydra.4 may make are listed with their tests in
     request to end; the 600 s waits of `disconnect` and `leaveProject` for owners and writers use
     the same bounds.
   - V4: a request for a program held by an abandoned request answers `busy` at once.
-  - V5: `cancel`, and a `timeout` deadline, end a request that waits for a program, project or
-    overlay lock.
+  - V5: `cancel`, and a `timeout` deadline, end a request that waits in a request-bound lock wait
+    (a program, a project, or an overlay's request lock site). The overlay lifecycle waits (open,
+    rebuild, drop and promote of an overlay) are untimed and are not ended by `cancel`, a
+    `timeout` or the release of a dead client (module README, Limits, L2).
   - V6: `protocolMin` and `protocolMax` in the endpoint file and the `ready` event.
   - V7: the sidecar of every `fork_project` gains `purpose` and `disposable`.
   - V8: a project that this engine sealed (the registry record, `SEALED.json`, or a `generation`
@@ -100,6 +102,15 @@ guarantees that hydra.4 may make are listed with their tests in
   that carries none.
 - **Headless only.** There is no GUI. Hydra Engine is headless only; projects it writes cannot
   be opened by Ghidra 12.2 or 12.1.4.
+- **Limits.** Every limit of `PROTOCOL-3.md` 6.2 is stated in the module README, "Limits of
+  12.3-hydra.4 and protocol 3" (L1 to L19 and R6.1 to R6.11). In short: a script that ignores
+  cancel is bounded and quarantined, not stopped, until the script worker's release gate (9.14)
+  passes; the overlay lifecycle waits are not cancel-aware; the leave of an owner or writer of an
+  open program still queues the exclusive lock (bounded); `lane:"quick"` is a trusted hint;
+  Windows x64 and JDK 25 only, no Linux or macOS claim; no power-cut test; nothing about ReFS is
+  tested for this release (no ReFS volume on the release machine, owner decision 2026-10-30;
+  NTFS is the release file system); the upgrade gate and the backup check guard against
+  accidents and are not a security boundary.
 - **NOTICE-HYDRA.** The list of modified Ghidra files was checked against the upstream commit
   `1b9e58a915cf867e106495eaa2a4b18eb4971c9d` of hydra.3: five modified core Java files, one added
   class (`VersionFileCheck`), and the build files already listed.
@@ -110,13 +121,14 @@ guarantees that hydra.4 may make are listed with their tests in
   to its final name (`LocalManagedBufferFile`), and the newest version is checked when a database
   is opened (`VersionedDatabase`, `LocalDatabaseItem`, the added class `VersionFileCheck`). A kill
   during a save used to leave an unopenable newest version in about 3% of kills in the crash tests
-  (12 of 363); kill batches with the change found 0 unopenable versions in 200 kills on NTFS and 0 in
-  200 on ReFS. The repair of a bad newest version applies only to writable forks inside declared
+  (12 of 363); a kill batch with the change found 0 unopenable versions in 200 kills on NTFS. No
+  ReFS result is stated: ReFS is not tested for this release (owner decision 2026-10-30). Release gate 9.15 (the counted kill
+  batches) has not passed. The repair of a bad newest version applies only to writable forks inside declared
   disposable roots and is not wired into the daemon yet. A bounded result, not a guarantee.
 - Fork publish is atomic and retryable (capability `forkAtomic`): the fork is built in a staging
   folder and published with `.gpr` last, a sidecar records its state, and a sweeper removes the
-  leftovers of a publisher that died. 330 kills on NTFS and 300 on ReFS left no state that a retry
-  could not finish (a killed publish can leave a `.rep` without its `.gpr`, which the next call
+  leftovers of a publisher that died. 330 kills on NTFS left no state that a retry could not
+  finish (no ReFS result is stated; release gate 9.15 has not passed) (a killed publish can leave a `.rep` without its `.gpr`, which the next call
   sweeps). A concurrent publisher of the same name now gets `conflict`.
 - Protocol 3 groundwork (client 1.1.0, version negotiation, the identity block; protocol 2 replies
   are unchanged and checked against the vendored 1.0.0 client), the corruption oracle and the
@@ -202,12 +214,12 @@ stock `analyzeHeadless` import with `-loader-*` arguments applied them; upstream
 
 - **README**: Hydra Engine is described as a fork of Ghidra 12.3 DEV that depends on it (the
   project format, decompiler, analyzers and scripts are Ghidra's), not as an independent project.
-- **Speed**: the warm decompile time is qualified as size-dependent. The 6.7-7.1 ms of the
-  benchmark is one function whose size was not recorded; measured by the owner on a KotOR
+- **Speed**: the warm decompile time is qualified as size-dependent. The 6.7-7.1 ms of the benchmark function
+  is one function whose size was not recorded; measured by the owner on a KotOR
   executable on 2026-10-27, a warm decompile took 0.7-2.1 ms for a one-byte function and 35-45 ms
   for a 6.7 KB function of 29 basic blocks.
-- **Writes**: they are serialized and never corrupt a program, but are not collision-checked by
-  default: shared writes are last-writer-wins per value, and `expect` is opt-in per call. The
+- **Writes**: they are serialized, and no corruption was seen in the tests listed in the module
+  README; they are not collision-checked by default: shared writes are last-writer-wins per value, and `expect` is opt-in per call. The
   wording "write without stepping on each other" is replaced accordingly (README and module
   README).
 - **Platform and limits** section: releases are Windows x64 only, JDK 25 is required, one daemon
@@ -483,9 +495,7 @@ You need a JDK 25 and Python 3.10 or later; the install has no JDK.
 - **Based on a development snapshot.** Upstream `master` is Ghidra's next version under work
   (12.3 DEV), not a Ghidra release.
 - **Windows only.** CI and releases build and test on Windows. The module and launcher have no
-  Windows-only path, and a one-off dry run of the release workflow on 2026-10-26 built Linux x64
-  and macOS arm64 installs that passed both test suites, but neither is released or tested
-  routinely; build from source there (`gradle buildHeadless`).
+  Windows-only path, but no Linux or macOS claim is made: neither is released or tested.
 - **There is no GUI.** Headless only: no help, javadoc or Python type stubs; `gradle buildGhidra`
   still builds the whole source tree, from source.
 

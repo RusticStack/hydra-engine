@@ -2703,6 +2703,7 @@
    "registry_unnested",
    "shared_stress_v3",
    "stalled_socket",
+   "v2_program_shape",
    "waiter_caps",
    "writer_vs_steady_readers"
   ],

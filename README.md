@@ -80,8 +80,8 @@ promise](#platform-and-limits) is spelled out below.
 - **Several agents writing.** Each in the way its work needs. Writes are serialized, and no
   corruption was seen in the tests listed; collisions are only detected when you pass `expect`:
   - a **working copy** of a project (`fork_project`) while the others keep reading the master:
-    a block clone on ReFS (about 0.2 s and a few MB for a 1.5 GB project), a full copy
-    elsewhere, with its source and base revision recorded;
+    a block clone on ReFS (about 0.2 s and a few MB for a 1.5 GB project, measured before
+    hydra.4; ReFS is not tested for hydra.4), a full copy elsewhere, with its source and base revision recorded;
   - a private **overlay** of a program others read: names, labels, comments, signatures and
     data types only that client sees, never saved unless promoted into a working copy;
   - **several writers** of one project (different programs in parallel), or of one program in
@@ -121,11 +121,11 @@ search caches on. Medians from the
 | No daemon running: start it and connect | 533 ms |
 | Daemon start until the first decompile answer | 1,637 ms |
 | Warm `decompile` | 6.7-7.1 ms for this function; about 1 to 45 ms by function size |
-| Another harness joins a running daemon: connect + `hello`, join the project, `open_program` (already open), `decompile` | 14 ms, 0.9 ms, 0.9 ms, 7.4 ms (measured on 12.1.4) |
+| Another harness joins a running daemon: connect + `hello`, join the project, `open_program` (already open), `decompile` | 14 ms, 0.9 ms, 0.9 ms, 7.4 ms for the benchmark function (measured on 12.1.4) |
 
 A warm decompile depends on the function's size. Measured by the owner on a KotOR executable
 (2026-10-27): 0.7-2.1 ms for a one-byte function, 35-45 ms for a 6.7 KB function of 29 basic
-blocks. So "about 7 ms" is one function in one program, not a constant.
+blocks. So "about 7 ms" is the benchmark function in one program, not a constant.
 
 The same question through stock `analyzeHeadless` (`-process ... -readOnly -postScript`, one
 decompile) took 7.0-7.8 s per question, and needed a copy of the project (stock Ghidra 12.1.4).
@@ -136,21 +136,22 @@ Several at once (same machine; the module README has the method):
 |---|---|
 | Four large PEs imported in parallel (`maxImports` 4) | 63.9 s, against 165.1 s one after another |
 | Decompiles while two 128 MB imports write into the same project | median 4.9 ms (5.7 ms before) |
-| Working copy of a 1.5 GB project on ReFS (`fork_project`) | 204-225 ms, 2.8-5.0 MB |
+| Working copy of a 1.5 GB project on ReFS (`fork_project`; measured before hydra.4 on the owner's former Dev Drive, not repeated: ReFS is not tested for hydra.4) | 204-225 ms, 2.8-5.0 MB |
 | Four clients x two threads, shared writing on one program | 3,200 renames and comments with 64 saves in 6.0 s, none lost (in this test) |
 
 ## Platform and limits
 
 - **Windows x64 only, for releases.** Each release has `hydra-engine-<version>-win_x86_64.zip`.
-  CI and the tests run on Windows. Linux and macOS: from source only, and a one-off dry run
-  passed on them; they are not tested routinely.
+  CI and the tests run on Windows. No Linux or macOS claim is made: the source may build there,
+  but nothing is tested on them.
 - **JDK 25 is required** (`application.java.min`), and Python 3.10 or later for the launcher.
 - **One daemon per state directory**, which is per user unless you set `GHIDRA_SESSION_HOME`
   (or an instance name); a second daemon for the same one exits.
 - **`fork_project` is a block clone only on ReFS** (Windows 11 24H2 or later, for example a Dev
   Drive); on NTFS and elsewhere it is a full copy, which `auto` refuses above `forkCopyLimitMb`.
-- **Writes are serialized and never corrupt a program, but they are not collision-checked by
-  default.** Each change is its own transaction under the program's exclusive lock. In shared
+- **Writes are serialized, and no corruption was seen in the tests listed in the
+  [module README](Ghidra/Features/HeadlessSession/README.md#tests); they are not
+  collision-checked by default.** Each change is its own transaction under the program's exclusive lock. In shared
   mode (`"share": true`) the last writer wins per value; optimistic concurrency is opt-in per call
   (`expect`, in the module README's "Shared writing"). In owner mode one client writes and the
   rest get `not_owner`.
@@ -165,13 +166,22 @@ Several at once (same machine; the module README has the method):
   `quickScriptMaxS` (60 s by default, 120 s at most) to take a quick slot, and `save`,
   `fork_project`, `refresh`, `reopen` and `promote_overlay` use their own maintenance lane
   (`maintSlots`, 4 by default); a protocol 2 client keeps the lanes above.
-- **A client that dies is released after a bounded time; a script that ignores cancel keeps
-  running.** The engine cancels its requests when the connection closes, and `cancel` (or a
-  `timeout`) ends a request that waits for a lock. After `cleanupGraceS` (15 s) the remaining
-  requests are interrupted, and after `abandonWaitS` (5 s) more the client is released even if one
-  still runs (the locks it holds are flagged abandoned). Java cannot stop a non-cooperative
-  thread: a script that does not poll for cancellation runs to its own end. This is a documented
-  limit.
+- **Since hydra.4 a client that dies is released after a bounded time; a script that ignores
+  cancel keeps running.** The engine cancels its requests when the connection closes, and `cancel`
+  (or a `timeout`) ends a request that waits in a request-bound lock wait (a program, a project, an
+  overlay's request lock site). The overlay lifecycle waits (open, rebuild, drop, promote of an
+  overlay) are untimed: `cancel`, a `timeout` and the release do not reach them. After
+  `cleanupGraceS` (15 s) the remaining requests are interrupted, and after `abandonWaitS` (5 s) more
+  the client is released even if one still runs (the locks it holds are flagged abandoned). The
+  tests of this (`cc_e3b` `dead_client_lock_wait`, `owner_leave_bounded`) pass; the release gate
+  that times it (9.13) has not passed. Java cannot stop a non-cooperative thread: a script that does
+  not poll for cancellation runs to its own end, bounded and quarantined, not stopped. This is a
+  documented limit.
+- **Every limit of hydra.4 and protocol 3** (`PROTOCOL-3.md` 6.2) is listed in the module README,
+  [Limits of 12.3-hydra.4 and protocol 3](Ghidra/Features/HeadlessSession/README.md#limits-of-123-hydra4-and-protocol-3).
+  Among them: nothing about ReFS is tested for this release (there is no ReFS volume on the release
+  machine; NTFS is the release file system), there is no power-cut test, and the upgrade gate is a
+  guard against accidents, not a security boundary.
 - **Changes are kept only by `save`.** Until a client saves, they live in the daemon's memory.
 - **Projects upgrade one way.** Ghidra 12.1.4 projects open read-only, unchanged; writing one
   with this build (it asks for `"upgrade": true`) moves its databases to a format that Ghidra
@@ -405,9 +415,8 @@ keeps it honest, are in [CONTRIBUTING](.github/CONTRIBUTING.md#the-headless-buil
 
 CI ([`ci.yml`](.github/workflows/ci.yml)) builds the headless install and runs
 `session_smoke.py`, `daemon_tests.py` and `contract_tests.py` on Windows, the platform that is
-tested and released. The launcher and module have no Windows-only path, and Linux x64 and macOS
-arm64 builds passed the suites of the time once (a release dry run, 2026-10-26), but neither is
-tested routinely. The full build
+tested and released. The launcher and module have no Windows-only path, but no Linux or macOS
+claim is made: they are not tested. The full build
 runs weekly. Releases are cut by [`release.yml`](.github/workflows/release.yml)
 ([CONTRIBUTING](.github/CONTRIBUTING.md#releases)).
 
