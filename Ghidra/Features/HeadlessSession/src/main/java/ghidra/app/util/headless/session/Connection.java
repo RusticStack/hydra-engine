@@ -174,6 +174,11 @@ final class Connection {
 				reader = null; // close() no longer interrupts this thread
 				Thread.interrupted(); // an interrupt from close() only meant: stop reading
 			}
+			// The client is gone from the moment its input ended, as on the platform reader: a
+			// shutdown sent right after this client closed must not count it as connected while
+			// the release below is still being handed to its own thread.
+			open = false;
+			client.leaving = true;
 			if (Thread.currentThread().isVirtual()) {
 				// the release closes programs and projects (Ghidra DB, lock files) and waits up to
 				// cleanupGraceS + abandonWaitS: it runs on a platform thread, so the virtual
