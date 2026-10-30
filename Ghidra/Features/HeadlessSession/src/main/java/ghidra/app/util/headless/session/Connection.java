@@ -90,9 +90,11 @@ final class Connection {
 	 * Whether a socket connection's reader and writer run on virtual threads ({@code -set
 	 * connectionThreads=virtual}, the default; {@code platform} restores one platform thread
 	 * each). They only wait on the socket and on monitors (which no longer pin a carrier since
-	 * JDK 24, JEP 491) and run no native or FFM code, so an idle client costs no platform thread.
-	 * Requests never run on them except the inline ones ({@code ping}, {@code status},
-	 * {@code cancel}, {@code health}) and the authenticating {@code hello}, as before.
+	 * JDK 24, JEP 491), so an idle client costs no platform thread. Requests never run on them
+	 * except the inline ones ({@code ping}, {@code status}, {@code cancel}, {@code health}) and
+	 * the authenticating {@code hello}, as before. The release of a client that left (closing its
+	 * programs and projects, Ghidra DB code) runs on a platform thread of its own, not on the
+	 * virtual reader (see {@link #run()}).
 	 */
 	static boolean virtualIo() {
 		String v = Settings.string("connectionThreads", "virtual").trim();
@@ -102,6 +104,17 @@ final class Connection {
 			default -> throw new IllegalArgumentException(
 				"-set connectionThreads=" + v + ": not virtual or platform");
 		};
+	}
+
+	/**
+	 * Start-up validation of {@code connectionThreads} and {@code laneIdleMs}: a bad value is a
+	 * usage error at launch, not a failure of every later socket connection.
+	 *
+	 * @throws IllegalArgumentException with a usage message
+	 */
+	static void validateSettings() {
+		virtualIo();
+		laneIdleMs();
 	}
 
 	/** How long an idle ordered lane keeps its thread ({@code -set laneIdleMs}, default 10 s). */
@@ -142,42 +155,70 @@ final class Connection {
 				reader = null; // close() no longer interrupts this thread
 				Thread.interrupted(); // an interrupt from close() only meant: stop reading
 			}
-			open = false;
-			client.leaving = true;
-			// cancel first: the worker must not finish a long request for a client that is gone;
-			// a request parked in a lock wait is interrupted by its cancel (Waits, 3.5)
-			client.running.values().forEach(RequestMonitor::cancel);
-			worker.shutdown();
-			parallel.shutdown();
-			// bounded release (3.5): cancel, wait cleanupGraceS, shutdownNow (interrupts lock waits
-			// and I/O, not busy loops), wait abandonWaitS, then disconnect regardless
-			try {
-				if (exiting) {
-					// the process is going down on this connection's own thread (shutdown): that
-					// thread must not be interrupted, it is the one closing the session. Only
-					// the process-ending shutdown request gets here and its own thread then
-					// ends the process, so the long bound is never reached in practice.
-					awaitBoth(3_600_000L);
-				}
-				else if (!awaitBoth(Session.cleanupGraceMs())) {
-					Msg.warn(this, client.label() + ": " + client.running.size() +
-						" request(s) still run " + Session.cleanupGraceMs() / 1000 +
-						" s after the connection closed; interrupting them");
-					worker.shutdownNow();
-					parallel.shutdownNow();
-					if (!awaitBoth(Session.abandonWaitMs())) {
-						Msg.warn(this, client.label() + ": " + client.running.size() +
-							" request(s) ignore cancel and interrupt; releasing the client anyway " +
-							"(the program locks they hold are flagged abandoned)");
+			if (Thread.currentThread().isVirtual()) {
+				// the release closes programs and projects (Ghidra DB, lock files) and waits up to
+				// cleanupGraceS + abandonWaitS: it runs on a platform thread, so the virtual
+				// reader only ever does socket I/O and many clients leaving at once do not hold
+				// the carriers of the virtual scheduler
+				Thread r = Thread.ofPlatform().name("session-" +
+					client.label().replace(' ', '-') + "-release").daemon(true).start(this::release);
+				boolean interrupted = false;
+				while (true) {
+					try {
+						r.join();
+						break;
+					}
+					catch (InterruptedException e) {
+						interrupted = true;
 					}
 				}
+				if (interrupted) {
+					Thread.currentThread().interrupt();
+				}
 			}
-			catch (InterruptedException e) {
-				Thread.currentThread().interrupt();
+			else {
+				release();
 			}
-			session.disconnect(client);
-			outbound.finish();
 		}
+	}
+
+	/** Releases what the client held (3.5): cancel, bounded waits, disconnect, drain the writer. */
+	private void release() {
+		open = false;
+		client.leaving = true;
+		// cancel first: the worker must not finish a long request for a client that is gone;
+		// a request parked in a lock wait is interrupted by its cancel (Waits, 3.5)
+		client.running.values().forEach(RequestMonitor::cancel);
+		worker.shutdown();
+		parallel.shutdown();
+		// bounded release (3.5): cancel, wait cleanupGraceS, shutdownNow (interrupts lock waits
+		// and I/O, not busy loops), wait abandonWaitS, then disconnect regardless
+		try {
+			if (exiting) {
+				// the process is going down on this connection's own thread (shutdown): that
+				// thread must not be interrupted, it is the one closing the session. Only
+				// the process-ending shutdown request gets here and its own thread then
+				// ends the process, so the long bound is never reached in practice.
+				awaitBoth(3_600_000L);
+			}
+			else if (!awaitBoth(Session.cleanupGraceMs())) {
+				Msg.warn(this, client.label() + ": " + client.running.size() +
+					" request(s) still run " + Session.cleanupGraceMs() / 1000 +
+					" s after the connection closed; interrupting them");
+				worker.shutdownNow();
+				parallel.shutdownNow();
+				if (!awaitBoth(Session.abandonWaitMs())) {
+					Msg.warn(this, client.label() + ": " + client.running.size() +
+						" request(s) ignore cancel and interrupt; releasing the client anyway " +
+						"(the program locks they hold are flagged abandoned)");
+				}
+			}
+		}
+		catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+		}
+		session.disconnect(client);
+		outbound.finish();
 	}
 
 	private boolean awaitBoth(long ms) throws InterruptedException {
@@ -628,6 +669,14 @@ final class Connection {
 							wait();
 						}
 						catch (InterruptedException e) {
+							// close() interrupted this virtual writer: it ends for good, so nothing
+							// queued later could be written. Stop taking replies and empty the queue,
+							// or finish() would wait writeStallMs for a queue nobody drains.
+							open = false;
+							stopping = true;
+							queue.clear();
+							queued = 0;
+							notifyAll();
 							return;
 						}
 					}

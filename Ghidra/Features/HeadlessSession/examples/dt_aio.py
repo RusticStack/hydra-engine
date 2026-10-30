@@ -155,14 +155,25 @@ def t_aio_idle_clients(c):
         after = settled_threads(pid)
     d.stop()
     c.timings["aio: OS threads before/connected/idle/after"] = [base, connected, idle, after]
-    # far below one thread per client; the slack is for virtual-thread carriers and pollers
-    bound = AIO_N // 4
+    # far below one thread per client; the slack is for virtual-thread carriers and pollers, whose
+    # number follows the CPUs granted to the daemon (os.cpu_count() as the upper estimate)
+    cpus = os.cpu_count() or 1
+    bound = AIO_N // 4 + cpus
     dt.check(connected - base < bound,
              f"{AIO_N} idle clients added {connected - base} OS threads (bound {bound}): "
              f"base {base}, connected {connected}")
     dt.check(idle - base < bound,
              f"{AIO_N} clients that sent ordered requests and went idle hold {idle - base} OS threads "
              f"(bound {bound}; lane threads end after laneIdleMs): base {base}, idle {idle}")
+    # the lane threads themselves ended: had the AIO_ORDER_N lanes kept their threads, idle -
+    # connected would be at least AIO_ORDER_N plus any carriers started meanwhile
+    lane_bound = AIO_ORDER_N // 2 + cpus
+    dt.check(idle - connected < lane_bound,
+             f"{AIO_ORDER_N} clients' ordered lanes still hold threads {LANE_IDLE_MS} ms after "
+             f"their last request: idle - connected = {idle - connected} (bound {lane_bound})")
+    dt.check(after - base < bound,
+             f"closed clients left {after - base} OS threads behind (bound {bound}): base {base}, "
+             f"after {after}")
     return (f"{AIO_N} idle socket clients: daemon OS threads {base} -> {connected} (connected) -> "
             f"{idle} (after {AIO_ORDER_N} pipelined {AIO_PIPE} ordered requests each, in order, and "
             f"went idle) -> {after} (closed)")

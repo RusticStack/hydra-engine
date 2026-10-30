@@ -117,6 +117,7 @@ public class HeadlessSession implements GhidraLaunchable {
 			requireExpect = Settings.bool("requireExpect", false); // a bad value is a usage error
 			Scheduler.validateSettings(); // so is a bad lane setting
 			Health.validateSettings(); // and testHooks as a setting: it is a launch property only
+			Connection.validateSettings(); // and connectionThreads / laneIdleMs (Goal 2)
 			Budgets.validate(); // E9: the budgets, and -Xmx against minXmxMb
 		}
 		catch (IllegalArgumentException e) {
@@ -337,7 +338,18 @@ public class HeadlessSession implements GhidraLaunchable {
 				}
 				// the reader of one client: a virtual thread by default, so a client that waits
 				// between requests holds no platform thread (Connection.virtualIo)
-				Connection.ioThread("session-socket", () -> serveSocket(s, token));
+				try {
+					Connection.ioThread("session-socket", () -> serveSocket(s, token));
+				}
+				catch (Throwable t) {
+					try {
+						s.close(); // a client that cannot be served is not left without a reply
+					}
+					catch (IOException ignored) {
+						// the connection is dropped either way
+					}
+					throw t;
+				}
 			}
 		});
 	}
@@ -764,6 +776,13 @@ public class HeadlessSession implements GhidraLaunchable {
 			Settings.set("connectionThreads", "bogus");
 			check("connectionThreads refuses a value that is not virtual or platform",
 				throwsIllegal(Connection::virtualIo));
+			check("a bad connectionThreads fails start-up validation (not every later client)",
+				throwsIllegal(Connection::validateSettings));
+			Settings.clear();
+			Settings.set("laneIdleMs", "soon");
+			check("a laneIdleMs that is not an integer fails start-up validation",
+				throwsIllegal(Connection::validateSettings));
+			Settings.clear();
 			Settings.set("connectionThreads", "platform");
 			boolean platform = !Connection.virtualIo();
 			Thread t = Connection.ioThread("selftest-io", () -> {
