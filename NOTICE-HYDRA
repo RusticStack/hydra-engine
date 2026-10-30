@@ -65,6 +65,17 @@ upstream commit 1b9e58a915cf867e106495eaa2a4b18eb4971c9d, outside the HeadlessSe
   Ghidra/Framework/SoftwareModeling/src/main/java/ghidra/app/plugin/processors/sleigh/SleighLanguageFile.java
       The language lock file is created the first time a language needs it instead of for every
       language description at start-up. A comment at the top of the file says so.
+  Ghidra/Framework/SoftwareModeling/src/main/java/ghidra/app/plugin/processors/sleigh/SleighLanguage.java
+      The .sla file is decoded with a TemplateInterner open, so equal p-code templates of the
+      language share one object. A comment at that line says so.
+  Ghidra/Framework/SoftwareModeling/src/main/java/ghidra/app/plugin/processors/sleigh/template/ConstTpl.java
+  Ghidra/Framework/SoftwareModeling/src/main/java/ghidra/app/plugin/processors/sleigh/template/VarnodeTpl.java
+  Ghidra/Framework/SoftwareModeling/src/main/java/ghidra/app/plugin/processors/sleigh/template/HandleTpl.java
+  Ghidra/Framework/SoftwareModeling/src/main/java/ghidra/app/plugin/processors/sleigh/template/OpTpl.java
+      ConstTpl and VarnodeTpl gain decodeShared, which returns the shared template of an equal
+      value while a TemplateInterner (a new Hydra file in the same folder) is open; HandleTpl,
+      VarnodeTpl and OpTpl decode their parts through it. Without a table open they decode as
+      before.
   gradle/distributableGhidraModule.gradle
       Two lines: a module's support/ folder is copied into the distribution without
       __pycache__ folders and .pyc files.

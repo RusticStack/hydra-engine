@@ -72,13 +72,30 @@ public class VarnodeTpl {
 
 	public void decode(Decoder decoder) throws DecoderException {
 		int el = decoder.openElement(ELEM_VARNODE_TPL);
-		space = new ConstTpl();
-		space.decode(decoder);
-		offset = new ConstTpl();
-		offset.decode(decoder);
-		size = new ConstTpl();
-		size.decode(decoder);
+		space = ConstTpl.decodeShared(decoder);
+		offset = ConstTpl.decodeShared(decoder);
+		size = ConstTpl.decodeShared(decoder);
 		decoder.closeElement(el);
+	}
+
+	/**
+	 * Decode a new VarnodeTpl; while a {@link TemplateInterner} is open on this thread, an equal
+	 * template decoded before is returned instead (templates are immutable after decode).
+	 * @param decoder the stream decoder
+	 * @return the decoded, possibly shared, template
+	 * @throws DecoderException for an invalid encoding
+	 */
+	public static VarnodeTpl decodeShared(Decoder decoder) throws DecoderException {
+		TemplateInterner interner = TemplateInterner.active();
+		if (interner == null) {
+			VarnodeTpl v = new VarnodeTpl();
+			v.decode(decoder);
+			return v;
+		}
+		// decode into the table's scratch object: a repeat allocates nothing
+		VarnodeTpl scratch = interner.varnodeScratch();
+		scratch.decode(decoder);
+		return interner.intern(scratch);
 	}
 
 	@Override

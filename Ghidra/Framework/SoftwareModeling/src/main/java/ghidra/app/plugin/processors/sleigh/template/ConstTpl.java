@@ -282,7 +282,31 @@ public class ConstTpl {
 		}
 	}
 
+	/**
+	 * Decode a new ConstTpl; while a {@link TemplateInterner} is open on this thread, an equal
+	 * template decoded before is returned instead (templates are immutable after decode).
+	 * @param decoder the stream decoder
+	 * @return the decoded, possibly shared, template
+	 * @throws DecoderException for an invalid encoding
+	 */
+	public static ConstTpl decodeShared(Decoder decoder) throws DecoderException {
+		TemplateInterner interner = TemplateInterner.active();
+		if (interner == null) {
+			ConstTpl c = new ConstTpl();
+			c.decode(decoder);
+			return c;
+		}
+		// decode into the table's scratch object: a repeat allocates nothing
+		ConstTpl scratch = interner.constScratch();
+		scratch.decode(decoder);
+		return interner.intern(scratch);
+	}
+
 	public void decode(Decoder decoder) throws DecoderException {
+		value_real = 0;
+		value_spaceid = null;
+		handle_index = 0;
+		select = 0;
 		int el = decoder.openElement();
 		if (el == ELEM_CONST_REAL.id()) {
 			type = REAL;

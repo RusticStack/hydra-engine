@@ -34,6 +34,7 @@ import ghidra.app.plugin.processors.generic.MemoryBlockDefinition;
 import ghidra.app.plugin.processors.sleigh.expression.ContextField;
 import ghidra.app.plugin.processors.sleigh.expression.PatternValue;
 import ghidra.app.plugin.processors.sleigh.symbol.*;
+import ghidra.app.plugin.processors.sleigh.template.TemplateInterner;
 import ghidra.framework.Application;
 import ghidra.pcode.utils.SlaFormat;
 import ghidra.program.model.address.*;
@@ -177,7 +178,9 @@ public class SleighLanguage implements Language {
 		}
 		
 		// Read in the sleigh specification
-		try (PackedDecode decoder = SlaFormat.buildDecoder(langFile.getSlaFile())) {
+		// Hydra: equal p-code templates of the language share one object (see TemplateInterner)
+		try (PackedDecode decoder = SlaFormat.buildDecoder(langFile.getSlaFile());
+				TemplateInterner interner = TemplateInterner.open()) {
 			decode(decoder);
 		}
 		catch (IOException | DecoderException e) {
