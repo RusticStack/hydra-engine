@@ -16,12 +16,17 @@ rust/crates/hydra-decomp-host/DESIGN.md||GHIDRA||||END|
 rust/crates/hydra-decomp-host/build.rs||GHIDRA||||END|
 rust/crates/hydra-decomp-host/cpp-sources.txt||GHIDRA||||END|
 rust/crates/hydra-decomp-host/cpp/host_shim.cc||GHIDRA||||END|
+rust/crates/hydra-decomp-host/cpp/snapshot_arch.cc||GHIDRA||||END|
+rust/crates/hydra-decomp-host/cpp/snapshot_arch.hh||GHIDRA||||END|
+rust/crates/hydra-decomp-host/cpp/snapshot_seh.cc||GHIDRA||||END|
 rust/crates/hydra-decomp-host/scripts/build_stock_console.ps1||GHIDRA||||END|
 rust/crates/hydra-decomp-host/src/lib.rs||GHIDRA||||END|
 rust/crates/hydra-decomp-host/src/main.rs||GHIDRA||||END|
 rust/crates/hydra-decomp-host/src/parser_check.rs||GHIDRA||||END|
+rust/crates/hydra-decomp-host/src/snapshot.rs||GHIDRA||||END|
 rust/crates/hydra-decomp-host/tests/concurrency.rs||GHIDRA||||END|
 rust/crates/hydra-decomp-host/tests/shared_state.rs||GHIDRA||||END|
+rust/crates/hydra-decomp-host/tests/snapshot_backend.rs||GHIDRA||||END|
 rust/rust-toolchain.toml||GHIDRA||||END|
 src/decompile/.cproject||GHIDRA||||END|
 src/decompile/cpp/.gitignore||GHIDRA||||END|

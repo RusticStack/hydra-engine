@@ -14,3 +14,6 @@ slghpatexpress slghpattern semantics context slaformat compression filemanage
 # EXTRA (console modules, minus the ones that need libbfd: bfd_arch loadimage_bfd analyzesigs codedata)
 callgraph ifacedecomp ifaceterm inject_sleigh interface libdecomp
 loadimage_xml raw_arch rulecompile sleigh_arch testfunction unify xml_arch
+# GHIDRA client components (decompile.exe's ArchitectureGhidra), answered from a SnapshotStore by cpp/snapshot_arch.cc
+ghidra_arch ghidra_context ghidra_translate database_ghidra inject_ghidra typegrp_ghidra
+comment_ghidra string_ghidra cpool_ghidra loadimage_ghidra

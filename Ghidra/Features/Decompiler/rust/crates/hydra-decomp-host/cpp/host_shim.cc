@@ -20,6 +20,11 @@
 #include "consolemain.cc"
 #undef main
 
+namespace ghidra {
+// snapshot_arch.cc: starts the library once per process for both entries (console and snapshot backend)
+bool hydraLibraryStart(const char *root,std::string &err);
+}
+
 extern "C" void hydra_decomp_free(char *p) noexcept
 {
   std::free(p);
@@ -46,8 +51,11 @@ extern "C" int hydra_decomp_init(const char *ghidraroot, char **err, size_t *err
   using namespace ghidra;
   *err = nullptr; *errlen = 0;
   try {
-    std::vector<std::string> extrapaths;
-    startDecompilerLibrary(ghidraroot, extrapaths);
+    std::string why;
+    if (!hydraLibraryStart(ghidraroot, why)) {
+      *err = copy_out(why, errlen);
+      return 2;
+    }
     const std::vector<LanguageDescription> &d(SleighArchitecture::getDescriptions());
     if (d.empty()) {
       *err = copy_out("no .ldefs language descriptions found under the Ghidra root", errlen);

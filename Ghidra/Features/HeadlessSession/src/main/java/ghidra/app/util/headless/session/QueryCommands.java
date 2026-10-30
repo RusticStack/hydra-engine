@@ -253,14 +253,12 @@ final class QueryCommands {
 			return r;
 		}
 		// Hydra: the optional host backend (hydra.decomp.backend=host); null = the process path
-		JsonObject hosted = HostDecompileBackend.tryDecompile(prog, f, timeout, cap);
-		if (hosted != null) {
-			return hosted;
-		}
-		DecompInterface d = e.borrowDecompiler();
+		// (a hosted result is a completed one; it then takes the same reply path as a process result)
+		DecompileResults hosted = HostDecompileBackend.tryDecompile(prog, e, f, timeout);
+		DecompInterface d = hosted != null ? null : e.borrowDecompiler();
 		boolean healthy = false;
 		try {
-			DecompileResults res = d.decompileFunction(f, timeout, m);
+			DecompileResults res = hosted != null ? hosted : d.decompileFunction(f, timeout, m);
 			if (m.isCancelled()) {
 				throw cancelled(m);
 			}
@@ -300,7 +298,9 @@ final class QueryCommands {
 			return reply(f, done, cap);
 		}
 		finally {
-			e.returnDecompiler(d, healthy);
+			if (d != null) {
+				e.returnDecompiler(d, healthy);
+			}
 		}
 	}
 

@@ -21,6 +21,9 @@ fn main() {
     println!("cargo:rerun-if-env-changed=HYDRA_DECOMP_LTCG");
     println!("cargo:rerun-if-changed=cpp-sources.txt");
     println!("cargo:rerun-if-changed=cpp/host_shim.cc");
+    println!("cargo:rerun-if-changed=cpp/snapshot_arch.cc");
+    println!("cargo:rerun-if-changed=cpp/snapshot_arch.hh");
+    println!("cargo:rerun-if-changed=cpp/snapshot_seh.cc");
 
     // The bison-generated parsers carry hand edits (thread_local parser globals). A regenerated
     // parser silently drops them and the host crashes at N workers, so refuse to build. Set
@@ -96,6 +99,11 @@ fn main() {
     // The shim includes consolemain.cc (main renamed) so the console commands (restore, load file,
     // save, addpath) are the stock ones.
     b.file(manifest.join("cpp/host_shim.cc"));
+    // The snapshot backend: ArchitectureGhidra answered from a generation's exported answers,
+    // and its hardware-exception guard.
+    b.include(manifest.join("cpp"));
+    b.file(manifest.join("cpp/snapshot_arch.cc"));
+    b.file(manifest.join("cpp/snapshot_seh.cc"));
     // Capabilities (XmlArchitectureCapability, PrintCCapability, IfaceDecompCapability...) register
     // through static constructors in objects nothing references; link the whole archive or the
     // linker drops them.
