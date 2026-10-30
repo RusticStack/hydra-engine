@@ -17,6 +17,7 @@
 package ghidra.framework.store.local;
 
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 
@@ -623,6 +624,21 @@ public class LocalDatabaseItem extends LocalFolderItem implements DatabaseItem {
 	 * Caller holds the file system lock.
 	 */
 	private LocalManagedBufferFile openPrivate(boolean forUpdate) throws IOException {
+		// Hydra GATE8: this item's database keeps the current version it scanned. A save whose
+		// commit took effect on disk but failed afterwards (before the database recorded the new
+		// version) leaves a newer version file than the one recorded, and every open of this item
+		// opened the older version again (and every save of it targeted the existing newer name),
+		// until the item was rebuilt. A newer version file than the recorded one makes the
+		// database scan its folder again, so that an open gets what a restart would get. One file
+		// test on the healthy path, no listing.
+		int recorded = privateDb.getCurrentVersion();
+		if (new File(getDataDir(), "db." + (recorded + 1) + ".gbf").isFile()) {
+			privateDb.refresh();
+			Msg.warn(this, getDataDir() + ": version " + (recorded + 1) +
+				" exists but version " + recorded + " was recorded as the newest (a save that " +
+				"failed after its commit); scanned again, the newest is version " +
+				privateDb.getCurrentVersion());
+		}
 		File newest = new File(getDataDir(), "db." + privateDb.getCurrentVersion() + ".gbf");
 		if (!VersionFileCheck.hasValidMagic(newest)) {
 			VersionFileCheck.Result r =
@@ -773,7 +789,25 @@ public class LocalDatabaseItem extends LocalFolderItem implements DatabaseItem {
 			versionedDb.refresh();
 		}
 		else {
-			privateDb.refresh();
+			try {
+				privateDb.refresh();
+			}
+			catch (FileNotFoundException e) {
+				// Hydra GATE8: the folder exists and the newest recorded version is there, but the
+				// folder cannot be listed (on Windows, another process holds it without read
+				// sharing). Thrown, it made the project drop the file (GhidraFolderData.fileChanged
+				// removes an item whose refresh fails, and a visited folder is not listed again), so
+				// a save that succeeded under such a hold left a program that could no longer be
+				// saved ("File is read-only") until the project was refreshed. The item is kept
+				// with what it recorded; the next refresh scans again.
+				int cur = privateDb.getCurrentVersion();
+				if (!getDataDir().isDirectory() ||
+					!new File(getDataDir(), "db." + cur + ".gbf").isFile()) {
+					throw e;
+				}
+				Msg.warn(this, getDataDir() + ": cannot be listed (" + e.getMessage() +
+					"; another process holds it?); the item keeps version " + cur);
+			}
 			privateDb.setIsCheckoutCopy(isCheckedOut());
 		}
 		return this;

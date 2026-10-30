@@ -29,6 +29,7 @@ import ghidra.program.model.address.*;
 import ghidra.program.model.listing.*;
 import ghidra.program.model.symbol.*;
 import ghidra.program.util.GhidraProgramUtilities;
+import ghidra.util.Msg;
 import ghidra.util.exception.*;
 
 /**
@@ -346,6 +347,9 @@ final class EditCommands {
 				if (stamp != null) {
 					ProjectBackup.remember(e, stamp); // not saved: the next save stamps
 				}
+				if (!(ex instanceof CancelledException)) {
+					logSaveFailure(e, ex);
+				}
 				throw ex;
 			}
 			stamped = stamp == null ? null : comment;
@@ -359,6 +363,25 @@ final class EditCommands {
 			Json.put(out, "upgradeStamp", stamped); // only the save that follows an upgrade open
 		}
 		return out;
+	}
+
+	/**
+	 * GATE8: one line per failed save with what a save that stays stuck needs to be explained from
+	 * the log alone: who holds the entry, whether the program can still save (a pre-save exists),
+	 * and the version of the file the program was opened from. Never throws.
+	 */
+	private void logSaveFailure(ProgramEntry e, Exception ex) {
+		try {
+			Msg.warn(s, "save of " + e.key + " failed: " + ex.getClass().getSimpleName() + ": " +
+				ex.getMessage() + " [mode " + e.mode + ", owner " + e.ownerText() + ", users " +
+				e.userCount() + ", unsaved edits " + (e.journal.seq() - e.savedSeq) +
+				", canSave " + e.program.canSave() + ", file in project " +
+				(e.file != null && e.file.exists()) + ", file read-only " +
+				(e.file == null || e.file.isReadOnly()) + "]");
+		}
+		catch (RuntimeException le) {
+			Msg.warn(s, "save of " + e.key + " failed: " + ex + " (state not readable: " + le + ")");
+		}
 	}
 
 	/**
