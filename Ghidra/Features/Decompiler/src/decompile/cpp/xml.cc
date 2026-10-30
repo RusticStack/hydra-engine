@@ -187,8 +187,8 @@ extern int xmlerror(const char *str);			///< Interface for registering an error 
 extern void print_content(const string &str);	///< Send character data to the ContentHandler
 extern int4 convertEntityRef(const string &ref);	///< Convert an XML entity to its equivalent character
 extern int4 convertCharRef(const string &ref);	///< Convert an XML character reference to its equivalent character
-static XmlScan *global_scan;					///< Global reference to the scanner
-static ContentHandler *handler;					///< Global reference to the content handler
+static thread_local XmlScan *global_scan;					///< Global reference to the scanner
+static thread_local ContentHandler *handler;					///< Global reference to the content handler
 
 
 
@@ -264,7 +264,7 @@ typedef union XMLSTYPE XMLSTYPE;
 #endif
 
 
-extern XMLSTYPE xmllval;
+extern thread_local XMLSTYPE xmllval;
 
 int xmlparse (void);
 
@@ -1346,12 +1346,12 @@ yydestruct (const char *yymsg, int yytype, YYSTYPE *yyvaluep)
 
 
 /* The lookahead symbol.  */
-int yychar;
+thread_local int yychar;	// Hydra: thread_local so independent Architectures can parse on separate threads (D10)
 
 /* The semantic value of the lookahead symbol.  */
-YYSTYPE yylval;
+thread_local YYSTYPE yylval;
 /* Number of syntax errors so far.  */
-int yynerrs;
+thread_local int yynerrs;
 
 
 /*----------.

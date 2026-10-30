@@ -96,7 +96,7 @@
 namespace ghidra {
 
 extern int pcodelex(void);
-static PcodeSnippet *pcode;
+static thread_local PcodeSnippet *pcode;
 extern int pcodeerror(const char *str );
 
 
@@ -240,7 +240,7 @@ typedef union PCODESTYPE PCODESTYPE;
 #endif
 
 
-extern PCODESTYPE pcodelval;
+extern thread_local PCODESTYPE pcodelval;
 
 int pcodeparse (void);
 
@@ -1775,12 +1775,12 @@ yydestruct (const char *yymsg, int yytype, YYSTYPE *yyvaluep)
 
 
 /* The lookahead symbol.  */
-int yychar;
+thread_local int yychar;	// Hydra: thread_local so independent Architectures can parse on separate threads (D10)
 
 /* The semantic value of the lookahead symbol.  */
-YYSTYPE yylval;
+thread_local YYSTYPE yylval;
 /* Number of syntax errors so far.  */
-int yynerrs;
+thread_local int yynerrs;
 
 
 /*----------.

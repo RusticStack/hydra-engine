@@ -1,0 +1,27 @@
+[package]
+name = "hydra-decomp-host"
+description = "Prototype host that runs N C++ decompiler Architectures concurrently on rayon workers (one Architecture + Sleigh per worker)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+build = "build.rs"
+links = "hydradecomp"
+
+[lib]
+name = "hydra_decomp_host"
+path = "src/lib.rs"
+
+[[bin]]
+name = "hydra-decomp-host"
+path = "src/main.rs"
+
+[dependencies]
+rayon = "1.10.0"
+
+[build-dependencies]
+cc = { version = "1.2.62", features = ["parallel"] }
+
+[lints]
+workspace = true

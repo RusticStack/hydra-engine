@@ -114,8 +114,10 @@ extern int xmlerror(const char *str);			///< Interface for registering an error 
 extern void print_content(const string &str);	///< Send character data to the ContentHandler
 extern int4 convertEntityRef(const string &ref);	///< Convert an XML entity to its equivalent character
 extern int4 convertCharRef(const string &ref);	///< Convert an XML character reference to its equivalent character
-static XmlScan *global_scan;					///< Global reference to the scanner
-static ContentHandler *handler;					///< Global reference to the content handler
+// Hydra (D10): parser state is thread_local. After regenerating the .cc with bison, also mark the generated
+// globals yychar, yylval, yynerrs and the extern yylval declaration thread_local (see the checked-in .cc).
+static thread_local XmlScan *global_scan;					///< Global reference to the scanner
+static thread_local ContentHandler *handler;					///< Global reference to the content handler
 
 %}
 

@@ -21,7 +21,9 @@ namespace ghidra {
 
 extern int grammarlex(void);
 extern int grammarerror(const char *str);
-static CParse *parse;
+// Hydra (D10): parser state is thread_local. After regenerating the .cc with bison, also mark the generated
+// globals yychar, yylval, yynerrs and the extern yylval declaration thread_local (see the checked-in .cc).
+static thread_local CParse *parse;
 %}
 
 %union {

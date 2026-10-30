@@ -3616,9 +3616,9 @@ void IfcTraceList::execute(istream &s)
     dcp->fd->debugPrintRange(i);
 }
     
-static vector<Funcdata *> jumpstack;
-static IfaceDecompData *dcp_callback;
-static IfaceStatus *status_callback;
+static thread_local vector<Funcdata *> jumpstack;
+static thread_local IfaceDecompData *dcp_callback;
+static thread_local IfaceStatus *status_callback;
 
 static void jump_callback(Funcdata &orig,Funcdata &fd)
 

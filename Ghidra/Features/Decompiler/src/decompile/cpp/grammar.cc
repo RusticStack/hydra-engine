@@ -97,7 +97,7 @@ namespace ghidra {
 
 extern int grammarlex(void);
 extern int grammarerror(const char *str);
-static CParse *parse;
+static thread_local CParse *parse;
 
 
 # ifndef YY_CAST
@@ -189,7 +189,7 @@ typedef union GRAMMARSTYPE GRAMMARSTYPE;
 #endif
 
 
-extern GRAMMARSTYPE grammarlval;
+extern thread_local GRAMMARSTYPE grammarlval;
 
 int grammarparse (void);
 
@@ -1040,12 +1040,12 @@ yydestruct (const char *yymsg,
 
 
 /* Lookahead token kind.  */
-int yychar;
+thread_local int yychar;	// Hydra: thread_local so independent Architectures can parse on separate threads (D10)
 
 /* The semantic value of the lookahead symbol.  */
-YYSTYPE yylval;
+thread_local YYSTYPE yylval;
 /* Number of syntax errors so far.  */
-int yynerrs;
+thread_local int yynerrs;
 
 
 
