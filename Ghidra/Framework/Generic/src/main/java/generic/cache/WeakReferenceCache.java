@@ -18,6 +18,8 @@ package generic.cache;
 import java.lang.ref.ReferenceQueue;
 import java.lang.ref.WeakReference;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 
@@ -28,7 +30,11 @@ import org.apache.commons.collections4.map.LRUMap;
  * referenced. It uses weak references for the values and a small hard cache
  * so that recent items don't get garbage collected immediately.
  * <P>
- * This class is thread safe. All public methods are synchronized.
+ * This class is thread safe. {@link #get(Object)} and {@link #size()} do not take the cache
+ * monitor: the weak references live in a {@link ConcurrentHashMap} and a hit refreshes the hard
+ * cache only when its lock is free, so the hard cache keeps an approximate recency order under
+ * contention. All methods that change the cache are synchronized, so callers may still group
+ * several changes in a {@code synchronized (cache)} block.
  * 
  * @param <K> The type of the object stored in this cache
  * @param <V> The type of the object stored in this cache
@@ -37,7 +43,8 @@ public class WeakReferenceCache<K, V> {
 
 	private Map<K, KeyedReference<K, V>> refsById;
 	private ReferenceQueue<V> refQueue;
-	private LRUMap<K, V> hardCache;
+	private LRUMap<K, V> hardCache; // guarded by hardCacheLock
+	private final ReentrantLock hardCacheLock = new ReentrantLock();
 
 	/**
 	 * Constructs a new WeakReferenceCache with a given hard cache size.  The hard cache size is
@@ -46,7 +53,7 @@ public class WeakReferenceCache<K, V> {
 	 * @param hardCacheSize the minimum number of objects to keep in the cache.
 	 */
 	public WeakReferenceCache(int hardCacheSize) {
-		refsById = new HashMap<>();
+		refsById = new ConcurrentHashMap<>();
 		refQueue = new ReferenceQueue<>();
 
 		hardCache = new LRUMap<>(hardCacheSize);
@@ -57,17 +64,25 @@ public class WeakReferenceCache<K, V> {
 	 * @param key the key of the object to retrieve.
 	 * @return the cached object or null if the object with that key is not currently cached.
 	 */
-	public synchronized V get(K key) {
+	public V get(K key) {
 		KeyedReference<K, V> ref = refsById.get(key);
 		if (ref == null) {
 			return null;
 		}
 		V v = ref.get();
 		if (v == null) {
-			refsById.remove(key);
+			refsById.remove(key, ref);
 			return null;
 		}
-		hardCache.put(key, v);
+		// a hit only refreshes the recency of the hard cache when nobody else is doing so
+		if (hardCacheLock.tryLock()) {
+			try {
+				hardCache.put(key, v);
+			}
+			finally {
+				hardCacheLock.unlock();
+			}
+		}
 		return v;
 	}
 
@@ -75,7 +90,7 @@ public class WeakReferenceCache<K, V> {
 	 * Returns the number of objects currently in the cache.
 	 * @return the number of objects currently in the cache.
 	 */
-	public synchronized int size() {
+	public int size() {
 		return refsById.size();
 	}
 
@@ -84,8 +99,14 @@ public class WeakReferenceCache<K, V> {
 	 * @param size the minimum number of objects to keep in the cache.
 	 */
 	public synchronized void setHardCacheSize(int size) {
-		hardCache.clear();
-		hardCache = new LRUMap<>(size);
+		hardCacheLock.lock();
+		try {
+			hardCache.clear();
+			hardCache = new LRUMap<>(size);
+		}
+		finally {
+			hardCacheLock.unlock();
+		}
 	}
 
 	/**
@@ -96,7 +117,13 @@ public class WeakReferenceCache<K, V> {
 	 */
 	public synchronized V add(K key, V data) {
 		processQueue();
-		hardCache.put(key, data);
+		hardCacheLock.lock();
+		try {
+			hardCache.put(key, data);
+		}
+		finally {
+			hardCacheLock.unlock();
+		}
 		KeyedReference<K, V> ref = new KeyedReference<>(key, data, refQueue);
 		refsById.put(key, ref);
 		return data;
@@ -164,16 +191,11 @@ public class WeakReferenceCache<K, V> {
 	private void processQueue() {
 		KeyedReference<K, V> ref;
 		while ((ref = (KeyedReference<K, V>) refQueue.poll()) != null) {
-			K key = ref.getKey();
-			KeyedReference<K, V> oldValue = refsById.remove(key);
-
-			if (oldValue != null && oldValue != ref) {
-				// we have put another item in the cache with the same key.  Further, we
-				// removed the item, but the garbage collector had not put the item on the
-				// reference queue until after we added a new reference to the cache.
-				// We want to keep the last value that was added, as it has not been deleted.
-				refsById.put(key, oldValue);
-			}
+			// Only drop the entry if it still holds this reference: if another item has been
+			// put in the cache with the same key after this one was removed, but before the
+			// garbage collector queued this reference, we keep the last value that was added,
+			// as it has not been deleted.
+			refsById.remove(ref.getKey(), ref);
 		}
 	}
 

@@ -89,22 +89,20 @@ public class AddressMapDB implements AddressMap {
 		(long) VARIABLE_ADDR_TYPE << ADDR_TYPE_SHIFT;
 	private final static long HASH_ADDR_TYPE_LONG = (long) HASH_ADDR_TYPE << ADDR_TYPE_SHIFT;
 
-	private AddressFactory addrFactory;
+	// getKey, getAbsoluteEncoding and decodeAddress do not take the monitor of this map: they read
+	// the base addresses from an immutable BaseState that is replaced (copy-on-write, under the
+	// monitor) whenever a base address is added or the bases are reloaded.
+	private volatile AddressFactory addrFactory;
 	private boolean readOnly;
 	private AddressMap oldAddrMap;
 	private boolean useOldAddrMap = false;
-	private AddressSpace defaultAddrSpace;
+	private volatile AddressSpace defaultAddrSpace;
 	private AddressMapDBAdapter adapter;
-	private Address[] baseAddrs; // these are normalized addrs
-	private Address[] sortedBaseStartAddrs; // these are normalized addrs
-	private Address[] sortedBaseEndAddrs;
+	private volatile BaseState baseState;
 	private List<KeyRange> allKeyRanges; // all existing key ranges (includes non-absolute memory, and external space) 
-	private HashMap<Address, Integer> addrToIndexMap = new HashMap<Address, Integer>();
-	private Address lastBaseAddress;
-	private int lastIndex;
 
-	private long baseImageOffset; // pertains to default address space only
-	private List<AddressRange> segmentedRanges; // when using segmented memory, this list contains	
+	private volatile long baseImageOffset; // pertains to default address space only
+	private volatile List<AddressRange> segmentedRanges; // when using segmented memory, this list contains	
 	// the ranges for each memory block for normalization
 
 	private static final long EXT_FROM_ADDRESS_LONG = -2;
@@ -190,8 +188,7 @@ public class AddressMapDB implements AddressMap {
 		adapter = AddressMapDBAdapter.getAdapter(handle, openMode, addrFactory, monitor);
 		oldAddrMap = (adapter.oldAddrMap != null) ? adapter.oldAddrMap : this;
 		useOldAddrMap = (openMode == OpenMode.IMMUTABLE && oldAddrMap != this);
-		baseAddrs = adapter.getBaseAddresses(false);
-		init(true);
+		init(adapter.getBaseAddresses(false));
 	}
 
 	/**
@@ -205,29 +202,42 @@ public class AddressMapDB implements AddressMap {
 			return; // if not segmented, we don't care
 		}
 		MemoryBlock[] blocks = mem.getBlocks();
-		segmentedRanges = new ArrayList<AddressRange>(blocks.length);
+		List<AddressRange> ranges = new ArrayList<AddressRange>(blocks.length);
 		for (MemoryBlock block : blocks) {
-			segmentedRanges.add(new AddressRangeImpl(block.getStart(), block.getEnd()));
+			ranges.add(new AddressRangeImpl(block.getStart(), block.getEnd()));
 		}
+		segmentedRanges = ranges;
 	}
 
-	private void init(boolean rebuildAddrToIndexMap) {
+	private void init(Address[] baseAddrs) {
 		allKeyRanges = null;
-		sortedBaseEndAddrs = new Address[baseAddrs.length];
-		sortedBaseStartAddrs = new Address[baseAddrs.length];
-		System.arraycopy(baseAddrs, 0, sortedBaseStartAddrs, 0, baseAddrs.length);
-		Arrays.sort(sortedBaseStartAddrs);
-		for (int i = 0; i < sortedBaseStartAddrs.length; i++) {
-			long max = sortedBaseStartAddrs[i].getAddressSpace().getMaxAddress().getOffset();
-			max = max < 0 ? MAX_OFFSET : Math.min(max, MAX_OFFSET);
-			long off = sortedBaseStartAddrs[i].getOffset() | max;
-			sortedBaseEndAddrs[i] =
-				sortedBaseStartAddrs[i].getAddressSpace().getAddressInThisSpaceOnly(off);
-		}
-		if (rebuildAddrToIndexMap) {
-			addrToIndexMap.clear();
+		baseState = new BaseState(baseAddrs);
+	}
+
+	/**
+	 * The base addresses of this map. A state never changes once it is published; adding a base
+	 * address or reloading the bases publishes a new state.
+	 */
+	private static final class BaseState {
+		final Address[] baseAddrs; // these are normalized addrs
+		final Address[] sortedBaseStartAddrs; // these are normalized addrs
+		final Address[] sortedBaseEndAddrs;
+		final HashMap<Address, Integer> addrToIndexMap = new HashMap<Address, Integer>();
+
+		BaseState(Address[] baseAddrs) {
+			this.baseAddrs = baseAddrs.clone();
 			for (int i = 0; i < baseAddrs.length; i++) {
 				addrToIndexMap.put(baseAddrs[i], i);
+			}
+			sortedBaseStartAddrs = baseAddrs.clone();
+			Arrays.sort(sortedBaseStartAddrs);
+			sortedBaseEndAddrs = new Address[baseAddrs.length];
+			for (int i = 0; i < sortedBaseStartAddrs.length; i++) {
+				long max = sortedBaseStartAddrs[i].getAddressSpace().getMaxAddress().getOffset();
+				max = max < 0 ? MAX_OFFSET : Math.min(max, MAX_OFFSET);
+				long off = sortedBaseStartAddrs[i].getOffset() | max;
+				sortedBaseEndAddrs[i] =
+					sortedBaseStartAddrs[i].getAddressSpace().getAddressInThisSpaceOnly(off);
 			}
 		}
 	}
@@ -237,10 +247,8 @@ public class AddressMapDB implements AddressMap {
 	 * @throws IOException if an IO error occurs
 	 */
 	public synchronized void invalidateCache() throws IOException {
-		lastBaseAddress = null;
 		if (!readOnly) {
-			baseAddrs = adapter.getBaseAddresses(true);
-			init(true);
+			init(adapter.getBaseAddresses(true));
 		}
 	}
 
@@ -260,7 +268,7 @@ public class AddressMapDB implements AddressMap {
 	}
 
 	@Override
-	public synchronized long getKey(Address addr, boolean create) {
+	public long getKey(Address addr, boolean create) {
 		if (useOldAddrMap) {
 			return oldAddrMap.getKey(addr, create);
 		}
@@ -288,7 +296,7 @@ public class AddressMapDB implements AddressMap {
 	}
 
 	@Override
-	public synchronized long getAbsoluteEncoding(Address addr, boolean create) {
+	public long getAbsoluteEncoding(Address addr, boolean create) {
 		if (useOldAddrMap) {
 			return oldAddrMap.getAbsoluteEncoding(addr, create);
 		}
@@ -420,19 +428,33 @@ public class AddressMapDB implements AddressMap {
 
 		AddressSpace space = addr.getAddressSpace();
 		Address tBase = space.getAddressInThisSpaceOnly(normalizedBaseOffset);
-		if (tBase.equals(lastBaseAddress)) {
-			return lastIndex;
-		}
-		Integer tIndex = addrToIndexMap.get(tBase);
+		// no memo of the last base found: a field written by every reader costs more under
+		// concurrent reads than the map lookup it saves
+		BaseState state = baseState;
+		Integer tIndex = state.addrToIndexMap.get(tBase);
 		if (tIndex != null) {
-			lastBaseAddress = tBase;
-			lastIndex = tIndex;
 			return tIndex;
 		}
 		else if (indexOperation == INDEX_MATCH) {
 			return Integer.MIN_VALUE;
 		}
 
+		int index =
+			findBaseAddressIndex(state, addr, normalize, normalizedBaseOffset, indexOperation);
+		if (index != Integer.MIN_VALUE || indexOperation != INDEX_CREATE) {
+			return index;
+		}
+		return createBaseAddressIndex(addr, normalize, normalizedBaseOffset);
+	}
+
+	/**
+	 * Search the sorted base addresses of a state.
+	 * @return base address index or Integer.MIN_VALUE if not found. A negative value other than
+	 * Integer.MIN_VALUE indicates a NEXT or PREVIOUS base index = -(return_value)-1.
+	 */
+	private int findBaseAddressIndex(BaseState state, Address addr, boolean normalize,
+			long normalizedBaseOffset, int indexOperation) {
+		Address[] sortedBaseStartAddrs = state.sortedBaseStartAddrs;
 		int search = normalize
 				? Arrays.binarySearch(sortedBaseStartAddrs, addr, normalizingAddressComparator)
 				: Arrays.binarySearch(sortedBaseStartAddrs, addr);
@@ -444,14 +466,14 @@ public class AddressMapDB implements AddressMap {
 			// Check for match
 			Address base = sortedBaseStartAddrs[search];
 			if (base.hasSameAddressSpace(addr) && normalizedBaseOffset == base.getOffset()) {
-				int index = addrToIndexMap.get(base);
+				int index = state.addrToIndexMap.get(base);
 				return index;
 			}
 		}
 		if (indexOperation == INDEX_MATCH_OR_PREVIOUS) {
 			if (search >= 0) {
 				Address base = sortedBaseStartAddrs[search];
-				int index = addrToIndexMap.get(base);
+				int index = state.addrToIndexMap.get(base);
 				return -index - 1;
 			}
 		}
@@ -459,16 +481,31 @@ public class AddressMapDB implements AddressMap {
 			int nextIndex = search + 1;
 			if (nextIndex < sortedBaseStartAddrs.length) {
 				Address base = sortedBaseStartAddrs[nextIndex];
-				int index = addrToIndexMap.get(base);
+				int index = state.addrToIndexMap.get(base);
 				return -index - 1;
 			}
 		}
-		if (indexOperation != INDEX_CREATE) {
-			// existing base address entry not found - can not create
-			return Integer.MIN_VALUE;
+		// existing base address entry not found
+		return Integer.MIN_VALUE;
+	}
+
+	private synchronized int createBaseAddressIndex(Address addr, boolean normalize,
+			long normalizedBaseOffset) {
+		// check if another thread added the base first
+		BaseState state = baseState;
+		Address tBase = addr.getAddressSpace().getAddressInThisSpaceOnly(normalizedBaseOffset);
+		Integer tIndex = state.addrToIndexMap.get(tBase);
+		if (tIndex != null) {
+			return tIndex;
+		}
+		int found =
+			findBaseAddressIndex(state, addr, normalize, normalizedBaseOffset, INDEX_CREATE);
+		if (found != Integer.MIN_VALUE) {
+			return found;
 		}
 
 		// A new address map entry is required
+		Address[] baseAddrs = state.baseAddrs;
 		int index = baseAddrs.length;
 		if (readOnly) {
 			// Create new base without modifying database
@@ -486,13 +523,12 @@ public class AddressMapDB implements AddressMap {
 				Msg.warn(this, "More than 100 address segments have been created!", null);
 			}
 		}
-		addrToIndexMap.put(baseAddrs[index], index);
-		init(false); // re-sorts baseAddrs
+		init(baseAddrs); // publishes the new bases, re-sorted
 		return index;
 	}
 
 	@Override
-	public synchronized Address decodeAddress(long value) {
+	public Address decodeAddress(long value) {
 		return decodeAddress(value, true);
 	}
 
@@ -506,7 +542,7 @@ public class AddressMapDB implements AddressMap {
 	 * generally always be true except when used by the Memory map objects to avoid recursion problems.
 	 * @return decoded address
 	 */
-	public synchronized Address decodeAddress(long value, boolean useMemorySegmentation) {
+	public Address decodeAddress(long value, boolean useMemorySegmentation) {
 		Address addr;
 		try {
 			addr = decode(value);
@@ -522,6 +558,7 @@ public class AddressMapDB implements AddressMap {
 	}
 
 	private Address normalize(Address addr) {
+		List<AddressRange> segmentedRanges = this.segmentedRanges;
 		if (segmentedRanges == null || !(addr instanceof SegmentedAddress)) {
 			return addr;
 		}
@@ -539,6 +576,7 @@ public class AddressMapDB implements AddressMap {
 		if (useOldAddrMap) {
 			return oldAddrMap.decodeAddress(value);
 		}
+		Address[] baseAddrs = baseState.baseAddrs;
 		int type = (int) ((value >> ADDR_TYPE_SHIFT) & ADDR_TYPE_MASK);
 		switch (type) {
 			case OLD_ADDRESS_KEY_TYPE:
@@ -901,6 +939,9 @@ public class AddressMapDB implements AddressMap {
 		}
 
 		// Try multi-range approach
+		BaseState state = baseState;
+		Address[] sortedBaseStartAddrs = state.sortedBaseStartAddrs;
+		Address[] sortedBaseEndAddrs = state.sortedBaseEndAddrs;
 		int index = Arrays.binarySearch(sortedBaseStartAddrs, normalizedStart);
 		if (index < 0) {
 			index = -index - 2;
@@ -993,8 +1034,7 @@ public class AddressMapDB implements AddressMap {
 		adapter.setEntries(newEntries);
 
 		defaultAddrSpace = addrFactory.getDefaultAddressSpace();
-		baseAddrs = adapter.getBaseAddresses(true);
-		init(true);
+		init(adapter.getBaseAddresses(true));
 	}
 
 	/**
