@@ -676,7 +676,36 @@ final class Connection {
 			}
 			o.add("result", raw.tree()); // an unexpected layout: the tree path
 		}
-		return (Json.GSON.toJson(o) + "\n").getBytes(StandardCharsets.UTF_8);
+		return line(o);
+	}
+
+	/**
+	 * A line with no read-plane bytes: {@code o} as JSON plus a newline, in UTF-8. Written by Gson straight
+	 * into a byte buffer (the same writer and settings as {@code GSON.toJson(o)}, so the bytes are
+	 * the same) instead of a String, a second String with the newline and then the bytes: a large
+	 * reply (a function listing, a long decompile) is no longer held three times.
+	 */
+	private static byte[] line(JsonObject o) {
+		LineBuffer buf = new LineBuffer();
+		try (Writer w = new OutputStreamWriter(buf, StandardCharsets.UTF_8)) {
+			Json.GSON.toJson(o, w);
+			w.write('\n');
+		}
+		catch (IOException e) {
+			throw new UncheckedIOException(e); // an in-memory buffer does not fail
+		}
+		return buf.bytes();
+	}
+
+	/** A byte buffer that hands over its array without a copy when it is exactly full. */
+	private static final class LineBuffer extends ByteArrayOutputStream {
+		LineBuffer() {
+			super(256);
+		}
+
+		byte[] bytes() {
+			return count == buf.length ? buf : java.util.Arrays.copyOf(buf, count);
+		}
 	}
 
 	/** The client does not read: drop it (its requests are cancelled and its locks released). */
@@ -893,23 +922,57 @@ final class Connection {
 	private Thread reader;
 
 	private final ByteArrayOutputStream buf = new ByteArrayOutputStream();
+	/**
+	 * What was read from {@link #in} and not yet taken as a line: {@code chunk[pos..lim)}. The
+	 * reader takes whole blocks and scans them for the newline, instead of one synchronized
+	 * {@code read()} call per byte.
+	 */
+	private final byte[] chunk = new byte[1 << 14];
+	private int pos;
+	private int lim;
 
 	/** Reads one line (without its terminator), refusing lines over {@link #MAX_LINE_BYTES}. */
 	private byte[] readLine() throws IOException {
 		buf.reset();
-		int b;
-		while ((b = in.read()) != -1) {
-			if (b == '\n') {
-				return trimCr(buf.toByteArray());
+		while (true) {
+			if (pos == lim) {
+				int n = in.read(chunk, 0, chunk.length);
+				if (n < 0) {
+					return buf.size() > 0 ? trimCr(buf.toByteArray()) : null;
+				}
+				pos = 0;
+				lim = n;
+				continue;
 			}
-			if (buf.size() >= MAX_LINE_BYTES) {
+			int nl = -1;
+			for (int i = pos; i < lim; i++) {
+				if (chunk[i] == '\n') {
+					nl = i;
+					break;
+				}
+			}
+			int end = nl < 0 ? lim : nl;
+			if ((long) buf.size() + (end - pos) > MAX_LINE_BYTES) {
 				send(error(null, new SessionException(SessionException.BAD_REQUEST,
 					"request line longer than " + MAX_LINE_BYTES + " bytes"), 0));
 				throw new IOException("request line too long; connection closed");
 			}
-			buf.write(b);
+			if (nl < 0) {
+				buf.write(chunk, pos, lim - pos);
+				pos = lim;
+				continue;
+			}
+			byte[] line;
+			if (buf.size() == 0) {
+				line = java.util.Arrays.copyOfRange(chunk, pos, nl);
+			}
+			else {
+				buf.write(chunk, pos, nl - pos);
+				line = buf.toByteArray();
+			}
+			pos = nl + 1;
+			return trimCr(line);
 		}
-		return buf.size() > 0 ? trimCr(buf.toByteArray()) : null;
 	}
 
 	private static byte[] trimCr(byte[] b) {

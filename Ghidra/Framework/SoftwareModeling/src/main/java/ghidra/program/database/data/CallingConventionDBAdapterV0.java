@@ -17,6 +17,7 @@ package ghidra.program.database.data;
 
 import java.io.IOException;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 
 import com.google.common.collect.Range;
@@ -45,13 +46,27 @@ class CallingConventionDBAdapterV0 extends CallingConventionDBAdapter {
 
 	private Table callingConventionTable;
 
-	private Map<String, Byte> callingConventionNameToIDMap;
-	private Map<Byte, String> callingConventionIDToNameMap;
+	/**
+	 * The name/ID maps and the free keys, read lazily from the table. Readers hold only the data
+	 * type manager's read lock (GP-6679), so several threads may read the cache at once (the
+	 * decompiler callbacks of concurrent decompiles of one program): it is built in locals and
+	 * then published whole through a volatile field, so a reader never sees it half built
+	 * (before, a reader could find one map set and the other still null, a NullPointerException
+	 * in {@link #getCallingConventionName(byte)}, or a map still being filled). Additions may come
+	 * from readers too (only the read lock is held), so they are serialized in {@link #allocate};
+	 * the maps are concurrent so readers may still look up meanwhile.
+	 *
+	 * @param nameToId calling convention name to ID
+	 * @param idToName calling convention ID to name
+	 * @param freeKeySet free IDs, closed ranges only. There is currently no method for removing
+	 * an allocated calling convention name/ID, therefor we can assume key consumption will be
+	 * sequential until the ability to delete is added. Use of freeKeySet can be eliminated if
+	 * delete ability never added.
+	 */
+	private record Cache(Map<String, Byte> nameToId, Map<Byte, String> idToName,
+			TreeRangeSet<Byte> freeKeySet) {}
 
-	// There is currently no method for removing an allocated calling convention name/ID,
-	// therefor we can assume key consumption will be sequential until the ability
-	// to delete is added.  Use of freeKeySet can be eliminated if delete ability never added.
-	private TreeRangeSet<Byte> freeKeySet; // closed-ranges only
+	private volatile Cache cache;
 
 	/**
 	 * Gets a version 0 adapter for the calling convention database table.
@@ -86,7 +101,7 @@ class CallingConventionDBAdapterV0 extends CallingConventionDBAdapter {
 	 * @return the next available key. A negative value indicates that all allowed IDs have 
 	 * been used.
 	 */
-	private byte removeFirstAvailableKey() {
+	private static byte removeFirstAvailableKey(TreeRangeSet<Byte> freeKeySet) {
 		Iterator<Range<Byte>> it = freeKeySet.asRanges().iterator();
 		if (!it.hasNext()) {
 			return -1;
@@ -103,19 +118,27 @@ class CallingConventionDBAdapterV0 extends CallingConventionDBAdapter {
 
 	@Override
 	void invalidateCache() {
-		callingConventionNameToIDMap = null;
-		callingConventionIDToNameMap = null;
-		freeKeySet = null;
+		cache = null;
 	}
 
-	private void populateCache() throws IOException {
-		if (callingConventionNameToIDMap != null) {
-			return;
+	private Cache populateCache() throws IOException {
+		Cache c = cache;
+		if (c != null) {
+			return c;
 		}
-		callingConventionNameToIDMap = new HashMap<>();
-		callingConventionIDToNameMap = new HashMap<>();
+		return buildCache();
+	}
 
-		freeKeySet = TreeRangeSet.create();
+	/** Reads the cache from the table; serialized with {@link #allocate} (one build at a time). */
+	private synchronized Cache buildCache() throws IOException {
+		Cache c = cache;
+		if (c != null) {
+			return c;
+		}
+		Map<String, Byte> callingConventionNameToIDMap = new ConcurrentHashMap<>();
+		Map<Byte, String> callingConventionIDToNameMap = new ConcurrentHashMap<>();
+
+		TreeRangeSet<Byte> freeKeySet = TreeRangeSet.create();
 		int nextKey = FIRST_CALLING_CONVENTION_ID;
 		RecordIterator iterator = callingConventionTable.iterator();
 		while (iterator.hasNext()) {
@@ -123,8 +146,10 @@ class CallingConventionDBAdapterV0 extends CallingConventionDBAdapter {
 
 			byte id = (byte) rec.getKey();
 			String name = rec.getString(V0_CALLING_CONVENTION_NAME_COL);
-			callingConventionIDToNameMap.put(id, name);
-			callingConventionNameToIDMap.put(name, id);
+			if (name != null) { // a concurrent map holds no null; a null name was never found
+				callingConventionIDToNameMap.put(id, name);
+				callingConventionNameToIDMap.put(name, id);
+			}
 
 			if (nextKey != id) {
 				freeKeySet.add(Range.closed((byte) nextKey, (byte) (id - 1)));
@@ -134,6 +159,9 @@ class CallingConventionDBAdapterV0 extends CallingConventionDBAdapter {
 		if (nextKey <= Byte.MAX_VALUE) {
 			freeKeySet.add(Range.closed((byte) nextKey, Byte.MAX_VALUE));
 		}
+		c = new Cache(callingConventionNameToIDMap, callingConventionIDToNameMap, freeKeySet);
+		cache = c;
+		return c;
 	}
 
 	@Override
@@ -144,13 +172,29 @@ class CallingConventionDBAdapterV0 extends CallingConventionDBAdapter {
 		else if (name.equals(CompilerSpec.CALLING_CONVENTION_default)) {
 			return DEFAULT_CALLING_CONVENTION_ID;
 		}
-		populateCache();
-		Byte id = callingConventionNameToIDMap.get(name);
+		Byte id = populateCache().nameToId().get(name);
 		if (id != null) {
 			return id;
 		}
+		return allocate(name, conventionAdded);
+	}
 
-		byte newId = removeFirstAvailableKey();
+	/**
+	 * Adds {@code name} under a new ID. The caller of {@link #getCallingConventionId} may hold only
+	 * the data type manager's read lock, so two threads may miss the same new name at once: the
+	 * miss path is serialized (and excludes a concurrent {@link #populateCache} build) and checks
+	 * the name again inside, so a name gets exactly one ID and one record, and the free key set
+	 * (not thread-safe) is changed by one thread at a time.
+	 */
+	private synchronized byte allocate(String name, Consumer<String> conventionAdded)
+			throws IOException {
+		Cache c = populateCache();
+		Byte id = c.nameToId().get(name);
+		if (id != null) {
+			return id; // another thread added it meanwhile
+		}
+
+		byte newId = removeFirstAvailableKey(c.freeKeySet());
 		if (newId < 0) {
 			Msg.error(this, "Unable to assign calling convention `" + name +
 				"` - allocation capacity exceeded");
@@ -161,8 +205,8 @@ class CallingConventionDBAdapterV0 extends CallingConventionDBAdapter {
 		record.setString(V0_CALLING_CONVENTION_NAME_COL, name);
 		callingConventionTable.putRecord(record);
 
-		callingConventionIDToNameMap.put(newId, name);
-		callingConventionNameToIDMap.put(name, newId);
+		c.idToName().put(newId, name);
+		c.nameToId().put(name, newId);
 		conventionAdded.accept(name);
 		return newId;
 	}
@@ -175,13 +219,11 @@ class CallingConventionDBAdapterV0 extends CallingConventionDBAdapter {
 		else if (id == UNKNOWN_CALLING_CONVENTION_ID) {
 			return null;
 		}
-		populateCache();
-		return callingConventionIDToNameMap.get(id);
+		return populateCache().idToName().get(id);
 	}
 
 	@Override
 	Set<String> getCallingConventionNames() throws IOException {
-		populateCache();
-		return callingConventionNameToIDMap.keySet();
+		return populateCache().nameToId().keySet();
 	}
 }

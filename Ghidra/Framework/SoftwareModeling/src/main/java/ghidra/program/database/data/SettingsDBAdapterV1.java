@@ -17,6 +17,7 @@ package ghidra.program.database.data;
 
 import java.io.IOException;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.apache.commons.lang3.StringUtils;
 
@@ -57,8 +58,19 @@ class SettingsDBAdapterV1 extends SettingsDBAdapter {
 	private Table settingsTable;
 	private Table settingsNameTable;
 
-	private HashMap<Short, String> nameIndexMap;
-	private HashMap<String, Short> nameStringMap;
+	/**
+	 * The setting names by index and the indexes by name, read lazily. Readers of the data type
+	 * manager hold only its read lock (GP-6679), so several threads may get here at once (the
+	 * decompiler callbacks of concurrent decompiles of one program): both maps are published
+	 * together through one volatile reference, built completely before it is set, and are
+	 * concurrent maps so that a name added later is safe beside readers. Before, one thread could
+	 * see the first map set and the second still null (a NullPointerException in
+	 * {@link #getNameIndex}).
+	 */
+	private record NameMaps(Map<Short, String> byIndex, Map<String, Short> byName) {
+	}
+
+	private volatile NameMaps nameMaps;
 
 	SettingsDBAdapterV1(String tableName, DBHandle handle, boolean create)
 			throws VersionException, IOException {
@@ -168,25 +180,31 @@ class SettingsDBAdapterV1 extends SettingsDBAdapter {
 		}
 	}
 
-	private void initNameMaps() throws IOException {
-		if (nameIndexMap != null) {
-			return;
+	private NameMaps initNameMaps() throws IOException {
+		NameMaps maps = nameMaps;
+		if (maps != null) {
+			return maps;
 		}
-		nameIndexMap = new HashMap<>();
-		nameStringMap = new HashMap<>();
+		Map<Short, String> byIndex = new ConcurrentHashMap<>();
+		Map<String, Short> byName = new ConcurrentHashMap<>();
 		RecordIterator it = settingsNameTable.iterator();
 		while (it.hasNext()) {
 			DBRecord nameRec = it.next();
 			short nameIndex = (short) nameRec.getKey();
 			String name = nameRec.getString(V1_NAME_COL);
-			nameIndexMap.put(nameIndex, name);
-			nameStringMap.put(name, nameIndex);
+			if (name != null) { // a concurrent map holds no null; get(null) answers null either way
+				byIndex.put(nameIndex, name);
+				byName.put(name, nameIndex);
+			}
 		}
+		maps = new NameMaps(byIndex, byName);
+		nameMaps = maps;
+		return maps;
 	}
 
 	private short assignNameIndexValue(String name) throws IOException {
-		initNameMaps();
-		Short nameIndex = nameStringMap.get(name);
+		NameMaps maps = initNameMaps();
+		Short nameIndex = name == null ? null : maps.byName().get(name);
 		if (nameIndex != null) {
 			return nameIndex;
 		}
@@ -204,23 +222,24 @@ class SettingsDBAdapterV1 extends SettingsDBAdapter {
 		nameRec.setString(V1_NAME_COL, name);
 		settingsNameTable.putRecord(nameRec);
 
-		nameIndexMap.put(nameIndex, name);
-		nameStringMap.put(name, nameIndex);
+		if (name != null) {
+			maps.byIndex().put(nameIndex, name);
+			maps.byName().put(name, nameIndex);
+		}
 
 		return nameIndex;
 	}
 
 	@Override
 	String getSettingName(DBRecord normalizedRecord) throws IOException {
-		initNameMaps();
+		NameMaps maps = initNameMaps();
 		short nameIndex = normalizedRecord.getShortValue(SettingsDBAdapter.SETTINGS_NAME_INDEX_COL);
-		return nameIndexMap.get(nameIndex);
+		return maps.byIndex().get(nameIndex);
 	}
 
 	@Override
 	void invalidateNameCache() {
-		nameIndexMap = null;
-		nameStringMap = null;
+		nameMaps = null;
 	}
 
 	/**
@@ -230,8 +249,7 @@ class SettingsDBAdapterV1 extends SettingsDBAdapter {
 	 * @throws IOException if an IO error occurs
 	 */
 	private short getNameIndex(String name) throws IOException {
-		initNameMaps();
-		Short index = nameStringMap.get(name);
+		Short index = name == null ? null : initNameMaps().byName().get(name);
 		if (index == null) {
 			return -1; // undefined name
 		}

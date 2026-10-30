@@ -637,7 +637,7 @@ def default_max_heap() -> str:
 DEFAULTS = {
     "java": None,            # JDK home (else discovered)
     "maxHeap": None,         # -Xmx; None: default_max_heap()
-    "minHeap": "512m",       # -Xms
+    "minHeap": "128m",       # -Xms (was 512m: a floor G1 never shrinks below, held by every daemon)
     "gc": "g1",              # g1 | zgc | parallel | default (the JDK's choice)
     "vmargs": [],            # extra JVM options, appended last
     "tmpdir": None,          # java.io.tmpdir: where Ghidra keeps unsaved database buffers
@@ -820,9 +820,13 @@ class Launch:
         gc = self.cfg["gc"]
         if gc == "g1":
             # Return unused heap to the OS while the daemon idles; dedup the many equal strings
-            # of a large program's symbols.
+            # of a large program's symbols. The free ratios keep the committed heap near the live
+            # set (G1's defaults, 40/70, let it stay 70 % free): with many daemons and agents on one
+            # machine the committed memory is what runs out (multi-agent benchmark, minHeap 128m
+            # and these ratios: mean committed -32 %, peak -18 %, the same replies).
             return ["-XX:+UseG1GC", "-XX:+UseStringDeduplication",
-                    "-XX:G1PeriodicGCInterval=300000"]
+                    "-XX:G1PeriodicGCInterval=300000", "-XX:MinHeapFreeRatio=15",
+                    "-XX:MaxHeapFreeRatio=40"]
         if gc == "zgc":
             return ["-XX:+UseZGC", "-XX:ZUncommitDelay=300"]
         if gc == "parallel":
@@ -940,7 +944,7 @@ class Launch:
         if not self.grants_native_access(vm + list(self.cfg.get("vmargs") or [])):
             vm.append("--enable-native-access=ALL-UNNAMED")
         heap = self.heap()
-        vm += [f"-Xmx{heap}", f"-Xms{self.cfg.get('minHeap') or '512m'}"]
+        vm += [f"-Xmx{heap}", f"-Xms{self.cfg.get('minHeap') or '128m'}"]
         vm += self.gc_args()
         # stdout is the protocol channel; the JVM's own log (an AOT cache that does not match,
         # GC warnings) goes to stdout unless told otherwise.

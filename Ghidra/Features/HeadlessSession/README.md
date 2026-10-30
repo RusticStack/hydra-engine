@@ -136,8 +136,8 @@ Lowest to highest: defaults, `<state>/config.json`, environment, command-line op
 |---|---|---|---|
 | `java` | `GHIDRA_SESSION_JAVA_HOME` | discovered | JDK home. |
 | `maxHeap` | `GHIDRA_SESSION_MAXMEM` | a quarter of RAM, 2-31 GiB | `-Xmx`. G1 only takes what it needs and returns idle memory. |
-| `minHeap` | | `512m` | `-Xms`. |
-| `gc` | `GHIDRA_SESSION_GC` | `g1` | `g1` (with string deduplication and periodic uncommit), `zgc`, `parallel`, `default`. |
+| `minHeap` | | `128m` | `-Xms` (it was `512m`; G1 never shrinks below it). |
+| `gc` | `GHIDRA_SESSION_GC` | `g1` | `g1` (with string deduplication, periodic uncommit and `MinHeapFreeRatio=15`/`MaxHeapFreeRatio=40`), `zgc`, `parallel`, `default`. |
 | `vmargs` | `GHIDRA_SESSION_VMARGS` (space-separated) | `[]` | Extra JVM options, last. |
 | `tmpdir` | `GHIDRA_SESSION_TMPDIR` | the JVM's | `java.io.tmpdir`: where Ghidra keeps unsaved database buffers. Put it on a fast disk with room. |
 | `mode` | `GHIDRA_SESSION_MODE` | `fast` | `fast` or `standard` (above). |
@@ -179,6 +179,9 @@ listed. The design text for keys that belong to packages not yet part of the rel
 | `connectionThreads` | virtual | `virtual`: a socket client's reader and writer are virtual threads, so an idle client holds no OS thread (the release of a client that left still runs on a short-lived platform thread, as it closes programs and projects); a bad value is a usage error at launch; `platform`: one platform thread each (the old behaviour). |
 | `laneIdleMs` | 10000 | A client's ordered lane gives its thread back after this long without a request (a new request starts it again, in order). |
 | `orderPerScope` | false | Protocol 3: each `client`/`harness` label of a connection gets its own ordered lane, so one label's requests keep their order and other labels run beside them (PROTOCOL-3.md 8.18). |
+| `functionIndex` | true | `functions` pages are slices of one listing per program state (built once per modification number, shared by all clients, in `health.functionIndex`); false reads every page from the database. |
+| `functionIndexMaxRows` | 1000000 | The most rows the `functions` indexes of all open programs keep together; above it the least recently used are dropped (rebuilt when needed). The first unfiltered page of a program state without an index is read from the database. |
+| `scriptClassCache` | true | A Java script whose source bundle did not change (file sizes and times) and imports only Ghidra's own packages (no `@importpackage` of another bundle) runs from its loaded class without the OSGi lock and bundle activation (`health.scriptClasses`); false loads every run the full way. |
 | `lockWaitersMin` | 4 | The least protocol 3 lock waiter cap, at least 2; the cap is `max(lockWaitersMin, slots/4)`, at most half the lane. |
 | `forcedGc` | true | The two `System.gc()` that measure a program's first open on a heap under 1 GB; false skips them and keeps the estimate. |
 | `scriptMaxS`, `scriptGraceS` | 600, 5 | Wall-clock budget of a script, and the seconds a script that ignores its cancel may run on before it is quarantined. |

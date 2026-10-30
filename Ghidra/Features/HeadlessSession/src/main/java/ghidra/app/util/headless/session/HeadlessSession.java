@@ -1440,6 +1440,13 @@ public class HeadlessSession implements GhidraLaunchable {
 			check("a contributor may not use a core key of the reply or an empty name",
 				throwsIllegal(() -> Health.contribute("state", () -> null)) &&
 					throwsIllegal(() -> Health.contribute("", () -> null)));
+			// Hydra daemon-async: a reply line is encoded straight to UTF-8 bytes; they must be the
+			// bytes of GSON.toJson plus a newline (non-ASCII, escapes, nulls, nesting, a large one)
+			JsonObject enc = Json.of("id", 7, "s", "aé中😀\"\\\n<>&=", "n", null,
+				"x", Json.of("k", List.of(1, 2.5, "z")), "big", "q".repeat(70_000));
+			check("Connection.encode gives the bytes of GSON.toJson(o) + newline",
+				java.util.Arrays.equals(Connection.encode(enc),
+					(Json.GSON.toJson(enc) + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8)));
 			Health.contribute("selfTestFigure", () -> new com.google.gson.JsonPrimitive(7));
 			Health.contribute("selfTestBroken", () -> {
 				throw new IllegalStateException("boom");

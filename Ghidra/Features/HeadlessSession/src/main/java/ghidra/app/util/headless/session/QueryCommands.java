@@ -101,6 +101,48 @@ final class QueryCommands {
 		// H1: one table per program state, shared by every request and view (FunctionTable)
 		FunctionTable.Cache tables = FunctionTable.cache();
 		if (tables == null) {
+			// functionTable off: daemon-async's shared index (functionIndex), else a walk
+			JsonArray a = new JsonArray();
+			int seen = 0;
+			boolean truncated = false;
+			// Hydra (daemon-async): pages are slices of the program state's one shared listing; the
+			// first unfiltered page of a state with no listing yet is read from the database (it stops
+			// after limit rows), so an edit-then-look loop does not build a whole listing each time
+			FunctionIndex.Snapshot ix = !FunctionIndex.enabled() ? null
+					: pat == null && sub == null && offset == 0 ? FunctionIndex.fresh(prog)
+					: FunctionIndex.of(prog);
+			if (ix != null) {
+				int n = ix.size();
+				if (pat == null && sub == null) {
+					int from = (int) Math.min(n, (long) offset);
+					int to = (int) Math.min(n, (long) from + limit);
+					for (int i = from; i < to; i++) {
+						a.add(ix.row(i));
+					}
+					truncated = to < n;
+				}
+				else {
+					for (int i = 0; i < n; i++) {
+						String nm = ix.names[i];
+						if (pat != null && !pat.matcher(nm).find()) {
+							continue;
+						}
+						if (sub != null && !nm.contains(sub)) {
+							continue;
+						}
+						if (seen++ < offset) {
+							continue;
+						}
+						if (a.size() >= limit) {
+							truncated = true;
+							break;
+						}
+						a.add(ix.row(i));
+					}
+				}
+				return Json.of("functions", a, "offset", offset, "returned", a.size(), "truncated",
+					truncated);
+			}
 			return FunctionTable.walk(prog, pat, sub, offset, limit);
 		}
 		return tables.functions(prog, pat, sub, offset, limit, Requests.waitMs(req), raw);
