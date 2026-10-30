@@ -22,6 +22,18 @@ example `12.3-hydra.1`); its tag is `v` and the version. Releases are on
   (`ParallelDecompiler`, `DecompilerConcurrentQ`) whose threads each keep a native decompiler
   process, and no end-to-end speed-up from a bigger pool was measured. `-Dcpu.core.override`
   (exact size) and `-Dcpu.core.limit` (upper bound) still apply.
+- `-Dhydra.decompiler.pipeline=true` (off by default) runs the batch decompile methods
+  (`ParallelDecompiler.decompileFunctions`) as a pipeline (`generic.concurrent.BoundedPipeline`):
+  the caller enumerates the functions a bounded window ahead of the workers instead of queueing
+  all of them first under the queue lock, and consumes results while the workers keep
+  decompiling; a consumer is called on the calling thread, one result at a time; the methods
+  that return a list return it in the iterator's order instead of completion order. Every
+  decompile result is the same (8 fixtures and 2000 KotOR functions, all methods compared).
+  Workers: `-Dhydra.decompiler.pipeline.workers=pool|granted|<n>` (default `pool`, today's size
+  from the granted CPUs with the cap of 10; `granted` is every CPU `HydraCpu` reports, uncapped);
+  window per worker: `-Dhydra.decompiler.pipeline.window` (4, or 32 when ordered). New
+  `ParallelDecompiler.decompileFunctionsInOrder` streams results in iterator order with bounded
+  memory, whatever the flag.
 - A constant propagation Max Threads value above the analysis pool size runs with the whole
   pool (`AbstractAnalyzer.clampThreadCount`) instead of silently dropping to one thread
   (`ConstantPropagationAnalyzer.runAddressAnalysis`), and the Max Threads option is no longer

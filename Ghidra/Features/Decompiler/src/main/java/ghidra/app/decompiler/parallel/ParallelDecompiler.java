@@ -22,11 +22,49 @@ import generic.concurrent.*;
 import ghidra.app.util.DecompilerConcurrentQ;
 import ghidra.program.model.address.AddressSetView;
 import ghidra.program.model.listing.*;
+import ghidra.util.cpu.HydraCpu;
 import ghidra.util.task.TaskMonitor;
 
+/**
+ * Decompiles many functions at once.
+ * <p>
+ * <b>Pipeline (Hydra, off by default).</b>  With {@code -Dhydra.decompiler.pipeline=true} the
+ * {@code decompileFunctions} methods run through a {@link BoundedPipeline} instead of a
+ * {@link DecompilerConcurrentQ}: the calling thread enumerates the functions a bounded window
+ * ahead of the workers (instead of queueing all of them first, under the queue lock) and
+ * consumes the results while the workers keep decompiling; results are handed to a consumer on
+ * the calling thread, one at a time, instead of on the worker threads.  The decompile of each
+ * function is the same callback with the same decompiler pool, so every result is the same; the
+ * methods that return a list return it in the iterator's order instead of completion order.
+ * {@link #decompileFunctionsInOrder} always uses the pipeline and delivers in iterator order.
+ * <p>
+ * Workers ({@code hydra.decompiler.pipeline.workers}): {@code pool} (the default: the size of
+ * the shared pool, i.e. today's concurrency, from the CPUs the OS grants through
+ * {@link HydraCpu} and the default pool cap), {@code granted} (every granted CPU,
+ * {@link HydraCpu#grantedCpus()}, uncapped), or a number.  Window
+ * ({@code hydra.decompiler.pipeline.window}, per worker): {@value #WINDOW_PER_WORKER} by default,
+ * {@value #ORDERED_WINDOW_PER_WORKER} for {@link #decompileFunctionsInOrder}.
+ */
 public class ParallelDecompiler {
 
 	static final String THREAD_POOL_NAME = "Parallel Decompiler";
+
+	/** The system property that turns the pipeline on for the existing methods (default off). */
+	public static final String PIPELINE_PROPERTY = "hydra.decompiler.pipeline";
+	/** The system property that sizes the pipeline: {@code pool}, {@code granted} or a number. */
+	public static final String PIPELINE_WORKERS_PROPERTY = "hydra.decompiler.pipeline.workers";
+	/**
+	 * The system property that sets the window per worker: how many functions the pipeline may
+	 * hold (queued, running, or finished and not yet consumed) for each worker.
+	 */
+	public static final String PIPELINE_WINDOW_PROPERTY = "hydra.decompiler.pipeline.window";
+	/** The default window per worker when results are consumed in completion order. */
+	static final int WINDOW_PER_WORKER = 4;
+	/**
+	 * The default window per worker when results are consumed in iterator order: larger, so one
+	 * slow function at the head does not stop the workers once the window fills behind it.
+	 */
+	static final int ORDERED_WINDOW_PER_WORKER = 32;
 
 	/**
 	 * Decompile the given functions using multiple decompilers
@@ -90,6 +128,16 @@ public class ParallelDecompiler {
 			throws InterruptedException, Exception {
 
 		int max = program.getFunctionManager().getFunctionCount();
+		if (Boolean.getBoolean(PIPELINE_PROPERTY)) {
+			Objects.requireNonNull(resultsConsumer);
+			monitor.initialize(max);
+			pipeline(callback, false, true).run(functions, (i, f, r) -> {
+				if (r != null) {
+					resultsConsumer.accept(r);
+				}
+			}, monitor);
+			return;
+		}
 		boolean collectResults = false; // the client will process results as they arrive
 		GThreadPool threadPool = GThreadPool.getSharedThreadPool(THREAD_POOL_NAME);
 		DecompilerConcurrentQ<Function, R> queue =
@@ -103,6 +151,11 @@ public class ParallelDecompiler {
 	private static <R> List<R> doDecompileFunctions(QCallback<Function, R> callback,
 			Iterator<Function> functions, int count, TaskMonitor monitor)
 			throws InterruptedException, Exception {
+
+		if (Boolean.getBoolean(PIPELINE_PROPERTY)) {
+			monitor.initialize(count);
+			return pipelineToList(callback, functions, monitor);
+		}
 
 		DecompilerConcurrentQ<Function, R> queue =
 			new DecompilerConcurrentQ<>(callback, THREAD_POOL_NAME, monitor);
@@ -125,6 +178,109 @@ public class ParallelDecompiler {
 		}
 
 		return results;
+	}
+
+	/**
+	 * Decompiles the given functions with multiple decompilers and hands each non-null result to
+	 * the consumer <b>in the iterator's order</b>, on the calling thread, while the decompiles of
+	 * the following functions run.  The functions are read from the iterator on the calling
+	 * thread, a bounded window ahead of the consumer, so memory stays bounded however many
+	 * functions there are; a slow consumer (or a slow function at the head) holds back the
+	 * enumeration, not the workers' queued work.
+	 *
+	 * <p>The first exception from the callback or the consumer stops the work (no further
+	 * function is started) and is thrown once the running decompiles have finished.  A cancelled
+	 * monitor stops the work and returns normally.
+	 *
+	 * <p><strong>This method will wait for all processing before returning.</strong>
+	 *
+	 * @param callback the callback to be called for each function
+	 * @param program the program
+	 * @param functions the functions to decompile
+	 * @param resultsConsumer the consumer to which results will be passed, in iterator order
+	 * @param monitor the task monitor
+	 * @throws InterruptedException if interrupted
+	 * @throws Exception if any other exception occurs
+	 */
+	public static <R> void decompileFunctionsInOrder(QCallback<Function, R> callback,
+			Program program, Iterator<Function> functions, Consumer<R> resultsConsumer,
+			TaskMonitor monitor) throws InterruptedException, Exception {
+		Objects.requireNonNull(resultsConsumer);
+		monitor.initialize(program.getFunctionManager().getFunctionCount());
+		pipeline(callback, true, true).run(functions, (i, f, r) -> {
+			if (r != null) {
+				resultsConsumer.accept(r);
+			}
+		}, monitor);
+	}
+
+	/**
+	 * Runs the functions through the pipeline and returns the results in the iterator's order.
+	 * Like the {@link DecompilerConcurrentQ} path, every function runs even when one fails, and
+	 * the failure (here: of the first function in iterator order) is thrown at the end.
+	 */
+	private static <R> List<R> pipelineToList(QCallback<Function, R> callback,
+			Iterator<Function> functions, TaskMonitor monitor)
+			throws InterruptedException, Exception {
+		// delivered in completion order (no head-of-line wait), placed by index
+		Map<Long, R> byIndex = new HashMap<>();
+		pipeline(callback, false, false).run(functions, (i, f, r) -> byIndex.put(i, r), monitor);
+		Long[] keys = byIndex.keySet().toArray(new Long[0]);
+		Arrays.sort(keys);
+		List<R> results = new ArrayList<>(keys.length);
+		for (Long k : keys) {
+			results.add(byIndex.get(k));
+		}
+		return results;
+	}
+
+	static <R> BoundedPipeline<Function, R> pipeline(QCallback<Function, R> callback,
+			boolean ordered, boolean stopOnError) {
+		GThreadPool pool = pipelinePool();
+		int workers = pool.getMaxThreadCount();
+		int perWorker = Integer.getInteger(PIPELINE_WINDOW_PROPERTY,
+			ordered ? ORDERED_WINDOW_PER_WORKER : WINDOW_PER_WORKER);
+		return new BoundedPipeline<>(callback, pool.getExecutor(), workers,
+			workers * Math.max(1, perWorker), ordered, stopOnError);
+	}
+
+	/**
+	 * The pool for the pipeline's workers, sized by {@value #PIPELINE_WORKERS_PROPERTY}.
+	 *
+	 * @return the shared pool to run on
+	 */
+	static GThreadPool pipelinePool() {
+		int n = pipelineWorkers(System.getProperty(PIPELINE_WORKERS_PROPERTY, "pool"));
+		if (n <= 0) {
+			return GThreadPool.getSharedThreadPool(THREAD_POOL_NAME);
+		}
+		GThreadPool pool = GThreadPool.getSharedThreadPool(THREAD_POOL_NAME + " (" + n + ")");
+		if (pool.getMaxThreadCount() != n) {
+			pool.setMaxThreadCount(n);
+		}
+		return pool;
+	}
+
+	/**
+	 * Parses {@value #PIPELINE_WORKERS_PROPERTY}.
+	 *
+	 * @param value {@code pool}, {@code granted} or a positive number
+	 * @return the number of workers, or 0 for the shared pool's size
+	 */
+	static int pipelineWorkers(String value) {
+		String v = value.trim();
+		if (v.isEmpty() || v.equalsIgnoreCase("pool")) {
+			return 0;
+		}
+		if (v.equalsIgnoreCase("granted")) {
+			return Math.max(1, HydraCpu.grantedCpus());
+		}
+		try {
+			return Math.max(0, Integer.parseInt(v));
+		}
+		catch (NumberFormatException e) {
+			return 0;
+		}
 	}
 
 	/**
