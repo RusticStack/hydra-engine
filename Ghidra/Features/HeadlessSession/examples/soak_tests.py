@@ -247,6 +247,28 @@ EXIT_CONN_LOST = 75
 EXIT_FORK_BAD = 76
 
 
+def source_signature(folder) -> list:
+    """The version files of the project(s) under ``folder``: ``[(relative path, size, mtime_ns)]``. A fork only reads
+    its source, so the signature before and after a failed fork must be equal (the handle-holder excuse, rule 2)."""
+    folder = pathlib.Path(folder)
+    out = []
+    for p, _n in oracle.version_files(folder):
+        with contextlib.suppress(OSError):
+            st = p.stat()
+            out.append((str(p.relative_to(folder)), st.st_size, st.st_mtime_ns))
+    return sorted(out)
+
+
+def fork_dest_state(dest) -> str:
+    """``absent`` when the destination folder holds no project (no ``.gpr``, no ``.rep``) and no staging folder;
+    otherwise a short description of what is there."""
+    dest = pathlib.Path(dest)
+    if not dest.exists():
+        return "absent"
+    left = sorted(e.name for e in dest.iterdir() if e.name.endswith((".gpr", ".rep")) or oracle.STAGING.match(e.name))
+    return "absent" if not left else "present: " + ",".join(left)[:200]
+
+
 def tag_prefix(idx: int) -> str:
     return f"sk{idx:02d}x"
 
@@ -301,7 +323,7 @@ def agent_main(spec_path: str) -> int:
             if e.code in ("closed",):
                 row(op, lane_, t0, False, "closed")
                 raise ConnLost() from e
-            row(op, lane_, t0, False, e.code, (e.details if e.code == "busy" else None) or None,
+            row(op, lane_, t0, False, e.code, (e.details if isinstance(e.details, dict) else None) or None,
                 expected=e.code in expect, message=(e.message or "")[:200])
             if e.code in expect:
                 return None
@@ -443,7 +465,17 @@ def agent_main(spec_path: str) -> int:
             dest = fk_dir / f"f{n}"
             opid = f"{idx}:fork:{n}"
             led.sent(opid, kind="fork", n=n, path=str(dest))
-            f = call("fork", "maint", "fork_project", project=pid, path=str(dest), mode="auto", writable=False)
+            src_before = source_signature(adir / "fork")
+            try:
+                f = call("fork", "maint", "fork_project", project=pid, path=str(dest), mode="auto", writable=False)
+            except gs.SessionError as e:
+                # what rule 2 of the handle-holder excuse needs (classify_rows): the source unchanged, the destination
+                # absent, the error structured and retryable. Recorded for every failed fork, judged there
+                det = e.details if isinstance(e.details, dict) else {}
+                row("fork_fail_check", "maint", time.perf_counter(), True, failed_code=e.code,
+                    src_unchanged=source_signature(adir / "fork") == src_before, dest_state=fork_dest_state(dest),
+                    structured=bool(det), retryable=det.get("retryable") is True)
+                raise
             led.ack(opid, kind="fork", n=n, path=str(dest))
             with contextlib.suppress(Exception):
                 s.call("close_project", project=f["project"])
@@ -641,7 +673,20 @@ FAULT_TOLERATES = {
 }
 
 
-def _window_tolerates(w: dict, r: dict) -> bool:
+def fork_holder_excused(w: dict, r: dict, check) -> bool:
+    """Coordinator rule 2 (9.17): a ``fork`` that fails because the handle-holder fault holds its source is excused
+    only when the failure is a structured, retryable error, it happened inside that fault window (the caller checks
+    the window and the agent), the source is unchanged and the destination is absent (or swept). ``check`` is the
+    agent's ``fork_fail_check`` row for this failure (None when it has none: then nothing is excused)."""
+    if w.get("cls") != "handle_holder" or r.get("op") != "fork" or not check:
+        return False
+    return bool(check.get("structured") and check.get("retryable") and check.get("src_unchanged")
+                and check.get("dest_state") == "absent")
+
+
+def _window_tolerates(w: dict, r: dict, check=None) -> bool:
+    if fork_holder_excused(w, r, check):
+        return True
     rule = FAULT_TOLERATES.get(w.get("cls"))
     if rule is None:
         return False
@@ -683,10 +728,20 @@ def classify_rows(rows, windows, tolerated_after_s: float = 0.0, t_span=None):
     AND is an error that fault class can cause (``FAULT_TOLERATES``); every tolerated error is counted by
     class, operation and code in the summary, with the share of the run the all-scope windows cover, so
     that a window cannot hide errors without that showing in the evidence."""
+    checks = {}
+    for r in rows:
+        if r.get("op") == "fork_fail_check":
+            checks.setdefault(r["agent"], []).append(r)
+
+    def check_of(r):
+        if r.get("op") != "fork":
+            return None
+        return next((c for c in checks.get(r["agent"], []) if 0 <= c["t"] - r["t"] <= 5), None)
+
     def tolerating(r):
         for w in windows:
             if w["t0"] - 2 <= r["t"] <= w["t1"] + tolerated_after_s and w["scope"] in ("all", r["agent"]) \
-                    and _window_tolerates(w, r):
+                    and _window_tolerates(w, r, check_of(r)):
                 return w
         return None
     viol, unexpected, busy_ok, busy_bad = {}, 0, 0, 0
@@ -880,6 +935,8 @@ class Soak:
         self.baseline_taken_at = None
         self.plant_foreign_blocked = 0
         self.guard = None
+        self.k6_sweep_log = None
+        self.daemon_logs = self.work / "daemon-logs"   # every incarnation's log (rotate_daemon_log)
 
     # ---------------------------------------------------------------------------- layout
     def master_gpr(self, p: int) -> pathlib.Path:
@@ -916,6 +973,10 @@ class Soak:
         self.daemon = self.gs.Daemon(self.a.ghidra, str(self.state), self.instance, **cfg)
 
     def start_daemon(self):
+        # keep the log of the incarnation that ended (killed or stopped) before the next one appends to the file:
+        # the client rotates the file only past 32 MB and overwrites its one .1, so without this a long run kept the
+        # last incarnation's log only (nightly-1)
+        rotate_daemon_log(self.state / f"{self.instance}.log", self.daemon_logs, self.incarnation)
         self.sess = self.daemon.connect("soak-supervisor", "soak", timeout=120)
         ep = self.daemon.read_endpoint()
         self.daemon_pid = int(ep["pid"]) if ep and ep.get("pid") else self.sess.hello.get("pid")
@@ -1115,23 +1176,24 @@ class Soak:
             f["phase"] = phase
         self.report.merge(rep)
 
-    def file_round(self, phase: str, *, quiescent: bool = False, daemon_alive: bool = True, locks: bool = True):
-        """The file-level invariants over every tree: K2 (version-file headers), K6 (a fork is absent or
-        complete; no staging folder left), K9 (nothing involved changes in a project no agent works on),
-        K7 (locks; temp folder growth)."""
+    def k6_roots(self) -> list:
+        """Every folder that holds fork destinations: the masters and each agent's folder (its fork and fk/fN)."""
+        out = [self.masters_dir / f"p{p}" for p in range(self.nproj)]
+        out += [self.agent_dir(i) for i in range(self.agents)]
+        return [x for x in out if x.exists()]
+
+    def file_round(self, phase: str, *, quiescent: bool = False, daemon_alive: bool = True, locks: bool = True,
+                   swept: bool = False):
+        """The file-level invariants over every tree: K2 (version-file headers), K6 (8.13: 0 .gpr without its .rep
+        at any instant; a half publish is ``pending_sweep`` until ``swept``, after which every fork destination is
+        absent or complete and no staging folder is left; staging folders are not projects), K9 (nothing involved
+        changes in a project no agent works on), K7 (locks; temp folder growth)."""
         rep = oracle.Report("round:" + phase)
         trees = self.all_project_trees()
         for p in trees:
             oracle.check_k2(p, rep)
-        for p in trees:
-            if p.name == "canary":
-                continue
-            for gpr in p.rglob("*.gpr"):
-                oracle.check_k6(gpr, require_sidecar=False, rep=rep)
-        for i in range(self.agents):
-            for parent in (self.agent_dir(i), self.agent_dir(i) / "fk"):
-                if parent.is_dir():
-                    oracle.check_k6_staging(parent, rep)
+        for root in self.k6_roots():
+            oracle.check_k6_tree(root, swept=swept, rep=rep)
         # canary parents (a planted .rep without .gpr lives next to it)
         if self.canary_forks().is_dir():
             for rp in self.canary_forks().glob("*.rep"):
@@ -1829,6 +1891,7 @@ class Soak:
                                        "(cancelled, timeout): the deaf and burn counts include timeout/cancel results by design",
                "evidence_note": "agent.log and daemon.log can carry program and function names of a game copy (engine "
                                 "error messages, up to 200 chars): keep the evidence folder off the repository",
+               "k6_sweep": self.k6_sweep_log,
                "features": self.features, "sample_stats": self.sample_stats, "k13_final_health": self.k13_final[-3:] +
                (self.health_samples[-1:] if self.health_samples else []),
                "agent_exits": self.rc_log[-200:], "fault_log": self.fault_log[-400:], "fault_windows": self.windows[-400:],
@@ -1925,8 +1988,59 @@ class Soak:
         oracle.check_k7_processes([pid], settle_s=8.0, only_pids=set(self.decompilers_seen) | {p.pid for p in self.planted_pids},
                                   rep=rep2)
         self.merge(rep2, "quiescent")
-        self.file_round("quiescent", quiescent=True, daemon_alive=False)
+        self.k6_sweep()
+        self.file_round("quiescent", quiescent=True, daemon_alive=False, swept=True)
         self.tmp_round("end")
+
+    def k6_sweep(self):
+        """The sweep that K6 is judged after (8.13). What a killed publisher left (a staging folder, a ``.rep`` without
+        its ``.gpr``, a sidecar still ``publishing`` or its ``.tmp``) is pending until a sweep has run. Trigger 1 is a
+        daemon start on the same state root (8.13 sweeps every recorded fork parent at start, and ``open_project``
+        sweeps the folder it opens). An engine without the start-up sweep is given trigger 2, the lazy sweep of D41:
+        one ``fork_project`` of master 0 into each folder that is still pending (the first fork under a folder sweeps
+        it whole; the fork it then makes is complete or refused, and is judged like any other). Which trigger cleared
+        which folder is recorded; the daemon is stopped again at the end. The strict K6 round follows."""
+        before = oracle.Report("k6-pending")
+        for root in self.k6_roots():
+            oracle.check_k6_tree(root, swept=False, rep=before)
+        pend = oracle.k6_pending_parents(before)
+        out = {"pending_before": pend, "cleared_by_restart": [], "probe_forks": [], "trigger": None}
+        self.k6_sweep_log = out
+        if not pend:
+            out["trigger"] = "nothing pending"
+            return out
+        try:
+            self.start_daemon()
+            time.sleep(3)
+            after = oracle.Report("k6-after-restart")
+            for root in self.k6_roots():
+                oracle.check_k6_tree(root, swept=False, rep=after)
+            left = oracle.k6_pending_parents(after)
+            out["cleared_by_restart"] = [p for p in pend if p not in left]
+            out["trigger"] = "daemon start (8.13)" if not left else "daemon start, then fork_project into each folder left (D41)"
+            if left:
+                o = self.sup_call("open_project", path=str(self.master_gpr(0)))
+                for parent in left:
+                    try:
+                        r = self.sup_call("fork_project", project=o["id"], path=parent, mode="auto", open=False, wait=600000)
+                        out["probe_forks"].append({"parent": parent, "result": "forked", "gpr": r.get("gpr")})
+                    except self.gs.SessionError as e:
+                        out["probe_forks"].append({"parent": parent, "result": e.code, "message": (e.message or "")[:200]})
+                with contextlib.suppress(Exception):
+                    self.sup_call("close_project", project=o["id"])
+        except Exception as e:  # noqa: BLE001
+            out["error"] = f"{type(e).__name__}: {e}"
+            self.extra_viol.append(("k6_sweep_failed", out["error"]))
+        finally:
+            with contextlib.suppress(Exception):
+                self.sess.close()
+            stopped = False
+            with contextlib.suppress(Exception):
+                stopped = self.daemon.stop(timeout=120)
+            if not stopped:
+                with contextlib.suppress(Exception):
+                    self.daemon.stop(force=True, timeout=120)
+        return out
 
     def cleanup(self):
         import chaos_lib as chaos
@@ -1958,7 +2072,14 @@ class Soak:
                     shutil.copy2(ad / n, kd / n)
         with contextlib.suppress(OSError):
             shutil.copy2(self.state / f"{self.instance}.log", self.evidence_dir / "daemon.log")
-        for n in ("agents", "masters", "state", "tmp", "canary", "canary-forks", "stage-src", "backup-test"):
+        # every incarnation's log, gzipped: daemon-logs/daemon.<incarnation>.log.gz (the last one is daemon.log too)
+        rotate_daemon_log(self.state / f"{self.instance}.log", self.daemon_logs, self.incarnation)
+        kd = self.evidence_dir / "daemon-logs"
+        kd.mkdir(parents=True, exist_ok=True)
+        for f in sorted(self.daemon_logs.glob("daemon.*.log")) if self.daemon_logs.is_dir() else []:
+            with open(f, "rb") as src, gzip.open(kd / (f.name + ".gz"), "wb") as dst:
+                shutil.copyfileobj(src, dst)
+        for n in ("agents", "masters", "state", "tmp", "canary", "canary-forks", "stage-src", "backup-test", "daemon-logs"):
             rmtree(self.work / n)
         if self.tree_root != self.work:
             # the masters and the agents' trees live on another volume (--master-root): "a fixture under
@@ -1967,6 +2088,27 @@ class Soak:
             rmtree(self.agents_dir)
             with contextlib.suppress(OSError):
                 self.tree_root.rmdir()
+
+
+def rotate_daemon_log(log, keep_dir, generation: int):
+    """Moves the daemon log ``log`` (and the client's own rotation ``<log>.1``, if any) to
+    ``keep_dir/daemon.<generation>.log`` before the next incarnation starts, so that every daemon of a run keeps its
+    log. Generation 0 (before the first start) and a missing log are nothing to do. Returns the kept path or None."""
+    log = pathlib.Path(log)
+    if generation <= 0 or not log.exists():
+        return None
+    keep_dir = pathlib.Path(keep_dir)
+    keep_dir.mkdir(parents=True, exist_ok=True)
+    dst = keep_dir / f"daemon.{generation:03d}.log"
+    with open(dst, "ab") as out:
+        for src in (log.with_suffix(log.suffix + ".1"), log):
+            if src.exists():
+                with open(src, "rb") as f:
+                    shutil.copyfileobj(f, out)
+    for src in (log.with_suffix(log.suffix + ".1"), log):
+        with contextlib.suppress(OSError):
+            src.unlink()
+    return dst
 
 
 def oracle_decompilers(daemon_pid):
@@ -2167,6 +2309,95 @@ def selftest(work: pathlib.Path | None = None, verbose: bool = True) -> int:
           any(k == "unexpected_error" for k, _ in viol), viol)
     viol, _ = classify_rows(rows + [dict(trow, t=t + 100)], [wall])
     check("the same timeout after the window is a violation", bool(viol), viol)
+
+    # ---- coordinator rule 2: a fork under the handle holder is excused only when structured, retryable, in the
+    # window, source unchanged and destination absent
+    whh = {"t0": t - 1, "t1": t + 1, "scope": 2, "cls": "handle_holder"}
+    frk = {"t": t, "agent": 2, "op": "fork", "lane": "maint", "ms": 6.0, "ok": False, "code": "failed",
+           "message": "~00000000.db: being used by another process"}
+    good = {"t": t + 0.1, "agent": 2, "op": "fork_fail_check", "lane": "maint", "ms": 0.0, "ok": True,
+            "failed_code": "failed", "src_unchanged": True, "dest_state": "absent", "structured": True, "retryable": True}
+    viol, summ = classify_rows(rows + [frk, good], [whh])
+    check("rule 2: a structured retryable fork failure in its holder window, source unchanged, destination absent: excused",
+          not viol and summ["tolerated_in_windows"] == {"handle_holder/fork:failed": 1}, (viol, summ))
+    for what, bad_check in (("unstructured (the hydra.4 answer of nightly-1)", dict(good, structured=False, retryable=False)),
+                            ("not retryable", dict(good, retryable=False)),
+                            ("source changed", dict(good, src_unchanged=False)),
+                            ("destination left", dict(good, dest_state="present: analysis.rep")),
+                            ("no fork_fail_check row", None)):
+        viol, _ = classify_rows(rows + [frk] + ([bad_check] if bad_check else []), [whh])
+        check(f"planted rule 2: a fork failure in the holder window that is {what} stays a violation",
+              any(k == "unexpected_error" and "fork:failed" in d for k, d in viol), viol)
+    viol, _ = classify_rows(rows + [dict(frk, t=t + 100), dict(good, t=t + 100.1)], [whh])
+    check("planted rule 2: the same fork failure outside the holder window is a violation", bool(viol), viol)
+    viol, _ = classify_rows(rows + [dict(frk, agent=3), dict(good, agent=3)], [whh])
+    check("planted rule 2: a fork failure of another agent than the held one is a violation", bool(viol), viol)
+
+    # ---- K6 per 8.13: staging folders are not projects; a half publish is pending until the sweep
+    k6 = base / "k6"
+    rmtree(k6)
+    stg = k6 / "a00" / "fk" / "f3" / ".analysis.fork-1a2b-cafe.tmp"
+    stg.mkdir(parents=True)
+    (stg / "analysis.gpr").write_text("x")             # an in-flight staging folder: .gpr moved in before .rep
+    done = k6 / "a00" / "fork"
+    (done / "analysis.rep").mkdir(parents=True)
+    (done / "analysis.gpr").write_text("x")
+    (done / "analysis.fork.json").write_text(json.dumps({"state": "complete"}))
+    r6 = oracle.check_k6_tree(k6, swept=False)
+    check("K6: a .gpr inside a staging folder is not judged as a fork; the staging folder is pending before the sweep",
+          not r6.findings and oracle.k6_pending_parents(r6) == [str(stg.parent)], (r6.findings, r6.notes))
+    r6 = oracle.check_k6_tree(k6, swept=True)
+    check("planted K6: a staging folder still there after the sweep is a violation",
+          "K6:staging_left" in r6.codes(), r6.findings)
+    rmtree(stg)
+    half = k6 / "a00" / "fk" / "f4"
+    (half / "analysis.rep").mkdir(parents=True)          # killed between the .rep move and the .gpr move
+    pub = k6 / "a00" / "fk" / "f5"
+    (pub / "analysis.rep").mkdir(parents=True)
+    (pub / "analysis.gpr").write_text("x")
+    (pub / "analysis.fork.json").write_text(json.dumps({"state": "publishing"}))   # killed before the sidecar rewrite
+    r6 = oracle.check_k6_tree(k6, swept=False)
+    check("K6: a .rep without .gpr and a 'publishing' sidecar are pending (not violations) before the sweep",
+          not r6.findings and set(oracle.k6_pending_parents(r6)) == {str(half), str(pub)}, (r6.findings, r6.notes))
+    r6 = oracle.check_k6_tree(k6, swept=True)
+    check("planted K6: after the sweep a .rep without .gpr and a 'publishing' sidecar are violations",
+          {"K6:rep_without_gpr", "K6:sidecar_state"} <= r6.codes(), r6.findings)
+    lone = k6 / "a01" / "fk" / "f1"
+    lone.mkdir(parents=True)
+    (lone / "analysis.gpr").write_text("x")
+    r6 = oracle.check_k6_tree(k6 / "a01", swept=False)
+    check("planted K6: a destination .gpr without its .rep is a violation at any instant (before the sweep too)",
+          "K6:gpr_without_rep" in r6.codes(), r6.findings)
+    (pub / "analysis.fork.json").write_text(json.dumps({"state": "complete"}))
+    rmtree(half)
+    r6 = oracle.check_k6_tree(k6 / "a00", swept=True)
+    check("K6: after a sweep that finished everything, absent or complete forks give no finding",
+          not r6.findings, r6.findings)
+    (k6 / "a00" / "del-f2" / "analysis.rep").mkdir(parents=True)
+    check("K6: the harness's own atomic delete (del-*) is not walked",
+          not oracle.check_k6_tree(k6 / "a00", swept=True).findings)
+
+    # ---- every daemon incarnation keeps its log (coordinator item 3)
+    lg = base / "logs"
+    rmtree(lg)
+    lg.mkdir()
+    dlog = lg / "soak.log"
+    keep = lg / "keep"
+    check("rotate: nothing to keep before the first start", rotate_daemon_log(dlog, keep, 0) is None)
+    for gen in (1, 2, 3):
+        dlog.write_text(f"incarnation {gen}\n")
+        if gen == 2:
+            dlog.with_suffix(".log.1").write_text("rotated part of 2\n")
+        rotate_daemon_log(dlog, keep, gen)
+    kept = sorted(p.name for p in keep.glob("daemon.*.log"))
+    check("rotate: every incarnation's log is kept by generation, the client's .1 included",
+          kept == ["daemon.001.log", "daemon.002.log", "daemon.003.log"]
+          and "rotated part of 2" in (keep / "daemon.002.log").read_text()
+          and (keep / "daemon.003.log").read_text() == "incarnation 3\n" and not dlog.exists(), kept)
+    dlog.write_text("incarnation 4\n")
+    shutil.copy2(dlog, lg / "only-last.log")             # what the runner kept before: the file as it is at the end
+    check("planted rotate: keeping only the final file loses the earlier incarnations",
+          "incarnation 1" not in (lg / "only-last.log").read_text())
     viol, _ = classify_rows(rows + [dict(frow, message="IOException: File error during save", op="save")],
                             [dict(wall, cls="handle_holder")])
     check("a failed save with an IOException in a handle-holder window is tolerated", not viol, viol)
