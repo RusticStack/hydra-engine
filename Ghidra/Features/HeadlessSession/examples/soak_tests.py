@@ -1125,6 +1125,8 @@ def judge_hy_rows(rows, windows=()) -> tuple:
     the live view); a publish that ended in another outcome than the four that keep the records is a violation."""
     viol, k15 = [], {"probes": 0, "rebuilt": 0, "differ": 0}
     unexpected = {}
+    stale_explained = 0
+    redos = [r for r in rows if r.get("op") == "hy_stale_redo" and r.get("ok")]
     for r in rows:
         if r.get("op") == "hy_k15":
             k15["probes"] += 1
@@ -1138,13 +1140,29 @@ def judge_hy_rows(rows, windows=()) -> tuple:
         code = r.get("code") or ""
         if code == "busy" and any(k in (r.get("details") or {}) for k in BUSY_EXPLAINERS):
             continue
+        if hy_stale_explained(r, redos):
+            stale_explained += 1
+            continue
         unexpected.setdefault(f"{r.get('op')}:{code}", []).append(r)
     for k, rs in sorted(unexpected.items()):
         viol.append(("hy_unexpected_error", f"{k}: {len(rs)} time(s); first: {json.dumps(rs[0], default=str)[:300]}"))
     counts = {"publish": sum(1 for r in rows if r.get("op") == "hy_publish" and r.get("ok")),
               "rebase": sum(1 for r in rows if r.get("op") == "hy_rebase" and r.get("ok")),
               "hydralysis_queries": sum(1 for r in rows if r.get("op") in HY_QUERY_OPS and r.get("ok"))}
-    return viol, {"unexpected": sum(len(v) for v in unexpected.values()), "k15": k15, "counts": counts}
+    return viol, {"unexpected": sum(len(v) for v in unexpected.values()), "k15": k15, "counts": counts,
+                  "stale_redone": stale_explained}
+
+
+def hy_stale_explained(r, redos) -> bool:
+    """An edit that raced a publish answers ``stale_view`` (``stale: master_generation_changed``): the documented
+    contract. It is explained only when the same agent then rebased successfully and redid that same edit: a
+    ``hy_stale_redo`` row of the same agent, edit ``n`` and attempt, at or after the stale row."""
+    if r.get("op") != "hy_edit" or r.get("code") != "stale_view":
+        return False
+    if (r.get("details") or {}).get("stale") != "master_generation_changed" or r.get("n") is None:
+        return False
+    return any(d.get("agent") == r.get("agent") and d.get("n") == r.get("n") and d.get("attempt") == r.get("attempt")
+               and d.get("t", 0) >= r.get("t", 0) for d in redos)
 
 
 def judge_k11p(facts: dict, rep: oracle.Report | None = None) -> oracle.Report:
@@ -3610,6 +3628,26 @@ def selftest(work: pathlib.Path | None = None, verbose: bool = True) -> int:
     viol, _ = judge_hy_rows(hrows + [{"t": t, "agent": "h00", "op": "hy_edit", "ok": False, "code": "busy",
                                       "details": {"reason": "capacity"}}])
     check("an explained busy of an H-agent is not a violation", not viol, viol)
+    stale = {"t": t, "agent": "h00", "op": "hy_edit", "ok": False, "code": "stale_view", "n": 4, "attempt": 1,
+             "details": {"stale": "master_generation_changed"}}
+    redo = {"t": t + 0.2, "agent": "h00", "op": "hy_stale_redo", "ok": True, "n": 4, "attempt": 1}
+    viol, summ = judge_hy_rows(hrows + [stale, {"t": t + 0.1, "agent": "h00", "op": "hy_rebase", "ok": True}, redo])
+    check("stale_view (master_generation_changed) followed by rebase + redo is explained, not a violation",
+          not viol and summ["stale_redone"] == 1, (viol, summ))
+    viol, _ = judge_hy_rows(hrows + [stale])
+    check("planted: a stale_view edit with no rebase + redo is a violation", any(k == "hy_unexpected_error" for k, _ in viol), viol)
+    viol, _ = judge_hy_rows(hrows + [stale, {**redo, "agent": "h01"}])
+    check("planted: another agent's redo does not explain a stale_view", any(k == "hy_unexpected_error" for k, _ in viol), viol)
+    viol, _ = judge_hy_rows(hrows + [stale, {**redo, "n": 5}])
+    check("planted: a redo of another edit does not explain a stale_view", any(k == "hy_unexpected_error" for k, _ in viol), viol)
+    viol, _ = judge_hy_rows(hrows + [{**stale, "details": {"stale": "base_missing"}}, redo])
+    check("planted: a stale_view for another reason is still a violation", any(k == "hy_unexpected_error" for k, _ in viol), viol)
+    import soak_hy  # stdlib + oracle only at import time
+    E = soak_hy.HyError
+    check("H-agent redoes an edit on stale_view (master_generation_changed) only",
+          soak_hy.is_stale_master(E("stale_view", "x", {"error": "stale_view", "stale": "master_generation_changed"}))
+          and not soak_hy.is_stale_master(E("stale_view", "x", {"stale": "base_missing"}))
+          and not soak_hy.is_stale_master(E("busy", "x", {"stale": "master_generation_changed"})))
 
     k11 = {"shared": {"tag": "k11s1", "q_saw": "k11s1"}, "isolated": {"tag": "k11P1", "q_saw": "FUN_1", "p_saw": "k11P1"},
            "errors": []}

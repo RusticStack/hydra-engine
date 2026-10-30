@@ -66,6 +66,16 @@ class HyError(Exception):
         self.code, self.message, self.payload = code, message, payload or {}
 
 
+#: how often one edit is redone after a stale_view (master_generation_changed) before it counts as a failure
+STALE_REDO_MAX = 3
+
+
+def is_stale_master(err) -> bool:
+    """The documented edit/publish race: ``stale_view`` with ``stale: master_generation_changed``."""
+    det = err.payload if isinstance(err.payload, dict) else {}
+    return err.code == "stale_view" and det.get("stale") == "master_generation_changed"
+
+
 def make_ask(settings):
     from hydralysis import query
     runner = query.QueryRunner(settings)
@@ -165,16 +175,17 @@ def cmd_agent(spec: dict) -> int:
         rec.update(extra)
         res.write(json.dumps(rec, default=str) + "\n")
 
-    def call(op, action, address="", **kw):
+    def call(op, action, address="", _extra=None, **kw):
         t0 = time.perf_counter()
         try:
             r = ask(action, address, **kw)
-            row(op, t0, True)
+            row(op, t0, True, **(_extra or {}))
             return r
         except HyError as e:
             det = e.payload if isinstance(e.payload, dict) else {}
-            row(op, t0, False, e.code, message=(e.message or "")[:300],
-                details={k: det.get(k) for k in ("reason", "resource", "retryable", "retry_after_ms", "csid") if k in det} or None)
+            row(op, t0, False, e.code, message=(e.message or "")[:300], **(_extra or {}),
+                details={k: det.get(k) for k in ("reason", "resource", "retryable", "retry_after_ms", "csid", "stale")
+                         if k in det} or None)
             raise
 
     def revision():
@@ -196,7 +207,20 @@ def cmd_agent(spec: dict) -> int:
         addr = rng.choice(mine)
         opid = f"{me}:edit:{n}"
         led.sent(opid, kind="hyedit", n=n, tag=tag, addr=addr)
-        e = call("hy_edit", "type_edit", addr, kind="rename", name=tag, source="soak", expect_revision=revision(), **{"as": me})
+        for attempt in range(1, STALE_REDO_MAX + 2):
+            try:
+                e = call("hy_edit", "type_edit", addr, _extra={"n": n, "attempt": attempt}, kind="rename", name=tag,
+                         source="soak", expect_revision=revision(), **{"as": me})
+                break
+            except HyError as err:
+                # the documented contract: an edit that raced a publish answers stale_view (master_generation_changed);
+                # the agent rebases its view onto the new head and redoes the edit. The hy_stale_redo row (written only
+                # after the rebase succeeded) is what explains the stale row to the judge (judge_hy_rows).
+                if not (is_stale_master(err) and attempt <= STALE_REDO_MAX):
+                    raise
+                t0 = time.perf_counter()
+                call("hy_rebase", "type_edit", kind="rebase", expect_revision=revision(), **{"as": me})
+                row("hy_stale_redo", t0, True, n=n, attempt=attempt)
         wc = e.get("working_copy")
         vk = pathlib.Path(wc).parents[1].name if wc else state["view_key"]
         state["view_key"] = vk
