@@ -70,6 +70,29 @@ class HyError(Exception):
 STALE_REDO_MAX = 3
 
 
+def store_key_of(root, record_id) -> str | None:
+    """The view key of the Hydralysis store that holds RECORD_ID: the stem of ``overlays/<key>.json`` (Hydralysis's
+    own durable store, sealed). Not the working copy's folder name: after a rebase the copy lives in ``<key>r``
+    (views._shadow), which has no store, and K8 then found ``overlays/<key>r.json`` unreadable (GATE11 run)."""
+    if not record_id:
+        return None
+    for p in sorted((pathlib.Path(root) / "overlays").glob("*.json")):
+        d, _ = oracle.read_sealed(p)
+        if isinstance(d, dict) and any(isinstance(e, dict) and e.get("id") == record_id for e in d.get("edits") or ()):
+            return p.stem
+    return None
+
+
+def rebase_options(err, revision) -> dict:
+    """The rebase a stale_view refusal names in ``next`` (kind rebase, its expect_revision); when it names none, a
+    rebase at the view's current revision (``revision()``)."""
+    det = err.payload if isinstance(err.payload, dict) else {}
+    opts = ((det.get("next") or {}).get("options") or {}) if isinstance(det.get("next"), dict) else {}
+    if opts.get("kind") == "rebase" and isinstance(opts.get("expect_revision"), int):
+        return {"kind": "rebase", "expect_revision": opts["expect_revision"]}
+    return {"kind": "rebase", "expect_revision": revision()}
+
+
 def is_stale_master(err) -> bool:
     """The documented edit/publish race: ``stale_view`` with ``stale: master_generation_changed``."""
     det = err.payload if isinstance(err.payload, dict) else {}
@@ -207,22 +230,30 @@ def cmd_agent(spec: dict) -> int:
         addr = rng.choice(mine)
         opid = f"{me}:edit:{n}"
         led.sent(opid, kind="hyedit", n=n, tag=tag, addr=addr)
+        expect = revision()
         for attempt in range(1, STALE_REDO_MAX + 2):
             try:
                 e = call("hy_edit", "type_edit", addr, _extra={"n": n, "attempt": attempt}, kind="rename", name=tag,
-                         source="soak", expect_revision=revision(), **{"as": me})
+                         source="soak", expect_revision=expect, **{"as": me})
                 break
             except HyError as err:
-                # the documented contract: an edit that raced a publish answers stale_view (master_generation_changed);
-                # the agent rebases its view onto the new head and redoes the edit. The hy_stale_redo row (written only
-                # after the rebase succeeded) is what explains the stale row to the judge (judge_hy_rows).
+                # the documented contract (Hydralysis README "An edit that races a publish is the client's to rebase"):
+                # an edit refused stale_view (master_generation_changed) recorded nothing; the client rebases with the
+                # call in the refusal's `next` and sends the edit again with the view_revision the rebase answers.
+                # The hy_stale_redo row (written only after the rebase succeeded) explains the stale row (judge_hy_rows)
                 if not (is_stale_master(err) and attempt <= STALE_REDO_MAX):
                     raise
                 t0 = time.perf_counter()
-                call("hy_rebase", "type_edit", kind="rebase", expect_revision=revision(), **{"as": me})
-                row("hy_stale_redo", t0, True, n=n, attempt=attempt)
-        wc = e.get("working_copy")
-        vk = pathlib.Path(wc).parents[1].name if wc else state["view_key"]
+                rb = call("hy_rebase", "type_edit", **{**rebase_options(err, revision), "as": me})
+                expect = rb.get("view_revision", rb.get("revision")) if isinstance(rb, dict) else None
+                if expect is None:
+                    expect = revision()
+                row("hy_stale_redo", t0, True, n=n, attempt=attempt, rebase_outcome=(rb or {}).get("outcome"))
+        vk = store_key_of(spec["root"], e.get("overlay_id"))
+        if vk is None:
+            row("hy_view_key", time.perf_counter(), False, "record_not_in_any_store", record=e.get("overlay_id"),
+                working_copy=e.get("working_copy"))
+            vk = state["view_key"]
         state["view_key"] = vk
         led.ack(opid, kind="hyedit", n=n, tag=tag, addr=addr, view_key=vk, record=e.get("overlay_id"))
         state["dirty"] = True

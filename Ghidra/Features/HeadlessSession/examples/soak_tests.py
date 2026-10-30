@@ -272,6 +272,17 @@ EXIT_CONN_LOST = 75
 EXIT_FORK_BAD = 76
 
 
+def held_retryable(details) -> bool:
+    """A63 (8.15): another process holds a project file or folder: ``busy`` with ``details.reason:"file_held"`` and
+    ``suggest:"retry"`` (``retryAfterMs`` 1000). The structured, retryable answer of coordinator rule 2."""
+    d = details if isinstance(details, dict) else {}
+    return d.get("reason") == "file_held" and (d.get("suggest") == "retry" or d.get("retryable") is True)
+
+
+#: how long an agent's setup retries a file_held open (a handle-holder window is about 30-40 s)
+HELD_RETRY_S = 90.0
+
+
 def source_signature(folder) -> list:
     """The version files of the project(s) under ``folder``: ``[(relative path, size, mtime_ns)]``. A fork only reads
     its source, so the signature before and after a failed fork must be equal (the handle-holder excuse, rule 2)."""
@@ -357,6 +368,19 @@ def agent_main(spec_path: str) -> int:
             row(op, lane_, t0, False, "conn:" + type(e).__name__)
             raise ConnLost() from e
 
+    def call_held(op, lane_, cmd, **fields):
+        """``call`` that retries the A63 answer ``busy``/``file_held`` (another process holds a file of the project,
+        retry after ``retryAfterMs`` 1000) for up to HELD_RETRY_S: the documented client reaction. Every refusal is a
+        row, judged by classify_rows (explained only inside a handle_holder window of this agent)."""
+        end = time.time() + HELD_RETRY_S
+        while True:
+            try:
+                return call(op, lane_, cmd, **fields)
+            except gs.SessionError as e:
+                if not (e.code == "busy" and held_retryable(e.details)) or time.time() > end:
+                    raise
+            time.sleep(1.0)
+
     try:
         # ---- setup: the master read-only, my fork writable
         master = call("setup_open_master", "quick", "open_project", path=spec["master"])
@@ -365,7 +389,7 @@ def agent_main(spec_path: str) -> int:
         if fork_dir.is_dir() and list(fork_dir.glob("*.gpr")):
             fork_gpr = next(fork_dir.glob("*.gpr"))
         if fork_gpr is not None:
-            o = call("setup_open_fork", "quick", "open_project", path=str(fork_gpr), writable=True)
+            o = call_held("setup_open_fork", "quick", "open_project", path=str(fork_gpr), writable=True)
             pid = o["id"]
         else:
             if fork_dir.exists():
@@ -373,7 +397,7 @@ def agent_main(spec_path: str) -> int:
             f = call("setup_fork", "maint", "fork_project", project=master["id"], path=str(fork_dir), mode="auto",
                      writable=True)
             pid = f["project"]
-        p = call("setup_open_program", "quick", "open_program", path=prog, project=pid, writable=True)
+        p = call_held("setup_open_program", "quick", "open_program", path=prog, project=pid, writable=True)
         key = p["key"]
         meta_path = adir / "meta.json"
         if meta_path.exists():
@@ -499,7 +523,7 @@ def agent_main(spec_path: str) -> int:
                 det = e.details if isinstance(e.details, dict) else {}
                 row("fork_fail_check", "maint", time.perf_counter(), True, failed_code=e.code,
                     src_unchanged=source_signature(adir / "fork") == src_before, dest_state=fork_dest_state(dest),
-                    structured=bool(det), retryable=det.get("retryable") is True)
+                    structured=bool(det), retryable=det.get("retryable") is True or held_retryable(det))
                 raise
             led.ack(opid, kind="fork", n=n, path=str(dest))
             with contextlib.suppress(Exception):
@@ -829,6 +853,16 @@ def classify_rows(rows, windows, tolerated_after_s: float = 0.0, t_span=None):
             return None
         return next((c for c in checks.get(r["agent"], []) if 0 <= c["t"] - r["t"] <= 5), None)
 
+    def held_window(r):
+        if not held_retryable(r.get("details")):
+            return None
+        for w in windows:
+            if w.get("cls") == "handle_holder" and w["t0"] - 2 <= r["t"] <= w["t1"] + tolerated_after_s                     and w["scope"] in ("all", r["agent"]):
+                if r.get("op") == "fork" and not fork_holder_excused(w, r, check_of(r)):
+                    continue
+                return w
+        return None
+
     def tolerating(r):
         for w in windows:
             if w["t0"] - 2 <= r["t"] <= w["t1"] + tolerated_after_s and w["scope"] in ("all", r["agent"]) \
@@ -841,6 +875,17 @@ def classify_rows(rows, windows, tolerated_after_s: float = 0.0, t_span=None):
         if r.get("ok") or r.get("expected") or r["op"] in ("deaf_wall", "burn_wall", "ready"):
             continue
         code = r.get("code") or ""
+        if code == "busy" and (r.get("details") or {}).get("reason") == "file_held":
+            # A63: a held file is excused only as coordinator rule 2 says: structured and retryable, inside a
+            # handle_holder window of this agent, and for a fork the source unchanged and the destination absent
+            w = held_window(r)
+            if w is not None:
+                key = f"handle_holder/{r['op']}:busy:file_held"
+                tolerated[key] = tolerated.get(key, 0) + 1
+            else:
+                unexpected += 1
+                viol.setdefault(("unexpected_error", f"{r['op']}:busy:file_held"), []).append(r)
+            continue
         if code == "busy":
             det = r.get("details") or {}
             if any(k in det for k in BUSY_EXPLAINERS):
@@ -3173,6 +3218,28 @@ def selftest(work: pathlib.Path | None = None, verbose: bool = True) -> int:
     check("planted rule 2: the same fork failure outside the holder window is a violation", bool(viol), viol)
     viol, _ = classify_rows(rows + [dict(frk, agent=3), dict(good, agent=3)], [whh])
     check("planted rule 2: a fork failure of another agent than the held one is a violation", bool(viol), viol)
+    # A63: the engine's structured answer to a held file is busy/file_held, suggest retry
+    held = {"reason": "file_held", "path": "x/~00000000.db", "suggest": "retry"}
+    hrow = {"t": t, "agent": 2, "op": "setup_open_program", "lane": "quick", "ms": 2.0, "ok": False, "code": "busy",
+            "details": held}
+    hfrk = dict(frk, code="busy", details=held)
+    viol, summ = classify_rows(rows + [hrow, hfrk, dict(good, failed_code="busy")], [whh])
+    check("rule 2 (A63): busy/file_held of an open and a fork in the agent's holder window: excused and counted",
+          not viol and summ["tolerated_in_windows"].get("handle_holder/setup_open_program:busy:file_held") == 1
+          and summ["tolerated_in_windows"].get("handle_holder/fork:busy:file_held") == 1, (viol, summ))
+    for what, extra, wins in (("outside any holder window", dict(hrow, t=t + 100), [whh]),
+                              ("of another agent than the held one", dict(hrow, agent=3), [whh]),
+                              ("in a window of another fault class", hrow, [dict(whh, cls="kill_decompiler")]),
+                              ("without suggest retry", dict(hrow, details={"reason": "file_held"}), [whh])):
+        viol, _ = classify_rows(rows + [extra], wins)
+        check(f"planted rule 2 (A63): busy/file_held {what} is a violation",
+              any(k == "unexpected_error" and "busy:file_held" in d for k, d in viol), viol)
+    viol, _ = classify_rows(rows + [hfrk, dict(good, failed_code="busy", src_unchanged=False)], [whh])
+    check("planted rule 2 (A63): a busy/file_held fork whose source changed is a violation",
+          any(k == "unexpected_error" and "fork:busy:file_held" in d for k, d in viol), viol)
+    viol, _ = classify_rows(rows + [hfrk, dict(good, failed_code="busy", dest_state="present: x.rep")], [whh])
+    check("planted rule 2 (A63): a busy/file_held fork that left its destination is a violation",
+          any(k == "unexpected_error" and "fork:busy:file_held" in d for k, d in viol), viol)
 
     # ---- K6 per 8.13: staging folders are not projects; a half publish is pending until the sweep
     k6 = base / "k6"
@@ -3643,7 +3710,24 @@ def selftest(work: pathlib.Path | None = None, verbose: bool = True) -> int:
     viol, _ = judge_hy_rows(hrows + [{**stale, "details": {"stale": "base_missing"}}, redo])
     check("planted: a stale_view for another reason is still a violation", any(k == "hy_unexpected_error" for k, _ in viol), viol)
     import soak_hy  # stdlib + oracle only at import time
+    sk = base / "hy-storekey"
+    rmtree(sk)
+    (sk / "overlays").mkdir(parents=True)
+    (sk / "working" / "abc123r" / "w-1").mkdir(parents=True)      # the rebased copy's folder: no store of that name
+    (sk / "overlays" / "abc123.json").write_text(json.dumps(oracle.seal_record({"edits": [{"id": "o-7"}], "revision": 1})))
+    (sk / "overlays" / "zzz.json").write_text(json.dumps(oracle.seal_record({"edits": [{"id": "o-1"}], "revision": 1})))
+    check("H-agent view key: the store that holds the acknowledged record, not the rebased copy's <key>r folder",
+          soak_hy.store_key_of(sk, "o-7") == "abc123" and soak_hy.store_key_of(sk, "o-9") is None)
     E = soak_hy.HyError
+    nxt = {"error": "stale_view", "stale": "master_generation_changed",
+           "next": {"tool": "ghidra_query", "action": "type_edit", "options": {"kind": "rebase", "expect_revision": 7}}}
+    check("H-agent rebases with the call the stale_view refusal names in next, else at the current revision",
+          soak_hy.rebase_options(E("stale_view", "x", nxt), lambda: 99) == {"kind": "rebase", "expect_revision": 7}
+          and soak_hy.rebase_options(E("stale_view", "x", {"stale": "master_generation_changed"}), lambda: 99)
+          == {"kind": "rebase", "expect_revision": 99})
+    viol, _ = judge_hy_rows(hrows + [{**stale, "op": "hy_decompile"}, {**redo}])
+    check("planted: stale_view on a read is a violation (reads answer from the working copy; only mutations are refused)",
+          any(k == "hy_unexpected_error" and "hy_decompile:stale_view" in d for k, d in viol), viol)
     check("H-agent redoes an edit on stale_view (master_generation_changed) only",
           soak_hy.is_stale_master(E("stale_view", "x", {"error": "stale_view", "stale": "master_generation_changed"}))
           and not soak_hy.is_stale_master(E("stale_view", "x", {"stale": "base_missing"}))
