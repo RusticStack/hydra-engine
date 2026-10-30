@@ -229,7 +229,9 @@ public class DbCache<T extends DbObject> {
 	}
 
 	/**
-	 * Updates the cache for an object whose key has changed.
+	 * Updates the cache for an object whose key has changed. Callers hold the database write
+	 * lock: lookups without the lock may briefly miss both keys, and only the read lock taken by
+	 * a miss keeps them from creating a second object for the new key.
 	 * @param oldKey the old key
 	 * @param newKey the new key
 	 */

@@ -91,7 +91,9 @@ public class AddressMapDB implements AddressMap {
 
 	// getKey, getAbsoluteEncoding and decodeAddress do not take the monitor of this map: they read
 	// the base addresses from an immutable BaseState that is replaced (copy-on-write, under the
-	// monitor) whenever a base address is added or the bases are reloaded.
+	// monitor) whenever a base address is added or the bases are reloaded. setLanguage replaces
+	// the address factory and the bases with separate writes, so it must only run while no other
+	// thread uses this map (the program's exclusive lock during a language upgrade).
 	private volatile AddressFactory addrFactory;
 	private boolean readOnly;
 	private AddressMap oldAddrMap;
@@ -517,6 +519,11 @@ public class AddressMapDB implements AddressMap {
 		}
 		else {
 			baseAddrs = adapter.addBaseAddress(addr, normalizedBaseOffset);
+			if (baseAddrs.length <= index) {
+				// the adapter could not store the base: never hand out a key without a base
+				throw new IllegalStateException(
+					"Failed to add address map base for " + addr.toString(true));
+			}
 			if (baseAddrs.length == 101) {
 				// TODO: Added to identify rogue Analyzers which cause too many segments to be created
 				// Leaving out stack trace because many object files really do have this many segments
@@ -1006,9 +1013,6 @@ public class AddressMapDB implements AddressMap {
 
 		AddressFactory oldAddressFactory = this.addrFactory;
 
-		this.addrFactory = addrFactory;
-		defaultAddrSpace = addrFactory.getDefaultAddressSpace();
-
 		adapter.clearAll();
 		adapter.setAddressFactory(addrFactory);
 
@@ -1033,8 +1037,12 @@ public class AddressMapDB implements AddressMap {
 		}
 		adapter.setEntries(newEntries);
 
+		// publish the new factory and its bases together, as late as possible: readers that do
+		// not take the monitor see the old state until here
+		Address[] baseAddrs = adapter.getBaseAddresses(true);
+		this.addrFactory = addrFactory;
 		defaultAddrSpace = addrFactory.getDefaultAddressSpace();
-		init(adapter.getBaseAddresses(true));
+		init(baseAddrs);
 	}
 
 	/**

@@ -34,7 +34,10 @@ import org.apache.commons.collections4.map.LRUMap;
  * monitor: the weak references live in a {@link ConcurrentHashMap} and a hit refreshes the hard
  * cache only when its lock is free, so the hard cache keeps an approximate recency order under
  * contention. All methods that change the cache are synchronized, so callers may still group
- * several changes in a {@code synchronized (cache)} block.
+ * several changes in a {@code synchronized (cache)} block, but only against other writers:
+ * {@code get} does not wait for such a block and may see its intermediate states (for example a
+ * key deleted and not yet added again). Callers that need a reader to see only the final state
+ * must order readers and writers themselves, as {@code DbCache} does with the database lock.
  * 
  * @param <K> The type of the object stored in this cache
  * @param <V> The type of the object stored in this cache
@@ -74,10 +77,13 @@ public class WeakReferenceCache<K, V> {
 			refsById.remove(key, ref);
 			return null;
 		}
-		// a hit only refreshes the recency of the hard cache when nobody else is doing so
+		// a hit only refreshes the recency of the hard cache when nobody else is doing so, and
+		// never puts back a value that add or delete has replaced since it was read
 		if (hardCacheLock.tryLock()) {
 			try {
-				hardCache.put(key, v);
+				if (refsById.get(key) == ref) {
+					hardCache.put(key, v);
+				}
 			}
 			finally {
 				hardCacheLock.unlock();
