@@ -349,6 +349,13 @@ final class EditCommands {
 				}
 				if (!(ex instanceof CancelledException)) {
 					logSaveFailure(e, ex);
+					// "File error during save" names no file: look at the program's own storage
+					// too (GATE10, A63); the open program can save again once it is let go (GATE8)
+					java.io.File held = HeldFiles.heldFor(ex, e.file);
+					if (held != null) {
+						throw HeldFiles.busy("save", held, ex,
+							ex.getClass().getSimpleName() + ": " + ex.getMessage());
+					}
 				}
 				throw ex;
 			}

@@ -22,6 +22,10 @@ CHANGELOG.md; the list was re-checked for 12.3-hydra.4 with `git diff --name-sta
 upstream commit 1b9e58a915cf867e106495eaa2a4b18eb4971c9d, outside the HeadlessSession module,
 .github and the changelog: it shows these modified files and the added ones named further below):
 
+  Ghidra/Features/Base/src/main/java/ghidra/app/plugin/core/osgi/OSGiParallelLock.java
+      The threads of one JVM take an in-JVM lock keyed by the lock file before the file lock, so a
+      second script load in the same process waits instead of failing with
+      OverlappingFileLockException; other processes are excluded by the file lock as before.
   Ghidra/Framework/DB/src/main/java/db/Database.java
       When the folder of a database cannot be listed right after a save gave the new version its
       final name (on Windows, another process holds the folder), the new version is recorded
@@ -50,6 +54,14 @@ upstream commit 1b9e58a915cf867e106495eaa2a4b18eb4971c9d, outside the HeadlessSe
       An item whose folder holds a newer version than the one it recorded scans its folder again
       when it is opened, and an item whose folder cannot be listed for a moment is kept by a
       refresh instead of being dropped from the project.
+  Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/local/LocalFolderItem.java
+      An item whose property file cannot be read for a moment (another process holds it without
+      read sharing) is kept by a refresh with the properties it read before, instead of being
+      dropped from the project; a property file that can be read and does not parse is still an
+      error. A comment at the top of the file says so.
+  Ghidra/Framework/Generic/src/main/java/generic/util/FileChannelLock.java
+      Probes of one lock file from two threads of one JVM take turns (JVM_TURN), so a probe never
+      reads "held" for a lock nobody holds, nor makes a concurrent writable open fail.
   Ghidra/Framework/SoftwareModeling/src/main/java/ghidra/app/plugin/processors/sleigh/SleighLanguageFile.java
       The language lock file is created the first time a language needs it instead of for every
       language description at start-up. A comment at the top of the file says so.

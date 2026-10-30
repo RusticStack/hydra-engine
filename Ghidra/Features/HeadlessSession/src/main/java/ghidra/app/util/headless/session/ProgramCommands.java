@@ -96,6 +96,11 @@ final class ProgramCommands {
 		}
 		DomainFile df = findFile(p, name);
 		if (!Program.class.isAssignableFrom(df.getDomainObjectClass())) {
+			// a program whose files another process holds reads as Unknown-File: busy, never a
+			// client mistake; read again once the hold is gone (GATE10, A63)
+			df = HeldFiles.recheck("open_program", df);
+		}
+		if (!Program.class.isAssignableFrom(df.getDomainObjectClass())) {
 			throw new SessionException(SessionException.BAD_REQUEST,
 				df.getPathname() + " is not a program (" + df.getContentType() + ")");
 		}
