@@ -144,6 +144,11 @@ final class ProgramEntry implements Decompilers, DecompilerGate.Pool {
 	volatile UpgradeCache.Plan cachePlan;
 	/** Set by the open that started the build, for its answer ({@code "cacheBuild":"started"}). */
 	boolean cacheBuildStarted;
+	/**
+	 * Hydra ({@code -Dhydra.memory.snapshotReads=true}): the memory-mapped sealed generation that
+	 * serves the byte reads of {@link #program} while it is open read-only; closed with it.
+	 */
+	ghidra.app.decompiler.MappedProgramSnapshot snapshotReads;
 
 	/** Clients using this program. Guarded by itself. */
 	final Set<Client> users = new LinkedHashSet<>();

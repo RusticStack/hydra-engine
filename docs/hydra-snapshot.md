@@ -77,6 +77,28 @@ move beyond the noise of a busy machine: byte queries are a small share of the c
 gain this step unlocks comes with the p-code section below. The engine-written files validate with the Rust reader
 (`HYSNAP_SAMPLE=<file> cargo test --test snapshot engine_written`).
 
+## Snapshot reads in the engine JVM (`hydra.memory.snapshotReads`, default off)
+
+Plan goals 1 and 3 (immutable shared data, no JVM heap for hot data). With
+`-Dhydra.memory.snapshotReads=true`, every program `HeadlessSession` opens **read-only** (also from the upgrade cache,
+and the read-only reopen after a writer leaves) serves its byte reads from the same snapshot file instead of the
+database buffers:
+
+| piece | file | role |
+|---|---|---|
+| hook | `SoftwareModeling/.../mem/MemoryReadSnapshot.java`, `MemoryMapDB.setReadSnapshot`, `MemoryBlockDB.getBytes(long..)` / `getByte(long)` | the block read paths ask the installed snapshot first; it answers only a range it holds whole, otherwise the database is read as before. Every `Memory.getBytes/getByte/getShort/getInt/getLong`, `MemoryBlock.getBytes/getByte` and `MemBuffer` read goes through these two methods, including FileBytes-backed blocks (original and modified file bytes) |
+| guard | `MemoryMapDB.activeReadSnapshot` | used only while `program.getModificationNumber()` equals the snapshot's generation; dropped (and unmapped) by any memory change: `checkMemoryWrite` (before bytes are written), bytes/block events, block add/split/join/move/remove, reload, undo/redo |
+| reader | `Decompiler/.../MappedProgramSnapshot.java` | leases the generation's file from `ProgramSnapshotFile` (the same shared file the decompiler processes map), maps it once with `FileChannel.map(READ_ONLY, .., Arena.ofShared())`, parses and validates the v1 tables, copies with `MemorySegment.copy`. Reads hold a reference; the arena is closed only after the snapshot is detached and the last read ends, then the lease is released (so Windows can delete the file) |
+| wiring | `HeadlessSession ProgramCommands.openReadOnly` / `releaseProgramObject` | attach after every read-only open, close with the program object |
+
+Proof: `MappedProgramSnapshotTest` (test.slow) and `SnapshotReadsABScript` (exhaustive compare of every byte of every
+block through `Memory.getBytes`, `MemoryBlock.getBytes` and `getByte`, plus cross-block reads, database vs mapping,
+then 8 concurrent readers off/on/off/on with the same seeded reads, whose checksums must match). Results are in the
+p6-offheap-mem report (`_logs/rust-integration/offheap-mem.md`).
+
+Not covered: direct `FileBytes.getOriginalByte(s)/getModifiedByte(s)` calls that bypass memory blocks (exporters) still
+read the database; writable and shared programs never get a snapshot.
+
 ## Extending to a callback-free decompiler (rank 12)
 
 The order follows the expected callback volume per decompiled function (D3: one p-code query per instruction, one

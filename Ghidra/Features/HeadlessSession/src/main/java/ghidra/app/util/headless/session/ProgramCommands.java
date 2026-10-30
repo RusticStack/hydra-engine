@@ -424,6 +424,12 @@ final class ProgramCommands {
 	 * opens. Held: its exclusive lock.
 	 */
 	Program openReadOnly(ProgramEntry e, DomainFile df, RequestMonitor m) {
+		Program program = openReadOnlyProgram(e, df, m);
+		attachSnapshotReads(e, program);
+		return program;
+	}
+
+	private Program openReadOnlyProgram(ProgramEntry e, DomainFile df, RequestMonitor m) {
 		try {
 			UpgradeCache.Plan plan = null;
 			try {
@@ -881,7 +887,37 @@ final class ProgramCommands {
 	 * Releases {@link ProgramEntry#program} and, when it came from the upgrade cache, closes the
 	 * view of the copy it came from. Held: its exclusive lock.
 	 */
+	/**
+	 * Hydra ({@value ghidra.app.decompiler.MappedProgramSnapshot#ENABLE_PROPERTY}, default off):
+	 * serve the byte reads of a program opened read-only from its memory-mapped sealed generation
+	 * instead of the database buffers. The bytes are the same (the memory map drops the snapshot on
+	 * any change); a program that gets none reads the database as before. Held: its exclusive lock.
+	 * Called by every read-only open ({@link #openReadOnly}); undone by {@link #releaseProgramObject}.
+	 */
+	private void attachSnapshotReads(ProgramEntry e, Program program) {
+		detachSnapshotReads(e);
+		if (!ghidra.app.decompiler.MappedProgramSnapshot.isEnabled() || program == null) {
+			return;
+		}
+		long t0 = System.nanoTime();
+		e.snapshotReads = ghidra.app.decompiler.MappedProgramSnapshot.attach(program);
+		if (e.snapshotReads != null) {
+			Msg.info(s, "snapshot reads for " + e.key + " from " + e.snapshotReads.getPath() +
+				" (generation " + e.snapshotReads.getGeneration() + ", " +
+				(System.nanoTime() - t0) / 1_000_000 + " ms)");
+		}
+	}
+
+	private static void detachSnapshotReads(ProgramEntry e) {
+		ghidra.app.decompiler.MappedProgramSnapshot snap = e.snapshotReads;
+		e.snapshotReads = null;
+		if (snap != null) {
+			snap.close();
+		}
+	}
+
 	void releaseProgramObject(ProgramEntry e) {
+		detachSnapshotReads(e);
 		try {
 			if (e.program != null) {
 				e.program.release(e);
