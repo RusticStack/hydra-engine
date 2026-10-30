@@ -1,0 +1,14 @@
+{
+  "release": "12.3-hydra.4",
+  "testedCommit": "79a9122e8c55a97dc04b92765b49a703f72960b4",
+  "date": "2026-10-30",
+  "machine": "Windows 11 Pro 10.0.26300, 22 cores, NTFS (D:), JDK 25.0.4.1 Temurin",
+  "install": "fast_install.py install of the tested tree, stamped hydra.version=12.3-hydra.4 (C:/dev-overflow/hydra-engines/final-h4)",
+  "suites": {
+    "daemon_tests.py": "211 tests via run_parallel.py --cores 14 --no-result-cache: 210 passed; refcount_leak failed only under load and passed alone (logs D:/Projects/Hydra/_logs/final/suite.out)",
+    "contract_tests.py": "7/7 passed (D:/Projects/Hydra/_logs/final/contract.log)",
+    "session_smoke.py": "all smoke checks passed (D:/Projects/Hydra/_logs/final/smoke.log)",
+    "client_compat_tests.py": "53/53 passed (D:/Projects/Hydra/_logs/final/cc.log)",
+    "release gates": "9.1-9.20 per D:/Projects/Hydra/_logs/gates/gates-1.md to gates-5.md and docs/release-notes-12.3-hydra.4.md"
+  }
+}

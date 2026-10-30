@@ -96,6 +96,28 @@ jobs:
       BIN_DLL: C:/Windows/System32/version.dll
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      # The long suites ran locally (D:/Projects/Hydra/_logs, run_parallel on 22 cores) on the commit named in
+      # .github/local-test-record.json. They are skipped here when every change from that commit to this one is a
+      # document (*.md), a workflow file (.github/) or the record itself; any other change runs them on the runner as before.
+      - name: Check the local test record
+        run: |
+          rec=.github/local-test-record.json
+          skip=false
+          if [ -f "$rec" ]; then
+            tested=$(python -c "import json; print(json.load(open('$rec'))['testedCommit'])")
+            if git merge-base --is-ancestor "$tested" HEAD; then
+              other=$(git diff --name-only "$tested" HEAD | grep -v -E '\.md$|^\.github/' | grep -v -x "$rec" || true)
+              if [ -z "$other" ]; then skip=true; else echo "changed since $tested, beyond documents:"; echo "$other"; fi
+            else
+              echo "::warning::$tested in $rec is not an ancestor of this commit"
+            fi
+          fi
+          echo "LOCAL_TESTED=$skip" >> "$GITHUB_ENV"
+          echo "Long suites covered by the local record: $skip" >> "$GITHUB_STEP_SUMMARY"
+          [ -f "$rec" ] && cat "$rec" >> "$GITHUB_STEP_SUMMARY" || true
 
       - name: Read the JDK version
         run: echo "JDK_VER=$(awk -F'=' '$1=="application.java.min" {print $2}' Ghidra/application.properties | tr -d '\r')" >> "$GITHUB_ENV"
@@ -107,7 +129,7 @@ jobs:
 
       - uses: actions/setup-python@v7.0.0
         with:
-          python-version: '3.12'
+          python-version: '3.13'
 
       - name: Cache fetched dependencies
         uses: actions/cache@v6.1.0
@@ -176,12 +198,14 @@ jobs:
           --binary "$BIN_A" --binary "$BIN_B"
 
       - name: daemon_tests.py
+        if: env.LOCAL_TESTED != 'true'
         run: >
           python Ghidra/Features/HeadlessSession/examples/daemon_tests.py
           --ghidra "$GHIDRA_INSTALL" --work "$RUNNER_TEMP/daemon"
           --exe "$BIN_A" --dll "$BIN_DLL"
 
       - name: contract_tests.py
+        if: env.LOCAL_TESTED != 'true'
         run: >
           python Ghidra/Features/HeadlessSession/examples/contract_tests.py
           --ghidra "$GHIDRA_INSTALL" --work "$RUNNER_TEMP/contract"
@@ -191,7 +215,13 @@ jobs:
           os_name=$(python -c "import platform; print(platform.platform(terse=True))")
           java_ver=$(java -version 2>&1 | head -n 1)
           size=$(python -c "import os; print(f'{os.path.getsize(\"out/$ASSET\") / 2**20:.0f} MiB')")
-          echo "| \`$ASSET\` | $size | ${{ matrix.os }} ($os_name, $java_ver) | built; session_smoke.py, daemon_tests.py and contract_tests.py passed on the unzipped install |" > "out/$ASSET.row"
+          if [ "$LOCAL_TESTED" = true ]; then
+            tested=$(python -c "import json; print(json.load(open('.github/local-test-record.json'))['testedCommit'][:10])")
+            how="built; session_smoke.py passed on the unzipped install; daemon_tests.py and contract_tests.py passed locally on \`$tested\` (.github/local-test-record.json; only documents changed since)"
+          else
+            how="built; session_smoke.py, daemon_tests.py and contract_tests.py passed on the unzipped install"
+          fi
+          echo "| \`$ASSET\` | $size | ${{ matrix.os }} ($os_name, $java_ver) | $how |" > "out/$ASSET.row"
           cat "out/$ASSET.row" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v7.0.2
