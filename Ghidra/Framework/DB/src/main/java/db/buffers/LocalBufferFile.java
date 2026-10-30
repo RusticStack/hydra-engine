@@ -677,6 +677,7 @@ public class LocalBufferFile implements BufferFile {
 		}
 		else {
 			buf.setEmpty(false);
+			buf.unshareForOverwrite(null); // never read into an interned page (SharedPages)
 			byte[] data = buf.data;
 			if (data == null) {
 				data = new byte[bufferSize];
