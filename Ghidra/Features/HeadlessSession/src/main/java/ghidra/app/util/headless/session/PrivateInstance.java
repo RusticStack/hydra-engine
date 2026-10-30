@@ -19,6 +19,7 @@ import java.io.IOException;
 import java.util.concurrent.locks.Lock;
 
 import ghidra.framework.model.DomainFile;
+import ghidra.program.database.ProgramDB;
 import ghidra.program.model.listing.Program;
 import ghidra.util.exception.CancelledException;
 import ghidra.util.exception.VersionException;
@@ -39,6 +40,35 @@ import ghidra.util.exception.VersionException;
  * instance) and the upgrade cache view and lease, even when the script failed.
  */
 final class PrivateInstance implements AutoCloseable {
+
+	/**
+	 * Config key (default true): overlays run light ({@link #lighten}). Proven safe: an overlay
+	 * program is a read-only domain object that is never saved, checked in, merged or recovery
+	 * snapshotted; promote replays the overlay's operation log on the target, not its change set;
+	 * nothing in this package or in Hydralysis reads a change set; an overlay is never undone
+	 * (discard edits apply inverse operations), and a failed operation batch still rolls back.
+	 */
+	static final String LIGHT_OVERLAYS = "lightOverlays";
+	/**
+	 * Config key (default false): {@code isolation:"private"} script instances run light. Off by
+	 * default because the script is arbitrary code that may read {@code getChangeSet()} or undo.
+	 */
+	static final String LIGHT_PRIVATE_SCRIPTS = "lightPrivateScripts";
+
+	/**
+	 * Makes a disposable program object light: no change set recording (its isChanged() still
+	 * works) and one undoable transaction instead of 50, so buffer pre-images of older
+	 * transactions are released instead of kept in the disk cache. Transaction rollback is
+	 * unaffected. Returns false (and changes nothing) for a program that is not a ProgramDB.
+	 */
+	static boolean lighten(Program p) {
+		if (!(p instanceof ProgramDB db)) {
+			return false;
+		}
+		db.disableChangeRecording();
+		db.setUndoDepth(1);
+		return true;
+	}
 
 	/** What was opened: the program object and what keeps its upgrade cache copy in place. */
 	record Loaded(Program program, SessionProject view, UpgradeCache.Lease lease, long openMs) {
@@ -120,6 +150,9 @@ final class PrivateInstance implements AutoCloseable {
 		int ignored = unsavedEdits(e);
 		PrivateInstance pi = new PrivateInstance(null, rev, ignored);
 		pi.loaded = load(cache, e, pi, m);
+		if (Settings.bool(LIGHT_PRIVATE_SCRIPTS, false)) {
+			lighten(pi.loaded.program());
+		}
 		return pi;
 	}
 

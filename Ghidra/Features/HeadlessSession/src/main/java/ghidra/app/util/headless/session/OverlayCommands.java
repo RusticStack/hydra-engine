@@ -328,6 +328,9 @@ final class OverlayCommands {
 		ProgramEntry e = o.base;
 		PrivateInstance.Loaded l = PrivateInstance.load(s.upgradeCache, e, o, m);
 		Program prog = l.program();
+		if (Settings.bool(PrivateInstance.LIGHT_OVERLAYS, true)) {
+			PrivateInstance.lighten(prog);
+		}
 		o.view = l.view();
 		o.lease = l.lease();
 		o.program = prog;

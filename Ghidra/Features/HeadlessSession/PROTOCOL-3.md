@@ -1161,6 +1161,7 @@ them in the README. No new environment variable is added.
 | `cleanupGraceS` / `abandonWaitS` | 15 / 5 | dead-client release | E3b |
 | `requireExpect` | false | shared-writer edits need `expect` | E1 |
 | `requireBackupForUpgrade` | true | the upgrade gate | E2 |
+| `lightOverlays` / `lightPrivateScripts` | true / false | a disposable program object (an overlay / an `isolation:"private"` script instance) records no change set and keeps 1 undoable transaction instead of 50; rollback of a failed call is unchanged. `info.overlay` shows `recordsChanges` and `undoDepth`. Private scripts default off: a script may read `getChangeSet()` (Rust plan rank 1 step 2, `examples/dt_mv.py`) | mem-views |
 | `orphanKeepS` | 0 (never) | orphan dump and discard | E3b |
 | `watchdogStallMs` / `starveMs` | 15000 / 30000 | `health` thresholds | E5 |
 | `minXmxMb`, `maxViews`, `maxViewsPerClient`, `heapSoftPct`, `heapHardPct`, `nativeBudgetMb` | 512, 32, 4, 70, 85, 50% of RAM minus `-Xmx` | the governor (3.11) | E9 |

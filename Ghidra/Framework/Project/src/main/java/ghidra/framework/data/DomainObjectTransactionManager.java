@@ -60,10 +60,23 @@ class DomainObjectTransactionManager extends AbstractTransactionManager {
 		}
 	}
 
+	/**
+	 * Hydra: applies {@link DomainObjectAdapterDB#setUndoDepth(int)} to the database and to the
+	 * undo list, so that both agree on what can be undone.
+	 */
+	void applyUndoDepth() {
+		int depth = domainObj.undoDepth;
+		domainObj.dbh.setMaxUndos(depth);
+		while (undoList.size() > depth) {
+			undoList.removeFirst();
+		}
+		redoList.clear();
+	}
+
 	@Override
 	void clearTransactions() {
 		domainObj.dbh.setMaxUndos(0);
-		domainObj.dbh.setMaxUndos(NUM_UNDOS);
+		domainObj.dbh.setMaxUndos(domainObj.undoDepth);
 		if (domainObj.changeSet != null) {
 			domainObj.changeSet.clearUndo();
 		}
@@ -155,7 +168,7 @@ class DomainObjectTransactionManager extends AbstractTransactionManager {
 					domainObj.changed = true;
 					redoList.clear();
 					undoList.addLast(transaction);
-					if (undoList.size() > NUM_UNDOS) {
+					if (undoList.size() > domainObj.undoDepth) {
 						undoList.removeFirst();
 					}
 					flushDomainObjectEvents();

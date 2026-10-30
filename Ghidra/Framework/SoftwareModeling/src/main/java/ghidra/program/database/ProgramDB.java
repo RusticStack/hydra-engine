@@ -226,6 +226,8 @@ public class ProgramDB extends DomainObjectAdapterDB implements Program, ChangeM
 	private boolean imageBaseOverride = false;
 	private Address effectiveImageBase = null;
 	private boolean recordChanges;
+	/** Hydra: {@link #disableChangeRecording()} was called; nothing turns recording back on. */
+	private volatile boolean changeRecordingDisabled;
 
 	private OverlaySpaceDBAdapter overlaySpaceAdapter;
 
@@ -479,7 +481,27 @@ public class ProgramDB extends DomainObjectAdapterDB implements Program, ChangeM
 	@Override
 	protected void setDomainFile(DomainFile df) {
 		super.setDomainFile(df);
-		recordChanges = true;
+		recordChanges = !changeRecordingDisabled;
+	}
+
+	/**
+	 * Hydra: stops recording which addresses and ids change into this program's change set
+	 * ({@link #getChangeSet()}) for the rest of its life, and forgets what it holds. For a
+	 * disposable program object that is never saved, checked in, merged or recovery-snapshotted
+	 * and whose change set nobody reads: those are the only readers of the change set.
+	 * {@link #isChanged()} and change events are unaffected. Call it before the first edit.
+	 */
+	public void disableChangeRecording() {
+		try (ghidra.util.Lock.Closeable c = lock.write()) {
+			changeRecordingDisabled = true;
+			recordChanges = false;
+			((ProgramDBChangeSet) changeSet).clearAll();
+		}
+	}
+
+	/** {@return true if this program records its changes in its change set} */
+	public boolean isRecordingChanges() {
+		return recordChanges;
 	}
 
 	private void registerProgramInformationOptions() {
