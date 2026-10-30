@@ -213,10 +213,12 @@ public class NewFunctionStackAnalysisCmd extends BackgroundCommand<Program> {
 			// Now check that there are not missing stack variables
 			//addMissingStackVariables(func);
 
-			if (oldSignatureSource != func.getSignatureSource()) {
-				// preserve signature source 
-				func.setSignatureSource(oldSignatureSource);
-			}
+			DeferredProgramWrites.run(() -> {
+				if (oldSignatureSource != func.getSignatureSource()) {
+					// preserve signature source
+					func.setSignatureSource(oldSignatureSource);
+				}
+			});
 		}
 		return true;
 	}
@@ -361,6 +363,25 @@ public class NewFunctionStackAnalysisCmd extends BackgroundCommand<Program> {
 
 		symEval.flowConstants(entryPoint, func.getBody(), eval, true, monitor);
 
+		// performed now, or recorded and applied later in a fixed order (DeferredProgramWrites)
+		if (DeferredProgramWrites.isCollecting()) {
+			DeferredProgramWrites.run(() -> {
+				try {
+					addStackVariables(func, sortedVariables, monitor);
+				}
+				catch (CancelledException e) {
+					// cancelled while applying; the remaining writes are skipped by the caller
+				}
+			});
+		}
+		else {
+			addStackVariables(func, sortedVariables, monitor);
+		}
+		return purge;
+	}
+
+	private void addStackVariables(Function func, List<Variable> sortedVariables,
+			TaskMonitor monitor) throws CancelledException {
 		if (sortedVariables.size() != 0) {
 
 			List<Variable> protectedFuncVars = new ArrayList<>();
@@ -381,7 +402,6 @@ public class NewFunctionStackAnalysisCmd extends BackgroundCommand<Program> {
 			addStackLocalVariables(func, sortedVariables, conflicts, monitor);
 
 		}
-		return purge;
 	}
 
 	private void addStackLocalVariables(Function func, List<Variable> sortedVariables,
@@ -664,8 +684,16 @@ public class NewFunctionStackAnalysisCmd extends BackgroundCommand<Program> {
 			}
 			else if (ref == null) {
 				RefType refType = RefTypeFactory.getDefaultStackRefType(instr, opIndex);
-				refMgr.addStackReference(instr.getMinAddress(), opIndex, stackOffset, refType,
-					SourceType.ANALYSIS);
+				if (DeferredProgramWrites.isCollecting()) {
+					final Address from = instr.getMinAddress();
+					// a duplicate record for the same operand replaces it
+					DeferredProgramWrites.run(() -> refMgr.addStackReference(from, opIndex,
+						stackOffset, refType, SourceType.ANALYSIS));
+				}
+				else {
+					refMgr.addStackReference(instr.getMinAddress(), opIndex, stackOffset, refType,
+						SourceType.ANALYSIS);
+				}
 				accumulateVariable(func, stackOffset, refSize, sortedVariables);
 			}
 		}

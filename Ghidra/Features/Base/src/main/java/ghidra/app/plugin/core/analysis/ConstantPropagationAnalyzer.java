@@ -100,6 +100,7 @@ public class ConstantPropagationAnalyzer extends AbstractAnalyzer {
 	protected boolean createComplexDataFromPointers = CREATE_COMPLEX_DATA_FROM_POINTERS_OPTION_DEFAULT_VALUE;
 	
 	protected int maxThreadCount = MAX_THREAD_COUNT_OPTION_DEFAULT_VALUE;
+	protected boolean deferredWrites = getDeferredWritesDefault();
 	protected long minStoreLoadRefAddress = MIN_KNOWN_REFADDRESS_OPTION_DEFAULT_VALUE;
 	protected long minSpeculativeRefAddress = MIN_SPECULATIVE_REFADDRESS_OPTION_DEFAULT_VALUE;
 	protected long maxSpeculativeRefAddress = MAX_SPECULATIVE_REFADDRESS_OPTION_DEFAULT_VALUE;
@@ -189,7 +190,11 @@ public class ConstantPropagationAnalyzer extends AbstractAnalyzer {
 			monitor.initialize(locationCount);
 			if (locationCount != 0) {
 				monitor.setMessage(getName());
-				AddressSetView resultSet = runParallelAddressAnalysis(program, locations, null, maxThreadCount, monitor);
+				AddressSetView resultSet = deferredWrites
+						? runDeferredParallelAddressAnalysis(program, locations, null,
+							maxThreadCount, monitor)
+						: runParallelAddressAnalysis(program, locations, null, maxThreadCount,
+							monitor);
 				// get rid of any reached addresses
 				unanalyzedSet.delete(resultSet);
 			}
@@ -579,6 +584,9 @@ public class ConstantPropagationAnalyzer extends AbstractAnalyzer {
 		options.registerOption(MAX_THREAD_COUNT_OPTION_NAME, maxThreadCount, null,
 			MAX_THREAD_COUNT_OPTION_DESCRIPTION);
 
+		options.registerOption(DEFERRED_WRITES_OPTION_NAME, deferredWrites, null,
+			DEFERRED_WRITES_OPTION_DESCRIPTION);
+
 		options.registerOption(MIN_KNOWN_REFADDRESS_OPTION_NAME, minStoreLoadRefAddress, null,
 			MIN_KNOWN_REFADDRESS_OPTION_DESCRIPTION);
 
@@ -602,6 +610,7 @@ public class ConstantPropagationAnalyzer extends AbstractAnalyzer {
 		createComplexDataFromPointers = options.getBoolean(CREATE_COMPLEX_DATA_FROM_POINTERS_OPTION_NAME, createComplexDataFromPointers);
 
 		maxThreadCount = options.getInt(MAX_THREAD_COUNT_OPTION_NAME, maxThreadCount);
+		deferredWrites = options.getBoolean(DEFERRED_WRITES_OPTION_NAME, deferredWrites);
 
 		// TODO: there should be a getAddress on option that validates and allows entry of addresses
 		minStoreLoadRefAddress =

@@ -62,9 +62,22 @@ public class X86Analyzer extends ConstantPropagationAnalyzer {
 							long lval = val.longValue();
 							Address refAddr = instr.getMinAddress().getNewAddress(lval);
 							if ((lval > 4096 || lval < 0) && program.getMemory().contains(refAddr)) {
-								if (instr.getOperandReferences(1).length == 0) {
-									instr.addOperandReference(1, refAddr, RefType.DATA,
-										SourceType.ANALYSIS);
+								if (!DeferredProgramWrites.isCollecting()) {
+									if (instr.getOperandReferences(1).length == 0) {
+										instr.addOperandReference(1, refAddr, RefType.DATA,
+											SourceType.ANALYSIS);
+									}
+								}
+								else {
+									// deferred: re-fetch and re-check when applied
+									final Address from = instr.getMinAddress();
+									DeferredProgramWrites.run(() -> {
+										Instruction in = program.getListing().getInstructionAt(from);
+										if (in != null && in.getOperandReferences(1).length == 0) {
+											in.addOperandReference(1, refAddr, RefType.DATA,
+												SourceType.ANALYSIS);
+										}
+									});
 								}
 							}
 						}

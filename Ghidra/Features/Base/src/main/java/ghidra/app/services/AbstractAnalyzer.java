@@ -15,7 +15,8 @@
  */
 package ghidra.app.services;
 
-import java.util.Set;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 import generic.concurrent.*;
 import ghidra.app.plugin.core.analysis.AutoAnalysisManager;
@@ -23,6 +24,7 @@ import ghidra.app.util.importer.MessageLog;
 import ghidra.framework.options.Options;
 import ghidra.program.model.address.*;
 import ghidra.program.model.listing.Program;
+import ghidra.program.util.DeferredProgramWrites;
 import ghidra.util.exception.CancelledException;
 import ghidra.util.task.TaskMonitor;
 
@@ -209,10 +211,127 @@ public abstract class AbstractAnalyzer implements Analyzer {
 				// @formatter:on
 			
 				queue.add(locations);
-			
+
 				queue.waitUntilDone();
-			
+
 				return analyzedSet;
 			}
 
+	/**
+	 * Name of the analyzer option that turns on {@link #runDeferredParallelAddressAnalysis}.
+	 */
+	public static final String DEFERRED_WRITES_OPTION_NAME = "Deferred Ordered Writes";
+	public static final String DEFERRED_WRITES_OPTION_DESCRIPTION =
+		"Workers collect their program writes per location and the writes are applied in " +
+			"ascending location order after all workers finish, so results do not depend on " +
+			"Max Threads or thread timing (results can differ from the immediate-write mode).";
+
+	/**
+	 * System property that gives the default of {@link #DEFERRED_WRITES_OPTION_NAME}
+	 * (default false: original immediate-write behaviour).
+	 */
+	public static final String DEFERRED_WRITES_PROPERTY = "hydra.analysis.deferredWrites";
+
+	/**
+	 * @return default value of the deferred-writes option
+	 */
+	public static boolean getDeferredWritesDefault() {
+		return Boolean.getBoolean(DEFERRED_WRITES_PROPERTY);
+	}
+
+	/**
+	 * Deterministic variant of {@link #runParallelAddressAnalysis}.
+	 * <p>
+	 * Every location is analyzed by a worker with a {@link DeferredProgramWrites} collector
+	 * open, so no worker writes to the program while others read it; every worker sees the
+	 * program as it was before this call. After all workers finish, the calling thread walks
+	 * the locations in ascending address order; a location whose address is already covered
+	 * by the result of an earlier applied location is dropped (the ordered form of the
+	 * "already analyzed" skip), otherwise its writes are applied and its result added.
+	 * The returned set and the program changes are therefore the same for any thread count.
+	 *
+	 * @param program program
+	 * @param locations points to analyze
+	 * @param restrictedSet set to restrict analysis to, null if none
+	 * @param maxThreads maximum number of threads to use
+	 * @param monitor to cancel
+	 * @return set of addresses covered by the applied locations
+	 * @throws CancelledException if cancelled
+	 * @throws InterruptedException if interrupted
+	 * @throws Exception any exception
+	 */
+	protected AddressSetView runDeferredParallelAddressAnalysis(final Program program,
+			final Set<Address> locations, final AddressSetView restrictedSet, int maxThreads,
+			final TaskMonitor monitor) throws CancelledException, InterruptedException, Exception {
+
+		monitor.checkCancelled();
+
+		final AddressSet appliedSet = new AddressSet();
+		if (locations.isEmpty()) {
+			return appliedSet;
+		}
+
+		final List<Address> ordered = new ArrayList<>(locations);
+		Collections.sort(ordered);
+
+		final ConcurrentHashMap<Address, LocationDelta> deltas = new ConcurrentHashMap<>();
+
+		GThreadPool pool = AutoAnalysisManager.getSharedAnalsysThreadPool();
+		monitor.setMaximum(ordered.size());
+
+		QCallback<Address, AddressSetView> callback = (loc, taskMonitor) -> {
+			DeferredProgramWrites writes = DeferredProgramWrites.open();
+			try {
+				AddressSetView result = analyzeLocation(program, loc, restrictedSet, taskMonitor);
+				deltas.put(loc, new LocationDelta(result, writes));
+				taskMonitor.incrementProgress(1);
+				return result;
+			}
+			catch (CancelledException e) {
+				return null; // monitor was cancelled
+			}
+			finally {
+				writes.close();
+			}
+		};
+
+		maxThreads = Math.max(1, Math.min(maxThreads, pool.getMaxThreadCount()));
+
+		// @formatter:off
+		ConcurrentQ<Address, AddressSetView> queue = new ConcurrentQBuilder<Address, AddressSetView>()
+			.setThreadPool(pool)
+			.setMaxInProgress(maxThreads)
+			.setMonitor(monitor)
+			.build(callback);
+		// @formatter:on
+
+		queue.add(ordered);
+		queue.waitUntilDone();
+
+		monitor.checkCancelled();
+
+		// apply in ascending location order on this (the analysis) thread
+		for (Address loc : ordered) {
+			monitor.checkCancelled();
+			LocationDelta delta = deltas.remove(loc);
+			if (delta == null || appliedSet.contains(loc)) {
+				continue;
+			}
+			delta.writes.apply();
+			if (delta.result != null) {
+				appliedSet.add(delta.result);
+			}
+		}
+		return appliedSet;
+	}
+
+	private static final class LocationDelta {
+		final AddressSetView result;
+		final DeferredProgramWrites writes;
+
+		LocationDelta(AddressSetView result, DeferredProgramWrites writes) {
+			this.result = result;
+			this.writes = writes;
+		}
+	}
 }

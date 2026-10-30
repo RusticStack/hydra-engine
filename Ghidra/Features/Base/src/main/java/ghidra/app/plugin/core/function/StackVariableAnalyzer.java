@@ -39,6 +39,7 @@ public class StackVariableAnalyzer extends AbstractAnalyzer {
 	protected static final int MAX_THREAD_COUNT_OPTION_DEFAULT_VALUE = 2;
 	
 	protected int maxThreadCount = MAX_THREAD_COUNT_OPTION_DEFAULT_VALUE;
+	protected boolean deferredWrites = getDeferredWritesDefault();
 	private boolean doCreateLocalStackVars = true;
 	private boolean doCreateStackParams = false;
 
@@ -62,7 +63,11 @@ public class StackVariableAnalyzer extends AbstractAnalyzer {
 		monitor.initialize(locationCount);
 		try {
 			monitor.setMessage(getName());
-			AddressSetView resultSet = runParallelAddressAnalysis(program, locations, null, maxThreadCount, monitor);
+			AddressSetView resultSet = deferredWrites
+					? runDeferredParallelAddressAnalysis(program, locations, null, maxThreadCount,
+						monitor)
+					: runParallelAddressAnalysis(program, locations, null, maxThreadCount,
+						monitor);
 		}
 		catch (Exception e) {
 			Msg.error(this, "caught exception", e);
@@ -121,6 +126,9 @@ public class StackVariableAnalyzer extends AbstractAnalyzer {
 		
 		options.registerOption(MAX_THREAD_COUNT_OPTION_NAME, maxThreadCount, null,
 			MAX_THREAD_COUNT_OPTION_DESCRIPTION);
+
+		options.registerOption(DEFERRED_WRITES_OPTION_NAME, deferredWrites, null,
+			DEFERRED_WRITES_OPTION_DESCRIPTION);
 	}
 
 	@Override
@@ -131,6 +139,7 @@ public class StackVariableAnalyzer extends AbstractAnalyzer {
 		doCreateStackParams = options.getBoolean("Create Param Variables", doCreateStackParams);
 		
 		maxThreadCount = options.getInt(MAX_THREAD_COUNT_OPTION_NAME, maxThreadCount);
+		deferredWrites = options.getBoolean(DEFERRED_WRITES_OPTION_NAME, deferredWrites);
 	}
 
 }

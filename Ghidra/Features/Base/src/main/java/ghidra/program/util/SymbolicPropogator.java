@@ -2772,7 +2772,28 @@ public class SymbolicPropogator {
 			}
 		}
 
-		if (opIndex == Reference.MNEMONIC) {
+		if (DeferredProgramWrites.isCollecting()) {
+			// re-fetch the instruction when the write is applied: earlier applied writes
+			// may have changed the listing
+			final Address fromAddr = instruction.getMinAddress();
+			final int refOpIndex = opIndex;
+			final Address refTarget = target;
+			final RefType deferredRefType = refType;
+			DeferredProgramWrites.run(() -> {
+				Instruction instr = program.getListing().getInstructionAt(fromAddr);
+				if (instr == null) {
+					return;
+				}
+				if (refOpIndex == Reference.MNEMONIC) {
+					instr.addMnemonicReference(refTarget, deferredRefType, SourceType.ANALYSIS);
+				}
+				else {
+					instr.addOperandReference(refOpIndex, refTarget, deferredRefType,
+						SourceType.ANALYSIS);
+				}
+			});
+		}
+		else if (opIndex == Reference.MNEMONIC) {
 			instruction.addMnemonicReference(target, refType, SourceType.ANALYSIS);
 		}
 		else {
