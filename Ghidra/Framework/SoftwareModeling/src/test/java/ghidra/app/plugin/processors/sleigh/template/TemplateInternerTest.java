@@ -277,4 +277,31 @@ public class TemplateInternerTest {
 		}
 		assertNull(TemplateInterner.active());
 	}
+
+	@Test
+	public void testOutOfOrderCloseNeverReinstallsClosedTable() throws Exception {
+		byte[] bytes = encodeOps();
+		TemplateInterner outer = TemplateInterner.open();
+		TemplateInterner inner = TemplateInterner.open();
+		outer.close(); // closed first, while inner is active
+		assertSame(inner, TemplateInterner.active());
+		inner.close();
+		// before the fix this re-installed the closed outer table, and decoding then threw
+		// ArrayIndexOutOfBoundsException on its emptied arrays
+		assertNull(TemplateInterner.active());
+		OpTpl[] ops = decodeOps(bytes);
+		assertNotSame(ops[0].getOutput(), ops[1].getOutput());
+
+		// three deep, middle closed first: the outermost open table becomes active again
+		TemplateInterner a = TemplateInterner.open();
+		TemplateInterner b = TemplateInterner.open();
+		TemplateInterner c = TemplateInterner.open();
+		b.close();
+		assertSame(c, TemplateInterner.active());
+		c.close();
+		assertSame(a, TemplateInterner.active());
+		decodeOps(bytes);
+		a.close();
+		assertNull(TemplateInterner.active());
+	}
 }

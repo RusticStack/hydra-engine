@@ -68,17 +68,32 @@ public final class TemplateInterner implements AutoCloseable {
 		return ACTIVE.get();
 	}
 
+	/** @return the nearest table at or below t that is still open, or null */
+	private static TemplateInterner firstOpen(TemplateInterner t) {
+		while (t != null && t.closed) {
+			t = t.previous;
+		}
+		return t;
+	}
+
 	@Override
 	public void close() {
 		if (closed) {
 			return;
 		}
 		closed = true;
-		if (previous == null) {
-			ACTIVE.remove();
-		}
-		else {
-			ACTIVE.set(previous);
+		// Tables may be closed out of order: only the active table hands the thread back, and
+		// never to a table that is already closed. A table closed while another is active leaves
+		// that one active; it is skipped when that one closes.
+		TemplateInterner current = ACTIVE.get();
+		if (current == this) {
+			TemplateInterner next = firstOpen(previous);
+			if (next == null) {
+				ACTIVE.remove();
+			}
+			else {
+				ACTIVE.set(next);
+			}
 		}
 		consts = new ConstTpl[0];
 		varnodes = new VarnodeTpl[0];
