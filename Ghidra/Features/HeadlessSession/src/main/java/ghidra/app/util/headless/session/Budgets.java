@@ -21,6 +21,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import ghidra.util.cpu.HydraCpu;
+
 /**
  * The resource budgets of PROTOCOL-3.md 3.11 and 3.7 (package E9): every value is a
  * {@link Settings} key, read here and nowhere else, advertised in {@code hello.limits}, and checked
@@ -123,9 +125,12 @@ final class Budgets {
 		return ram == 0 ? 4096 : Math.max(DECOMPILER_MB, mb);
 	}
 
-	/** The permits of the decompiler gate: {@code min(CPUs, nativeBudget / 200 MB)}, at least 1. */
+	/**
+	 * The permits of the decompiler gate: {@code min(CPUs, nativeBudget / 200 MB)}, at least 1;
+	 * CPUs are the ones the OS grants the process ({@link HydraCpu#grantedCpus()}).
+	 */
 	static int gatePermits() {
-		int cpus = Runtime.getRuntime().availableProcessors();
+		int cpus = HydraCpu.grantedCpus();
 		return (int) Math.max(1, Math.min(cpus, nativeBudgetMb() / DECOMPILER_MB));
 	}
 

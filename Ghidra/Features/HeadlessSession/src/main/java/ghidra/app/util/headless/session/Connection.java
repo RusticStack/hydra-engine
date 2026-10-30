@@ -23,6 +23,7 @@ import java.util.concurrent.*;
 import com.google.gson.*;
 
 import ghidra.util.Msg;
+import ghidra.util.cpu.HydraCpu;
 
 /**
  * One client's JSON-lines channel (stdio or a loopback socket).
@@ -67,13 +68,16 @@ final class Connection {
 		this.client = session.connect(transport, launcher, this::send);
 		this.client.authenticated = token == null;
 		this.worker = Executors.newSingleThreadExecutor(r -> {
-			Thread t = new Thread(r, "session-" + client.label().replace(' ', '-'));
+			// request handling is latency-critical: on a hybrid CPU the profile may prefer P-cores
+			Thread t = new Thread(HydraCpu.placed(HydraCpu.Role.LATENCY, r),
+				"session-" + client.label().replace(' ', '-'));
 			t.setDaemon(true);
 			return t;
 		});
 		this.parallel = new ThreadPoolExecutor(0, MAX_PARALLEL, 30, TimeUnit.SECONDS,
 			new SynchronousQueue<>(), r -> {
-				Thread t = new Thread(r, "session-" + client.label().replace(' ', '-') + "-p");
+				Thread t = new Thread(HydraCpu.placed(HydraCpu.Role.LATENCY, r),
+					"session-" + client.label().replace(' ', '-') + "-p");
 				t.setDaemon(true);
 				return t;
 			});

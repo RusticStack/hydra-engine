@@ -38,6 +38,7 @@ import ghidra.app.script.GhidraScriptUtil;
 import ghidra.framework.Application;
 import ghidra.framework.HeadlessGhidraApplicationConfiguration;
 import ghidra.util.Msg;
+import ghidra.util.cpu.HydraCpu;
 
 /**
  * A long-lived headless Ghidra process that works like the window does: open projects, list
@@ -153,7 +154,9 @@ public class HeadlessSession implements GhidraLaunchable {
 		DeferredInit.add("script bundles",
 			() -> GhidraScriptUtil.acquireBundleHostReference().add(scriptDirs, true, true));
 
-		int cpus = Runtime.getRuntime().availableProcessors();
+		// the lanes are sized from the CPUs the OS grants the process (affinity, job CPU cap)
+		int cpus = HydraCpu.grantedCpus();
+		Msg.info(HeadlessSession.class, "cpu: " + HydraCpu.report());
 		int maxQuick = o.maxQuick > 0 ? o.maxQuick : cpus;
 		// the long default is max(8, CPUs) (D40; it was a quarter of the CPUs, at least 2, and a
 		// 7th client's tiny script, save and fork waited 10 s behind six long ones)
@@ -715,7 +718,7 @@ public class HeadlessSession implements GhidraLaunchable {
 			Budgets.clearLearned();
 			check("the gate has min(CPUs, nativeBudget / 200 MB) permits, at least one",
 				Budgets.gatePermits() >= 1 &&
-					Budgets.gatePermits() <= Runtime.getRuntime().availableProcessors());
+					Budgets.gatePermits() <= HydraCpu.grantedCpus());
 			gateFairness();
 			guardedRestarts();
 			reservations();

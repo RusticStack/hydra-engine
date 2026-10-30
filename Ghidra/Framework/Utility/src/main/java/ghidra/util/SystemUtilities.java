@@ -25,6 +25,7 @@ import java.util.function.Supplier;
 
 import javax.swing.SwingUtilities;
 
+import ghidra.util.cpu.HydraCpu;
 import ghidra.util.exception.AssertException;
 import utilities.util.reflection.ReflectionUtilities;
 
@@ -465,7 +466,10 @@ public class SystemUtilities {
 		// extra thread over the number of cores so that you can maximize usage while context
 		// switching is taking place.
 		//
-		int numProcessors = Math.max(1, Runtime.getRuntime().availableProcessors() + 1);
+		// Hydra: the CPUs the OS grants the process (affinity, job object CPU cap), through the
+		// active tuning profile (ghidra.util.cpu.HydraCpu); the JVM count when nothing native
+		// is available.
+		int numProcessors = Math.max(1, HydraCpu.defaultPoolSize());
 
 		//
 		// We enforce an upper bound here.  There is likely diminishing returns with
