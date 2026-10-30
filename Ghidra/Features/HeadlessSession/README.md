@@ -152,6 +152,7 @@ Lowest to highest: defaults, `<state>/config.json`, environment, command-line op
 | `log` | | `<state>/<instance>.log` | The daemon's log (Ghidra's log and stderr). |
 | `upgradeCache` | `GHIDRA_SESSION_UPGRADE_CACHE` (`off`, `false`, `0`: off) | `true` | Serve read-only opens of programs saved in an older database format from an upgraded copy (below). |
 | `upgradeCacheDir` | `GHIDRA_SESSION_UPGRADE_CACHE_DIR` | `<state>/upgrade-cache` | Where those copies live; best on the same volume as the projects (a block clone there costs nothing). |
+| `forkUpgradeFromCache` | - | `true` | A writable `upgrade:true` open of an older-format program in a disposable fork takes the upgrade cache's upgraded version of the fork's source when it is ready, instead of upgrading in memory (below). |
 | `forkCopyLimitMb` | `GHIDRA_SESSION_FORK_COPY_LIMIT_MB` | `2048` | `fork_project` in `auto` mode refuses a full copy (one the file system cannot block-clone) larger than this; `"mode": "full"` copies anyway. |
 | `settingsDir` | `GHIDRA_SESSION_SETTINGS_DIR` | `auto` | Ghidra's per-user settings dir of the daemon (its OSGi `felixcache` and compiled script bundles, which every JVM of a user shares and contends for). `auto`: its own, `<state>/settings/<instance>` (the user's `Extensions` are linked into it); `shared`: the user's, as Ghidra's launcher chooses; or a directory. Passed as `-Dapplication.settingsdir`, so it also reaches the launch routes without an environment; a `-Dapplication.settingsdir` in `vmargs` or `launch.properties` wins. The first script of a daemon compiles into an empty cache. |
 
@@ -594,6 +595,21 @@ them (a key is built under an exclusive OS lock on `<key>.lock`, so several daem
 directory). The source is only ever read.
 
 Turn it off with `"upgradeCache": false`.
+
+Writable opens of forks (H2). A writable `upgrade:true` open of an older-format program in a disposable
+fork (`fork_project`; the upgrade gate exempts it) whose source has a ready copy takes that copy's
+upgraded version instead of upgrading in memory, when the fork's current version is the one the copy
+was upgraded from (same version number, size, modification time and first 64 KiB). The upgraded file
+is copied into the fork as its next version (`db.<n+1>.gbf`: copied, forced to disk, renamed into
+place) and the open finds the current format. The program is then in the state an in-memory upgrade
+leaves: changed, nothing to undo, so `changed`, `save`'s `saved` and the unsaved-changes checks
+answer as before. If it is released with its changes unsaved (`close_program` or `close_project`
+with `discard`), the adopted version is removed again and the fork is back in its older format, as
+after an unsaved in-memory upgrade. A writable open never waits on the cache's locks: when the copy
+is not ready, busy, or anything fails, it upgrades in memory as before. Such a fork open starts the
+source's build only from the second fork open of the same source and program in the daemon (a
+source forked once costs nothing more), and never again after that build failed in this daemon.
+Turn it off with `-set forkUpgradeFromCache=false`.
 
 ## Protocol (version 2)
 

@@ -1463,6 +1463,7 @@
    "fork_purposes",
    "fork_report",
    "fork_save_behind_analysis",
+   "fork_upgrade_from_cache",
    "format_readonly",
    "format_truncated",
    "held_fork_source",
@@ -1711,6 +1712,7 @@
    "fork_purposes",
    "fork_report",
    "fork_save_behind_analysis",
+   "fork_upgrade_from_cache",
    "format_readonly",
    "format_truncated",
    "held_fork_source",
@@ -2675,6 +2677,7 @@
    "fork_purposes",
    "fork_report",
    "fork_save_behind_analysis",
+   "fork_upgrade_from_cache",
    "format_readonly",
    "format_truncated",
    "held_fork_source",
@@ -3306,6 +3309,9 @@
    "e9_runaway",
    "e9_selftest",
    "e9_view_probe"
+  ],
+  "Ghidra/Features/HeadlessSession/examples/dt_h2.py": [
+   "fork_upgrade_from_cache"
   ],
   "Ghidra/Features/HeadlessSession/examples/dt_held.py": [
    "held_fork_source",

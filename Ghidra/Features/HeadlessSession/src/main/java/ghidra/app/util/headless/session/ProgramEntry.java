@@ -146,6 +146,12 @@ final class ProgramEntry implements Decompilers, DecompilerGate.Pool {
 	/** Set by the open that started the build, for its answer ({@code "cacheBuild":"started"}). */
 	boolean cacheBuildStarted;
 	/**
+	 * H2: the upgrade cache's version this writable open of a fork adopted
+	 * ({@link UpgradeCache#adoptForFork}); a close that discards the changes before any save puts
+	 * the fork back ({@link UpgradeCache#rollBack}).
+	 */
+	UpgradeCache.Adopted adopted;
+	/**
 	 * Hydra ({@code -Dhydra.memory.snapshotReads=true}): the memory-mapped sealed generation that
 	 * serves the byte reads of {@link #program} while it is open read-only; closed with it.
 	 */

@@ -125,6 +125,14 @@ final class UpgradeCache {
 
 	/** Builds by {@link Plan#id()}, oldest first. Guarded by this. */
 	private final LinkedHashMap<String, Build> builds = new LinkedHashMap<>();
+	/**
+	 * H2: writable fork opens per plan id ({@link #adoptForFork}) that found no ready copy; the
+	 * fork path starts the source's build only from the second (a source forked once pays nothing
+	 * besides its own in-memory upgrade). Guarded by this.
+	 */
+	private final HashMap<String, Integer> forkMisses = new HashMap<>();
+	/** H2: plan ids whose build failed; the fork path does not start them again. Guarded by this. */
+	private final HashSet<String> forkBuildFailed = new HashSet<>();
 	private ExecutorService executor;
 	private boolean closed;
 	private long buildsStarted;
@@ -209,6 +217,16 @@ final class UpgradeCache {
 		private synchronized boolean acquire() throws IOException {
 			acquireUse(keyUse, true);
 			keyHeld = true;
+			genHeld = acquireUse(genUse, false);
+			return genHeld;
+		}
+
+		/** As {@link #acquire} without waiting for the key's lock: false when it is not free. */
+		private synchronized boolean tryAcquire() throws IOException {
+			keyHeld = acquireUse(keyUse, false);
+			if (!keyHeld) {
+				return false;
+			}
 			genHeld = acquireUse(genUse, false);
 			return genHeld;
 		}
@@ -363,9 +381,9 @@ final class UpgradeCache {
 	 * changes nothing: the open upgrades in memory as before, and a build of the source's copy is
 	 * started for the next fork (when none is ready or running).
 	 *
-	 * @return what was done, for the log, or null when the open upgrades in memory
+	 * @return what was done, or null when the open upgrades in memory
 	 */
-	JsonObject adoptForFork(ProjectEntry p, DomainFile df, RequestMonitor m) {
+	Adopted adoptForFork(ProjectEntry p, DomainFile df, RequestMonitor m) {
 		// open (by another program entry of this daemon): its save would make the next version
 		if (!enabled() || df.isVersioned() || df.isLink() || df.isOpen() ||
 			!Settings.bool("forkUpgradeFromCache", true)) {
@@ -404,9 +422,9 @@ final class UpgradeCache {
 			return null;
 		}
 		try {
-			JsonObject done = adopt(plan, dpd, fs, p, df, m);
+			Adopted done = adopt(plan, dpd, fs, p, df, m);
 			if (done != null) {
-				Json.put(done, "ms", (System.nanoTime() - t0) / 1_000_000);
+				Json.put(done.info(), "ms", (System.nanoTime() - t0) / 1_000_000);
 				return done;
 			}
 		}
@@ -417,13 +435,101 @@ final class UpgradeCache {
 			Msg.warn(this, "upgrade cache: could not give the fork " + p.resolved.gpr() + " " +
 				df.getPathname() + " its upgraded copy; it is upgraded in memory: " + e, e);
 		}
-		if (!isReady(plan)) {
+		if (forkBuildWanted(plan)) {
 			startBuild(plan); // the next fork of this source finds it
 		}
 		return null;
 	}
 
-	private JsonObject adopt(Plan plan, DefaultProjectData dpd, LocalFileSystem fs, ProjectEntry p,
+	/**
+	 * Whether a writable fork open that found no ready copy starts the source's build: not when it
+	 * is ready or running, not when it failed for this key and program in this daemon (a source
+	 * whose build cannot succeed, for example one the program is missing from, is not copied again
+	 * on every fork), and only from the second such open of the plan (a source forked once is not
+	 * copied and upgraded besides the fork's own in-memory upgrade).
+	 */
+	private boolean forkBuildWanted(Plan plan) {
+		if (isReady(plan)) {
+			return false;
+		}
+		synchronized (this) {
+			if (closed || forkBuildFailed.contains(plan.id())) {
+				return false;
+			}
+			Build b = builds.get(plan.id());
+			if (b != null) {
+				if (b.state == State.FAILED) {
+					forkBuildFailed.add(plan.id());
+				}
+				return false; // failed, building or ready
+			}
+			if (forkMisses.size() > 4096) {
+				forkMisses.clear();
+			}
+			return forkMisses.merge(plan.id(), 1, Integer::sum) >= 2;
+		}
+	}
+
+	/**
+	 * A fork's adopted version ({@link #adoptForFork}): {@code base} its version before,
+	 * {@code target} the adopted one. Until a save makes a newer version, {@link #rollBack}
+	 * returns the fork to {@code base}.
+	 */
+	record Adopted(JsonObject info, ProjectEntry project, DefaultProjectData data, Path base,
+			Path target) {}
+
+	/**
+	 * Puts a fork back as it was before {@link #adoptForFork} when nothing was saved since (the
+	 * adopted version is still the newest): after a close that discarded the changes, or an open
+	 * that failed after the adoption, the fork's program is in its older format again, as after an
+	 * in-memory upgrade that was not saved. The program must be released. Never throws.
+	 */
+	static void rollBack(Adopted a) {
+		if (a == null) {
+			return;
+		}
+		try {
+			String n = a.target().getFileName().toString();
+			int v = Integer.parseInt(n.substring(3, n.length() - 4));
+			Path next = a.target().resolveSibling("db." + (v + 1) + ".gbf");
+			if (!Files.isRegularFile(a.base()) || !Files.isRegularFile(a.target()) ||
+				Files.exists(next)) {
+				return; // saved since
+			}
+			Files.delete(a.target());
+			a.data().refresh(true);
+			Msg.info(UpgradeCache.class, "upgrade cache: fork " + a.project().resolved.gpr() +
+				" put back to " + a.base().getFileName() + " (the adopted version was not saved)");
+		}
+		catch (IOException | RuntimeException e) {
+			Msg.warn(UpgradeCache.class,
+				"upgrade cache: could not put the fork back from " + a.target() + ": " + e, e);
+		}
+		finally {
+			a.project().invalidateRevision();
+		}
+	}
+
+	/** Deletes {@code tmp<n>.tmp} files of {@link #adopt} left in a fork's database folder. */
+	private static void sweepTmp(Path forkDb) {
+		try (DirectoryStream<Path> ds = Files.newDirectoryStream(forkDb, "tmp*" + TMP_SUFFIX)) {
+			for (Path t : ds) {
+				if (t.getFileName().toString().matches("tmp[0-9]+\\.tmp")) {
+					try {
+						Files.deleteIfExists(t);
+					}
+					catch (IOException e) {
+						// held by someone: left
+					}
+				}
+			}
+		}
+		catch (IOException e) {
+			// nothing to sweep
+		}
+	}
+
+	private Adopted adopt(Plan plan, DefaultProjectData dpd, LocalFileSystem fs, ProjectEntry p,
 			DomainFile df, RequestMonitor m) throws IOException, CancelledException {
 		File dir = new File(root, plan.key());
 		JsonObject entry = readEntry(dir);
@@ -433,8 +539,8 @@ final class UpgradeCache {
 		String gen = entry.get("generation").getAsString();
 		Lease lease = new Lease(plan.key(), gen);
 		try {
-			if (!lease.acquire()) {
-				return null; // being removed
+			if (!lease.tryAcquire()) {
+				return null; // busy or being removed: a writable open never waits on the cache
 			}
 			FolderItem item = fs.getItem(df.getParent().getPathname(), df.getName());
 			if (!(item instanceof LocalDatabaseItem dbItem)) {
@@ -475,6 +581,7 @@ final class UpgradeCache {
 				return null;
 			}
 			m.checkCancelled();
+			sweepTmp(forkDb.toPath()); // a copy left by a daemon that died between copy and rename
 			Path tmp = forkDb.toPath().resolve("tmp" + System.nanoTime() + TMP_SUFFIX);
 			boolean placed = false;
 			try {
@@ -488,6 +595,7 @@ final class UpgradeCache {
 					Files.deleteIfExists(tmp);
 				}
 			}
+			p.invalidateRevision();
 			// the project re-reads its items (it keeps the version each item scanned)
 			dpd.refresh(true);
 			String still = olderFormat(dpd, df);
@@ -495,6 +603,7 @@ final class UpgradeCache {
 				// cannot happen with a ready copy; put the fork back as it was
 				Files.deleteIfExists(target);
 				dpd.refresh(true);
+				p.invalidateRevision();
 				throw new IOException("the adopted version of " + plan.path() + " is still in an " +
 					"older format (" + still + ")");
 			}
@@ -511,8 +620,8 @@ final class UpgradeCache {
 					break; // left for Ghidra's next scan of the folder
 				}
 			}
-			return Json.of("used", true, "reason", plan.why(), "key", plan.key(), "generation", gen,
-				"version", cur + 1);
+			return new Adopted(Json.of("used", true, "reason", plan.why(), "key", plan.key(),
+				"generation", gen, "version", cur + 1), p, dpd, base, target);
 		}
 		finally {
 			lease.release();
@@ -528,7 +637,7 @@ final class UpgradeCache {
 	 */
 	static void markUpgraded(Program program) throws IOException {
 		if (!(program instanceof ghidra.framework.data.DomainObjectAdapterDB dbo)) {
-			return;
+			throw new IOException("the adopted program is not a database program");
 		}
 		int tx = program.startTransaction("upgraded (upgrade cache)");
 		boolean ok = false;
@@ -536,10 +645,11 @@ final class UpgradeCache {
 			// the record as it is, written again (DBStringMapAdapter.put skips an equal value)
 			db.Table table = dbo.getDBHandle().getTable("Program");
 			db.DBRecord rec = table == null ? null : table.getRecord(new db.StringField("DB Version"));
-			if (rec != null) {
-				table.putRecord(rec);
-				ok = true;
+			if (rec == null) {
+				throw new IOException("the adopted program has no stored database version");
 			}
+			table.putRecord(rec);
+			ok = true;
 		}
 		finally {
 			program.endTransaction(tx, ok);

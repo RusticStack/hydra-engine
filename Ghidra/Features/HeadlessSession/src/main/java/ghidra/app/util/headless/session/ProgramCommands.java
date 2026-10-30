@@ -508,13 +508,21 @@ final class ProgramCommands {
 			}
 			boolean upgrade = Json.bool(req, "upgrade", false);
 			ProjectBackup.UpgradeStamp stamp = upgrade ? upgradeGate(c, e, df, req) : null;
-			JsonObject adopted = null;
+			UpgradeCache.Adopted adopted = null;
+			e.adopted = null;
 			if (upgrade && stamp == null) {
 				// H2: a fork of a source the upgrade cache holds gets the upgraded version instead
 				// of upgrading in memory (UpgradeCache.adoptForFork: disposable forks only)
 				adopted = s.upgradeCache.adoptForFork(e.project, df, m);
 			}
-			Program program = (Program) df.getDomainObject(e, upgrade, false, m);
+			Program program;
+			try {
+				program = (Program) df.getDomainObject(e, upgrade, false, m);
+			}
+			catch (IOException | VersionException | CancelledException | RuntimeException ex) {
+				UpgradeCache.rollBack(adopted); // the fork as it was before the open
+				throw ex;
+			}
 			if (adopted != null) {
 				// opened as an in-memory upgrade leaves it: changed, nothing to undo
 				try {
@@ -522,10 +530,12 @@ final class ProgramCommands {
 				}
 				catch (IOException | RuntimeException ex) {
 					program.release(e);
+					UpgradeCache.rollBack(adopted);
 					throw ex;
 				}
+				e.adopted = adopted;
 				Msg.info(s, "opened " + e.key + " of a fork from the upgrade cache's upgraded " +
-					"version " + adopted);
+					"version " + adopted.info());
 			}
 			if (stamp != null) {
 				ProjectBackup.remember(e, stamp);
@@ -937,12 +947,20 @@ final class ProgramCommands {
 	 */
 	void releaseProgramObject(ProgramEntry e) {
 		detachSnapshotReads(e);
+		// H2: a fork's adopted version (UpgradeCache.adoptForFork) released with its changes
+		// unsaved goes with them, as an in-memory upgrade not saved would: the fork is put back
+		UpgradeCache.Adopted adopted = e.adopted;
+		e.adopted = null;
+		boolean unsaved = adopted != null && e.program != null && e.program.isChanged();
 		try {
 			if (e.program != null) {
 				e.program.release(e);
 			}
 		}
 		finally {
+			if (unsaved) {
+				UpgradeCache.rollBack(adopted);
+			}
 			e.program = null;
 			SessionProject view = e.cacheView;
 			UpgradeCache.Lease lease = e.cacheLease;

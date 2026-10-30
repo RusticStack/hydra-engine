@@ -21,11 +21,14 @@ upgraded version of the fork's source instead of upgrading in memory (``UpgradeC
 
 * ``fork_upgrade_from_cache``: with the source's copy ready, a fork's writable open finds the current format: its
   database folder holds the adopted next version and the one before it, no temporary file, and the program is
-  changed with nothing to undo, as after an in-memory upgrade (``save`` answers ``saved``). A daemon with ``forkUpgradeFromCache=false``
+  changed, as after an in-memory upgrade (``save`` answers ``saved``; the protocol has no undo, so the cleared
+  undo of ``markUpgraded`` is not observable here). A writable open that adopts and then closes with
+  ``discard`` leaves the fork as it was: an open without ``upgrade`` fails with ``conflict`` again and a
+  reopen with it is changed again. A daemon with ``forkUpgradeFromCache=false``
   upgrades a second fork in memory. Both forks get the same edits; the function list and the decompilation of
   every function (edited one included) must be identical, before and after save, and after a read-only reopen of
-  the saved forks. A fork whose source has no ready copy upgrades in memory and starts the source's build. The
-  source is never written.
+  the saved forks. A fork whose source has no ready copy upgrades in memory; the first such fork starts no build,
+  the second starts the source's build. The source is never written.
 """
 import hashlib
 import json
@@ -80,6 +83,14 @@ def t_fork_upgrade_from_cache(c):
     with d.connect("h2", "tests") as s:
         o = s.call("open_project", path=str(legacy))
         prog = c.a.legacy_program or s.call("list", programsOnly=True)["entries"][0]["path"]
+        # a source forked once is not also built (its fork pays only its own in-memory upgrade)
+        f1 = s.call("fork_project", project=o["id"], path=str(c.work / "h2-fork-1"), writable=True, timeout=600)
+        p1 = s.call("open_program", path=prog, project=_pid(f1), writable=True, upgrade=True, wait=1800000)
+        dt.check(p1["changed"] is True, f"an upgrade:true open of an older-format fork is not changed: {p1}")
+        st = s.call("status")["upgradeCache"]
+        dt.check(st["buildsStarted"] == 0, f"the first fork's open started a build of its source: {st}")
+        s.call("close_project", project=_pid(f1), discard=True)
+        # the second fork of the same source starts it, for the forks after it
         f0 = s.call("fork_project", project=o["id"], path=str(c.work / "h2-fork-0"), writable=True, timeout=600)
         p0 = s.call("open_program", path=prog, project=_pid(f0), writable=True, upgrade=True, wait=1800000)
         dt.check(p0["changed"] is True, f"an upgrade:true open of an older-format fork is not changed: {p0}")
@@ -90,7 +101,24 @@ def t_fork_upgrade_from_cache(c):
         dt.check(pathlib.Path(b["source"]).parent.resolve() == legacy.resolve(),
                  f"the build is not of the fork's source: {b}")
         s.call("close_project", project=_pid(f0), discard=True)
-        notes.append("no copy: in memory, build of the source started")
+        notes.append("no copy: in memory, build of the source started from its second fork")
+
+        # 1a. an adopted version closed without a save goes, as an unsaved in-memory upgrade does
+        fc_dir = c.work / "h2-fork-c"
+        fc = s.call("fork_project", project=o["id"], path=str(fc_dir), writable=True, timeout=600)
+        fc_before = {p: sorted(x.name for x in p.iterdir()) for p in _db_dirs(fc_dir)}
+        pc = s.call("open_program", path=prog, project=_pid(fc), writable=True, upgrade=True, wait=1800000)
+        dt.check(pc["changed"] is True, f"the adopted fork's program is not changed after the open: {pc}")
+        fc_open = {p: sorted(x.name for x in p.iterdir()) for p in fc_before}
+        dt.check(fc_open != fc_before, f"fork C did not adopt the upgraded version: {fc_open}")
+        s.call("close_program", program=pc["key"], discard=True)
+        fc_after = {p: sorted(x.name for x in p.iterdir()) for p in fc_before}
+        dt.check(fc_after == fc_before, f"a discarded adoption left the fork changed: {fc_before} -> {fc_after}")
+        dt.expect_error("conflict", s.call, "open_program", path=prog, project=_pid(fc), writable=True)
+        pc2 = s.call("open_program", path=prog, project=_pid(fc), writable=True, upgrade=True, wait=1800000)
+        dt.check(pc2["changed"] is True, f"a reopen after a discarded adoption is not changed: {pc2}")
+        s.call("close_project", project=_pid(fc), discard=True)
+        notes.append("discarded adoption: the fork is back in its older format")
 
         # 1. copy ready: fork A adopts the upgraded version
         fa_dir = c.work / "h2-fork-a"
