@@ -4,6 +4,13 @@
  * caller-owned output buffer. Every call builds its own IfaceStatus and, through `restore`, its own
  * Architecture; the Sleigh translator cache (SleighArchitecture::translators) and parser state are
  * thread_local, so calls on different threads share no mutable decompiler state.
+ *
+ * `addpath` is deliberately not registered: it appends to the process-global
+ * SleighArchitecture::specpaths, which every worker reads while building an Architecture. Spec
+ * search paths are fixed once by hydra_decomp_init. A script using it gets the console's
+ * unknown-command error.
+ *
+ * No C++ exception may leave these extern "C" functions (Rust declares them `extern "C"`).
  */
 #include <cstdlib>
 #include <cstring>
@@ -13,9 +20,14 @@
 #include "consolemain.cc"
 #undef main
 
+extern "C" void hydra_decomp_free(char *p) noexcept
+{
+  std::free(p);
+}
+
 namespace {
 
-char *copy_out(const std::string &s, size_t *len)
+char *copy_out(const std::string &s, size_t *len) noexcept
 {
   char *p = (char *)std::malloc(s.size() + 1);
   if (p == nullptr) { *len = 0; return nullptr; }
@@ -29,7 +41,7 @@ char *copy_out(const std::string &s, size_t *len)
 
 /// Start the decompiler library once (single-threaded) and collect the .ldefs language list so
 /// later, concurrent calls only read it. Returns 0 on success; on failure *err holds the reason.
-extern "C" int hydra_decomp_init(const char *ghidraroot, char **err, size_t *errlen)
+extern "C" int hydra_decomp_init(const char *ghidraroot, char **err, size_t *errlen) noexcept
 {
   using namespace ghidra;
   *err = nullptr; *errlen = 0;
@@ -56,9 +68,11 @@ extern "C" int hydra_decomp_init(const char *ghidraroot, char **err, size_t *err
 /// to stdout, *err what it writes to stderr from main. Returns the console exit code (0, 1 = a command
 /// failed, 2 = interface error) or 3 for an exception the console would not have caught.
 extern "C" int hydra_decomp_run_script(const char *script, char **out, size_t *outlen, char **err,
-                                       size_t *errlen)
+                                       size_t *errlen) noexcept
 {
   using namespace ghidra;
+  *out = nullptr; *outlen = 0; *err = nullptr; *errlen = 0;
+  try {
   std::istringstream in;
   std::ostringstream os;
   std::ostringstream es;
@@ -67,7 +81,6 @@ extern "C" int hydra_decomp_run_script(const char *script, char **out, size_t *o
     std::unique_ptr<IfaceStatus> status(new IfaceTerm("[decomp]> ", in, os));
     IfaceCapability::registerAllCommands(status.get());
     status->registerCom(new IfcLoadFile(), "load", "file");
-    status->registerCom(new IfcAddpath(), "addpath");
     status->registerCom(new IfcSave(), "save");
     status->registerCom(new IfcRestore(), "restore");
     try {
@@ -95,9 +108,11 @@ extern "C" int hydra_decomp_run_script(const char *script, char **out, size_t *o
   *out = copy_out(os.str(), outlen);
   *err = copy_out(es.str(), errlen);
   return retval;
+  } catch (...) {	// e.g. bad_alloc building the streams or copying them out
+    hydra_decomp_free(*out);
+    *out = nullptr; *outlen = 0;
+    *err = nullptr; *errlen = 0;
+    return 3;
+  }
 }
 
-extern "C" void hydra_decomp_free(char *p)
-{
-  std::free(p);
-}

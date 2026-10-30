@@ -7,6 +7,8 @@
 
 use std::path::PathBuf;
 
+include!("src/parser_check.rs");
+
 fn main() {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let decompile = match std::env::var("HYDRA_DECOMP_CPP_DIR") {
@@ -20,6 +22,25 @@ fn main() {
     println!("cargo:rerun-if-changed=cpp-sources.txt");
     println!("cargo:rerun-if-changed=cpp/host_shim.cc");
 
+    // The bison-generated parsers carry hand edits (thread_local parser globals). A regenerated
+    // parser silently drops them and the host crashes at N workers, so refuse to build. Set
+    // HYDRA_DECOMP_ALLOW_SHARED_PARSERS=1 only for the negative control on unmodified sources.
+    println!("cargo:rerun-if-env-changed=HYDRA_DECOMP_ALLOW_SHARED_PARSERS");
+    if std::env::var("HYDRA_DECOMP_ALLOW_SHARED_PARSERS").as_deref() != Ok("1") {
+        for (f, pfx) in [
+            ("grammar.cc", "grammar"),
+            ("xml.cc", "xml"),
+            ("pcodeparse.cc", "pcode"),
+        ] {
+            let src = std::fs::read_to_string(cpp.join(f)).unwrap();
+            let miss = missing_thread_local(&src, pfx);
+            assert!(
+                miss.is_empty(),
+                "{f}: parser globals not thread_local: {miss:?}. Regenerated with bison? Re-apply the                  thread_local edits (see the note in the .y file)"
+            );
+        }
+    }
+
     let list = std::fs::read_to_string(manifest.join("cpp-sources.txt")).unwrap();
     let names: Vec<&str> = list
         .lines()
@@ -28,6 +49,19 @@ fn main() {
         .collect();
     let msvc = std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
     let ltcg = std::env::var("HYDRA_DECOMP_LTCG").as_deref() == Ok("1");
+
+    // cc-rs reuses RUSTC_WRAPPER for C/C++ when it names a known wrapper (sccache, or whatever
+    // CC_KNOWN_WRAPPER_CUSTOM names; the user-level config sets kache there), and kache rejects
+    // cl.exe ("unrecognized subcommand"). Compile the C++ directly. Opt back in with
+    // HYDRA_DECOMP_CC_WRAPPER=1.
+    println!("cargo:rerun-if-env-changed=HYDRA_DECOMP_CC_WRAPPER");
+    if std::env::var("HYDRA_DECOMP_CC_WRAPPER").as_deref() != Ok("1") {
+        // SAFETY: build scripts are single-threaded here; no cc::Build (and no thread) exists yet.
+        unsafe {
+            std::env::remove_var("RUSTC_WRAPPER");
+            std::env::remove_var("CC_KNOWN_WRAPPER_CUSTOM");
+        }
+    }
 
     let mut b = cc::Build::new();
     b.cpp(true)

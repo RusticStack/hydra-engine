@@ -15,14 +15,21 @@ daemon decompile backend over the sealed snapshot.
   single-threaded; `hydra_decomp_run_script(script)` is `decomp -i script </dev/null` in-process:
   a fresh `IfaceTerm` over an in-memory stream, the stock command set, `mainloop`.
 - Rust (`src/lib.rs`): `run_batch(scripts, threads)` runs jobs on a dedicated rayon pool
-  (`threads = 0` means the CPUs the OS grants: `available_parallelism`), results in input order.
+  (`threads = 0` means the CPUs the OS grants: `available_parallelism`, capped on Windows by the
+  number of CPUs in the process affinity mask, which `available_parallelism` ignores there),
+  results in input order. `run_script`/`run_batch` refuse jobs (code -1) until `init` succeeded.
+- `addpath` is not registered in the host: it appends to the process-global
+  `SleighArchitecture::specpaths` that every worker reads. Search paths are fixed by `init`.
+- No C++ exception crosses the C ABI: the shim functions are `noexcept` and catch everything,
+  including allocation failures while copying the output out.
 - Inputs are DecompileDebug dumps (`<xml_savefile>`, read by `XmlArchitecture` through `restore`),
   so no Java callbacks are needed. The test converts the repo's 89 decompiler datatests into
   a `<binaryimage>` dump (the datatests hold only that) loaded with `load file` (XmlArchitecture
   init + loader symbols, the same steps as the datatest harness) plus a console script; a dump with
   more than a binaryimage becomes an `<xml_savefile>` read with `restore`.
 
-## Measured (2026-10-30; available_parallelism = 24; machine shared with other agents and builds)
+## Measured (2026-10-30; available_parallelism = 24, before the affinity cap was added, so the
+"24 workers" runs were sized from the group's CPUs, not the granted mask; machine shared with other agents and builds)
 
 - 89 dumps, 190 `lo fu` commands, 159 `Decompilation complete` (the rest are the datatests' own
   `parse line`/language errors, identical in stock).
@@ -53,16 +60,40 @@ sequence of values is the same as before, so `decompile.exe` (one thread) behave
 Read-only after start-up (left as is, initialised before workers run): capability lists
 (`CapabilityPoint`, `ArchitectureCapability`, `IfaceCapability`, `PrintLanguageCapability`),
 `AttributeId`/`ElementId` tables, `SleighArchitecture::description` (filled by
-`hydra_decomp_init`; `collectSpecFiles` returns early once filled) and `specpaths`, `Symbol::ID_BASE`,
-the `PrintC` operator tokens, `FileManage::separator`.
+`hydra_decomp_init`; `collectSpecFiles` returns early once filled) and `specpaths` (only written
+by `addpath`, which the host does not register; test `addpath_is_refused_on_every_worker`),
+`Symbol::ID_BASE`, the `PrintC` operator tokens, `FileManage::separator`.
+
+Thread affinity: `buildTranslator` returns a pointer into the calling thread's `translators` map,
+so an Architecture is thread-affine: it must be used and destroyed only on the worker that built
+it. A worker keeps one Sleigh per language it has seen for the thread's lifetime, so Sleigh memory
+is N workers x languages used, independent of any Architecture cache. Between jobs the Sleigh's
+`loader` points at the previous (destroyed) LoadImage until the next `reset`; nothing reads it then.
+
+`TokenSplit::countbase` (one counter per thread now) numbers the markup `open`/`close` ids that
+`EmitMarkup` writes. In stock `decompile.exe` it already accumulates over every function a process
+has printed, so ids depend on history there too; with N workers they depend on which jobs ran
+earlier on the same thread. The console `print C` text (what the prototype compares) does not
+contain them. The daemon gate (step 5) therefore compares markup with the syntax `open`/`close`
+ids renumbered in order of appearance; everything else must be byte-identical.
 
 Not in the host build: `ghidra_process.cc` `archlist` / `GhidraCapability::commandmap` (the
 Java-pipe process). They are per-process and only touched by the single command thread there; the
 daemon backend below does not use the pipe protocol, so they stay as they are.
 
-Bison note: `yychar`/`yylval`/`yynerrs` (and the `extern yylval` declaration) are emitted by the bison skeleton. The checked-in `.cc`
-files carry `thread_local`; the `.y` files say so. Regenerating them needs the same edit (or a
-move to `%define api.pure full`, a larger change).
+Bison note: `yychar`/`yylval`/`yynerrs` (and the `extern yylval` declaration) are emitted by the
+bison skeleton. The checked-in `.cc` files carry `thread_local`; the `.y` files say so.
+Regenerating them (Makefile rules or the Gradle `yaccDecompiler` task; the native build itself uses
+the checked-in files) drops the edit. `build.rs` then refuses to build the host (checked by
+`src/parser_check.rs`, unit test `generated_parsers_keep_thread_local_state`) until the edit is
+re-applied; `HYDRA_DECOMP_ALLOW_SHARED_PARSERS=1` bypasses it only for the negative control on
+unmodified sources (together with `HYDRA_DECOMP_CPP_DIR`). A move to `%define api.pure full` would
+remove the hand edit but is a larger change.
+
+Build note: the user-level cargo config routes cc-rs through the kache wrapper
+(`CC_KNOWN_WRAPPER_CUSTOM=kache`), which fails on `cl.exe`. `build.rs` drops `RUSTC_WRAPPER` and
+`CC_KNOWN_WRAPPER_CUSTOM` from its own environment before compiling the C++, so `cargo test` works
+without overrides (rustc itself still goes through kache). `HYDRA_DECOMP_CC_WRAPPER=1` keeps them.
 
 ## Wiring it as the daemon decompile backend over the sealed snapshot
 
@@ -78,13 +109,18 @@ move to `%define api.pure full`, a larger change).
 3. Request: (program id, generation, function entry, options). The worker looks up or builds the
    Architecture for (program, generation), runs `decompile` + the markup printer, and returns the
    same XML/packed result `ghidra_process` returns today, so `DecompileResults` decoding is unchanged.
+   Each Architecture is pinned to the worker that built it (thread affinity above).
 4. Remaining callbacks: inject payloads and cpool answer from the snapshot when exported; anything
    else falls back to the existing process path (behind the same flag).
 5. Flag and rollout: `hydra.decomp.backend=host` (default `process`). Gate: the golden diff (9.1)
    must be identical with the flag on, and the offline replay (500 DecompileDebug dumps, N workers vs
-   `decompile.exe`) must be byte-identical, as this prototype's test does for the datatests.
+   `decompile.exe`) must be byte-identical after renumbering the markup `open`/`close` ids in order
+   of appearance (see `countbase` above), as this prototype's test does for the datatests' C text.
+   A markup-output (EmitMarkup) identity test is part of that backend work; it is not in the prototype.
 6. Memory: one Architecture per worker per open generation; cap with an LRU per worker and size
-   the pool so N x (Architecture + Sleigh) fits the decompile budget (today 200 MB per permit).
+   the pool so N x (Architecture + languages x Sleigh) fits the decompile budget (today 200 MB per
+   permit). When the LRU drops a worker's last Architecture for a language, clear that language's
+   entry in the worker's thread_local `translators` map (an eviction hook to add with the backend).
 7. Failure isolation: a C++ crash in-process takes the daemon down, unlike a `decompile.exe`
    crash. Keep the process backend as the fallback; run the host in a child process (one process,
    N threads) until the crash rate on the full KotOR set is measured at zero.
