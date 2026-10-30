@@ -226,6 +226,9 @@ final class Budgets {
 		}
 		viewDiskBudgetBytes();
 		diskReserveBytes(0);
+		// a bad cache size fails the launch, not every later request that uses the cache
+		decompileCacheBytes();
+		functionTableBytes();
 		long xmxMb = maxHeapBytes() >> 20;
 		// the JVM reports a little less than -Xmx with some collectors; 10% of slack
 		if (min > 0 && xmxMb * 10 < (long) min * 9) {

@@ -21,12 +21,19 @@
   ``contains``, both, filters that match nothing) from a daemon with the table off and twice from a daemon with
   it on (the first listing of the state is a walk, the rest come from one table: ``health.functionTable``);
   every reply byte-identical.
-* ``ft_invalidate``: a rename and a function created in a writable view change the program's modification
-  number; the next listings show the new name / the new function, the same pages a table-off daemon gives.
+* ``ft_invalidate``: two renames in a writable view change the program's modification number; the next
+  listings show the new name, the same pages a table-off daemon gives.
 * ``ft_single_flight``: 8 clients page through the same program at the same moment: one table build, all
   replies equal to the table-off reference.
+* ``ft_create_delete``: a function deleted and created again by a script in a writable view: the row count and
+  the rows (size, thunk, external) of every page follow each change, the same pages a table-off daemon gives.
+* ``ft_too_big``: a ``functionTable`` budget below one table's weight: 8 concurrent deep pagers never build a
+  table (``tooBig`` walks, no build, no wait on each other) and every reply equals the walk.
+* ``ft_rename_race``: one thread renames a function in a loop while 4 threads of the same client page the
+  writable program: no listing sent after a rename was acknowledged shows an older name (a torn table/number pair would).
 """
 import json
+import re
 import sys
 import threading
 
@@ -144,7 +151,7 @@ def t_invalidate(c):
                  "contains finds no renamed function after the rename")
         st = _stats(b)
         dt.check(st.get("builds", 0) > b0, f"the rename did not lead to a new table: {st}")
-        # a second change, then a deep page first (built at once, never the older state)
+        # a second change, then a deep page first (a walk of the new state, never the older table)
         for s in (a, b):
             s.call("rename", address=x, name="ft_renamed_again")
         g2 = _canon(b.call("functions", offset=2, limit=3))
@@ -195,10 +202,186 @@ def t_single_flight(c):
         e9.stop(d)
 
 
+FT_FUNC = """
+import ghidra.app.script.GhidraScript;
+
+public class FtFunc extends GhidraScript {
+    @Override
+    public void run() throws Exception {
+        String[] a = getScriptArgs();
+        var at = toAddr(a[1]);
+        if (a[0].equals("delete")) {
+            if (getFunctionAt(at) == null) {
+                throw new IllegalStateException("no function at " + at);
+            }
+            removeFunctionAt(at);
+        }
+        else if (createFunction(at, null) == null) {
+            throw new IllegalStateException("no function created at " + at);
+        }
+    }
+}
+"""
+
+
+def _script(c, s, *args):
+    (c.scripts / "FtFunc.java").write_text(FT_FUNC)
+    return s.call("script", script=c.script("FtFunc.java"), args=list(args), wait=120000)
+
+
+def t_create_delete(c):
+    exe = e9.fixture_args(c)
+    ga, gb = c.copy_fixture("ftCdA"), c.copy_fixture("ftCdB")
+    da, db = c.daemon("ft-cd-off", engine=OFF), c.daemon("ft-cd-on", engine=ON)
+    a = b = None
+    try:
+        a, b = c.connect(da, "a", "ft", 3), c.connect(db, "b", "ft", 3)
+        e9.open_view(c, a, ga, exe, writable=True)
+        e9.open_view(c, b, gb, exe, writable=True)
+        pages = [{"offset": 0, "limit": 10000}, {"offset": 7, "limit": 20}, {"offset": 50, "limit": 1000},
+                 {"contains": "FUN_", "offset": 3, "limit": 30}]
+
+        def same(tag):
+            got = None
+            for _ in range(2):              # a walk, then the table of the state
+                got = [_canon(b.call("functions", **q)) for q in pages]
+                want = [_canon(a.call("functions", **q)) for q in pages]
+                dt.check(got == want, f"{tag}: the table daemon lists differently from the walk")
+            return json.loads(got[0])["returned"]
+
+        n0 = same("before")
+        x = a.call("functions", offset=10, limit=1)["functions"][0]["address"]
+        for s in (a, b):
+            _script(c, s, "delete", x)
+        n1 = same("after delete")
+        dt.check(n1 == n0 - 1, f"delete: {n0} -> {n1} functions")
+        for s in (a, b):
+            _script(c, s, "create", x)
+        n2 = same("after create")
+        dt.check(n2 == n0, f"create: {n1} -> {n2} functions")
+        st = _stats(b)
+        dt.check(st.get("builds", 0) >= 3, f"each state was not served from its own table: {st}")
+        return f"delete + create of {x}: {n0} -> {n1} -> {n2} functions, every page equal to the walk; {st}"
+    finally:
+        e9.close_all(a, b)
+        e9.stop(da)
+        e9.stop(db)
+
+
+def t_too_big(c):
+    exe = e9.fixture_args(c)
+    gr, g = c.copy_fixture("ftTbRef"), c.copy_fixture("ftTb")
+    dr, d = c.daemon("ft-tb-off", engine=OFF), c.daemon("ft-tb", engine={"functionTable": "4KB"})
+    r, ss = None, []
+    try:
+        r = c.connect(dr, "ref", "ft", 3)
+        e9.open_view(c, r, gr, exe)
+        total = _total(r)
+        step = max(1, total // 6)
+        offs = list(range(0, total + step, step))
+        ref = {o: _canon(r.call("functions", offset=o, limit=step)) for o in offs}
+        ss = [c.connect(d, f"tb{i}", "ft", 3) for i in range(8)]
+        for s in ss:
+            e9.open_view(c, s, g, exe)
+        out, go = [None] * 8, threading.Barrier(8)
+
+        def run(i):
+            go.wait()
+            mine = offs[1 + i % (len(offs) - 1):] + offs[:1 + i % (len(offs) - 1)]
+            res = {}
+            for o in mine * 2:
+                res[o] = _canon(ss[i].call("functions", offset=o, limit=step))
+            out[i] = res
+
+        ts = [threading.Thread(target=run, args=(i,)) for i in range(8)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join(300)
+        st = _stats(ss[0])
+        dt.check(all(o == ref for o in out), "a listing over budget differs from the reference walk")
+        dt.check(st.get("builds") == 0 and st.get("tables") == 0 and st.get("tooBig", 0) > 0,
+                 f"a table that cannot be kept was built: {st}")
+        return f"budget 4KB, 8 clients x {2 * len(offs)} pages: no build, all walks equal the reference; {st}"
+    finally:
+        e9.close_all(r, *ss)
+        e9.stop(dr)
+        e9.stop(d)
+
+
+def t_rename_race(c):
+    exe = e9.fixture_args(c)
+    g = c.copy_fixture("ftRace")
+    d = c.daemon("ft-race", engine=ON)
+    w, ps = None, []
+    try:
+        w = c.connect(d, "w", "ft", 3)
+        e9.open_view(c, w, g, exe, writable=True)
+        # one writer per program: the pagers are threads of the owning client (the session is thread-safe
+        # and the daemon serves one client's requests concurrently), so they list the very program edited
+        ps = [w] * 4
+        xoff = 9
+        x = w.call("functions", offset=xoff, limit=1)["functions"][0]["address"]
+        w.call("rename", address=x, name="ft_r0")
+        dt.check(ps[0].call("functions", offset=xoff, limit=1)["functions"][0]["name"].endswith("ft_r0"),
+                 "the pagers do not see the writer's program (not the same program object)")
+        acked = [0]             # the newest rename acknowledged
+        stop, bad, seen, busy, errors = threading.Event(), [], [0], [0], []
+        rx = re.compile(r"ft_r(\d+)$")
+
+        def writer():
+            try:
+                for i in range(1, 61):
+                    w.call("rename", address=x, name=f"ft_r{i}")
+                    acked[0] = i
+            finally:
+                stop.set()
+
+        def pager(p):
+            k = 0
+            while not stop.is_set():
+                floor = acked[0]
+                # a deep page (the table path) and the whole listing, alternately
+                q = {"offset": xoff, "limit": 1} if k % 2 == 0 else {"offset": 0, "limit": 10000}
+                k += 1
+                try:
+                    fs = p.call("functions", **q)["functions"]
+                except Exception as e:  # noqa: BLE001
+                    if getattr(e, "code", None) == "busy":
+                        busy[0] += 1        # the per-program wait queue is full: a legal reply, retry
+                        time.sleep(0.01)
+                        continue
+                    errors.append(repr(e)[:300])
+                    return
+                row = fs[0] if q["offset"] == xoff else fs[xoff]
+                m = rx.search(row["name"])
+                if not m or int(m.group(1)) < floor:
+                    bad.append((floor, row["name"]))
+                seen[0] += 1
+
+        ts = [threading.Thread(target=writer)] + [threading.Thread(target=pager, args=(p,)) for p in ps]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join(600)
+        st = _stats(w)
+        dt.check(acked[0] == 60, f"the writer stopped after {acked[0]} renames")
+        dt.check(not errors, f"a pager failed: {errors[:3]}")
+        dt.check(not bad, f"{len(bad)} listings showed a name older than an acknowledged rename: {bad[:5]}")
+        dt.check(seen[0] > 20, f"only {seen[0]} listings ran during the renames")
+        return f"60 renames, {seen[0]} concurrent listings ({busy[0]} busy retries): none stale; {st}"
+    finally:
+        e9.close_all(w)
+        e9.stop(d)
+
+
 TESTS = {
     "ft_identical": t_identical,
     "ft_invalidate": t_invalidate,
     "ft_single_flight": t_single_flight,
+    "ft_create_delete": t_create_delete,
+    "ft_too_big": t_too_big,
+    "ft_rename_race": t_rename_race,
 }
 
 BASELINE = {}

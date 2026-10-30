@@ -39,11 +39,14 @@ import ghidra.program.model.listing.*;
  * an array slice (no filter) or a scan of names in memory (a {@code regex} or {@code contains}).
  * The reply is the one the walk gives, field for field and in the same order.
  * <p>
- * A table is built only when it is worth it: for a page past the first, or for the second listing
- * of the same program state. The first page of a state never seen before is answered by the walk
- * itself (it stops after {@code limit} functions), so an edit followed by one listing costs no
- * more than before. Concurrent builders of one state share one build (single flight). A table is
- * kept only if the program's modification number did not move while it was built; tables are held
+ * A table is built only when it is worth it: for the second listing of the same program state.
+ * The first listing of a state never seen before is answered by the walk itself (it stops after
+ * {@code offset + limit} functions), so an edit followed by one listing, or a program that keeps
+ * changing, costs no more than before. No table is built for a program whose table could not be
+ * kept ({@code functionCount} times its last bytes per row over the budget). Concurrent builders
+ * of one state share one build (single flight), each waiting at most the request's wait; table
+ * and modification number are published together as one {@link Snap}. A table is kept only if
+ * the program's modification number did not move while it was built; tables are held
  * weakly by program (never keep a closed program alive) and bounded by {@code functionTable} bytes
  * (default 1/64 of the heap, at most 64 MB; 0 turns it off), the least recently used dropped first.
  */
@@ -188,13 +191,24 @@ final class FunctionTable {
 		return b < FLOOR_BYTES ? 0 : b;
 	}
 
+	/**
+	 * A table with the modification number it was built at, published as one reference so a reader
+	 * never pairs one state's table with another state's number.
+	 */
+	private record Snap(FunctionTable table, long mod) {
+	}
+
+	/** The least a row can weigh (see the constructor): the first estimate of a program's table. */
+	static final long MIN_ROW_BYTES = 8 + 8 + 8 + 1 + 56 + 56 + 2;
+
 	/** One program's newest table and its build lock. */
 	private static final class Holder {
 		final ReentrantLock build = new ReentrantLock();
-		volatile FunctionTable table;
-		volatile long tableMod = Long.MIN_VALUE;
-		/** The modification number of the last listing answered by a walk. */
-		volatile long walkedMod = Long.MIN_VALUE;
+		volatile Snap snap;
+		/** The modification number of the last listing answered without a table. */
+		volatile long listedMod = Long.MIN_VALUE;
+		/** Bytes per row of this program's last build: whether its next table can be kept. */
+		volatile long rowBytes = MIN_ROW_BYTES;
 		volatile long used;
 	}
 
@@ -210,6 +224,8 @@ final class FunctionTable {
 		final AtomicLong joined = new AtomicLong();
 		final AtomicLong unstored = new AtomicLong();
 		final AtomicLong evicted = new AtomicLong();
+		final AtomicLong tooBig = new AtomicLong();
+		final AtomicLong timedOut = new AtomicLong();
 
 		Cache(long budget) {
 			this.budget = budget;
@@ -225,24 +241,33 @@ final class FunctionTable {
 
 		/**
 		 * The reply of {@code functions} on {@code prog} as it stands now: from its table (built
-		 * now if worth it) or by a walk.
+		 * now if worth it) or by a walk. A caller waits at most {@code waitMs} for another
+		 * caller's build of the same state, then walks.
 		 */
-		JsonObject functions(Program prog, Pattern pat, String sub, int offset, int limit) {
+		JsonObject functions(Program prog, Pattern pat, String sub, int offset, int limit,
+				long waitMs) {
 			long mod = prog.getModificationNumber();
 			Holder h = holder(prog);
 			h.used = clock.incrementAndGet();
-			FunctionTable t = h.table;
-			if (t != null && h.tableMod == mod) {
+			Snap s = h.snap;
+			if (s != null && s.mod() == mod) {
 				hits.incrementAndGet();
-				return t.page(pat, sub, offset, limit);
+				return s.table().page(pat, sub, offset, limit);
 			}
-			if (offset == 0 && h.walkedMod != mod) {
-				// the first listing of this state: the walk stops after one page
-				h.walkedMod = mod;
+			if (h.listedMod != mod) {
+				// the first listing of this state (an edit, analysis): the walk stops at
+				// offset + limit, so a program that keeps changing never pays for full builds
+				h.listedMod = mod;
 				walks.incrementAndGet();
 				return walk(prog, pat, sub, offset, limit);
 			}
-			t = table(prog, h, mod);
+			if ((long) prog.getFunctionManager().getFunctionCount() * h.rowBytes > budget) {
+				// its table could not be kept: no build, no wait on other callers
+				tooBig.incrementAndGet();
+				walks.incrementAndGet();
+				return walk(prog, pat, sub, offset, limit);
+			}
+			FunctionTable t = table(prog, h, mod, waitMs);
 			if (t == null) {
 				walks.incrementAndGet();
 				return walk(prog, pat, sub, offset, limit);
@@ -250,31 +275,38 @@ final class FunctionTable {
 			return t.page(pat, sub, offset, limit);
 		}
 
-		/** The table of {@code prog} at {@code mod}: one build for concurrent callers. */
-		private FunctionTable table(Program prog, Holder h, long mod) {
-			boolean waited = h.build.isLocked();
-			h.build.lock();
+		/**
+		 * The table of {@code prog} at {@code mod}, one build for concurrent callers; null when
+		 * the program has moved past {@code mod} or another caller's build took over
+		 * {@code waitMs}.
+		 */
+		private FunctionTable table(Program prog, Holder h, long mod, long waitMs) {
+			boolean waited = !h.build.tryLock();
+			if (waited && !Waits.tryLock(h.build, waitMs)) {
+				timedOut.incrementAndGet();
+				return null;
+			}
 			try {
-				FunctionTable t = h.table;
-				if (t != null && h.tableMod == mod) {
+				Snap s = h.snap;
+				if (s != null && s.mod() == mod) {
 					(waited ? joined : hits).incrementAndGet();
-					return t;
+					return s.table();
 				}
 				if (prog.getModificationNumber() != mod) {
 					return null;
 				}
 				builds.incrementAndGet();
-				t = FunctionTable.build(prog);
-				if (prog.getModificationNumber() != mod) {
-					unstored.incrementAndGet();
-					return null; // the program moved during the walk: answered by a walk
+				FunctionTable t = FunctionTable.build(prog);
+				if (t.size() > 0) {
+					h.rowBytes = Math.max(MIN_ROW_BYTES, t.weight() / t.size());
 				}
-				if (t.weight() > budget) {
+				if (prog.getModificationNumber() != mod || t.weight() > budget) {
+					// moved during the build (this answer is as consistent as a walk during the
+					// same change) or too big to keep: answer from it, keep nothing
 					unstored.incrementAndGet();
 					return t;
 				}
-				h.table = t;
-				h.tableMod = mod;
+				h.snap = new Snap(t, mod);
 				trim(h);
 				return t;
 			}
@@ -289,11 +321,11 @@ final class FunctionTable {
 				long total = 0;
 				Holder oldest = null;
 				for (Holder h : holders.values()) {
-					FunctionTable t = h.table;
-					if (t == null) {
+					Snap s = h.snap;
+					if (s == null) {
 						continue;
 					}
-					total += t.weight();
+					total += s.table().weight();
 					if (h != keep && (oldest == null || h.used < oldest.used)) {
 						oldest = h;
 					}
@@ -301,8 +333,7 @@ final class FunctionTable {
 				if (total <= budget || oldest == null) {
 					return;
 				}
-				oldest.table = null;
-				oldest.tableMod = Long.MIN_VALUE;
+				oldest.snap = null;
 				evicted.incrementAndGet();
 			}
 		}
@@ -311,10 +342,10 @@ final class FunctionTable {
 			long bytes = 0;
 			int tables = 0;
 			for (Holder h : holders.values()) {
-				FunctionTable t = h.table;
-				if (t != null) {
+				Snap s = h.snap;
+				if (s != null) {
 					tables++;
-					bytes += t.weight();
+					bytes += s.table().weight();
 				}
 			}
 			JsonObject o = new JsonObject();
@@ -327,6 +358,8 @@ final class FunctionTable {
 			o.addProperty("joined", joined.get());
 			o.addProperty("unstored", unstored.get());
 			o.addProperty("evicted", evicted.get());
+			o.addProperty("tooBig", tooBig.get());
+			o.addProperty("timedOut", timedOut.get());
 			return o;
 		}
 	}

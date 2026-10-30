@@ -94,7 +94,7 @@ final class QueryCommands {
 		if (tables == null) {
 			return FunctionTable.walk(prog, pat, sub, offset, limit);
 		}
-		return tables.functions(prog, pat, sub, offset, limit);
+		return tables.functions(prog, pat, sub, offset, limit, Requests.waitMs(req));
 	}
 
 	/** The code of a decompile that failed in the native process (E9, 3.11): retryable. */
