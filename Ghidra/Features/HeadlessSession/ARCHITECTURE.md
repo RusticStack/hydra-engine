@@ -146,6 +146,11 @@ data-type and string decoding, so the next function fetches its data-types again
   option or action change (`setOptions`, `setSimplificationStyle`, the `toggle*` methods,
   `setSignatureSettings`), `structureGraph`, opening or closing a program and a process restart all go
   back to a full `flushNative`. Function state is never kept: a kept `Funcdata` would leak a recovered
-  prototype into its callers' decompiles.
-* `QueryCommands.decompile` gives the decompiler and its gate permit back once the result is decoded and
-  before the C text is printed (D9). The reply is unchanged.
+  prototype into its callers' decompiles. The kept state is bounded: after
+  `-Dhydra.decompiler.keepTypesLimit` functions (default 1000) a full `flushNative` runs. The kept types
+  belong to one process; a restarted process starts with cleared temporary ids. A decompiler whose reply
+  to `flushFunctions` is not `0` (an older `decompile` without the command) gets a full `flushNative`
+  instead. `DecompInterface.getKeptTypesFlushCount()` counts the accepted commands.
+* D9 (giving the permit back before the C text is printed) is not done: the result is decoded inside
+  `decompileFunction`, so only `PrettyPrinter` and the JSON building would leave the permit early, an
+  unmeasured gain for a second return path.

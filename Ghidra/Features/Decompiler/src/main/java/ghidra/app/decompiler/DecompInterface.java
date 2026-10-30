@@ -21,6 +21,7 @@ import static ghidra.program.model.pcode.ElementId.*;
 
 import java.io.*;
 import java.util.ArrayList;
+import java.util.concurrent.atomic.AtomicLong;
 
 import generic.jar.ResourceFile;
 import ghidra.app.decompiler.signature.DebugSignature;
@@ -160,8 +161,19 @@ public class DecompInterface {
 	 * (flushFunctions instead of flushNative). Off unless {@code -Dhydra.decompiler.keepTypes=true}.
 	 */
 	static final boolean KEEP_TYPES = Boolean.getBoolean("hydra.decompiler.keepTypes");
+	/**
+	 * Hydra: the number of functions after which kept data-types are dropped with a full
+	 * flushNative, so neither the native type factory nor the temporary-id maps grow without bound.
+	 */
+	static final int KEEP_TYPES_LIMIT =
+		Math.max(1, Integer.getInteger("hydra.decompiler.keepTypesLimit", 1000));
 	private static final long NO_KEPT_TYPES = -1;
-	private long keptTypesModification = NO_KEPT_TYPES;	// Program modification number of the kept types
+	private static final AtomicLong keptTypesFlushes = new AtomicLong();
+	// Program modification number of the kept types, and the process that keeps them. Written by
+	// stopProcess() from other threads, so a restarted process never sees stale temporary ids.
+	private volatile long keptTypesModification = NO_KEPT_TYPES;
+	private volatile DecompileProcess keptTypesProcess;
+	private int keptTypesFunctions;		// Functions decompiled since the types were last flushed
 
 	public DecompInterface() {
 		program = null;
@@ -725,6 +737,8 @@ public class DecompInterface {
 	public synchronized int flushCache() {
 		int res = -1;
 		keptTypesModification = NO_KEPT_TYPES;
+		keptTypesProcess = null;
+		keptTypesFunctions = 0;
 		try {
 			if ((decompProcess != null) && decompProcess.isReady()) {
 				decompProcess.sendCommand("flushNative", stringResponse);
@@ -751,7 +765,15 @@ public class DecompInterface {
 		try {
 			if ((decompProcess != null) && decompProcess.isReady()) {
 				decompProcess.sendCommand("flushFunctions", stringResponse);
-				keptTypesModification = modification;
+				if (stringResponse.toString().equals("0")) {
+					keptTypesProcess = decompProcess;
+					keptTypesModification = modification;
+					keptTypesFunctions++;
+					keptTypesFlushes.incrementAndGet();
+					return;
+				}
+				// A decompiler without the command flushed nothing: flush everything instead
+				flushCache();
 				return;
 			}
 		}
@@ -763,6 +785,15 @@ public class DecompInterface {
 		}
 		keptTypesModification = NO_KEPT_TYPES;
 		stopProcess();
+	}
+
+	/**
+	 * Hydra: the number of times, in this JVM, a decompiler process accepted flushFunctions and
+	 * kept its data-types for the next function.
+	 * @return the count of accepted flushFunctions commands
+	 */
+	public static long getKeptTypesFlushCount() {
+		return keptTypesFlushes.get();
 	}
 
 	/**
@@ -823,8 +854,13 @@ public class DecompInterface {
 
 		long modification = program == null ? NO_KEPT_TYPES : program.getModificationNumber();
 		boolean debugWasOff = debug == null;
+		DecompileProcess keeper = keptTypesProcess;
 		if (keptTypesModification != NO_KEPT_TYPES &&
-			(modification != keptTypesModification || debug != null)) {
+			(keeper != decompProcess || keeper == null || !keeper.isReady())) {
+			keptTypesModification = NO_KEPT_TYPES;	// The process that kept the types is gone
+		}
+		if (keptTypesModification != NO_KEPT_TYPES && (modification != keptTypesModification ||
+			debug != null || keptTypesFunctions >= KEEP_TYPES_LIMIT)) {
 			flushCache();
 		}
 		if (keptTypesModification == NO_KEPT_TYPES) {
@@ -909,6 +945,7 @@ public class DecompInterface {
 	 */
 	public void stopProcess() {
 		keptTypesModification = NO_KEPT_TYPES;
+		keptTypesProcess = null;
 		if (decompProcess != null) {
 			decompProcess.dispose();
 		}
@@ -1054,7 +1091,9 @@ public class DecompInterface {
 	 * @return true if the settings took effect
 	 */
 	public boolean setSignatureSettings(int value) {
-		dropKeptTypes();
+		synchronized (this) {
+			dropKeptTypes();
+		}
 		sigSettings = value;
 		// Property can be set before process exists
 		if (decompProcess == null) {

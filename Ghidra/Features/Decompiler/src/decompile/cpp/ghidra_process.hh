@@ -146,7 +146,7 @@ public:
   virtual void rawAction(void);
 };
 
-/// rief Command to  flush the per-function symbols of a Program, keeping its data-types
+/// \brief Command to \b flush the per-function symbols of a Program, keeping its data-types
 ///
 /// Like FlushNative, but the data-type and string caches are kept. The client sends it only while
 /// the Program is unchanged since the kept data-types were fetched, so the next function does not

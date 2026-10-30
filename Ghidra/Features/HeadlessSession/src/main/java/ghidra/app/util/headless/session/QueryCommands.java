@@ -140,7 +140,6 @@ final class QueryCommands {
 		}
 		DecompInterface d = e.borrowDecompiler();
 		boolean healthy = false;
-		boolean returned = false;
 		try {
 			DecompileResults res = d.decompileFunction(f, timeout, m);
 			if (m.isCancelled()) {
@@ -171,10 +170,6 @@ final class QueryCommands {
 			}
 			healthy = true;
 			DecompilerGate.Breaker.succeeded(prog, f);
-			// D9: the result is decoded; give the process and its permit back before the C text is
-			// printed, so the next decompile does not wait for it
-			returned = true;
-			e.returnDecompiler(d, true);
 			DecompiledFunction df = res.getDecompiledFunction();
 			String c = df.getC();
 			Json.put(r, "signature", df.getSignature());
@@ -184,9 +179,7 @@ final class QueryCommands {
 			return r;
 		}
 		finally {
-			if (!returned) {
-				e.returnDecompiler(d, healthy);
-			}
+			e.returnDecompiler(d, healthy);
 		}
 	}
 
