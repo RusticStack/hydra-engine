@@ -84,7 +84,44 @@ final class FunctionIndex {
 			return Json.of("name", names[i], "address", addresses[i], "size", sizes[i], "thunk",
 				(flags[i] & 1) != 0, "external", (flags[i] & 2) != 0);
 		}
+
+		/** Hydra reply-encode: the off-heap copy for the native encoder, made on first use. */
+		private volatile ReplyEncoder.Columns columns;
+		/** Names this program state in the daemon-wide page cache (which keeps no reference to it). */
+		final long id = IDS.incrementAndGet();
+
+		ReplyEncoder.Columns columns() {
+			ReplyEncoder.Columns c = columns;
+			if (c == null) {
+				synchronized (this) {
+					c = columns;
+					if (c == null) {
+						columns = c = new ReplyEncoder.Columns(this);
+					}
+				}
+			}
+			return c;
+		}
+
+		/**
+		 * The JSON array of rows {@code from..to}, encoded natively, or taken from the daemon-wide
+		 * page cache when an earlier request of any client asked for the same page of this program
+		 * state; null when the native encoder failed.
+		 */
+		byte[] page(int from, int to) {
+			byte[] b = ReplyEncoder.cachedPage(id, from, to);
+			if (b != null) {
+				return b;
+			}
+			b = ReplyEncoder.functionRows(this, null, 0, from, to);
+			if (b != null) {
+				ReplyEncoder.cachePage(id, from, to, b);
+			}
+			return b;
+		}
 	}
+
+	private static final AtomicLong IDS = new AtomicLong();
 
 	/** The build of one program, or its finished snapshot. */
 	private static final class Slot {
@@ -109,6 +146,11 @@ final class FunctionIndex {
 	}
 
 	private FunctionIndex() {
+	}
+
+	/** Registers {@code health.functionIndex} at start-up, so health has one shape on every run. */
+	static void init() {
+		// the class initializer does it
 	}
 
 	static boolean enabled() {
