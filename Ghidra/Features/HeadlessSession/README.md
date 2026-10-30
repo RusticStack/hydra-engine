@@ -1420,9 +1420,11 @@ section 6.1, each with its test; until a gate of section 9 has passed, nothing b
   `monitor.checkCancelled()` keeps its program lock after its client is gone. The engine bounds the
   wait, shows the holder and keeps the rest of the daemon running; restarting the daemon is safe for
   Hydralysis work (its store is the record). Only a helper JVM for user scripts is a hard remedy: that
-  is the script worker (E7, `isolation:"worker"`), and its release gate (9.14) has not passed as a
-  whole, so the documents say such a script is bounded and quarantined: confined to its owner's
-  view and one slot, counted against the owner's cap.
+  is the script worker (E7, `isolation:"worker"`), whose items of release gate 9.14 passed
+  (`e7_edited_view`, `e7_kill_by_hand`, `e7_cancel_cap`, `e7_cost`): a script run there is ended at
+  its timeout. A script run inside the daemon (`shared`, `exclusive` or `private`) is bounded and
+  quarantined, not stopped: confined to its owner's view and one slot, counted against the owner's
+  cap.
 - **L2, the overlay lifecycle waits are not cancel-aware.** `openOverlay`, `rebuildOverlays`,
   `dropOverlays` and `promoteOverlay` take untimed locks on an overlay's lock. `cancel`, a `timeout`
   deadline and the release of a dead client do not reach a request blocked there. What `cancel` and a
@@ -1483,8 +1485,9 @@ section 6.1, each with its test; until a gate of section 9 has passed, nothing b
   cannot be read; it is never guessed.
 - **L19, sources of numbers.** The save time (about 35 s) and the clone and hash costs come from the
   1.5 GB, 243,855-function benchmark; the golden baseline is KotOR (122 MB). Every timing constant of
-  the design is unmeasured on the target machine until the measurements of release gate 9.10 are
-  recorded.
+  the design was unmeasured on the target machine until release gate 9.10 recorded its measurements
+  (2026-10-30, on the NTFS volumes C:, D: and E:; the Dev Drive and clone against copy were not
+  measured; `docs/release-notes-12.3-hydra.4.md`, gate 9.10).
 - **R6.1** Every measurement behind the design (streams A, B, C and D) is a single run or a handful on
   one 24-CPU machine under foreign load (A varied about 2x between identical runs), on KotOR (8,966
   functions) only; heap per view, fork time, publish latency and the soak result do not transfer to a
@@ -1499,13 +1502,15 @@ section 6.1, each with its test; until a gate of section 9 has passed, nothing b
   and views.
 - **R6.5** One `Program` instance serves DB-bound reads at 1.4x to 1.8x of one reader, until E11
   (hydra.5, conditional).
-- **R6.6** A script that ignores cancel cannot be stopped until the script worker's gate (9.14) passes
-  (L1).
+- **R6.6** A script that ignores cancel cannot be stopped inside the daemon; only the script worker,
+  whose items of gate 9.14 passed, ends one (L1).
 - **R6.7** A native decompiler is one process per concurrent request. The decompiler gate of the
-  resource governor (E9) is in this build, but its release gate (9.14) has not passed as a whole, so
-  no bound on the number of decompiler processes is stated.
+  resource governor (E9) is in this build and release gate 9.14 passed, but its tests cover a crash,
+  a hang and a kill, not the number of processes, so no bound on the number of decompiler processes
+  is stated.
 - **R6.8** The unmeasured values (heap watermarks, eviction times, quotas, `BASE_WAIT_S`) are starting
-  points, to be checked by the squeeze laps of release gate 9.14.
+  points. The squeeze laps of release gate 9.14 passed with them at `-Xmx256m` and `-Xmx512m`; that
+  shows those two budgets, not that the values are tuned.
 - **R6.9** ReFS gives a disk saving and no protection (and nothing about ReFS is tested for this
   release, L8).
 - **R6.10** Whether the version-file defect (the newest version unopenable after a kill during a

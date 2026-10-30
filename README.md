@@ -167,16 +167,19 @@ Several at once (same machine; the module README has the method):
   `fork_project`, `refresh`, `reopen` and `promote_overlay` use their own maintenance lane
   (`maintSlots`, 4 by default); a protocol 2 client keeps the lanes above.
 - **Since hydra.4 a client that dies is released after a bounded time; a script that ignores
-  cancel keeps running.** The engine cancels its requests when the connection closes, and `cancel`
+  cancel keeps running inside the daemon.** The engine cancels its requests when the connection closes, and `cancel`
   (or a `timeout`) ends a request that waits in a request-bound lock wait (a program, a project, an
   overlay's request lock site). The overlay lifecycle waits (open, rebuild, drop, promote of an
   overlay) are untimed: `cancel`, a `timeout` and the release do not reach them. After
   `cleanupGraceS` (15 s) the remaining requests are interrupted, and after `abandonWaitS` (5 s) more
   the client is released even if one still runs (the locks it holds are flagged abandoned). The
-  tests of this (`cc_e3b` `dead_client_lock_wait`, `owner_leave_bounded`) pass; the release gate
-  that times it (9.13) has not passed. Java cannot stop a non-cooperative thread: a script that does
-  not poll for cancellation runs to its own end, bounded and quarantined, not stopped. This is a
-  documented limit.
+  tests of this (`cc_e3b` `dead_client_lock_wait`, `owner_leave_bounded`) pass, and so do the timing
+  items of release gate 9.13 (`dead_client_released`, `owner_leave_bounded`, `cancel_while_waiting`);
+  9.13 as a whole was not met, on reader throughput under view writers (`s11`, see the
+  [release notes](docs/release-notes-12.3-hydra.4.md)). Java cannot stop a non-cooperative thread: a
+  script that does not poll for cancellation and runs inside the daemon runs to its own end, bounded
+  and quarantined, not stopped. A script run in the script worker (`isolation:"worker"`) is ended at
+  its timeout (release gate 9.14, `e7_kill_by_hand`, `e7_edited_view`). This is a documented limit.
 - **Every limit of hydra.4 and protocol 3** (`PROTOCOL-3.md` 6.2) is listed in the module README,
   [Limits of 12.3-hydra.4 and protocol 3](Ghidra/Features/HeadlessSession/README.md#limits-of-123-hydra4-and-protocol-3).
   Among them: nothing about ReFS is tested for this release (there is no ReFS volume on the release
@@ -191,7 +194,7 @@ Several at once (same machine; the module README has the method):
 
 One port serves protocol 2 and protocol 3. A client that asks for nothing newer gets protocol 2, with
 replies byte-identical to 12.3-hydra.3 except for the changes listed by name in the
-[release notes](docs/release-notes-12.3-hydra.4.md) (V1 to V11; the table is in
+[release notes](docs/release-notes-12.3-hydra.4.md) (V1 to V12; the table is in
 [`PROTOCOL-3.md`](Ghidra/Features/HeadlessSession/PROTOCOL-3.md), section 5.1). `minClient` stays `1.0.0`:
 no existing client is rejected. The legacy window: hydra.4 serves protocol 2; whether a later release
 refuses it is the owner's decision.
@@ -243,8 +246,8 @@ has `hydra-engine-<version>-win_x86_64.zip`, the client alone as `hydra-client-<
 and a `SHA256SUMS`. Unzip the engine anywhere; it holds the install, `ghidra_12.3_DEV\`:
 
 ```powershell
-Get-FileHash hydra-engine-12.3-hydra.3-win_x86_64.zip     # compare with SHA256SUMS
-Expand-Archive hydra-engine-12.3-hydra.3-win_x86_64.zip C:\tools
+Get-FileHash hydra-engine-12.3-hydra.4-win_x86_64.zip     # compare with SHA256SUMS
+Expand-Archive hydra-engine-12.3-hydra.4-win_x86_64.zip C:\tools
 $G = "C:\tools\ghidra_12.3_DEV"
 python $G\Ghidra\Features\HeadlessSession\support\ghidra_session.py ensure   # the daemon
 & $G\support\analyzeHeadless.bat C:\re MyProject -import target.exe          # stock headless
