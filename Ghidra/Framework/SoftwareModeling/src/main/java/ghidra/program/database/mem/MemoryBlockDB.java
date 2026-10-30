@@ -433,6 +433,14 @@ public class MemoryBlockDB implements MemoryBlock {
 	}
 
 	public byte getByte(long offset) throws MemoryAccessException {
+		MemoryReadSnapshot snapshot = memMap.activeReadSnapshot();
+		if (snapshot != null && offset >= 0 && offset < length) {
+			int b = snapshot.readByte(startAddress.getAddressSpace(),
+				startAddress.getOffset() + offset);	// no allocation per byte
+			if (b >= 0) {
+				return (byte) b;
+			}
+		}
 		SubMemoryBlock subBlock = getSubBlock(offset);
 		try {
 			return subBlock.getByte(offset);
@@ -454,6 +462,15 @@ public class MemoryBlockDB implements MemoryBlock {
 		}
 
 		len = (int) Math.min(len, length - offset);
+
+		if (len > 0) {
+			// Hydra: a sealed generation's bytes from the read snapshot (off-heap) when installed
+			MemoryReadSnapshot snapshot = memMap.activeReadSnapshot();
+			if (snapshot != null && snapshot.read(startAddress.getAddressSpace(),
+				startAddress.getOffset() + offset, b, off, len)) {
+				return len;
+			}
+		}
 
 		int totalCopied = 0;
 

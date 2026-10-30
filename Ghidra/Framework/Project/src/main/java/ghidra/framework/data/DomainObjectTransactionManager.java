@@ -287,6 +287,7 @@ class DomainObjectTransactionManager extends AbstractTransactionManager {
 	void doRedo(boolean notify) throws IOException {
 		if (canRedo()) {
 			DomainObjectDBTransaction t = redoList.removeLast();
+			domainObj.beforeUndoRedo();
 			domainObj.dbh.redo();
 			domainObj.clearCache(false);
 			if (domainObj.changeSet != null) {
@@ -306,6 +307,7 @@ class DomainObjectTransactionManager extends AbstractTransactionManager {
 		if (canUndo()) {
 			DomainObjectDBTransaction t = undoList.removeLast();
 			t.initAfterState(domainObj);
+			domainObj.beforeUndoRedo();
 			domainObj.dbh.undo();
 			if (domainObj.changeSet != null) {
 				domainObj.changeSet.undo();

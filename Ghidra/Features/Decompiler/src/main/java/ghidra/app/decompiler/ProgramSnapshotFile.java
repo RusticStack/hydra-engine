@@ -176,6 +176,25 @@ public final class ProgramSnapshotFile {
 	}
 
 	/**
+	 * Lease the snapshot file of the program's current generation for another reader than the
+	 * decompiler (the same shared file, written if no other user has): see
+	 * {@link MappedProgramSnapshot}. Release it with {@link #releaseLease()}.
+	 * @param program the program
+	 * @return the leased snapshot, or null when none can be had now (see {@code acquire})
+	 */
+	public static ProgramSnapshotFile lease(Program program) {
+		return acquire(program, null);
+	}
+
+	/**
+	 * Release a lease taken with {@link #lease(Program)}; the file is deleted when its last lease
+	 * is released (after every mapping of it in this JVM is closed).
+	 */
+	public void releaseLease() {
+		release(this);
+	}
+
+	/**
 	 * Release a lease; the file is deleted when its last lease is released.
 	 * @param snapshot the lease to release, or null
 	 */

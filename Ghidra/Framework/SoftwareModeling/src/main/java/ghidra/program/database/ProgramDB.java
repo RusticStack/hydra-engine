@@ -1885,6 +1885,14 @@ public class ProgramDB extends DomainObjectAdapterDB implements Program, ChangeM
 	}
 
 	@Override
+	protected void beforeUndoRedo() {
+		// Hydra: a memory read snapshot holds the pre-undo/redo bytes; drop it before they change
+		if (memoryManager != null) {
+			memoryManager.setReadSnapshot(null);
+		}
+	}
+
+	@Override
 	protected void clearCache(boolean all) {
 		try (Closeable c = lock.write()) {
 			super.clearCache(all);
