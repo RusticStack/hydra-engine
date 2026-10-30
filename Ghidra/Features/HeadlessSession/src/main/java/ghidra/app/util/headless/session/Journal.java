@@ -68,8 +68,12 @@ final class Journal {
 		new AtomicReferenceArray<>(CHUNKS);
 	/** The last appended {@code seq}: the publication point readers synchronise on. */
 	private volatile long seq;
-	/** The {@code seq}s of the held entries of each idempotency key, oldest first. */
-	private final ConcurrentHashMap<String, long[]> rkIndex = new ConcurrentHashMap<>();
+	/**
+	 * The {@code seq}s of the held entries of each idempotency key, oldest first. One {@code edit}
+	 * journals every op of its batch under one key, so appending and dropping are amortised O(1)
+	 * per entry (see {@link SeqRun}), never a copy of the key's whole list.
+	 */
+	private final ConcurrentHashMap<String, SeqRun> rkIndex = new ConcurrentHashMap<>();
 	/** The {@code seq} of the newest entry per (address, field), for {@link #lastAt}. */
 	private final ConcurrentHashMap<String, Long> lastIndex = new ConcurrentHashMap<>();
 	/**
@@ -96,7 +100,9 @@ final class Journal {
 			}
 			put(s, e);
 			if (e.has("rk")) {
-				rkIndex.merge(e.get("rk").getAsString(), new long[] { s }, Journal::concat);
+				String rk = e.get("rk").getAsString();
+				SeqRun r = rkIndex.get(rk);
+				rkIndex.put(rk, r == null ? SeqRun.of(s) : r.plus(s));
 			}
 			String k = lastKey(e);
 			if (k != null) {
@@ -114,12 +120,13 @@ final class Journal {
 	 */
 	List<JsonObject> byRk(String rk) {
 		List<JsonObject> out = new ArrayList<>();
-		long[] seqs = rkIndex.get(rk);
-		if (seqs == null) {
+		SeqRun run = rkIndex.get(rk);
+		if (run == null) {
 			return out;
 		}
 		long lo = oldest(seq);
-		for (long s : seqs) {
+		for (int i = run.from; i < run.to; i++) {
+			long s = run.seqs[i];
 			JsonObject e = s >= lo ? get(s) : null;
 			if (e != null) {
 				out.add(e.deepCopy());
@@ -197,15 +204,29 @@ final class Journal {
 		return Math.max(1, hi - CAP + 1);
 	}
 
-	/** Drops entry {@code s} from the indexes (its slot is reused {@link #RING} entries later). */
+	/** Drops entry {@code s}: clears its slot and removes it from the indexes. */
 	private void evict(long s) {
-		JsonObject old = get(s);
-		if (old == null) {
+		long i = (s - 1) % RING;
+		AtomicReferenceArray<Slot> chunk = ring.get((int) (i / CHUNK));
+		Slot slot = chunk == null ? null : chunk.get((int) (i % CHUNK));
+		if (slot == null || slot.seq != s) {
 			return;
 		}
+		// release the entry now rather than RING - CAP appends later; get() reads null as dropped
+		chunk.compareAndSet((int) (i % CHUNK), slot, null);
+		JsonObject old = slot.e;
 		if (old.has("rk")) {
-			rkIndex.computeIfPresent(old.get("rk").getAsString(), (k, v) -> v[0] != s ? v
-					: v.length == 1 ? null : Arrays.copyOfRange(v, 1, v.length));
+			String rk = old.get("rk").getAsString();
+			SeqRun r = rkIndex.get(rk);
+			if (r != null && r.seqs[r.from] == s) {
+				SeqRun rest = r.minusFirst();
+				if (rest == null) {
+					rkIndex.remove(rk, r);
+				}
+				else {
+					rkIndex.put(rk, rest);
+				}
+			}
 		}
 		String k = lastKey(old);
 		if (k != null) {
@@ -235,9 +256,47 @@ final class Journal {
 		return slot != null && slot.seq == s ? slot.e : null;
 	}
 
-	private static long[] concat(long[] a, long[] b) {
-		long[] r = Arrays.copyOf(a, a.length + b.length);
-		System.arraycopy(b, 0, r, a.length, b.length);
-		return r;
+	/**
+	 * An immutable view {@code seqs[from, to)} of one key's held {@code seq}s, oldest first. Only
+	 * the writer (under {@code append}) makes new views. Several views share one array: the writer
+	 * only ever writes at the newest view's {@code to}, which no published view covers, and drops by
+	 * moving {@code from}, so a reader's view never changes under it. When the array is full the
+	 * live range is copied once into an array twice its size: appends and drops are amortised O(1).
+	 */
+	private static final class SeqRun {
+		final long[] seqs;
+		final int from, to;
+
+		private SeqRun(long[] seqs, int from, int to) {
+			this.seqs = seqs;
+			this.from = from;
+			this.to = to;
+		}
+
+		static SeqRun of(long s) {
+			long[] a = new long[4];
+			a[0] = s;
+			return new SeqRun(a, 0, 1);
+		}
+
+		SeqRun plus(long s) {
+			long[] a = seqs;
+			int f = from, t = to;
+			if (t == a.length) {
+				int n = t - f;
+				long[] b = new long[Math.max(4, n * 2)];
+				System.arraycopy(a, f, b, 0, n);
+				a = b;
+				f = 0;
+				t = n;
+			}
+			a[t] = s; // beyond every published view of a: no reader sees it before the new view
+			return new SeqRun(a, f, t + 1);
+		}
+
+		/** This run without its oldest {@code seq}, or null when that was the last one. */
+		SeqRun minusFirst() {
+			return from + 1 == to ? null : new SeqRun(seqs, from + 1, to);
+		}
 	}
 }

@@ -17,10 +17,12 @@ package ghidra.app.util.headless.session;
 
 import static org.junit.Assert.*;
 
+import java.lang.reflect.Field;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicReferenceArray;
 
 import org.junit.Test;
 
@@ -171,25 +173,80 @@ public class JournalTest {
 	}
 
 	/**
-	 * A reader never waits for another holder of the journal: before, every read was
-	 * {@code synchronized} on the journal and waited here.
+	 * A reader never waits for a writer that is inside {@code add}: the test holds the monitor the
+	 * writer appends under (and the journal's own monitor, which the old reads took) while every
+	 * read runs.
 	 */
 	@Test
 	public void readersTakeNoTurn() throws Exception {
 		Journal j = new Journal();
 		Client a = client(1);
 		j.add(a, "edit", change("rename", "1000", "k"));
+		Field f = Journal.class.getDeclaredField("append");
+		f.setAccessible(true);
+		Object appendLock = f.get(j);
 		ExecutorService ex = Executors.newSingleThreadExecutor();
 		try {
 			synchronized (j) {
-				Future<Integer> r = ex.submit(() -> j.since(0, null, 10).size() +
-					j.byRk("k").size() + (j.lastAt("1000", "name") != null ? 1 : 0) +
-					j.newestFirst(0).size() + (int) j.seq() + (int) j.dropped());
-				assertEquals(Integer.valueOf(5), r.get(5, TimeUnit.SECONDS));
+				synchronized (appendLock) {
+					Future<Integer> r = ex.submit(() -> j.since(0, null, 10).size() +
+						j.byRk("k").size() + (j.lastAt("1000", "name") != null ? 1 : 0) +
+						j.newestFirst(0).size() + (int) j.seq() + (int) j.dropped());
+					assertEquals(Integer.valueOf(5), r.get(5, TimeUnit.SECONDS));
+				}
 			}
 		}
 		finally {
 			ex.shutdownNow();
 		}
+	}
+
+	/**
+	 * One {@code edit} journals every op of its batch under one idempotency key: appending such a
+	 * batch, and dropping it again under the cap, is linear, not a copy of the key's list per entry.
+	 */
+	@Test(timeout = 20_000)
+	public void largeOneKeyBatchIsLinear() {
+		Journal j = new Journal();
+		Client a = client(1);
+		for (int i = 0; i < Journal.CAP; i++) {
+			j.add(a, "edit", change("rename", "a" + i, "batch"));
+		}
+		assertEquals(Journal.CAP, j.byRk("batch").size());
+		for (int i = 0; i < Journal.CAP / 2; i++) {
+			j.add(a, "edit", change("rename", "b" + i, null));
+		}
+		List<JsonObject> held = j.byRk("batch");
+		assertEquals(Journal.CAP / 2, held.size());
+		assertEquals(Journal.CAP / 2 + 1, held.get(0).get("seq").getAsLong());
+		assertEquals(Journal.CAP, held.get(held.size() - 1).get("seq").getAsLong());
+		for (int i = 0; i < Journal.CAP / 2; i++) {
+			j.add(a, "edit", change("rename", "c" + i, i % 3 == 0 ? "batch" : null));
+		}
+		held = j.byRk("batch");
+		assertEquals((Journal.CAP / 2 + 2) / 3, held.size());
+		long prev = 0;
+		for (JsonObject e : held) {
+			long s = e.get("seq").getAsLong();
+			assertTrue(s > prev && s > j.dropped());
+			prev = s;
+		}
+	}
+
+	/** A dropped entry is released at once, not kept until its ring slot is reused. */
+	@Test
+	public void droppedEntryIsReleased() throws Exception {
+		Journal j = new Journal();
+		Client a = client(1);
+		for (int i = 0; i < Journal.CAP + 1; i++) {
+			j.add(a, "edit", change("rename", "a" + (i % 10), null));
+		}
+		Field rf = Journal.class.getDeclaredField("ring");
+		rf.setAccessible(true);
+		@SuppressWarnings("unchecked")
+		AtomicReferenceArray<AtomicReferenceArray<?>> ring =
+			(AtomicReferenceArray<AtomicReferenceArray<?>>) rf.get(j);
+		assertNull(ring.get(0).get(0)); // seq 1, dropped by the cap
+		assertNotNull(ring.get(0).get(1)); // seq 2, held
 	}
 }
