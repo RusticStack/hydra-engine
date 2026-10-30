@@ -45,6 +45,8 @@ import ghidra.util.cpu.HydraCpu;
  * this</td></tr>
  * <tr><td>{@code decompileCache}</td><td>1/32 of {@code -Xmx}, at most 256 MB, off below 8 MB: the
  * decompile results of unchanged programs shared by every connection (0 turns it off)</td></tr>
+ * <tr><td>{@code functionTable}</td><td>1/64 of {@code -Xmx}, at most 64 MB, off below 1 MB: the
+ * function listings of program states shared by every connection (0 turns it off)</td></tr>
  * <tr><td>{@code decompilerWaitS}</td><td>60: the longest a request waits for a decompiler
  * permit before {@code busy}</td></tr>
  * </table>
@@ -142,6 +144,14 @@ final class Budgets {
 	 */
 	static long decompileCacheBytes() {
 		return size("decompileCache", DecompileCache.defaultBytes(maxHeapBytes()));
+	}
+
+	/**
+	 * {@code functionTable}: the bytes of function listings kept per program state
+	 * ({@link FunctionTable}); default 1/64 of the heap, at most 64 MB, 0 (off) below 1 MB.
+	 */
+	static long functionTableBytes() {
+		return size("functionTable", FunctionTable.defaultBytes(maxHeapBytes()));
 	}
 
 	static long viewDiskBudgetBytes() {

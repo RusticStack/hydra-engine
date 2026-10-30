@@ -89,29 +89,12 @@ final class QueryCommands {
 		String sub = Json.str(req, "contains", null);
 		int limit = (int) Json.num(req, "limit", 200, 1, 10_000);
 		int offset = (int) Json.num(req, "offset", 0, 0, Integer.MAX_VALUE);
-		JsonArray a = new JsonArray();
-		int seen = 0;
-		boolean truncated = false;
-		for (Function f : prog.getFunctionManager().getFunctions(true)) {
-			String n = f.getName(true);
-			if (pat != null && !pat.matcher(n).find()) {
-				continue;
-			}
-			if (sub != null && !n.contains(sub)) {
-				continue;
-			}
-			if (seen++ < offset) {
-				continue;
-			}
-			if (a.size() >= limit) {
-				truncated = true;
-				break;
-			}
-			a.add(Json.of("name", n, "address", hex(f.getEntryPoint()), "size",
-				f.getBody().getNumAddresses(), "thunk", f.isThunk(), "external", f.isExternal()));
+		// H1: one table per program state, shared by every request and view (FunctionTable)
+		FunctionTable.Cache tables = FunctionTable.cache();
+		if (tables == null) {
+			return FunctionTable.walk(prog, pat, sub, offset, limit);
 		}
-		return Json.of("functions", a, "offset", offset, "returned", a.size(), "truncated",
-			truncated);
+		return tables.functions(prog, pat, sub, offset, limit);
 	}
 
 	/** The code of a decompile that failed in the native process (E9, 3.11): retryable. */
