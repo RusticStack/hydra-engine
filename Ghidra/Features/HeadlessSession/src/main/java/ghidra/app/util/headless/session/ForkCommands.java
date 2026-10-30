@@ -201,6 +201,8 @@ final class ForkCommands {
 		// the lazy sweep: what a dead publisher of this engine left here is removed first, so that
 		// its half fork never answers a retry with a bare conflict (D41)
 		ForkSweeper.sweepFor(destDir, name);
+		// 8.13: recorded before anything is staged, so a daemon start sweeps it after a kill
+		ForkSweeper.registerParent(destDir);
 		String id = ProjectFork.newId();
 		ForkSweeper.Claim claim;
 		long giveUpAt = System.nanoTime() + waitMs(req) * 1_000_000L;

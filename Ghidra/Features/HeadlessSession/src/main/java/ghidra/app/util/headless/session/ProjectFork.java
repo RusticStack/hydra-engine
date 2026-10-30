@@ -228,11 +228,22 @@ final class ProjectFork {
 	static final String STATE_COMPLETE = "complete";
 
 	/**
+	 * 8.13 (A62): the temporary file of {@link #writeSidecar} names the process that writes it,
+	 * {@code <file>.<pid>.tmp}, so that a sweeper can prove its writer dead (a kill between the
+	 * write and the rename leaves it, also after the fork's staging folder is gone: the promote
+	 * marker) and two processes never share one temporary file. {@code <file>.tmp} is the name of
+	 * builds before it.
+	 */
+	static File tmpOf(File f, long pid) {
+		return new File(f.getPath() + "." + pid + ".tmp");
+	}
+
+	/**
 	 * Writes a sidecar atomically and flushed (a temporary file forced to disk, then a rename), so
 	 * that a reader sees the old record or the new one and never a torn one.
 	 */
 	static void writeSidecar(File f, JsonObject o) throws IOException {
-		File tmp = new File(f.getPath() + ".tmp");
+		File tmp = tmpOf(f, ProcessHandle.current().pid());
 		try (java.nio.channels.FileChannel ch = java.nio.channels.FileChannel.open(tmp.toPath(),
 			StandardOpenOption.CREATE, StandardOpenOption.WRITE,
 			StandardOpenOption.TRUNCATE_EXISTING)) {
@@ -461,6 +472,27 @@ final class ProjectFork {
 	}
 
 	/**
+	 * Test hook only (launch property {@code ghidra.session.testHooks}): holds the publish between
+	 * the move of the {@code .rep} and the move of the {@code .gpr} for
+	 * {@code ghidra.session.testForkPauseAfterRepMs} ms, so a test can kill the daemon exactly
+	 * there (8.13, {@code e2a_sweep_at_start}). Does nothing without the hooks.
+	 */
+	private static void pauseBetweenRenames() {
+		if (!Health.testHooks()) {
+			return;
+		}
+		long ms = Long.getLong("ghidra.session.testForkPauseAfterRepMs", 0L);
+		if (ms > 0) {
+			try {
+				Thread.sleep(ms);
+			}
+			catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+			}
+		}
+	}
+
+	/**
 	 * {@link #publish(Staged, File, String, JsonObject, String)} for a fork that also carries
 	 * files staged next to the project (a backup's {@code backup.json}, the {@code SEALED.json}
 	 * marker): each is moved into {@code destDir} after the {@code .rep} and before the
@@ -499,6 +531,7 @@ final class ProjectFork {
 		catch (FileAlreadyExistsException e) {
 			throw new RaceLost("another publisher holds " + destRep);
 		}
+		pauseBetweenRenames();
 		boolean committed = false;
 		try {
 			sidecar.addProperty("forkId", st.id());
@@ -519,7 +552,7 @@ final class ProjectFork {
 				// reader holds the sidecar open (F1: one attempt could leave a sidecar alone)
 				removeRetrying(destRep);
 				removeRetrying(sc.toPath());
-				removeRetrying(Path.of(sc.getPath() + ".tmp"));
+				removeRetrying(tmpOf(sc, ProcessHandle.current().pid()).toPath());
 				for (String extra : moved) {
 					removeRetrying(destDir.toPath().resolve(extra));
 				}
