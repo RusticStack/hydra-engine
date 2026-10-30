@@ -857,6 +857,33 @@ def window_share(windows, tolerated_after_s: float, t_span, scope_all_only: bool
     return round(cov / (t1 - t0), 4)
 
 
+def late_decompile_failures(rows, windows, tolerated_after_s: float = 0.0) -> set:
+    """3.11 "Decompiler faults": a killed native decompiler fails "that one request". The fault kills one decompiler of
+    the daemon; when it was idle in a program's pool, that request comes after the window (nightly-2: 23 s and 11 s
+    later, "the pipe is being closed", reason crash). So each kill_decompiler window whose own window saw no
+    decompiler_failed explains at most ONE later ``read_decompile`` ``decompiler_failed`` with reason ``crash`` and
+    ``retryable`` true, before the next daemon kill (a new daemon has fresh decompilers) and before the next
+    kill_decompiler window. Returns the ``id()`` of the rows so explained."""
+    def is_dec(r):
+        d = r.get("details") or {}
+        return (r.get("op") == "read_decompile" and r.get("code") == "decompiler_failed" and not r.get("ok")
+                and d.get("reason") == "crash" and d.get("retryable") is True)
+    kills = sorted((w for w in windows if w.get("cls") == "kill_decompiler"), key=lambda w: w["t0"])
+    restarts = sorted(w["t0"] for w in windows if w.get("cls") in ("kill_daemon_random", "kill_daemon_trigger"))
+    decs = sorted((r for r in rows if is_dec(r)), key=lambda r: r["t"])
+    out = set()
+    for k, w in enumerate(kills):
+        lo, hi = w["t0"] - 2, w["t1"] + tolerated_after_s
+        if any(lo <= r["t"] <= hi for r in decs):
+            continue    # the killed decompiler's one request failed inside the window
+        nxt = min([kills[k + 1]["t0"] - 2] if k + 1 < len(kills) else [float("inf")])
+        nxt = min([nxt] + [t for t in restarts if t > w["t0"]])
+        late = next((r for r in decs if hi < r["t"] < nxt and id(r) not in out), None)
+        if late is not None:
+            out.add(id(late))
+    return out
+
+
 def classify_rows(rows, windows, tolerated_after_s: float = 0.0, t_span=None):
     """Judges the agents' result rows. Returns ``(violations, summary)``; ``violations`` is a list of
     ``(code, detail)``. An error is tolerated only when it falls inside a fault window that covers its agent
@@ -891,6 +918,7 @@ def classify_rows(rows, windows, tolerated_after_s: float = 0.0, t_span=None):
         return None
     viol, unexpected, busy_ok, busy_bad = {}, 0, 0, 0
     tolerated = {}
+    late_dec = late_decompile_failures(rows, windows, tolerated_after_s)
     for r in rows:
         if r.get("ok") or r.get("expected") or r["op"] in ("deaf_wall", "burn_wall", "ready"):
             continue
@@ -913,6 +941,10 @@ def classify_rows(rows, windows, tolerated_after_s: float = 0.0, t_span=None):
                 continue
             busy_bad += 1
             viol.setdefault(("unexplained_busy", r["op"]), []).append(r)
+            continue
+        if id(r) in late_dec:
+            key = "kill_decompiler/late:" + f"{r['op']}:{code}"
+            tolerated[key] = tolerated.get(key, 0) + 1
             continue
         w = tolerating(r)
         if w is not None:
@@ -1250,6 +1282,14 @@ def hy_view_state_copy(hy_root, kd) -> int:
         shutil.copy2(f, d / "state.json")
         n += 1
     return n
+
+
+def k7_live_daemons(soak_pids, hy_pids) -> list:
+    """The daemons whose descendants K7 keeps (never orphans): the soak daemon(s) and, with the Hydralysis lane, the
+    Hydralysis engine daemon, which is still up at the quiescent check. Without it, a decompiler of that daemon whose pid
+    reuses one the soak daemon had (``decompilers_seen`` holds pids of a 2 h run) was flagged an orphan (nightly-2: pids
+    27684 and 6548, parent 8832 = the Hydralysis daemon, alive)."""
+    return [p for p in list(soak_pids) + list(hy_pids) if p]
 
 
 def judge_k11p(facts: dict, rep: oracle.Report | None = None) -> oracle.Report:
@@ -1859,7 +1899,7 @@ class Soak:
                 chaos.kill_client_proc(p)
         self.reap_agents(respawn=False)
         rep = oracle.Report("post-kill:" + cls)
-        oracle.check_k7_processes([], settle_s=8.0, only_pids=before_dec, rep=rep)
+        oracle.check_k7_processes(k7_live_daemons([], self.hy_daemon_pids()), settle_s=8.0, only_pids=before_dec, rep=rep)
         self.merge(rep, "post-kill " + cls)
         self.file_round("post-kill " + cls, quiescent=False, daemon_alive=False, locks=False)
         # restart on the same state root
@@ -2506,7 +2546,8 @@ class Soak:
             with contextlib.suppress(Exception):
                 self.daemon.stop(force=True, timeout=120)
         rep2 = oracle.Report("quiescent")
-        oracle.check_k7_processes([pid], settle_s=8.0, only_pids=set(self.decompilers_seen) | {p.pid for p in self.planted_pids},
+        oracle.check_k7_processes(k7_live_daemons([pid], self.hy_daemon_pids()), settle_s=8.0,
+                                  only_pids=set(self.decompilers_seen) | {p.pid for p in self.planted_pids},
                                   rep=rep2)
         self.merge(rep2, "quiescent")
         self.k6_sweep()
@@ -2683,6 +2724,22 @@ class Soak:
 
     def hy_daemon(self):
         return self.gs.Daemon(self.a.ghidra, str(self.hy_root / "hydra" / "state"), "rusticre")
+
+    def hy_daemon_pids(self) -> list:
+        """The Hydralysis engine daemon's JVM pid while it runs (its own ``health``), else nothing."""
+        if not getattr(self, "hy_enabled", False) or not self.hy_ready():
+            return []
+        s = None
+        try:
+            s = self.hy_daemon().connect("soak-hy-pid", "soak", start=False, timeout=15)
+            pid = (s.call("health") or {}).get("pid")
+            return [int(pid)] if pid else []
+        except Exception:  # noqa: BLE001
+            return []
+        finally:
+            if s is not None:
+                with contextlib.suppress(Exception):
+                    s.close()
 
     def hy_engine_sample(self, phase: str):
         """The Hydralysis engine daemon as a client sees it: the governor's views and every program nobody uses that
@@ -3204,6 +3261,43 @@ def selftest(work: pathlib.Path | None = None, verbose: bool = True) -> int:
     nightly_hits = {c: n for c, n in MIN_FAULTS["nightly"].items()}
     kills = sum(nightly_hits.get(c, 0) for c in KILL_CLASSES)
     check("nightly minimums sum to at least 150 kills", kills >= 150, kills)
+    # K7: a decompiler below the (live) Hydralysis daemon is no orphan, even when its pid is one the soak daemon had
+    import subprocess as _sp
+    par = _sp.Popen([sys.executable, "-c", "import subprocess,sys,time;c=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)']);"
+                     "print(c.pid,flush=True);time.sleep(60)"], stdout=_sp.PIPE, text=True)
+    try:
+        kid = int(par.stdout.readline())
+        nm = {pathlib.Path(sys.executable).name.lower()}
+        r_no = oracle.check_k7_processes(k7_live_daemons([999999], []), settle_s=0.5, only_pids={kid}, names=nm)
+        r_ok = oracle.check_k7_processes(k7_live_daemons([999999], [par.pid]), settle_s=0.5, only_pids={kid}, names=nm)
+        check("K7: a process below the live Hydralysis daemon is kept (no orphan); without that daemon it is flagged",
+              "K7:orphan_decompiler" in r_no.codes() and r_ok.ok, (r_no.codes(), r_ok.codes()))
+    finally:
+        with contextlib.suppress(Exception):
+            _sp.run(["taskkill", "/PID", str(par.pid), "/T", "/F"], capture_output=True, timeout=30)
+        with contextlib.suppress(Exception):
+            par.wait(10)
+    kw = {"t0": t - 30, "t1": t, "scope": "all", "cls": "kill_decompiler"}
+    late = {"t": t + 20, "agent": 1, "op": "read_decompile", "lane": "quick", "ms": 1.5, "ok": False, "code": "decompiler_failed",
+            "details": {"function": "f", "entry": "0x1", "reason": "crash", "retryable": True}}
+    viol, summ = classify_rows(rows + [late], [kw], tolerated_after_s=5.0)
+    check("3.11: the one request of a killed idle decompiler, after the window, is explained (once per kill)",
+          not viol and summ["tolerated_in_windows"].get("kill_decompiler/late:read_decompile:decompiler_failed") == 1,
+          (viol, summ))
+    viol, _ = classify_rows(rows + [late, dict(late, t=t + 40)], [kw], tolerated_after_s=5.0)
+    check("planted 3.11: a second late decompiler_failed for one kill is a violation",
+          any(k == "unexpected_error" and "decompiler_failed" in d for k, d in viol), viol)
+    viol, _ = classify_rows(rows + [dict(late, t=t + 1), late], [kw], tolerated_after_s=5.0)
+    check("planted 3.11: a kill whose request already failed in its window explains no later one",
+          any(k == "unexpected_error" and "decompiler_failed" in d for k, d in viol), viol)
+    viol, _ = classify_rows(rows + [dict(late, details={**late["details"], "reason": "timeout"})], [kw], tolerated_after_s=5.0)
+    check("planted 3.11: a late decompiler_failed that is not a crash is a violation", bool(viol), viol)
+    viol, _ = classify_rows(rows + [late], [kw, {"t0": t + 10, "t1": t + 15, "scope": "all", "cls": "kill_daemon_random"}],
+                            tolerated_after_s=5.0)
+    check("planted 3.11: after a daemon restart (fresh decompilers) a late decompiler_failed is a violation",
+          any(k == "unexpected_error" and "decompiler_failed" in d for k, d in viol), viol)
+    viol, _ = classify_rows(rows + [late], [], tolerated_after_s=5.0)
+    check("planted 3.11: a decompiler_failed with no kill before it is a violation", bool(viol), viol)
     check("release30 (8.16): 24x6 for 1800 s, minimums = release x 1/8 rounded up",
           PROFILES["release30"]["agents"] == 24 and PROFILES["release30"]["projects"] == 6
           and PROFILES["release30"]["duration_s"] == 1800 and PROFILES["release30"]["gate"]
