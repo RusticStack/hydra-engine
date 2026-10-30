@@ -216,3 +216,54 @@ Identical replies everywhere. A function's first decompile in a generation is sl
 generation's answers are exported the host is 30-45 % faster than the process path. The backend
 stays off by default for that reason. Next: export the remaining per-function answers in bulk
 when a generation is made (data types, strings), and look at the cold-path contention at 4-8 clients.
+
+## rust/t-host status (2026-10-30): async submission, store affinity, measured as the default
+
+- **Async submission (C ABI 3).** `hydra_dhost_submit(store, addr, ticket)` queues a run and
+  returns at once (bounded: 8 runs per worker, `hydra_dhost_queue_capacity`; over the bound it
+  returns `BUSY`); finished runs go to one completion queue that a single JVM platform thread
+  drains with the blocking downcall `hydra_dhost_completions` (plain downcalls only, no upcall).
+  `HostDecompiler` runs the export and the round loop on the caller's thread and waits on a
+  `CompletableFuture` (a virtual thread unmounts), so no platform thread is held per request; the
+  generation stays open until the run's completion is taken, also after a timeout.
+  `-Dhydra.decomp.host.async=false` keeps the step 6 path (one platform thread per request,
+  blocking downcall); `status.decompileBackend.host.submission` says which is in use.
+- **Store affinity (`src/workers.rs`, replaces the rayon pool for snapshot jobs).** A job for a
+  store goes to an idle worker that already holds its Architecture, else to the idle worker that
+  holds the fewest stores, else behind the least loaded warm worker. A store decompiled one
+  request at a time keeps one Architecture instead of one per worker (unit test
+  `sequential_jobs_of_one_store_stay_on_one_worker`); concurrent requests still spread to idle
+  workers. The pool mirrors the C++ per-worker LRU (`HYDRA_SNAPSHOT_ARCHS`) and forgets a store
+  when it is closed. Affinity is a preference, not a binding: a worker whose own queue is empty
+  steals a queued job from a running worker (one for a store it holds first, else the oldest job
+  of the longest queue), so a job never waits behind a long decompile while a worker is idle
+  (review fix; unit test `idle_worker_steals_jobs_queued_behind_a_long_job`, which fails on the
+  first version: 1.52 s instead of under 0.1 s). Queues and bookkeeping share one lock, so
+  choosing a worker and a worker going idle cannot miss each other.
+- **Async failure handling (review fixes).** If the completion thread stops, every pending run is
+  failed (future, slot, generation released) and later requests fall back to the process path,
+  so no request waits forever (also with timeout 0). A full host queue (`BUSY`) falls back instead
+  of making a blocking downcall on a possibly virtual thread. The deadline is checked after the
+  export work (prefetch, learn) too, so the timeout bounds the whole hosted decompile as in the
+  blocking path. A failed pool start stops the workers it already started.
+- **Identity.** KotOR, all 8,616 non-external functions through the daemon `decompile` command
+  (decompile cache off, 4 clients), with the host as the default: 8,616 identical to the hydra.4
+  reference (`gate/dc/h4-plain.json`, aggregate `c954f77a1b13d6f2`), 0 errors, 8,600 hosted,
+  16 fallbacks (11 pseudo-disassembly p-code, 4 misses after 12 runs, 1 over the 120 s timeout).
+  Same result before and after the affinity pool. Multi-agent benchmark: every reply equal to h4.
+- **Why it stays opt-in.** On the shared multi-agent benchmark (`_logs/rust-targets/bench`,
+  16 agents, interleaved with hydra.4, integration-next and this build with the host off) the host
+  as default cut `decompile.exe` CPU (8.5 s to 3.4 s) but added more JVM CPU (export of about
+  120 answers per function and 1.14 native runs per function), so total CPU was flat to +2 %;
+  `decompile_fresh` p50 rose from about 8 ms to about 63 ms and `decompile_hot` from about 10 ms to
+  about 96 ms (the hot set's first decompile and every waiter of its flight pay the cold host
+  path); peak committed memory rose by about 150 MB (Architectures in the JVM process; the
+  process path's `decompile.exe` processes are small for this workload). The native run itself
+  took 32 ms per run with one client against about 7 ms CPU per function in `decompile.exe` for the
+  same functions, so the next step is a native profile of `SnapshotArchitecture` runs (samply with
+  the PDB build), not more wiring.
+- **Shared spec data: not done.** Every Architecture parses the registerProgram pspec/cspec/tspec
+  and builds its own TypeFactory/Scope caches, and those are mutated while decompiling, so they
+  cannot be shared read-only as they are. Sharing needs an immutable spec/type core split out of
+  `ArchitectureGhidra` (C++ change in the decompiler core); store affinity is the cheaper half:
+  it keeps the number of Architectures at the real concurrency.

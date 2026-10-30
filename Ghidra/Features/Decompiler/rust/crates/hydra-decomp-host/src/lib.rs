@@ -19,6 +19,7 @@ mod parser_check;
 pub use parser_check::missing_thread_local;
 
 pub mod snapshot;
+pub mod workers;
 
 mod ffi {
     use std::ffi::{c_char, c_int};
