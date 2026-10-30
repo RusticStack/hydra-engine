@@ -35,9 +35,15 @@ public class FileBytes {
 	private final long fileOffset;
 	private final long size;
 
-	private DBBuffer[] originalBuffers;
-	private DBBuffer[] layeredBuffers;
-	private boolean invalid = false;
+	// Buffer arrays are never modified in place; refresh replaces them.  Reads go through
+	// these volatile references without taking this object's monitor.
+	private volatile DBBuffer[] originalBuffers;
+	private volatile DBBuffer[] layeredBuffers;
+	private volatile boolean invalid = false;
+
+	// Odd while a synchronized mutation (put, refresh) is in progress; bumped on each start and
+	// end.  Reads run lock-free and fall back to the monitor if they overlap a mutation.
+	private volatile long mutationSeq;
 
 	public FileBytes(FileBytesAdapter adapter, DBRecord record) throws IOException {
 		this.adapter = adapter;
@@ -49,6 +55,16 @@ public class FileBytes {
 	}
 
 	synchronized boolean refresh(DBRecord record) throws IOException {
+		mutationSeq++;
+		try {
+			return doRefresh(record);
+		}
+		finally {
+			mutationSeq++;
+		}
+	}
+
+	private boolean doRefresh(DBRecord record) throws IOException {
 
 		String f = record.getString(FileBytesAdapter.FILENAME_COL);
 		long offset = record.getLongValue(FileBytesAdapter.OFFSET_COL);
@@ -60,17 +76,19 @@ public class FileBytes {
 		BinaryField field = (BinaryField) record.getFieldValue(FileBytesAdapter.BUF_IDS_COL);
 
 		int[] bufferIds = new BinaryCodedField(field).getIntArray();
-		originalBuffers = new DBBuffer[bufferIds.length];
+		DBBuffer[] newOriginalBuffers = new DBBuffer[bufferIds.length];
 		for (int i = 0; i < bufferIds.length; i++) {
-			originalBuffers[i] = adapter.getBuffer(bufferIds[i]);
+			newOriginalBuffers[i] = adapter.getBuffer(bufferIds[i]);
 		}
 
 		field = (BinaryField) record.getFieldValue(FileBytesAdapter.LAYERED_BUF_IDS_COL);
 		bufferIds = new BinaryCodedField(field).getIntArray();
-		layeredBuffers = new DBBuffer[bufferIds.length];
+		DBBuffer[] newLayeredBuffers = new DBBuffer[bufferIds.length];
 		for (int i = 0; i < bufferIds.length; i++) {
-			layeredBuffers[i] = adapter.getBuffer(bufferIds[i], originalBuffers[i]);
+			newLayeredBuffers[i] = adapter.getBuffer(bufferIds[i], newOriginalBuffers[i]);
 		}
+		originalBuffers = newOriginalBuffers;
+		layeredBuffers = newLayeredBuffers;
 		return true;
 	}
 
@@ -112,9 +130,8 @@ public class FileBytes {
 	 * @throws IOException if there is a problem reading the database.
 	 * @throws IndexOutOfBoundsException if the given offset is invalid.
 	 */
-	public synchronized byte getModifiedByte(long offset)
-			throws IOException, IndexOutOfBoundsException {
-		return getByte(layeredBuffers, offset);
+	public byte getModifiedByte(long offset) throws IOException, IndexOutOfBoundsException {
+		return readByte(true, offset);
 	}
 
 	/**
@@ -124,9 +141,8 @@ public class FileBytes {
 	 * @throws IOException if there is a problem reading the database.
 	 * @throws IndexOutOfBoundsException if the given offset is invalid.
 	 */
-	public synchronized byte getOriginalByte(long offset)
-			throws IOException, IndexOutOfBoundsException {
-		return getByte(originalBuffers, offset);
+	public byte getOriginalByte(long offset) throws IOException, IndexOutOfBoundsException {
+		return readByte(false, offset);
 	}
 
 	/**
@@ -139,9 +155,9 @@ public class FileBytes {
 	 * @throws IOException if there is an error reading from the database
 	 * @throws IndexOutOfBoundsException if the given offset is invalid.
 	 */
-	public synchronized int getModifiedBytes(long offset, byte[] b)
+	public int getModifiedBytes(long offset, byte[] b)
 			throws IOException, IndexOutOfBoundsException {
-		return getBytes(layeredBuffers, offset, b, 0, b.length);
+		return getModifiedBytes(offset, b, 0, b.length);
 	}
 
 	/**
@@ -154,9 +170,9 @@ public class FileBytes {
 	 * @throws IOException if there is an error reading from the database
 	 * @throws IndexOutOfBoundsException if the given offset is invalid.
 	 */
-	public synchronized int getOriginalBytes(long offset, byte[] b)
+	public int getOriginalBytes(long offset, byte[] b)
 			throws IOException, IndexOutOfBoundsException {
-		return getBytes(originalBuffers, offset, b, 0, b.length);
+		return readBytes(false, offset, b, 0, b.length);
 	}
 
 	/**
@@ -173,9 +189,9 @@ public class FileBytes {
 	 * @throws IndexOutOfBoundsException if the destination offset and length would exceed the
 	 * size of the buffer b.
 	 */
-	public synchronized int getModifiedBytes(long offset, byte[] b, int off, int length)
+	public int getModifiedBytes(long offset, byte[] b, int off, int length)
 			throws IOException, IndexOutOfBoundsException {
-		return getBytes(layeredBuffers, offset, b, off, length);
+		return readBytes(true, offset, b, off, length);
 	}
 
 	/**
@@ -192,9 +208,59 @@ public class FileBytes {
 	 * @throws IndexOutOfBoundsException if the destination offset and length would exceed the
 	 * size of the buffer b.
 	 */
-	public synchronized int getOriginalBytes(long offset, byte[] b, int off, int length)
+	public int getOriginalBytes(long offset, byte[] b, int off, int length)
 			throws IOException, IndexOutOfBoundsException {
-		return getBytes(originalBuffers, offset, b, off, length);
+		return readBytes(false, offset, b, off, length);
+	}
+
+	/**
+	 * Read one byte without this object's monitor.  If a put or refresh overlapped the read,
+	 * the result (value or exception) is discarded and the read is repeated under the monitor,
+	 * so callers observe exactly what a fully synchronized read would have returned.
+	 */
+	private byte readByte(boolean modified, long offset) throws IOException {
+		long seq = mutationSeq;
+		if ((seq & 1) == 0) {
+			try {
+				byte b = getByte(modified ? layeredBuffers : originalBuffers, offset);
+				if (mutationSeq == seq) {
+					return b;
+				}
+			}
+			catch (IOException | RuntimeException e) {
+				if (mutationSeq == seq) {
+					throw e;
+				}
+			}
+		}
+		synchronized (this) {
+			return getByte(modified ? layeredBuffers : originalBuffers, offset);
+		}
+	}
+
+	/**
+	 * Read bytes without this object's monitor; see {@link #readByte(boolean, long)}.
+	 */
+	private int readBytes(boolean modified, long offset, byte[] b, int off, int length)
+			throws IOException {
+		long seq = mutationSeq;
+		if ((seq & 1) == 0) {
+			try {
+				int n = getBytes(modified ? layeredBuffers : originalBuffers, offset, b, off,
+					length);
+				if (mutationSeq == seq) {
+					return n;
+				}
+			}
+			catch (IOException | RuntimeException e) {
+				if (mutationSeq == seq) {
+					throw e;
+				}
+			}
+		}
+		synchronized (this) {
+			return getBytes(modified ? layeredBuffers : originalBuffers, offset, b, off, length);
+		}
 	}
 
 	void checkValid() {
@@ -218,6 +284,16 @@ public class FileBytes {
 	 * @throws IOException if the write to the database fails.
 	 */
 	synchronized void putByte(long offset, byte b) throws IndexOutOfBoundsException, IOException {
+		mutationSeq++;
+		try {
+			doPutByte(offset, b);
+		}
+		finally {
+			mutationSeq++;
+		}
+	}
+
+	private void doPutByte(long offset, byte b) throws IndexOutOfBoundsException, IOException {
 
 		checkValid();
 
@@ -264,6 +340,17 @@ public class FileBytes {
 	 * @throws IOException if the write to the database fails.
 	 */
 	synchronized int putBytes(long offset, byte[] b, int off, int length)
+			throws IOException, IndexOutOfBoundsException {
+		mutationSeq++;
+		try {
+			return doPutBytes(offset, b, off, length);
+		}
+		finally {
+			mutationSeq++;
+		}
+	}
+
+	private int doPutBytes(long offset, byte[] b, int off, int length)
 			throws IOException, IndexOutOfBoundsException {
 
 		checkValid();

@@ -57,7 +57,8 @@ public class MemoryMapDB implements Memory, ProgramDBModule {
 
 	private MemoryAddressSetViews addrSetViews;
 
-	private MemoryBlock lastBlock;// the last accessed block
+	// immutable snapshot of blocks used for lock-free address lookups, replaced on change
+	private volatile BlockLookup blockLookup = new BlockLookup(new MemoryBlockDB[0]);
 
 	// lazy map of block names to blocks, must be reloaded if blocks are removed or added
 	private HashMap<String, MemoryBlock> nameBlockMap = new HashMap<>();
@@ -182,7 +183,7 @@ public class MemoryMapDB implements Memory, ProgramDBModule {
 
 	private synchronized void initializeBlocks() {
 		blocks = adapter.getMemoryBlocks();
-		lastBlock = null;
+		refreshBlockLookup();
 		nameBlockMap = new HashMap<>();
 		addrSetViews = null; // signal stale views
 		addrMap.memoryMapChanged(this);
@@ -402,27 +403,53 @@ public class MemoryMapDB implements Memory, ProgramDBModule {
 		return null;
 	}
 
-	private synchronized MemoryBlock getBlockDB(Address addr) {
-		if (lastBlock != null) {
-			if (lastBlock.contains(addr)) {
-				return lastBlock;
-			}
-		}
+	private MemoryBlock getBlockDB(Address addr) {
+		return blockLookup.getBlock(addr);
+	}
+
+	/**
+	 * Replace the lock-free lookup snapshot with one built from the current {@code blocks} list.
+	 * Must be called whenever the block list is changed.
+	 */
+	private void refreshBlockLookup() {
 		List<MemoryBlockDB> tmpBlocks = blocks;
-		int index = Collections.binarySearch(tmpBlocks, addr, BLOCK_ADDRESS_COMPARATOR);
-		if (index >= 0) {
-			lastBlock = tmpBlocks.get(index);
-			return lastBlock;
+		blockLookup = new BlockLookup(tmpBlocks == null ? new MemoryBlockDB[0]
+				: tmpBlocks.toArray(new MemoryBlockDB[tmpBlocks.size()]));
+	}
+
+	/**
+	 * Immutable sorted block array plus its own last-accessed block cache.  A new instance is
+	 * published whenever the block list changes, so a reader racing a change can only cache
+	 * a block in the snapshot it used and never revive a stale block in the current one.
+	 */
+	private static class BlockLookup {
+		private final MemoryBlockDB[] sortedBlocks;
+		private volatile MemoryBlock lastBlock;// the last accessed block
+
+		BlockLookup(MemoryBlockDB[] sortedBlocks) {
+			this.sortedBlocks = sortedBlocks;
 		}
-		index = -index - 2;
-		if (index >= 0) {
-			MemoryBlock block = tmpBlocks.get(index);
-			if (block.contains(addr)) {
-				lastBlock = block;
-				return block;
+
+		MemoryBlock getBlock(Address addr) {
+			MemoryBlock last = lastBlock;
+			if (last != null && last.contains(addr)) {
+				return last;
 			}
+			int index = Arrays.binarySearch(sortedBlocks, addr, BLOCK_ADDRESS_COMPARATOR);
+			if (index >= 0) {
+				lastBlock = sortedBlocks[index];
+				return sortedBlocks[index];
+			}
+			index = -index - 2;
+			if (index >= 0) {
+				MemoryBlock block = sortedBlocks[index];
+				if (block.contains(addr)) {
+					lastBlock = block;
+					return block;
+				}
+			}
+			return null;
 		}
-		return null;
 	}
 
 	private void fireBlockAdded(MemoryBlock newBlock) {
@@ -925,6 +952,7 @@ public class MemoryMapDB implements Memory, ProgramDBModule {
 			MemoryBlock newBlock = null;
 			try {
 				memBlock1.join(memBlock2);
+				refreshBlockLookup();
 				newBlock = getBlockDB(block1Addr);
 				fireBlocksJoined(newBlock, block2Addr);
 			}
