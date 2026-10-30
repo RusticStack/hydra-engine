@@ -20,8 +20,13 @@ import static org.junit.Assert.*;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
+import java.util.*;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.*;
 import org.junit.rules.TemporaryFolder;
@@ -51,6 +56,16 @@ public class PresaveCleanupTest {
 
 	private static void idle() throws InterruptedException {
 		assertTrue("presave cleanup did not finish", PresaveCleanup.awaitIdle(30_000));
+	}
+
+	/** Idle, and every worker ended, so the next request starts exactly one worker. */
+	private static void noWorkers() throws InterruptedException {
+		idle();
+		long deadline = System.currentTimeMillis() + 30_000;
+		while (PresaveCleanup.counters()[4] != 0 && System.currentTimeMillis() < deadline) {
+			Thread.sleep(20);
+		}
+		assertEquals("live workers", 0, PresaveCleanup.counters()[4]);
 	}
 
 	/** An old presave file is removed at the open of a writable file system; nothing else is. */
@@ -175,5 +190,125 @@ public class PresaveCleanupTest {
 		LocalDatabaseItem.cleanupOldPresaveFiles(root);
 		idle();
 		assertFalse(ps.exists());
+	}
+
+	/** A root that java.nio refuses (java.io accepts it) is scanned by the old recursion. */
+	@Test
+	public void rootRefusedByNioFallsBackToTheOldRecursion() throws Exception {
+		File root = tmp.newFolder("nio.rep");
+		long old = System.currentTimeMillis() - HOUR;
+		File a = file(new File(root, "00/~00000000.db"), "tmp1.ps", old);
+		File b = file(new File(root, "~00000001.db"), "tmp2.ps", old);
+		file(new File(root, "~hidden/~00000002.db"), "tmp3.ps", old);
+		File refused = new File(root.getPath()) {
+			@Override
+			public Path toPath() {
+				throw new InvalidPathException(getPath(), "refused for the test");
+			}
+		};
+		Set<File> expected = new HashSet<>(List.of(a, b));
+		assertEquals(expected, new HashSet<>(PresaveCleanup.findPresaveFiles(root)));
+		assertEquals(expected, new HashSet<>(PresaveCleanup.findPresaveFiles(refused)));
+	}
+
+	/**
+	 * A scan stuck on one root (a hung volume) does not stop the cleanup of other roots: the next
+	 * open starts one more worker, which never scans the stuck root a second time. The worker is a
+	 * non-daemon thread, as the old per-open thread was.
+	 */
+	@Test
+	public void stalledScanDoesNotBlockOtherRoots() throws Exception {
+		noWorkers();
+		File slow = tmp.newFolder("slow.rep").getAbsoluteFile();
+		File other = tmp.newFolder("other.rep");
+		File ps = file(new File(other, "~00000000.db"), "tmp1.ps", System.currentTimeMillis() - HOUR);
+		CountDownLatch entered = new CountDownLatch(1);
+		CountDownLatch release = new CountDownLatch(1);
+		AtomicInteger slowScans = new AtomicInteger();
+		AtomicReference<Boolean> daemon = new AtomicReference<>();
+		long oldStall = PresaveCleanup.stallMs;
+		PresaveCleanup.stallMs = 200;
+		PresaveCleanup.beforeScan = r -> {
+			daemon.compareAndSet(null, Thread.currentThread().isDaemon());
+			if (r.equals(slow)) {
+				slowScans.incrementAndGet();
+				entered.countDown();
+				try {
+					release.await(60, TimeUnit.SECONDS);
+				}
+				catch (InterruptedException e) {
+					Thread.currentThread().interrupt();
+				}
+			}
+		};
+		try {
+			LocalDatabaseItem.cleanupOldPresaveFiles(slow);
+			assertTrue(entered.await(10, TimeUnit.SECONDS));
+			Thread.sleep(500); // past the stall time
+			LocalDatabaseItem.cleanupOldPresaveFiles(slow); // waits: never two scans of a root
+			LocalDatabaseItem.cleanupOldPresaveFiles(other);
+			long deadline = System.currentTimeMillis() + 10_000;
+			while (ps.exists() && System.currentTimeMillis() < deadline) {
+				Thread.sleep(20);
+			}
+			assertFalse("the other root was not cleaned while one scan was stuck", ps.exists());
+			assertEquals(1, slowScans.get());
+			assertEquals(Boolean.FALSE, daemon.get());
+		}
+		finally {
+			release.countDown();
+			idle();
+			PresaveCleanup.beforeScan = null;
+			PresaveCleanup.stallMs = oldStall;
+		}
+		assertEquals("the queued request for the stuck root runs after it", 2, slowScans.get());
+	}
+
+	/**
+	 * The cutoff is the time of the open, not of the scan: a presave file whose time is after the
+	 * open is kept even when the scan runs later (Ghidra's thread used the time of its scan).
+	 */
+	@Test
+	public void cutoffIsTheTimeOfTheOpen() throws Exception {
+		noWorkers();
+		File blocker = tmp.newFolder("blocker.rep").getAbsoluteFile();
+		File root = tmp.newFolder("cut.rep");
+		File data = new File(root, "~00000000.db");
+		File before = file(data, "tmp1.ps", System.currentTimeMillis() - HOUR);
+		CountDownLatch entered = new CountDownLatch(1);
+		CountDownLatch release = new CountDownLatch(1);
+		long oldStall = PresaveCleanup.stallMs;
+		PresaveCleanup.stallMs = 600_000;
+		PresaveCleanup.beforeScan = r -> {
+			if (r.equals(blocker)) {
+				entered.countDown();
+				try {
+					release.await(60, TimeUnit.SECONDS);
+				}
+				catch (InterruptedException e) {
+					Thread.currentThread().interrupt();
+				}
+			}
+		};
+		File after;
+		try {
+			LocalDatabaseItem.cleanupOldPresaveFiles(blocker);
+			assertTrue(entered.await(10, TimeUnit.SECONDS));
+			long openTime = System.currentTimeMillis();
+			LocalDatabaseItem.cleanupOldPresaveFiles(root); // queued behind the blocker
+			after = file(data, "tmp2.ps", openTime + 1000); // stale by the scan, not by the open
+			while (System.currentTimeMillis() < openTime + 2500) {
+				Thread.sleep(50);
+			}
+			assertTrue(before.exists());
+		}
+		finally {
+			release.countDown();
+			idle();
+			PresaveCleanup.beforeScan = null;
+			PresaveCleanup.stallMs = oldStall;
+		}
+		assertFalse("a presave file older than the open is removed", before.exists());
+		assertTrue("a presave file newer than the open is kept", after.exists());
 	}
 }

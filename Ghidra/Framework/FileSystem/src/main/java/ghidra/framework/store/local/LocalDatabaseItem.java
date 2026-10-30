@@ -27,9 +27,12 @@ import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Set;
+import java.util.function.Consumer;
 
 import org.apache.commons.lang3.StringUtils;
 
@@ -830,13 +833,29 @@ public class LocalDatabaseItem extends LocalFolderItem implements DatabaseItem {
 	 * Hydra (H6): the open used to start a new {@code Database-Item-Cleanup} thread per call (a
 	 * project open makes three calls, for its private, user and versioned file systems; every
 	 * fork and every upgrade copy opens one more project), and each thread created and deleted a
-	 * temporary file in the root and then stat'ed every entry of the tree. Now one low-priority
-	 * daemon worker serves every root and ends when idle; a root that is already waiting is not
-	 * queued twice (the later open's cutoff covers the earlier one); each folder is listed once
-	 * with the attributes the listing returns, without a stat per entry; and the file-system clock
-	 * (the temporary file) is read only when a presave file is found. The cutoff is the
-	 * file-system time of the open itself, so a presave file that a save creates after the open
-	 * is never taken, however long the worker's queue is.
+	 * temporary file in the root and then stat'ed every entry of the tree. Now a shared worker
+	 * serves every root and ends when idle; a root that is already waiting is not queued twice
+	 * (the later open's cutoff covers the earlier one); each folder is listed once with the
+	 * attributes the listing returns, without a stat per entry; and the file-system clock (the
+	 * temporary file) is read only when a presave file is found.
+	 * <p>
+	 * Behaviour, compared with the old per-open thread:
+	 * <ul>
+	 * <li>The worker is a non-daemon thread, like the old one, so a short process that opens a
+	 * project and returns from {@code main} still finishes its sweep before the JVM exits. It
+	 * lingers {@link PresaveCleanup#IDLE_MS} after its last scan, so the three opens of one project
+	 * open share it.</li>
+	 * <li>It runs one step below normal priority (the old threads ran at normal priority).</li>
+	 * <li>Roots are scanned one after another. When every worker has been inside one scan for
+	 * longer than {@link PresaveCleanup#stallMs} (a slow or hung volume, such as an unreachable
+	 * network share), the next open starts one more worker, up to
+	 * {@link PresaveCleanup#MAX_WORKERS}, so the other roots are still cleaned. A root is never
+	 * scanned by two workers at once.</li>
+	 * <li>The cutoff is the file-system time of the open itself (the old thread used the time when
+	 * it started its scan), so a presave file that a save creates after the open is never taken,
+	 * however long the queue is; a file that turns stale while it waits is removed at the next
+	 * open.</li>
+	 * </ul>
 	 * @param root file-system root directory
 	 */
 	static void cleanupOldPresaveFiles(File root) {
@@ -844,26 +863,36 @@ public class LocalDatabaseItem extends LocalFolderItem implements DatabaseItem {
 	}
 
 	/**
-	 * The process-wide presave cleanup worker (see {@link #cleanupOldPresaveFiles(File)}).
+	 * The process-wide presave cleanup workers (see {@link #cleanupOldPresaveFiles(File)}).
 	 */
 	static final class PresaveCleanup {
 
 		static final String THREAD_NAME = "Database-Item-Cleanup";
-		/** How long the worker waits for more work before it ends. */
-		static final long IDLE_MS = 1000;
+		/** How long a worker waits for more work before it ends (it holds the JVM that long). */
+		static final long IDLE_MS = 250;
+		/** The most workers at once; more than one only while scans are stalled. */
+		static final int MAX_WORKERS = 4;
+		/** How long every worker must be inside one scan before an open starts another. */
+		static volatile long stallMs = 5000;
+		/** Called with the root before each scan. For tests. */
+		static volatile Consumer<File> beforeScan;
 
 		private static final Object LOCK = new Object();
 		/** Roots waiting for a scan, by absolute path, with the time of their latest open. */
 		private static final LinkedHashMap<String, Request> PENDING = new LinkedHashMap<>();
-		private static Thread worker;
-		private static boolean busy;
+		/** Roots being scanned now, by absolute path. */
+		private static final Set<String> IN_FLIGHT = new HashSet<>();
+		private static int workers;
+		private static int busy;
+		/** When a scan last started or ended. */
+		private static long progressNanos;
 		// counters, for tests and diagnostics
 		private static long requests;
 		private static long scans;
 		private static long threadsStarted;
 		private static long clockProbes;
 
-		private record Request(File root, long openNanos) {
+		private record Request(String key, File root, long openNanos) {
 		}
 
 		private PresaveCleanup() {
@@ -871,17 +900,21 @@ public class LocalDatabaseItem extends LocalFolderItem implements DatabaseItem {
 
 		static void request(File root) {
 			File abs = root.getAbsoluteFile();
-			Request r = new Request(abs, System.nanoTime());
+			String key = abs.getPath();
+			long nowNanos = System.nanoTime();
+			Request r = new Request(key, abs, nowNanos);
 			synchronized (LOCK) {
 				requests++;
 				// a root already waiting keeps its place; the newer open has the later cutoff,
 				// which covers every file the earlier open's scan would have removed
-				PENDING.put(abs.getPath(), r);
-				if (worker == null) {
+				PENDING.put(key, r);
+				boolean stalled = workers > 0 && busy == workers && workers < MAX_WORKERS &&
+					nowNanos - progressNanos > stallMs * 1_000_000L;
+				if (workers == 0 || stalled) {
 					Thread t = new Thread(PresaveCleanup::work, THREAD_NAME);
-					t.setDaemon(true);
-					t.setPriority(Thread.MIN_PRIORITY);
-					worker = t;
+					t.setDaemon(false); // as the old per-open thread (made by a non-daemon opener)
+					t.setPriority(Thread.NORM_PRIORITY - 1);
+					workers++;
 					threadsStarted++;
 					t.start();
 				}
@@ -891,17 +924,29 @@ public class LocalDatabaseItem extends LocalFolderItem implements DatabaseItem {
 			}
 		}
 
+		/** The first waiting root that no other worker is scanning, taken off the queue. */
+		private static Request takeNext() {
+			Iterator<Request> it = PENDING.values().iterator();
+			while (it.hasNext()) {
+				Request r = it.next();
+				if (!IN_FLIGHT.contains(r.key())) {
+					it.remove();
+					return r;
+				}
+			}
+			return null;
+		}
+
 		private static void work() {
 			for (;;) {
 				Request r;
 				synchronized (LOCK) {
-					busy = false;
-					LOCK.notifyAll();
 					long deadline = System.nanoTime() + IDLE_MS * 1_000_000L;
-					while (PENDING.isEmpty()) {
+					while ((r = takeNext()) == null) {
 						long waitMs = (deadline - System.nanoTime()) / 1_000_000L;
 						if (waitMs <= 0) {
-							worker = null;
+							workers--;
+							LOCK.notifyAll();
 							return;
 						}
 						try {
@@ -911,12 +956,15 @@ public class LocalDatabaseItem extends LocalFolderItem implements DatabaseItem {
 							// keep serving: an interrupt must not drop a queued root
 						}
 					}
-					Iterator<Request> it = PENDING.values().iterator();
-					r = it.next();
-					it.remove();
-					busy = true;
+					IN_FLIGHT.add(r.key());
+					busy++;
+					progressNanos = System.nanoTime();
 				}
 				try {
+					Consumer<File> hook = beforeScan;
+					if (hook != null) {
+						hook.accept(r.root());
+					}
 					scan(r);
 				}
 				catch (Throwable t) {
@@ -924,7 +972,11 @@ public class LocalDatabaseItem extends LocalFolderItem implements DatabaseItem {
 				}
 				finally {
 					synchronized (LOCK) {
+						IN_FLIGHT.remove(r.key());
+						busy--;
 						scans++;
+						progressNanos = System.nanoTime();
+						LOCK.notifyAll();
 					}
 				}
 			}
@@ -939,7 +991,7 @@ public class LocalDatabaseItem extends LocalFolderItem implements DatabaseItem {
 		static boolean awaitIdle(long timeoutMs) throws InterruptedException {
 			long deadline = System.nanoTime() + timeoutMs * 1_000_000L;
 			synchronized (LOCK) {
-				while (!PENDING.isEmpty() || busy) {
+				while (!PENDING.isEmpty() || busy > 0) {
 					long waitMs = (deadline - System.nanoTime()) / 1_000_000L;
 					if (waitMs <= 0) {
 						return false;
@@ -952,28 +1004,41 @@ public class LocalDatabaseItem extends LocalFolderItem implements DatabaseItem {
 
 		/**
 		 * The counters, for tests.
-		 * @return requests, scans, threads started, file-system clock probes
+		 * @return requests, scans, threads started, file-system clock probes, live workers
 		 */
 		static long[] counters() {
 			synchronized (LOCK) {
-				return new long[] { requests, scans, threadsStarted, clockProbes };
+				return new long[] { requests, scans, threadsStarted, clockProbes, workers };
 			}
 		}
 
-		private static void scan(Request r) throws IOException {
-			File root = r.root();
+		/**
+		 * The presave files below a root, chosen as the old recursion did.
+		 * @param root file-system root directory
+		 * @return the presave files, whatever their time
+		 * @throws IOException if the walk fails
+		 */
+		static List<File> findPresaveFiles(File root) throws IOException {
 			List<File> found = new ArrayList<>();
 			if (root.isDirectory()) {
 				try {
 					collect(root.toPath(), found);
 				}
 				catch (InvalidPathException e) {
-					// a name java.nio refuses on this platform (on Windows, one that ends in a
-					// space or a dot) that java.io accepts: the old recursion, which takes it
+					// a root java.nio refuses on this platform (on Windows, a name that ends in a
+					// space or a dot) that java.io accepts: the old recursion, which takes it.
+					// Entries below the root are built from the listing without being parsed
+					// again, so only the root's own path can be refused.
 					found.clear();
 					legacyDir(root, found);
 				}
 			}
+			return found;
+		}
+
+		private static void scan(Request r) throws IOException {
+			File root = r.root();
+			List<File> found = findPresaveFiles(root);
 			if (found.isEmpty()) {
 				return;
 			}
