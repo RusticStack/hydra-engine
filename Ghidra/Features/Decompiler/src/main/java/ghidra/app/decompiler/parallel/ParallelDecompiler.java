@@ -62,9 +62,12 @@ public class ParallelDecompiler {
 	static final int WINDOW_PER_WORKER = 4;
 	/**
 	 * The default window per worker when results are consumed in iterator order: larger, so one
-	 * slow function at the head does not stop the workers once the window fills behind it.
+	 * slow function at the head does not stop the workers once the window fills behind it.  Up
+	 * to this many finished results per worker wait for the head, so a callback returning large
+	 * objects may want a smaller value.  Measured on 2000 KotOR functions (10 workers): 32 was
+	 * about 1.3x the unordered wall time, 128 the same as unordered.
 	 */
-	static final int ORDERED_WINDOW_PER_WORKER = 32;
+	static final int ORDERED_WINDOW_PER_WORKER = 128;
 
 	/**
 	 * Decompile the given functions using multiple decompilers

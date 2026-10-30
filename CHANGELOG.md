@@ -31,7 +31,7 @@ example `12.3-hydra.1`); its tag is `v` and the version. Releases are on
   decompile result is the same (8 fixtures and 2000 KotOR functions, all methods compared).
   Workers: `-Dhydra.decompiler.pipeline.workers=pool|granted|<n>` (default `pool`, today's size
   from the granted CPUs with the cap of 10; `granted` is every CPU `HydraCpu` reports, uncapped);
-  window per worker: `-Dhydra.decompiler.pipeline.window` (4, or 32 when ordered). New
+  window per worker: `-Dhydra.decompiler.pipeline.window` (4, or 128 when ordered). New
   `ParallelDecompiler.decompileFunctionsInOrder` streams results in iterator order with bounded
   memory, whatever the flag.
 - A constant propagation Max Threads value above the analysis pool size runs with the whole
