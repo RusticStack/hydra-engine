@@ -630,7 +630,9 @@ FAULT_TOLERATES = {
     "kill_client": dict(codes=("closed", "conn:*")),
     "kill_daemon_random": dict(codes=("closed", "conn:*", "timeout")),
     "kill_daemon_trigger": dict(codes=("closed", "conn:*", "timeout")),
-    "kill_decompiler": dict(codes=("failed", "timeout"), ops=("read_decompile",)),
+    # decompiler_failed{function, entry, reason, retryable} is the protocol 3 answer of the one decompile whose native
+    # decompiler died (3.11 "Decompiler faults", E9 A36); ``failed`` is the older answer
+    "kill_decompiler": dict(codes=("failed", "decompiler_failed", "timeout"), ops=("read_decompile",)),
     "suspend_daemon": dict(codes=("closed", "conn:*", "timeout")),
     "suspend_client": dict(codes=("timeout",)),
     "stalled_reader": dict(codes=("timeout",)),
@@ -2148,6 +2150,21 @@ def selftest(work: pathlib.Path | None = None, verbose: bool = True) -> int:
     viol, summ = classify_rows(rows + [trow], [wall])
     check("a timeout inside a daemon-kill window is tolerated by rule and counted",
           not viol and summ["tolerated_in_windows"] == {"kill_daemon_random/read_decompile:timeout": 1}, (viol, summ))
+    # a killed native decompiler fails the one decompile that used it with decompiler_failed (3.11, E9 A36; a protocol 3
+    # client): tolerated inside a kill_decompiler window, an unexpected error outside it and for any other fault class
+    wdec = {"t0": t - 1, "t1": t + 1, "scope": "all", "cls": "kill_decompiler"}
+    drow = {"t": t, "agent": 2, "op": "read_decompile", "lane": "quick", "ms": 3.0, "ok": False, "code": "decompiler_failed",
+            "message": "the native decompiler failed on FUN_1: Exception while decompiling 1: pipe is being closed; "
+                       "this request failed alone, retry"}
+    viol, summ = classify_rows(rows + [drow], [wdec])
+    check("decompiler_failed of read_decompile inside a kill_decompiler window is tolerated and counted",
+          not viol and summ["tolerated_in_windows"] == {"kill_decompiler/read_decompile:decompiler_failed": 1}, (viol, summ))
+    viol, _ = classify_rows(rows + [drow], [])
+    check("planted: decompiler_failed outside any window is an unexpected error",
+          any(k == "unexpected_error" and "decompiler_failed" in d for k, d in viol), viol)
+    viol, _ = classify_rows(rows + [drow], [wall])
+    check("planted: decompiler_failed inside a daemon-kill window (not a decompiler kill) is an unexpected error",
+          any(k == "unexpected_error" for k, _ in viol), viol)
     viol, _ = classify_rows(rows + [dict(trow, t=t + 100)], [wall])
     check("the same timeout after the window is a violation", bool(viol), viol)
     viol, _ = classify_rows(rows + [dict(frow, message="IOException: File error during save", op="save")],
