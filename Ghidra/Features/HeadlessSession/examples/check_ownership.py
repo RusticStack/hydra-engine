@@ -229,13 +229,18 @@ def check_matrix(spec):
     return bad
 
 
-def ownership(spec):
-    """{repository-relative path: set of packages of its cells}."""
+def ownership(spec, kind=None):
+    """{repository-relative path: set of packages of its cells}, from the rows of ``kind``'s table
+    (all tables when None). The tables are per repository: a root path such as ``README.md`` or
+    ``.github/workflows/release.yml`` is a different file in the Hydra and in the Hydralysis
+    repository, so a row of one table never owns a file of the other (8.14, `w2/GATE6`)."""
     owners = {}
-    for kind, files, cells in spec.rows:
+    for k, files, cells in spec.rows:
+        if kind is not None and k != kind:
+            continue
         pk = {p for cell in cells.values() for p in packages_in(cell)}
         for tok in files:
-            for path in resolve(kind, tok):
+            for path in resolve(k, tok):
                 owners.setdefault(path, set()).update(pk)
     return owners
 
@@ -279,7 +284,7 @@ def check_changes(spec, kind, pkg, changed):
     """Violations among the repository-relative ``changed`` paths of package ``pkg``."""
     if pkg not in {p for ps in spec.plan.values() for p in ps}:
         return [f"{pkg} is not a package of the wave plan"]
-    owners = ownership(spec)
+    owners = ownership(spec, kind)
     tfiles, tdirs = package_text_files(spec, kind, pkg)
     own_test = re.compile(rf"{re.escape(MODULE)}/examples/(dt|char|cc)_{pkg.lower()}\.py")
     # rule 2 of section 8: the goldens a package's char_<id>.py records carry the package id
@@ -422,6 +427,12 @@ def selftest():
     expect("Y0a changes the root README.md and docs/ row of E1: only the first is its row",
            check_changes(spec, "hydralysis", "Y0a", ["README.md", "THIRD_PARTY.md"]) == []
            and len(check_changes(spec, "hydralysis", "Y0a", ["docs/upstream-setup.md"])) == 1, True)
+    expect("a row of one repository's table never owns a file of the other (README.md is a root "
+           "document of both)",
+           [len(check_changes(spec, "hydra", "E1", ["README.md"])),
+            len(check_changes(spec, "hydralysis", "E1", ["README.md"])),
+            len(check_changes(spec, "hydralysis", "Y0a", ["README.md"])),
+            len(check_changes(spec, "hydra", "Y0a", ["README.md"]))], [0, 1, 0, 1])
     expect("a root config.example.json is E1's, src/hydralysis/README.md is in no row",
            len(check_changes(spec, "hydralysis", "Y0a", ["config.example.json",
                                                          "src/hydralysis/README.md"])), 2)

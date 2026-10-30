@@ -3126,7 +3126,7 @@ Paths are relative to `Ghidra/Features/HeadlessSession` unless they begin with `
 | File | W0 | W1 | W2 | W3 | W4 | W5 | W8 |
 |---|---|---|---|---|---|---|---|
 | `S/Session.java` | | E1 (hello, `info`, `admit` call with the request, the call sites of `ProjectEntry.info(client)` at `:265`, `:333`, `:427`, the admission and `Guarded` seam call sites, `isInline` stays) | E2 (A13: the `seal_project` and `prepare_upgrade` dispatch) | E3b (`disconnect`, `reap`) | E3c (the join of a program under analysis, the registry as a state machine, refcount disposal in `reap`; A32: `completeLeaves` closes the idle project through `registry.closeIdle`) | E5 (`isInline`, `case health`, watchdog start) **then** E9 (A33: `Governor.admit` before the slot wait of a request and the close of its reservation; `reap(warmMs)`, the overload the governor calls with 0 before it refuses an open) **then** E7 (A39: one line, the `Health` contributor `scriptWorkers`, commit `5e5f95cb37`) | |
-| `S/Scheduler.java` | | E1 (`laneOf(cmd, req, v3)`, `admit(c, cmd, req, m, waitMs)`, `describe(boolean)`, all behaviour-free) | E3a (maint lane, fair key, cap, queue info, ETA, `Preflight` call, `Ticket.yieldSlot`) | | | E5 (`describe` `tryLock`, lane stats) | |
+| `S/Scheduler.java` | | E1 (`laneOf(cmd, req, v3)`, `admit(c, cmd, req, m, waitMs)`, `describe(boolean)`, all behaviour-free) | E3a (maint lane, fair key, cap, queue info, ETA, `Preflight` call, `Ticket.yieldSlot`) | | E3c (A44: `bind`/`bound`, the ticket of the executing request for the `yieldSlot` wiring; `free(s, t, completed)` and `recorded(lane)`: a yield records no hold time and no completion; commit `cb99c188ab`, merged `c5d5be2d79`) | E5 (`describe` `tryLock`, lane stats) | |
 | `S/ImportCommands.java` | | E1 (the `admit` call at `:112` only) | E3a (remaining wait; the `ImportGate.enter` call at `:100` passes the client) | | | | |
 | **`S/ImportGate.java`** | | | E3a (`enter` takes the `Client`, `Entry` keeps it, `queueInfo` adds `estimateScope` for v3) | | | | |
 | `S/Connection.java` | | E1 (`error()` gets the client and emits `next`, `retryAfterMs`) | E3a (`respond`: `queue` header) | E3b (`run`: grace, `shutdownNow`; `respond`: `cancelled` details; the bounded outbound queue; parallel dispatch for v3) | | | |
@@ -3141,6 +3141,7 @@ Paths are relative to `Ghidra/Features/HeadlessSession` unless they begin with `
 | `S/ProjectCommands.java` | | E1 (the call sites of `ProjectEntry.info(client)` at `:92`, `:395`) | E2 (`openProject` `format`, the `sealed` refusal) | E3b (`leaveProject`, the `makeWritable` wait taken out of the registry monitor) | E3c | | |
 | `S/ProgramCommands.java` | | | E2 (`openWritable` gate, `sealed`, `upgradeBackup`) | E3b (`releaseUse` for owners and writers, bounded; `closeEntry`) | E3c (the plain-reader leave: the fast path and the deferred disposal, D63b) | | |
 | **`S/ProjectRegistry.java`** | | | | | E3c | | |
+| **`S/WaitStats.java`** | | | | | E3c (A46: `waits.foreignBlocked`, `singleFlightOpen`, `contended`, `lockWaitP99Ms`, K13; commit `cb99c188ab`, merged `c5d5be2d79`) | | |
 | `S/UpgradeCache.java` | | E1 (`currentDbVersion` moved to `DbVersions`) | E2 (`readStored`, `prepare_upgrade` single flight) | | | | |
 | `S/EditCommands.java` | | E1 (`withLastEditor`, `rk`) | E2 (`save` stamp) | | | | |
 | `S/ForkCommands.java`, `S/ProjectFork.java` | | E2a (the `.gpr`-last order, the intent, `rk`, the sidecar `state`) | E2 (purpose, open, verify, cost, warnings, sidecar fields, `view`, `promote` marker; A26, after the land: the fix package F1 made the sidecar writes of `setPromote` and the rollback of `publish` retry) | | | | E12 (A38, `ProjectFork.java` only, commit `45b8af2cdd`: `publish` forces every staged file and folder before the intent says moving, a read-only version file made writable for the flush and read-only again; the destination folder synced before and after the `.gpr` move, a no-op on Windows) |
@@ -3148,10 +3149,11 @@ Paths are relative to `Ghidra/Features/HeadlessSession` unless they begin with `
 | **`S/ProjectFormat.java`**, **`S/ProjectBackup.java`**, **`S/Seals.java`** | | | E2 | | | | |
 | `S/ProjectEntry.java` | | E1 (`info(Client)`: the signature only, same value) | E2 (`format` for v3) | | E3c (state machine fields) | | |
 | **`S/DbVersions.java`** | | E1 (`program()`, `dataTypes()` returning `null`) | E2 (`dataTypes()`) | | | | |
-| `S/Operations.java`, `S/Journal.java`, `S/Client.java`, `S/SessionException.java`, **`S/Identity.java`**, **`S/Settings.java`**, **`S/Preflight.java`**, **`S/Hooks.java`** | | E1 (`SessionException`: the new codes, the busy-details and the bad-request-details helpers; `Hooks.Admission`, inert) | | | | | |
+| `S/Operations.java`, `S/Journal.java`, `S/Client.java`, `S/SessionException.java`, **`S/Settings.java`**, **`S/Preflight.java`**, **`S/Hooks.java`** | | E1 (`SessionException`: the new codes, the busy-details and the bad-request-details helpers; `Hooks.Admission`, inert) | | | | | |
+| **`S/Identity.java`** | | E1 | | | | E5 (A51: the key `platform.testHooks`, 3.2; commit `3972cda7c9`, merged `3bf1900b01`) | |
 | **`S/Guarded.java`** | | | | | | E9 (A37: E9 creates it; E1 left no `Guarded` seam: the restart loop, the backoff, the per-thread `beat` and `states`, the emergency reserve, the test fault `inject`) | |
 | **`S/Advertised.java`** | | E1 (capability, limit and policy names declared up front) **then** E2a (adds the capability name `forkAtomic`, A4) | E2 (A13: the capability name `seal`, inserted before `forkAtomic`, A9) | | | E9 (A35: the capability name `admission` after `forkAtomic`; the limit names `minXmxMb` to `decompilerNegativeS` after `maxRunningPerKey`) | |
-| `S/HeadlessSession.java` | | E1 (endpoint and `ready`, `-set`) | E2 **then** E3a (A13, E2: the self-check of `DbVersions.dataTypes()` at `:762`, 5 lines; E3a: the `maxLong` and `maintSlots` defaults at `:133-134` and the usage text at `:78-79`; the option parser stays as it is) | | | E5 **then** E9 (E5: the watchdog and `testHooks`; E9: the governor start and the process job) | |
+| `S/HeadlessSession.java` | | E1 (endpoint and `ready`, `-set`) | E2 **then** E3a (A13, E2: the self-check of `DbVersions.dataTypes()` at `:762`, 5 lines; E3a: the `maxLong` and `maintSlots` defaults at `:133-134` and the usage text at `:78-79`; the option parser stays as it is) | | E3c (A45: self-test checks only: `waiterCaps`, `closeVsViewChange` and the `yieldSlot` record; commits `cb99c188ab`, `4e575f175d`, `908c6315f9`, merged `c5d5be2d79`) | E5 **then** E9 (E5: the watchdog and `testHooks`; E9: the governor start and the process job) | |
 | `S/HydraInfo.java` | | E1 (protocol constants) | | | | R1 (version) | |
 | `S/ScriptCommands.java` | | | | | E4 | E7 (the routing to a worker, D64) | |
 | **`S/PrivateInstance.java`** | | | | | E4 | | |
@@ -3166,22 +3168,30 @@ Paths are relative to `Ghidra/Features/HeadlessSession` unless they begin with `
 | `/Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/local/LocalDatabaseItem.java` | | E8 (the private-database open path, so that repair-on-open reaches forks, A3; revision 8.2, A14, the follow-up recorded after the W2 land: the versioned branch uses the read-only constructor and read-only items never repair, no header read at construction; and the reopen when another opener quarantined the newest version first, commit `862f134874`, found by the R-V1 verification) | | | | | |
 | `/NOTICE-HYDRA` | | E8 (the three patched core files and the one added class, A3) | | | | R1 | |
 | `support/ghidra_session.py` | | P1a (range, `engine` pass-through) | | | P1b **then** E3c (P1b: deadline, `LaunchError`, registry; the caller-job detection and the breakaway-then-WMI spawn of D65; the JVM flag `--enable-native-access` of D60; the `maxLong` comment `:425-426`; no Job Object; E3c, A25: the module-level PE32 class and the lock around the Toolhelp `argtypes`; note, A29: the fix package R-V3 sets the Toolhelp signatures once inside the locked `_pe32_class()`, after P1b and E3c) | | |
+| `PROTOCOL-3.md` (this file; no package owns it, the coordinator amends it, 8.14) | | | | | E3c (A42, out of scope, recorded: 3.9's table and 3.10 say 19 rows of `lock_matrix.json`, not 17; commit `ac3cc90774`, merged `c5d5be2d79`) | E9 (A43, out of scope, recorded: the 8.1 cells and section 8.9 of revision 8.5, written on the package branch; commit `af15ebfb20`, merged `91dfcb2cb3`) | |
 | `examples/daemon_tests.py` | E0 | | | E3b (A24: `t_shared_stress` connects at protocol 2 through `c.connect`, because the waiter cap of 3.5 refuses eight protocol 3 writers; note, A30: the fix package R-V3 adds the `Skipped` status, the SKIP tally and `Ctx.release()`) | | | |
 | `examples/characterization_tests.py`, **`examples/dt_baseline.py`**, `examples/characterization/v3/` (created by E0 as an empty directory with the loader) | E0 | | | | | | |
 | **`examples/characterization/v3/e3a-busy.json`** (E3a's golden; A31) | | | E3a (recorded) | | E4 (re-recorded in `48d3da27b9`: the reply keys `isolation`, `lane`, `attemptedChanges`, `attemptedChangesCount`) | | |
 | `examples/characterization/clients.json`, `examples/characterization/edits.json`, `examples/characterization/fork_refresh.json`, `examples/characterization/import_script.json`, `examples/characterization/overlays.json`, `examples/characterization/readonly.json`, `examples/characterization/session.json` | E0 (the seven v2 goldens; `fork_refresh.json` and `overlays.json` were re-recorded once, in `f47ff15934`, to mask the copied project's total size, E0; **amendment A1, revision 7, D62: six goldens are re-recorded once more to mask the scheduler `slots`**; no later package edits them, E3a included) | | | | | | |
 | **`examples/oracle.py`**, **`examples/chaos_lib.py`** | X0 | | | | | | |
+| **`examples/lock_matrix.json`** | | | | | E3c (A47: the copy of B's lock matrix that `dt_e3c` enumerates, 3.10; commit `ac3cc90774`, merged `c5d5be2d79`) | | |
+| `examples/run_parallel.py` (made by a non-package branch; E7, SPEED4 and FIX4 also edited it, 8.10, 8.11) | | | | | E3c (A49, out of scope, recorded: one line that clears read-only attributes before the scratch is deleted; commit `887222e374`, merged `c5d5be2d79`) | | |
+| `examples/conc/run_ef.py` | X0 | | | | | E6 (A52, out of scope, recorded: a `busy` retry in `e04f7def92`/`224b2dc0ff`, merged `355974a9ca`; taken back to X0's text in `c7d26ae101`, merged `855a788da3`; no E6 change remains) | |
 | **`examples/conc/`** | X0 | | E2 (A14: the red-table base script only, `mkbase.py`: the red-table base is built as a disposable fork because the E2 upgrade gate refuses a canonical copy; commit `683fd092ca`) | | | | |
 | **`examples/check_ownership.py`** | E0 (revision 8.2, A12, amendment A1 of revision 7, commit `6fccf3c65c`: `python -I` works and the Hydralysis root documents resolve) | E1 (its first commit: the package ids read from the wave plan, the `<id>-` golden prefix, the frozen files; section 8, rule 4) | | | | | |
-| `examples/contract_tests.py` | | E1 (the protocol and first-`hello` tests) | E2 (A13: `dbVersions.dataTypes` may be a positive integer, and `seal` in the capability order) | | | | |
+| `examples/contract_tests.py` | | E1 (the protocol and first-`hello` tests) | E2 (A13: `dbVersions.dataTypes` may be a positive integer, and `seal` in the capability order) | | | E5 (A51: the `platform` keys compared without `testHooks`; commit `3972cda7c9`, merged `3bf1900b01`) | |
 | **`examples/client_compat_tests.py`**, **`examples/stock/ghidra_session_1_0_0.py`** | | P1a | E3a (A12: no edit is planned; both files name a launch value (`maintSlots` as a passed `-set` flag, the comment `CPU/4` of the stock client's own default) and the proof demands a lane-package owner of every frozen file that names a lane default; the stock copy stays byte-identical unless D40 forces a comment) | | | | |
-| `examples/char_e1.py`, `examples/characterization/v3/e1-hello.json`, `examples/characterization/v3/e1-expect.json`, `examples/characterization/v3/e1-require-expect.json`, `examples/characterization/v3/e1-rk.json` | | E1 (revision 8.2, after the W2 land: A13, the `dbVersions` assertions of `char_e1.py` and the goldens it records follow `DbVersions.dataTypes()` once it is read; A12, amendment A1: `e1-hello.json` is re-recorded once with `"slots": "<masked>"`, which makes the 4-line scheduler mask that another branch adds to `head()` of `char_e1.py` redundant) | E3a (A23: the 9-line scheduler mask in `head()` of `char_e1.py`, added after the W1 cell) | | | | |
+| `examples/char_e1.py` | | E1 (revision 8.2, after the W2 land: A13, the `dbVersions` assertions of `char_e1.py` and the goldens it records follow `DbVersions.dataTypes()` once it is read; A12, amendment A1: `e1-hello.json` is re-recorded once with `"slots": "<masked>"`, which makes the 4-line scheduler mask that another branch adds to `head()` of `char_e1.py` redundant) | E2 **then** E3a (A50: E2, the `dbVersions` assertions of A13, which the W1 cell named only in parentheses; commit `1784823fd9`, merged `9c7cdef9e4`; A23: the 9-line scheduler mask in `head()` of `char_e1.py`, added after the W1 cell) | | | E5 (A51: the `platform` keys compared without `testHooks`; commit `3972cda7c9`, merged `3bf1900b01`) | |
+| `examples/characterization/v3/e1-hello.json` | | E1 (A12, amendment A1: re-recorded once with `"slots": "<masked>"`) | | | E3c (A48: `status` gains `waits` and `projectStates`, which `char_e1.py` compares exactly; commit `cb99c188ab`, merged `c5d5be2d79`) | | |
+| `examples/characterization/v3/e1-expect.json`, `examples/characterization/v3/e1-require-expect.json`, `examples/characterization/v3/e1-rk.json` | | E1 | E2 (A50: the goldens of A13 follow `DbVersions.dataTypes()`; commit `1784823fd9`, merged `9c7cdef9e4`) | | | | |
 | **`examples/soak_tests.py`**, **`examples/chaos_tests.py`** | | | | | | E6 | |
 | **`examples/dt_e4.py`**, **`examples/char_e4.py`**, **`examples/characterization/v3/e4-script.json`** (E4's tests and golden; A40) | | | | | E4 | E7 (A40, commit `5e5f95cb37`: the `isolation` value list gains `worker` in the `bad_request` assertions and the re-recorded golden) | |
 | `examples/test-map.json` (generated by `run_parallel.py --make-test-map`; A41) | E0 **then** X0 **then** R0 | P1a **then** E1 **then** E8 **then** E2a | E2 **then** E3a | E3b | E3c **then** E4 **then** P1b | E5 **then** E9 **then** E6 **then** E7 **then** R1 **then** Z15 | E10 **then** E11 **then** E12 |
 | **`format-matrix.json`**, **`examples/format_gate.py`**, **`examples/make_legacy_fixture.py`**, **`examples/vectors/canonical-manifest.json`**, **`examples/fixtures/legacy-12.1.4/`** | | | E2 | | | | |
 | `README.md`, `ARCHITECTURE.md` (the module's) | R0 | | | | | R1 | |
 | `/README.md`, `/CHANGELOG.md` | R0 | | | | | R1 | |
+| `/.github/workflows/release.yml` (the release workflow) | | | | | | R1 (A53: the release checks of the dry run; commit `8a5a334da5`, merged `7a8171ff28`) | |
+| **`/docs/release-notes-12.3-hydra.4.md`** | | | | | | R1 (A53: the release notes of 5.2; commits `7913a727ae`, `0b4320a80d`, merged `7a8171ff28`) | |
 | `/.github/CONTRIBUTING.md`, `/.github/SECURITY.md`, **`/.github/workflows/upstream-sync.yml`**, **`/.github/hydra-touched-files.txt`** | | | | | | Z15 | |
 | **`/.github/scripts/upstream-sync-report.sh`**, **`/.github/scripts/test-upstream-sync-report.sh`**, **`/.github/scripts/check-archive-notices.sh`**, **`/.github/scripts/test-check-archive-notices.sh`** | | | | | | Z15 (A11: the guard must be runnable and testable locally, and the Tests line 'release archives contain LICENSE, NOTICE and NOTICE-HYDRA' needs a test that builds the client zip) | |
 
@@ -3194,7 +3204,7 @@ Paths are relative to `Ghidra/Features/HeadlessSession` unless they begin with `
 | `tests/test_durable.py` | Y0a | Y0e (**the ratchet table**: the six rows of the three writers Y0e moves and the three count assertions, 8.2; the two-process and large-log tests had landed in the W0 follow-up `2bf90c7`) | Y2 (the ratchet allow-list row of `_start_saver` leaves with the function, D61) | Z3 (A15: two FOLLOW_UP rows of the frozen write-site gate for `environment.py`) | | | | |
 | `tests/test_durable.py` (**second step of W1, after Y0e**) | | Y1 (the two `save_overlay` rows and the counts, in the commit that deletes the function, 8.2) | | | | | | |
 | `tests/test_address_maps.py` | Y0a (one line: drop the stale seal of a hand-edited record; commit `c78be27`) | | | | | | | |
-| `tests/test_query.py` | Y0a (one line, the same) | Y1 (`status show=changes`) | Y2 (`stop`, `show=lineage`; the `_start_saver` patch of the fixture removed, D61) | Y3 (rebase, `stale_view`) | | | Y4a (lane hint, `wait` on every call of the attempt, the pool entry in `_ask`, `stop` over the entries; the release literals `:285-296` derived from the fake) | |
+| `tests/test_query.py` | Y0a (one line, the same) | Y1 (`status show=changes`) | Y2 (`stop`, `show=lineage`; the `_start_saver` patch of the fixture removed, D61) | Y3 (rebase, `stale_view`) | Y5 (A55: the `EngineCase` fixture asks the shared view, the stale-view test takes the conflict path, one auto-rebase test; commit `4c1f832`, merged `7a1614d`) | | Y4a (lane hint, `wait` on every call of the attempt, the pool entry in `_ask`, `stop` over the entries; the release literals `:285-296` derived from the fake) | |
 | `hydra.py` | Y0b | Y0e (`write_daemon_config` through `durable.atomic_write`) | Y2 (the launch configuration: `maxLong`, `maxQuick` from the expected number of agents; the `saver` comment of `Engine`, D61) | | | | Y4a (capabilities, the pin bump by `tools/bump_hydra.py`, `Supervisor`, the helper, the pool, the leave gate) | |
 | `tests/test_client.py` | Y0b | | | | | | | |
 | `tests/fakehydra.py` | Y0b | | Y2 (fork purposes) | | | | Y4a (the v3 fake, the E2 surface for Y4d's tests, the opt-in connection scope; the release constant is edited by the bump script, 5) | |
@@ -3202,7 +3212,8 @@ Paths are relative to `Ghidra/Features/HeadlessSession` unless they begin with `
 | `tests/test_mcp_transport.py` | Y0c | | | | | | | |
 | `api.py` | Y0d | | Y2 (the handler registry that replaces the Y0d stubs, 8, with the capability names `views`, `publish`, `environment`, `evidenceBundle`; the `OPTION_BAGS` lines for `options.as` and `options.op=remove`, help only, D59, OD8) | Z3 (A15: the `backend status` branch sends status through `dispatch("environment", ...)`, about 15 lines, so that status starts no JVM; 8.3 row 2) | Y5 (A18: `ghidra_run` `options.as`) | | | |
 | `workflow_help.py` | Y0d | | | | | | | |
-| `tests/test_contracts.py` | Y0d | | Y2 (the four stub tests of `NotAvailableCarriers`, `:111-157`, rewritten against the handler registry, 8; one assertion that `backend help` lists `options.as`, D59) | | | | | |
+| `tests/test_compat.py` | | | | Z3 (A56: the configuration lookup patched at `config.user_config_dir`; commit `91bd90b`, merged `ec238f6`) | | | | |
+| `tests/test_contracts.py` | Y0d | | Y2 (the four stub tests of `NotAvailableCarriers`, `:111-157`, rewritten against the handler registry, 8; one assertion that `backend help` lists `options.as`, D59) | Z3 (A56: the configuration lookup also patched at `config.user_config_dir`; commit `91bd90b`, merged `ec238f6`) | | | | |
 | **`cli.py`** | | Y0e (`backend --action doctor` and `--action backups`, `--options` and `--options-file`, passed through to the dispatcher) | | | | | | |
 | **`tests/test_cli.py`** | | Y0e | Y2 (its two stub tests rewritten against the handler registry, 8) | | | | | |
 | **`runtime_actions.py`**, **`runtime_agents.py`**, **`runtime_capture.py`**, **`runtime_events.py`**, **`runtime_exports.py`**, **`runtime_snapshot.py`** | | | | | | | Z10 (A21: the worker is split into agent templates, event log, action handlers and lifecycle, as the Z10 text requires) | |
@@ -3236,7 +3247,7 @@ Paths are relative to `Ghidra/Features/HeadlessSession` unless they begin with `
 | `userscripts.py`, **`tests/test_userscripts.py`** | | | | | Y5 (A18: `run(who=)`) | | Y4e | |
 | **`tests/test_deadline.py`**, **`tests/test_supervisor.py`** | | | | | | | Y4a | |
 | `tests/test_backends.py` | | | | | | | Y4a (the pinned release literals, `:21` and `:101`, derive from `hydra.RELEASE`, 5) | |
-| `README.md` | Z13a (the wording pass, the GUI removal) | | Y2 (the sentence on the background save and `overlay_save_debounce_s`, the per-target lock sentence and the "Changes in 0.5.0" note, D61) | | Y5 (the sentence "Clients share the default view", D43, D59) | Z13b (numbers regenerated from the ledger) | Y4a (the one sentence that names the pinned release, edited by `tools/bump_hydra.py`, 5) | |
+| `README.md` | Z13a (the wording pass, the GUI removal) | | Y2 (the sentence on the background save and `overlay_save_debounce_s`, the per-target lock sentence and the "Changes in 0.5.0" note, D61) | Z3 (A56: one sentence on the per-user configuration, `environment init` and the launch banner; commit `91bd90b`, merged `ec238f6`) | Y5 (the sentence "Clients share the default view", D43, D59) | Z13b (numbers regenerated from the ledger) | Y4a (the one sentence that names the pinned release, edited by `tools/bump_hydra.py`, 5) | |
 | `THIRD_PARTY.md` | Z13a (the wording pass, the GUI removal) | | | | | Z13b (numbers regenerated from the ledger) | Y4a (the one sentence that names the pinned release, edited by `tools/bump_hydra.py`, 5) | |
 | `docs/upstream-setup.md` | | | | | | | Y4a (the pin sentence, edited by `tools/bump_hydra.py`, 5) | |
 | `docs/golden-harness.md` | Z13a (one phrase: "parity with the Ghidra window" becomes `DecompileOptions.grabFromProgram`; the file stays a dated report) | | | | | | | |
@@ -3247,7 +3258,9 @@ Paths are relative to `Ghidra/Features/HeadlessSession` unless they begin with `
 | **`tests/test_concurrency.py`** | | Z1 | Y2 (flips the known-issue marker of the `_sync` test) | | | | | |
 | **`benchmarks/mcp_latency.py`**, **`benchmarks/concurrency_bench.py`**, **`benchmarks/named_view_cost.py`**, **`benchmarks/bench_cold_start.py`**, **`benchmarks/bench_install.py`**, **`benchmarks/budgets.json`**, **`tests/test_output_size.py`** | | | | Z2 | | | | |
 | **`environment.py`**, **`tests/test_environment.py`**, `config.py`, `paths.py` | | | | Z3 | | | | |
-| **`tests/test_engine_nostock.py`**, **`tools/audit_harness.py`**, `docs/ci.md`, `.github/workflows/tests.yml` | | | Z4 | | | | | |
+| **`tests/test_engine_nostock.py`**, **`tools/audit_harness.py`**, `docs/ci.md` | | | Z4 | | | | | |
+| `.github/workflows/tests.yml` | | | Z4 | | | | Z14 (A54: the `workflow_call` trigger, so that `release.yml` runs its unit and engine jobs; commit `f1e2575`, merged `66cd740`) | |
+| `pyproject.toml`, `__init__.py` | | | | | | | Z14 (A54: version `0.6.0.dev0`, the tree pins hydra.4; commit `f1e2575`, merged `66cd740`) | |
 | **`tests/test_engine_prepare.py`**, **`tests/test_engine_scripts.py`**, **`docs/verification-prepare.md`** | | | Z5 | | | | | |
 | **`tools/golden_classify.py`**, **`tests/test_golden_classify.py`**, **`docs/verification-golden.md`** | | | Z7 (A19: the test file of the classifier) | | | | | |
 | **`tests/test_engine_export.py`**, `tools/verify_corpus.py` | | | | Z6 | | | | |
@@ -3936,6 +3949,87 @@ This amendment says nothing about ReFS: no result is taken, inferred or carried 
 state a ReFS property as tested on this release (6.2 "Copy-on-write is ReFS only" and "ReFS gives a disk saving and no
 protection" stay as written, as limits). A gate report names these parts "not testable on the release machine, owner decision
 2026-10-30", never "passed" and never "skipped as green".
+
+### 8.14 Revision 8.10: release gate 9.11, hygiene (ownership amendments A42 to A56, the limits of 6.2 in the documents, `w2/GATE6`)
+
+A coordinator amendment, recorded on branch `w2/GATE6` (from Hydra `integration/w3` at `3c3c100d8b`) to close the two open items of
+gate 9.11 found by the gate run of 2026-10-29 (`D:/Projects/Hydra/_logs/gates/gates-1.md`). It changes no design decision and no
+engine or client behaviour, and weakens no gate; the one code change is a correction of `examples/check_ownership.py` that makes it
+stricter (part 1 (c)). Where this section differs from an earlier one, it governs. Sections 8.13 and later revisions of E2a and 9.15
+belong to another stream and are not touched here.
+
+**(1) Ownership: every package merge against 8.1.** Method (`D:/Projects/Hydra/_logs/gate1/run_ownership.py`, rerun as
+`D:/Projects/Hydra/_logs/gate6/run_ownership.py`): for every first-parent merge of a package branch into the integration branches since
+`v12.3-hydra.3` (Hydra) and 2026-10-26 (Hydralysis), the files `git diff --name-only --no-renames M^1 M` brought in, checked with
+`check_changes` of `examples/check_ownership.py` against this file. Before this revision: 47 package merges, 37 clean, 10 with 26
+violations (`D:/Projects/Hydra/_logs/gate1/ownership.log`). Each violation was decided from its commit:
+
+(a) *Missing table entries*: the package needed the edit for its own work, or an amendment meant to grant it did not reach the
+matrix. The entry is added to 8.1, citing the commit and the merge.
+
+| Amendment | File (its owner before) | Package, wave, commit, merge | Why the package needed it |
+|---|---|---|---|
+| A44 | `S/Scheduler.java` (E1, E3a, E5) | E3c, W4, `cb99c188ab`, merged `c5d5be2d79` | the `Ticket.yieldSlot` wiring is E3c's (its block: "the optional `Ticket.yieldSlot` wiring behind `yieldSlots`"): `bind`/`bound` give the executing request's ticket; a yield must not record a hold time or a completion (`free(s, t, completed)`, `recorded(lane)`, the E3a review nit) |
+| A45 | `S/HeadlessSession.java` (E1, E2, E3a, E5, E9) | E3c, W4, `cb99c188ab`, `4e575f175d`, `908c6315f9`, merged `c5d5be2d79` | self-test checks only (`waiterCaps`, `closeVsViewChange`, the `yieldSlot` record): the self-test lives in this file |
+| A46 | **`S/WaitStats.java`** (no row) | E3c, W4, `cb99c188ab`, merged `c5d5be2d79` | created by E3c: `waits.foreignBlocked` and its companions, the deterministic evidence of K13 (D49) |
+| A47 | **`examples/lock_matrix.json`** (no row) | E3c, W4, `ac3cc90774`, merged `c5d5be2d79` | the copy of B's lock matrix that `dt_e3c` enumerates (3.10: a row without a decision fails the test) |
+| A48 | `examples/characterization/v3/e1-hello.json` (E1, E3a) | E3c, W4, `cb99c188ab`, merged `c5d5be2d79` | `status` gains `waits` and `projectStates`; `char_e1.py` compares `status` exactly (3.1), so the golden had to be re-recorded (like A40) |
+| A50 | `examples/char_e1.py`, `e1-expect.json`, `e1-require-expect.json`, `e1-rk.json` (E1, E3a) | E2, W2, `1784823fd9`, merged `9c7cdef9e4` | already granted by A13 (revision 8.2), but A13 named E2 only inside the parentheses of E1's W1 cell, which the checker reads as explanation; the W2 cell is now `E2 **then** E3a` (E2 merged first) |
+| A51 | **`S/Identity.java`** (E1), `examples/contract_tests.py` (E1, E2), `examples/char_e1.py` (E1, E3a) | E5, W5, `3972cda7c9`, merged `3bf1900b01` | 3.1 and the E5 block put `platform.testHooks` in `hello` (E5); the key is built in `Identity`, and E1's exact key lists in `contract_tests.py` and `char_e1.py` fail on it, so both compare the keys without `testHooks` (asserted by `dt_e5`/`cc_e5`). `S/Identity.java` leaves E1's shared row for a row of its own |
+| A53 | `/.github/workflows/release.yml` (no Hydra row), **`/docs/release-notes-12.3-hydra.4.md`** (no row) | R1, W5, `8a5a334da5`, `7913a727ae`, `0b4320a80d`, merged `7a8171ff28` | the R1 block names "the release workflow (a dry run)" and "the release notes"; neither had a row |
+| A54 | `.github/workflows/tests.yml` (Z4), `pyproject.toml`, `__init__.py` (no row) (Hydralysis) | Z14, W6, `f1e2575`, merged `66cd740` | the release dry run must run the unit and engine jobs (Z14 Tests): `workflow_call` in `tests.yml`; the version `0.6.0.dev0` because the tree pins hydra.4 (already recorded as a fact in the Z14 block, revision 8.6). `tests.yml` leaves Z4's shared row |
+| A55 | `tests/test_query.py` (Y0a, Y1, Y2, Y3, Y4a) (Hydralysis) | Y5, W4, `4c1f832`, merged `7a1614d` | per-agent default views (Y5) change what a bare call reads: the `EngineCase` fixture asks the shared view, the stale-view test takes the conflict path, one auto-rebase test is added (A18 listed the other fixtures, not this file) |
+| A56 | `README.md` (Z13a, Y2, Y5, Z13b, Y4a), `tests/test_contracts.py` (Y0d, Y2), `tests/test_compat.py` (no row) (Hydralysis) | Z3, W3, `91bd90b`, merged `ec238f6` | Z3 moves the configuration lookup to the per-user folder (`config.user_config_dir`); two tests patched the old lookup, and the README sentence on where the configuration lives had to follow |
+
+(b) *Out-of-scope edits*, reported: the edit was not the package's to make. Each is recorded in 8.1 with "out of scope, recorded",
+so that the per-merge check names an owner for every file a merge brought in; such a cell grants nothing further (every one of
+these packages is merged and its wave closed), and it is listed here so that it is not hidden.
+
+| Amendment | File | Package, commit, merge | What happened |
+|---|---|---|---|
+| A42 | `PROTOCOL-3.md` (no row: no package edits the spec) | E3c, `ac3cc90774`, merged `c5d5be2d79` | the package corrected two sentences of the spec (3.9's table and 3.10: `lock_matrix.json` has 19 rows, not 17). The correction is right and stays; the edit belonged to the coordinator |
+| A43 | `PROTOCOL-3.md` | E9 (E9b), `af15ebfb20`, merged `91dfcb2cb3` | the package branch wrote the coordinator's amendments A33 to A37 (8.1 cells, section 8.9, revision 8.5) itself; 8.10 (1) (c) recorded it as a fact. The amendments stand; the place was wrong |
+| A49 | `examples/run_parallel.py` (no row; made by a non-package branch) | E3c, `887222e374`, merged `c5d5be2d79` | one line, unrelated to E3c's package: the runner clears read-only attributes before it deletes its scratch |
+| A52 | `examples/conc/run_ef.py` (X0's directory row) | E6, `e04f7def92`, `224b2dc0ff`, merged `355974a9ca`; reverted by `c7d26ae101`, merged `855a788da3` | a `busy` retry in X0's red-table runner, which the commit itself called "an E6 edit outside E6's rows"; E6's review round 2 took the file back to X0's text, so no E6 change remains (2 violations, one per merge). The file now has a row of its own (X0 W0, E6 W5) |
+
+Of the 26 violations, 21 are (a) and 5 are (b) (A42, A43, A49, and the two merges of A52).
+
+(c) *A checker defect, corrected.* `ownership()` merged the rows of the Hydra and the Hydralysis tables into one map keyed by path,
+so a repository-root path that both repositories have (`README.md`, `CHANGELOG.md`, `.github/workflows/release.yml`) was owned by
+the packages of both tables: R1's Hydra `release.yml` was reported as "owned by Z14" (Z14's Hydralysis row), and a Hydralysis
+package could have changed its own `README.md` on the strength of a Hydra row (R0, R1). `ownership(spec, kind)` now reads only the
+table of the repository being checked; a new self-test check (a row of one table never owns a file of the other) is red with the
+old code. This narrows what a row grants; the result below is the same with the unchanged gate1 checker
+(`D:/Projects/Hydra/_logs/gate6/ownership-oldchecker.log`).
+
+Result on `w2/GATE6`: `check_ownership.py` (the matrix) 151 rows, 52 packages, 0 violations; `--selftest` all checks pass;
+`run_ownership.py` 47 package merges, **0 violations** (`D:/Projects/Hydra/_logs/gate6/ownership.log`).
+
+**(2) The documents state every limit of 6.2.** The gate run found 6 of the 30 limits stated, 13 partly and 11 missing, and five
+kinds of sentences stronger than 6.2. The engine module README now has the complete list, "Limits of 12.3-hydra.4 and protocol 3"
+(L1 to L19 for the bullets of 6.2, R6.1 to R6.11 for the numbered "Revision 6 limits"); the engine README, the CHANGELOG and the
+hydra.4 release notes summarise it and point to it, and the Hydralysis README ("Limits of this client with hydra.4") and CHANGELOG
+state the limits the client owns or meets first. Corrected to what the tests show:
+
+- `cancel` and a `timeout` end the request-bound lock waits (program, project, an overlay's request lock site), not the overlay
+  lifecycle waits, which are untimed (engine README, CHANGELOG V5, module README "Leaving", release notes V5; Hydralysis README).
+- No ReFS result is stated for hydra.4 (8.12): the CHANGELOG's "0 in 200 on ReFS" and "300 on ReFS", the same result in the module
+  README's table of core changes, and the release notes' "skipped" (now "not testable on the release machine, owner decision
+  2026-10-30"); the README's ReFS fork timings are marked as measured before hydra.4 and not repeated.
+- "never corrupt a program (in the tests listed ...)" becomes "no corruption was seen in the tests listed" (engine README, module
+  README, CHANGELOG), the ledger's form, so no "never corrupt" remains outside D52's exact form.
+- The one-off Linux and macOS pass is gone from the engine README (two places), the module README and the CHANGELOG: no Linux or
+  macOS claim is made.
+- The bounded release of a dead client names its tests and says that gate 9.13 has not passed.
+- Three "about 7 ms" lines carry their size qualifier (the benchmark function), as the 9.19 grep requires.
+
+Check (`D:/Projects/Hydra/_logs/gate6/run_limits.py`, an extension of gate1's keyword pass to all 30 limits and the overclaims):
+30 of 30 present in the list, every client-owned limit in the Hydralysis README, 0 overclaims; on the documents of the gate run it
+finds 0 of 30 in a list and 16 overclaims (`limits-before.log`). `tests/test_claims.py` passes; the D52 grep finds no hit in the
+engine and Hydralysis documents (the site repository is not edited here; its three "never corrupt ... in the tests listed" lines
+without the parentheses are the site owner's, S2).
+
+The shipped `docs/release-notes-12.3-hydra.3.md` is not edited.
 
 ### W0
 
