@@ -18,6 +18,10 @@ package ghidra.program.util;
 import java.util.ArrayList;
 import java.util.List;
 
+import ghidra.util.Msg;
+import ghidra.util.exception.CancelledException;
+import ghidra.util.task.TaskMonitor;
+
 /**
  * Per-thread collector of program writes made by an analysis worker.
  * <p>
@@ -36,6 +40,7 @@ import java.util.List;
 public final class DeferredProgramWrites {
 
 	private static final ThreadLocal<DeferredProgramWrites> CURRENT = new ThreadLocal<>();
+	private static final ThreadLocal<TaskMonitor> APPLY_MONITOR = new ThreadLocal<>();
 
 	private final List<Runnable> writes = new ArrayList<>();
 
@@ -93,16 +98,70 @@ public final class DeferredProgramWrites {
 	}
 
 	/**
+	 * Monitor for a recorded write to use. While {@link #apply(TaskMonitor)} runs on this
+	 * thread this is the apply-time monitor (the analysis monitor, which can still be
+	 * cancelled); otherwise it is the given monitor (immediate mode).
+	 *
+	 * @param recordTimeMonitor monitor of the code recording the write
+	 * @return the monitor to use
+	 */
+	public static TaskMonitor monitor(TaskMonitor recordTimeMonitor) {
+		TaskMonitor m = APPLY_MONITOR.get();
+		return m != null ? m : recordTimeMonitor;
+	}
+
+	/**
+	 * Perform the recorded writes in the order they were recorded, with no cancellation.
+	 *
+	 * @return number of writes that threw a RuntimeException (logged and skipped)
+	 * @see #apply(TaskMonitor)
+	 */
+	public int apply() {
+		try {
+			return apply(TaskMonitor.DUMMY);
+		}
+		catch (CancelledException e) {
+			throw new AssertionError(e); // DUMMY is never cancelled
+		}
+	}
+
+	/**
 	 * Perform the recorded writes in the order they were recorded. Must be called with no
 	 * collector open on the current thread so that the writes really happen.
+	 * <p>
+	 * A write that throws a RuntimeException is logged and skipped and the remaining writes
+	 * are still performed, so one failing write cannot drop the rest of the pass (the same
+	 * write fails the same way for every thread count, so the outcome stays deterministic).
+	 * Cancellation of {@code monitor} is checked before every write; recorded writes that
+	 * take a monitor get {@code monitor} through {@link #monitor(TaskMonitor)}.
+	 *
+	 * @param monitor apply-time monitor
+	 * @return number of writes that threw a RuntimeException
+	 * @throws CancelledException if {@code monitor} is cancelled
 	 */
-	public void apply() {
+	public int apply(TaskMonitor monitor) throws CancelledException {
 		if (CURRENT.get() != null) {
 			throw new IllegalStateException("cannot apply while collecting on this thread");
 		}
-		for (Runnable w : writes) {
-			w.run();
+		int failures = 0;
+		APPLY_MONITOR.set(monitor);
+		try {
+			for (Runnable w : writes) {
+				monitor.checkCancelled();
+				try {
+					w.run();
+				}
+				catch (RuntimeException e) {
+					failures++;
+					Msg.error(DeferredProgramWrites.class, "deferred program write failed", e);
+				}
+			}
+			monitor.checkCancelled();
 		}
-		writes.clear();
+		finally {
+			APPLY_MONITOR.remove();
+			writes.clear();
+		}
+		return failures;
 	}
 }

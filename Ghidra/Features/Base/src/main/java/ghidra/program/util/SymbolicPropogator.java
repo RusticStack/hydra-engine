@@ -2440,8 +2440,11 @@ public class SymbolicPropogator {
 				if (DeferredProgramWrites.isCollecting()) {
 					final Address from = instr.getMinAddress();
 					final int rmOpIndex = ref.getOperandIndex();
+					// capture locals only: a lambda reading the field would keep this whole
+					// propagator (and its VarnodeContext) alive until the writes are applied
+					final Listing listing = program.getListing();
 					DeferredProgramWrites.run(() -> {
-						Instruction in = program.getListing().getInstructionAt(from);
+						Instruction in = listing.getInstructionAt(from);
 						if (in != null) {
 							in.removeOperandReference(rmOpIndex, refAddr);
 						}
@@ -2803,8 +2806,10 @@ public class SymbolicPropogator {
 			final Address refTarget = target;
 			final RefType deferredRefType = refType;
 			final boolean skipIfTargetExists = deferredSkipIfTargetExists;
+			// capture locals only (not this propagator): see removeOperandReference above
+			final Listing listing = program.getListing();
 			DeferredProgramWrites.run(() -> {
-				Instruction instr = program.getListing().getInstructionAt(fromAddr);
+				Instruction instr = listing.getInstructionAt(fromAddr);
 				if (instr == null) {
 					return;
 				}

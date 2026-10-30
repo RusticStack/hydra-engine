@@ -37,6 +37,15 @@ public class X86Analyzer extends ConstantPropagationAnalyzer {
 		super(PROCESSOR_NAME);
 	}
 
+	/**
+	 * The only x86-specific worker-time write (the LEA reference) goes through
+	 * {@link ghidra.program.util.DeferredProgramWrites}.
+	 */
+	@Override
+	protected boolean supportsDeferredWrites() {
+		return true;
+	}
+
 	@Override
 	public boolean canAnalyze(Program program) {
 		return program.getLanguage().getProcessor().equals(

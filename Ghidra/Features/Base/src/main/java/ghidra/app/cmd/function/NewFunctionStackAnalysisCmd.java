@@ -372,10 +372,12 @@ public class NewFunctionStackAnalysisCmd extends BackgroundCommand<Program> {
 		if (DeferredProgramWrites.isCollecting()) {
 			DeferredProgramWrites.run(() -> {
 				try {
-					addStackVariables(func, sortedVariables, monitor);
+					// apply-time (analysis) monitor, not the finished worker's monitor
+					addStackVariables(func, sortedVariables, DeferredProgramWrites.monitor(monitor));
 				}
 				catch (CancelledException e) {
-					// cancelled while applying; the remaining writes are skipped by the caller
+					// Runnable cannot throw it; DeferredProgramWrites.apply(monitor) checks the
+					// same (cancelled) monitor right after this write and throws there
 				}
 			});
 		}
@@ -702,7 +704,8 @@ public class NewFunctionStackAnalysisCmd extends BackgroundCommand<Program> {
 				if (DeferredProgramWrites.isCollecting()) {
 					final Address from = instr.getMinAddress();
 					pendingStackRefs.put(new PendingRefKey(from, opIndex), stackOffset);
-					// a duplicate record for the same operand replaces it
+					// recorded once: later visits of this operand in the flow are answered
+					// from pendingStackRefs above (run() appends, it never replaces)
 					DeferredProgramWrites.run(() -> refMgr.addStackReference(from, opIndex,
 						stackOffset, refType, SourceType.ANALYSIS));
 				}

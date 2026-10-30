@@ -234,7 +234,7 @@ public class ConstantPropagationContextEvaluator extends ContextEvaluatorAdapter
 				Data udata = program.getListing().getUndefinedDataAt(address);
 				if (udata != null) {
 					DisassembleCommand cmd = new DisassembleCommand(address, null, true);
-					cmd.applyTo(program, monitor);
+					cmd.applyTo(program, DeferredProgramWrites.monitor(monitor));
 				}
 			});
 			// 

@@ -28,6 +28,7 @@ import ghidra.program.model.listing.Program;
 import ghidra.program.util.DeferredProgramWrites;
 import ghidra.util.exception.CancelledException;
 import ghidra.util.task.TaskMonitor;
+import ghidra.util.task.TaskMonitorAdapter;
 
 /**
  * Deferred, ordered program writes for the parallel per-location analyzers (constant
@@ -158,6 +159,78 @@ public class DeferredParallelAddressAnalysisTest {
 		assertFalse(DeferredProgramWrites.isCollecting());
 		d.apply();
 		assertEquals(List.of(1, 2), log);
+	}
+
+	/** One location records a write that throws: the pass must still apply every other write. */
+	@Test
+	public void testFailingWriteDoesNotDropRemainingWrites() throws Exception {
+		for (int threads : new int[] { 1, 8 }) {
+			FakeAnalyzer analyzer = new FakeAnalyzer() {
+				@Override
+				public AddressSetView analyzeLocation(Program program, Address start,
+						AddressSetView set, TaskMonitor monitor) throws CancelledException {
+					if (start.getOffset() == 0x300) {
+						DeferredProgramWrites.run(() -> {
+							throw new IllegalStateException("stale listing");
+						});
+					}
+					return super.analyzeLocation(program, start, set, monitor);
+				}
+			};
+			AddressSetView result = analyzer.runDeferred(locations(), threads);
+			assertEquals("threads=" + threads, expectedOrder(), analyzer.appliedLog);
+			assertTrue(result.contains(a(0x1000)));
+		}
+	}
+
+	@Test
+	public void testApplyCountsFailuresAndContinues() {
+		List<Integer> log = new ArrayList<>();
+		DeferredProgramWrites d = DeferredProgramWrites.open();
+		try {
+			DeferredProgramWrites.run(() -> log.add(1));
+			DeferredProgramWrites.run(() -> {
+				throw new RuntimeException("boom");
+			});
+			DeferredProgramWrites.run(() -> log.add(3));
+		}
+		finally {
+			d.close();
+		}
+		assertEquals(1, d.apply());
+		assertEquals(List.of(1, 3), log);
+		assertEquals(0, d.size());
+	}
+
+	/** Recorded writes must get the apply-time monitor, not the finished worker's monitor. */
+	@Test
+	public void testRecordedWriteUsesApplyMonitorAndCancelStopsApply() {
+		TaskMonitor workerMonitor = new TaskMonitorAdapter(true);
+		TaskMonitor applyMonitor = new TaskMonitorAdapter(true);
+		List<TaskMonitor> seen = new ArrayList<>();
+		DeferredProgramWrites d = DeferredProgramWrites.open();
+		try {
+			DeferredProgramWrites.run(() -> {
+				TaskMonitor m = DeferredProgramWrites.monitor(workerMonitor);
+				seen.add(m);
+				m.cancel(); // user cancels during the apply
+			});
+			DeferredProgramWrites.run(() -> seen.add(null));
+		}
+		finally {
+			d.close();
+		}
+		try {
+			d.apply(applyMonitor);
+			fail("cancel during apply must throw");
+		}
+		catch (CancelledException e) {
+			// expected
+		}
+		assertEquals(1, seen.size()); // second write not run after cancel
+		assertSame(applyMonitor, seen.get(0));
+		// outside apply the record-time monitor is used (immediate mode)
+		assertSame(workerMonitor, DeferredProgramWrites.monitor(workerMonitor));
 	}
 
 	@Test

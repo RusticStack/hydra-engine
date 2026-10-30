@@ -25,6 +25,7 @@ import ghidra.framework.options.Options;
 import ghidra.program.model.address.*;
 import ghidra.program.model.listing.Program;
 import ghidra.program.util.DeferredProgramWrites;
+import ghidra.util.Msg;
 import ghidra.util.exception.CancelledException;
 import ghidra.util.task.TaskMonitor;
 
@@ -224,7 +225,8 @@ public abstract class AbstractAnalyzer implements Analyzer {
 	public static final String DEFERRED_WRITES_OPTION_DESCRIPTION =
 		"Workers collect their program writes per location and the writes are applied in " +
 			"ascending location order after all workers finish, so results do not depend on " +
-			"Max Threads or thread timing (results can differ from the immediate-write mode).";
+			"Max Threads or thread timing (results can differ from the immediate-write mode). " +
+			"Offered only by analyzers whose worker writes are all deferred.";
 
 	/**
 	 * System property that gives the default of {@link #DEFERRED_WRITES_OPTION_NAME}
@@ -317,7 +319,13 @@ public abstract class AbstractAnalyzer implements Analyzer {
 			if (delta == null || appliedSet.contains(loc)) {
 				continue;
 			}
-			delta.writes.apply();
+			// a failing write is logged and skipped inside apply; the other writes and
+			// locations still run (CancelledException ends the pass)
+			int failures = delta.writes.apply(monitor);
+			if (failures != 0) {
+				Msg.warn(this, getName() + ": " + failures +
+					" deferred write(s) failed for location " + loc);
+			}
 			if (delta.result != null) {
 				appliedSet.add(delta.result);
 			}
