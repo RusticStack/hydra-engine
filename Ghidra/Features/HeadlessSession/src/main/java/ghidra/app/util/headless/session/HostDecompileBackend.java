@@ -21,6 +21,7 @@ import com.google.gson.JsonObject;
 
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Program;
+import ghidra.util.Msg;
 
 /**
  * Hydra: the optional in-process decompile backend (plan rank 12, step 5 of
@@ -76,7 +77,10 @@ final class HostDecompileBackend {
 		}
 		String reason = unsupportedReason(prog, f);
 		if (reason != null) {
-			FALLBACKS.incrementAndGet();
+			if (FALLBACKS.incrementAndGet() == 1) {
+				Msg.info(HostDecompileBackend.class,
+					"decompile backend host: falling back to the process path (" + reason + ")");
+			}
 			return null;
 		}
 		HOSTED.incrementAndGet();
