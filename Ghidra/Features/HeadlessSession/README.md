@@ -409,7 +409,7 @@ owner may turn its program shared by opening it again with `share`.
   transaction (Ghidra joins concurrent transactions on one program into one, which would let one
   client's rollback undo another's work). Readers share the lock between changes. A committed
   change is visible to every client at once: they share one program object.
-- **Writes are serialized and never corrupt the program (in the tests listed, see
+- **Writes are serialized, and no corruption was seen in the tests listed (see
   [Tests](#tests)), but they are not collision-checked unless you ask.** **Last writer wins** per value (a name, a comment of a type at an address,
   ...) by default; `expect` is optional on each call, not required. To detect a
   lost update instead, pass `"expect"` (the value you read; `null`: none) on `rename`, `comment`
@@ -738,8 +738,10 @@ in `error.details`:
   12.3-hydra.4 a lock wait stayed until its `wait` ran out).
 - **Leaving.** When a client disconnects or its process dies (the OS resets its socket), its
   requests are cancelled and its uncommitted changes are rolled back (and logged) when its
-  running request ends, and its programs go back to read-only for the others. A lock wait ends
-  on cancel. A request that is still running `cleanupGraceS` (15 s) after the disconnect is
+  running request ends, and its programs go back to read-only for the others. A request-bound
+  lock wait (a program, a project, an overlay's request lock site) ends on cancel; the overlay
+  lifecycle waits (open, rebuild, drop, promote of an overlay) are untimed and are not ended by
+  `cancel`, a `timeout` or the release (Limits, L2). A request that is still running `cleanupGraceS` (15 s) after the disconnect is
   interrupted, and `abandonWaitS` (5 s) later the client is released even if it ignores that: the
   locks it holds are flagged abandoned and a request for such a program answers `busy` at once.
   Only a script that does not poll for cancellation runs to its own end (Java cannot stop it).
@@ -1141,7 +1143,7 @@ module" and "Deferred start-up"; "this branch" is with them.
 The warm `decompile` rows here and below time one function of this program, whose size was not
 recorded; a warm decompile depends on the function's size. Measured by the owner on a KotOR
 executable (2026-10-27): 0.7-2.1 ms for a one-byte function and 35-45 ms for a 6.7 KB function of
-29 basic blocks. Read "about 7 ms" as one function in one program, not as a constant.
+29 basic blocks. Read "about 7 ms" as the benchmark function in one program, not as a constant.
 
 Master's `open_program` cost depends on the volume the install is on: it is the language service
 opening a lock file per language (see "Changes outside this module"), which measured 1.1-1.9 s
@@ -1189,7 +1191,7 @@ about 26 s once per install and JDK.
 | No daemon running: start it and connect | 573 ms (the JVM is ready after 413 ms) |
 | First client: `open_project`, `open_program`, first `decompile` | 44 ms, 981 ms, 250 ms |
 | Warm `decompile` (the benchmark function; about 1 to 45 ms by function size) | 6.3 ms |
-| Another harness process, while the first is connected: connect + `hello`, join the project, `open_program` (already open), `decompile` | 14 ms, 0.9 ms, 0.9 ms, 7.4 ms |
+| Another harness process, while the first is connected: connect + `hello`, join the project, `open_program` (already open), `decompile` | 14 ms, 0.9 ms, 0.9 ms, 7.4 ms (the benchmark function) |
 | A harness that arrives after everyone left (within `keepWarm`): `open_program` | 1.7 ms (no reopen) |
 | 40 decompiles of different functions by one harness | 0.2-1.2 s |
 | Heap in use with that program open | 79-327 MB of a 15 GB ceiling |
@@ -1342,7 +1344,7 @@ tests, each small and each useful to any Ghidra process:
 |---|---|---|
 | `Framework/DB`, `LocalBufferFile.close`/`delete` | A temporary buffer file (a program's database cache) is closed, then deleted. On ReFS (a Windows Dev Drive) the last close of a file writes all its dirty cached pages back to disk first, even when the file is deleted right after: closing a large program, or shutting a session down with one open, took 22-41 s with `java.io.tmpdir` there (up to 150 s seen), against 0.05 s on NTFS. | A temporary file is truncated to 0 bytes before it is closed, which drops its unwritten pages: 0.25-0.76 s on the same drive. Nothing reads it again, so nothing else changes. |
 | `Framework/FileSystem`, `LocalDatabaseItem.create` | A new program written into a project (an import's save, *Save As*) gets its item's property file, with its file type, first; then its database is streamed in. A process killed during that stream (measured: a 512 MB raw import killed 30% into a 10 s write) leaves an item that every later open lists as a program and fails to open ("Unrecognized file format"). | The property file is written without its file type until version 1 of the database is complete (the existing `versionCreated` callback adds it). An item killed mid-write has no file type, which Ghidra's existing repair removes the next time the folder is listed ("Removing folder item with unspecified file type"); a completed one is unchanged. Only new private (non-versioned) databases; shared-project (server) files are untouched. `daemon_tests.py import_write_kill`. |
-| `Framework/DB`, `LocalManagedBufferFile.saveCompleted` | A save writes the new version file under its final name (`db.N.gbf`) and only then writes and syncs its header. A process killed in that window leaves a final-named version file with an empty header, which Ghidra cannot open ('Unrecognized file format'), and a read-only open fails on it too. Measured on the crash tests: 12 of 363 killed saves. | The header is written and synced before the rename, so a killed save leaves either the old version or a complete new one. Kill batches since then: 0 unopenable versions in 200 kills on NTFS and 0 in 200 on ReFS (`daemon_tests.py e8_kill_loop`), a bounded result, not a guarantee. |
+| `Framework/DB`, `LocalManagedBufferFile.saveCompleted` | A save writes the new version file under its final name (`db.N.gbf`) and only then writes and syncs its header. A process killed in that window leaves a final-named version file with an empty header, which Ghidra cannot open ('Unrecognized file format'), and a read-only open fails on it too. Measured on the crash tests: 12 of 363 killed saves. | The header is written and synced before the rename, so a killed save leaves either the old version or a complete new one. Kill batches since then: 0 unopenable versions in 200 kills on NTFS (`daemon_tests.py e8_kill_loop`), a bounded result, not a guarantee. No ReFS result is stated: ReFS is not tested for hydra.4 (owner decision 2026-10-30, `PROTOCOL-3.md` 8.12). |
 | `Framework/FileSystem`, `VersionedDatabase`, `LocalDatabaseItem` (open) and the added class `VersionFileCheck` | An unreadable newest version file (left by an older build, or by a kill outside the window above) makes the whole database unopenable. | The newest version is checked when a database is opened. A writable item inside a root declared disposable (`hydra.storage.repairRoots`) moves the bad file aside (`.quarantine`) and uses the previous version; any other open, and every read-only open, writes nothing and answers `corrupt_newest`. The daemon does not declare roots yet, so today a real fork is not repaired; that comes with the fork and health work in `PROTOCOL-3.md`. |
 | `Framework/SoftwareModeling`, `SleighLanguageFile` | On master, the language service opens a `<language>.sla.lock` file read-write for every language definition (about 300) when it starts, only to learn whether it could lock it. Each open and close of a file on the install's volume costs milliseconds, more on a volume with an antivirus filter: the first `open_program` of a session took 1.4-6.9 s instead of about 0.8 s. | The lock file is created the first time a language actually needs it (`canLock`, `withLock`): one or two per session. Same results, same rules for a directory the user cannot write. |
 
@@ -1362,10 +1364,9 @@ The distribution also leaves out `__pycache__` folders and `.pyc` files that run
 
 ## Limits
 
-- Tested on Windows 11 (locally and in CI); releases are Windows x64 only. The launcher and
-  module have no Windows-specific path (POSIX file locks, `start_new_session`, owner-only state
-  dir), and a one-off dry run built and passed the tests on Linux x64 and macOS arm64, but
-  neither is tested routinely.
+- Tested on Windows 11 (locally and in CI); releases are Windows x64 with JDK 25 only. The
+  launcher and module have no Windows-specific path (POSIX file locks, `start_new_session`,
+  owner-only state dir), but no Linux or macOS claim is made: they are not tested.
 - There is no GUI. Hydra Engine is headless only; projects it writes cannot be opened by Ghidra
   12.2 or 12.1.4. Projects saved by this build (upstream `master`, 12.3 DEV) write data type
   databases at version 3, which those versions cannot read. A read-only view writes nothing;
@@ -1395,3 +1396,107 @@ The distribution also leaves out `__pycache__` folders and `.pyc` files that run
   its program in memory until it is saved; more queue, visibly. The library search path set
   that loaders use to find libraries is one per process, not per project (as it always was);
   see "Parallel imports".
+
+### Limits of 12.3-hydra.4 and protocol 3
+
+These are the limits of [`PROTOCOL-3.md`](PROTOCOL-3.md), section 6.2, one by one (L1 to L19, then the
+eleven "revision 6" limits R6.1 to R6.11). Some belong to the client (Hydralysis); they are listed
+here so that the list is complete in one place. The guarantees the release may state are only those of
+section 6.1, each with its test; until a gate of section 9 has passed, nothing below is stated as passed.
+
+- **L1, non-cooperative threads.** Java cannot kill a thread that ignores cancel and interrupt, nor
+  release a `ReentrantReadWriteLock` from another thread. A script that never polls
+  `monitor.checkCancelled()` keeps its program lock after its client is gone. The engine bounds the
+  wait, shows the holder and keeps the rest of the daemon running; restarting the daemon is safe for
+  Hydralysis work (its store is the record). Only a helper JVM for user scripts is a hard remedy: that
+  is the script worker (E7, `isolation:"worker"`), and its release gate (9.14) has not passed as a
+  whole, so the documents say such a script is bounded and quarantined: confined to its owner's
+  view and one slot, counted against the owner's cap.
+- **L2, the overlay lifecycle waits are not cancel-aware.** `openOverlay`, `rebuildOverlays`,
+  `dropOverlays` and `promoteOverlay` take untimed locks on an overlay's lock. `cancel`, a `timeout`
+  deadline and the release of a dead client do not reach a request blocked there. What `cancel` and a
+  `timeout` end are the request-bound timed lock waits (a program, a project, or an overlay's request
+  lock site: V5).
+- **L3, a stalled call on hydra.2 or hydra.3 is abandoned, not ended.** On those engines the client's
+  deadline sends `cancel`, then abandons a worker thread and its connection; the engine keeps the
+  request, its slot and any lock until it ends by itself, and a script that never polls its monitor can
+  hold them for as long as it runs. Hydralysis tolerates at most 8 abandoned user connections per
+  process (its supervisor probe has its own budget of 3), and each stays a `users` entry of the programs
+  it joined until its request ends. The remedy is hydra.4's bounded release of a dead client.
+- **L4, a leave can stall the other readers of a program.** On hydra.2 and hydra.3 the release of a
+  client takes the program's exclusive lock; while it waits behind a running read, every new
+  `open_program`, script or decompile of that program waits behind it, up to the longest running read
+  (at most its `timeout`), and a waiter whose own `wait` is shorter gets `busy`. On hydra.4 a plain
+  reader's leave takes no exclusive lock (V10), but the leave of an owner or writer of an open (legacy)
+  program still queues the exclusive lock, bounded by `cleanupGraceS + abandonWaitS`. The stall is
+  bounded and visible (`busy` with the holder), not a hang or a loss.
+- **L5, the `lane:"quick"` hint is trust-based.** The engine cannot know that a script is quick. It
+  honours the hint for `0 < timeout <= quickScriptMaxS`, and the `timeout` only sets the request's
+  cancel flag: a script that never polls `monitor.checkCancelled()` keeps its quick slot past its
+  timeout, and enough of them use up the quick lane. RusticQuery polls and is hash-pinned; an arbitrary
+  user script that claims `quick` is not policed. `health` shows it (`longestRunningMs` past the hint).
+- **L6, history is capped by records and bytes** (Hydralysis). A store with 4096 pending records, or
+  20 MiB of them, takes no further edit until some are committed (a subset commit works) or exported as
+  a bundle; pending records are not compacted and nothing is dropped automatically.
+- **L7, an append log has no rotation yet** (Hydralysis). A `CURRENT.log` or `backups.log` is read in
+  full by the lineage open, `verify` and the doctor, which is linear in its size (one line per commit or
+  backup).
+- **L8, copy-on-write is ReFS only.** On NTFS a fork is a full copy bounded by `forkCopyLimitMb`. No
+  ReFS behaviour is tested for this release: the release machine has no ReFS volume (owner decision
+  2026-10-30, `PROTOCOL-3.md` 8.12); NTFS is the release file system. A clone backup is not protection
+  against the loss of the volume.
+- **L9, Windows x64 and JDK 25 only.** No Linux or macOS claim is made.
+- **L10, no power-cut test.** Durability rests on documented flags (fsync, write-through), process
+  kills (`TerminateProcess`) and torn-file tests. Directory-entry durability cannot be forced from Java
+  or Python on Windows; the design does not rely on it (every state is self-validating and a reader
+  takes the last valid record). Nothing is claimed about power loss or an OS crash.
+- **L11, `Revision.of` is metadata for large files** (size and modification time above 1 MiB): it
+  shows that the saved state is the same, not that the bytes are intact. Integrity is the manifest hash.
+- **L12, a backup verifies the bytes it reads back through the OS cache after a flush**, not the
+  media. Latent errors are found by re-hashing (`backend backups verify` in Hydralysis) and by keeping
+  an independent copy.
+- **L13, bulk edits have no per-subject `before`** (`import_types`, `import_archive`): drift is
+  detected by the input hash. A subject is an address, a type path or `structure:functions`; a struct
+  and a prototype that uses it are different subjects, a dependency the rebase cannot see. The same
+  holds for a subset commit (`only`): it can ship a `signature` or `data_type` edit without the pending
+  struct it uses. Subset commits have no semantic dependency tracking.
+- **L14, the upgrade gate and the backup check are guards against accidents**, not a security
+  boundary: a local process with the daemon's rights can forge a manifest.
+- **L15, `private` isolation reads the stored file**, not unsaved edits; in `shared` isolation
+  `attemptedChanges` is program-wide, not per script.
+- **L16, an ETA is a rough estimate**: `null` without history, and `null` when the lane is dominated
+  by a long job.
+- **L17, headless only.** There is no GUI. Projects Hydra Engine writes cannot be opened by Ghidra 12.2
+  or 12.1.4, and opening them in a stock Ghidra is not a goal.
+- **L18, the data-type database version** (`analysisIdentity.dbVersions.dataTypes`) is `null` when it
+  cannot be read; it is never guessed.
+- **L19, sources of numbers.** The save time (about 35 s) and the clone and hash costs come from the
+  1.5 GB, 243,855-function benchmark; the golden baseline is KotOR (122 MB). Every timing constant of
+  the design is unmeasured on the target machine until the measurements of release gate 9.10 are
+  recorded.
+- **R6.1** Every measurement behind the design (streams A, B, C and D) is a single run or a handful on
+  one 24-CPU machine under foreign load (A varied about 2x between identical runs), on KotOR (8,966
+  functions) only; heap per view, fork time, publish latency and the soak result do not transfer to a
+  244k-function, 1.5 GB program.
+- **R6.2** The kill tests are `TerminateProcess`: the OS page cache survives, so fsync and power loss
+  are not measured.
+- **R6.3** Kills inside the write window are rare at random times (2 of 131), so the batches use
+  trigger-timed kills, a biased sample that gives bounds, not field rates; the intervals are wide
+  (Wilson 95%).
+- **R6.4** Open (legacy) projects, protocol 2 connections, rooms of shared writers and the shared view
+  keep their locks and block their own readers; the non-blocking contract is for sealed generations
+  and views.
+- **R6.5** One `Program` instance serves DB-bound reads at 1.4x to 1.8x of one reader, until E11
+  (hydra.5, conditional).
+- **R6.6** A script that ignores cancel cannot be stopped until the script worker's gate (9.14) passes
+  (L1).
+- **R6.7** A native decompiler is one process per concurrent request. The decompiler gate of the
+  resource governor (E9) is in this build, but its release gate (9.14) has not passed as a whole, so
+  no bound on the number of decompiler processes is stated.
+- **R6.8** The unmeasured values (heap watermarks, eviction times, quotas, `BASE_WAIT_S`) are starting
+  points, to be checked by the squeeze laps of release gate 9.14.
+- **R6.9** ReFS gives a disk saving and no protection (and nothing about ReFS is tested for this
+  release, L8).
+- **R6.10** Whether the version-file defect (the newest version unopenable after a kill during a
+  save) also exists in stock Ghidra was not run.
+- **R6.11** The foreign-load sampler that records how busy the machine was is an estimate.
