@@ -40,15 +40,33 @@ import ghidra.program.model.listing.Program;
  * decompile, and only a completed decompile is stored (a failure is answered fresh every time).
  * <p>
  * N callers asking for the same key at once trigger one decompile (single flight): the first is
- * the leader, the others wait for its result; when the leader fails or is cancelled the next
- * waiter leads. The memory is bounded by a size-based LRU of {@code decompileCache} bytes
- * (default: 1/32 of the heap, at most 256 MB; off when that is below 8 MB, or with
- * {@code -set decompileCache=0}).
+ * the leader, the others wait for its outcome. A failure of the leader (a timeout, a crash, a
+ * declined function) is handed to all of its waiters at once and not stored (the caller decides
+ * whether a waiter answers the same or decompiles itself, in parallel with the others); only a
+ * cancelled leader makes the next waiter lead. A waiter waits no longer than its own budget. The
+ * memory is bounded by a size-based LRU of {@code decompileCache} bytes (default: 1/32 of the
+ * heap, at most 256 MB; off when that is below 8 MB, or with {@code -set decompileCache=0}).
  */
 final class DecompileCache {
 
+	/** How a flight ended: a {@link Result} or a {@link Failure}. */
+	sealed interface Outcome permits Result, Failure {
+	}
+
+	/**
+	 * A decompile that ended without a result (a timeout, a crash, a function the decompiler
+	 * declines): handed to the callers that joined that flight, never stored. {@code payload} is
+	 * the caller's description of the failure, opaque here.
+	 */
+	record Failure(Object payload) implements Outcome {
+	}
+
+	/** {@link #compute} gave up waiting for another caller's decompile at its deadline. */
+	static final Failure WAIT_EXPIRED =
+		new Failure("the wait for another caller's decompile expired");
+
 	/** What one decompile answered: the signature and the full C text. */
-	record Result(String signature, String c) {
+	record Result(String signature, String c) implements Outcome {
 		long weight() {
 			// two object headers, two strings (Latin-1 or UTF-16), the key and the map entry
 			return 160 + 2L * (signature.length() + c.length());
@@ -91,10 +109,13 @@ final class DecompileCache {
 	// guarded by this
 	private final LinkedHashMap<Key, Result> lru = new LinkedHashMap<>(256, 0.75f, true);
 	private long bytes;
-	/** The newest modification number stored per program token. */
-	private final Map<Long, Long> newest = new HashMap<>();
+	/**
+	 * Per program token with entries in {@link #lru}: {newest modification number stored, number
+	 * of entries}. A token leaves the map with its last entry, so the map is bounded by the LRU.
+	 */
+	private final Map<Long, long[]> programs = new HashMap<>();
 
-	private final ConcurrentHashMap<Key, CompletableFuture<Result>> inflight =
+	private final ConcurrentHashMap<Key, CompletableFuture<Outcome>> inflight =
 		new ConcurrentHashMap<>();
 
 	/** Program object to token; weak so the cache never keeps a closed program alive. */
@@ -107,6 +128,8 @@ final class DecompileCache {
 	private final AtomicLong evicted = new AtomicLong();
 	private final AtomicLong dropped = new AtomicLong();
 	private final AtomicLong unstored = new AtomicLong();
+	private final AtomicLong shared = new AtomicLong();
+	private final AtomicLong expired = new AtomicLong();
 
 	DecompileCache(long budget) {
 		this.budget = budget;
@@ -128,30 +151,42 @@ final class DecompileCache {
 	}
 
 	/**
-	 * The result of {@code k}: from the cache, from a concurrent leader, or from {@code work} run
-	 * by this caller as the leader. {@code work} returns null when the decompile did not complete;
-	 * its result is stored only when {@code modificationNow} still equals the key's.
+	 * The outcome of {@code k}: from the cache, from the flight of a concurrent leader, or from
+	 * {@code work} run by this caller as the leader.
+	 * <p>
+	 * {@code work} returns a {@link Result} (stored when {@code modificationNow} still equals the
+	 * key's), a {@link Failure} (handed to every caller that joined this flight, all at once, and
+	 * not stored), or null / throws when the leader was cancelled: then one waiter leads again.
+	 * A waiter waits at most {@code waitNanos} (its own budget); then it gets
+	 * {@link #WAIT_EXPIRED}.
 	 *
-	 * @return the result, or null when this caller led and {@code work} returned null, or when
-	 *         {@code cancelled} turned true while it waited
+	 * @return the outcome, or null when {@code cancelled} turned true while this caller waited
+	 *         (or this caller led and {@code work} returned null)
 	 */
-	Result compute(Key k, BooleanSupplier cancelled, LongSupplier modificationNow,
-			Supplier<Result> work) {
+	Outcome compute(Key k, BooleanSupplier cancelled, long waitNanos,
+			LongSupplier modificationNow, Supplier<Outcome> work) {
+		long deadline = System.nanoTime() + Math.max(0, waitNanos);
 		while (true) {
 			Result r = cached(k);
 			if (r != null) {
 				hits.incrementAndGet();
 				return r;
 			}
-			CompletableFuture<Result> mine = new CompletableFuture<>();
-			CompletableFuture<Result> other = inflight.putIfAbsent(k, mine);
+			CompletableFuture<Outcome> mine = new CompletableFuture<>();
+			CompletableFuture<Outcome> other = inflight.putIfAbsent(k, mine);
 			if (other == null) {
 				return lead(k, mine, modificationNow, work);
 			}
 			joined.incrementAndGet();
+			Outcome o;
 			while (true) {
+				long left = deadline - System.nanoTime();
+				if (left <= 0) {
+					expired.incrementAndGet();
+					return WAIT_EXPIRED;
+				}
 				try {
-					r = other.get(50, TimeUnit.MILLISECONDS);
+					o = other.get(Math.min(left, 50_000_000L), TimeUnit.NANOSECONDS);
 					break;
 				}
 				catch (TimeoutException e) {
@@ -164,50 +199,67 @@ final class DecompileCache {
 					return null;
 				}
 				catch (ExecutionException e) {
-					r = null;
+					o = null;
 					break;
 				}
 			}
-			if (r != null) {
-				return r;
+			if (o != null) {
+				if (o instanceof Failure) {
+					shared.incrementAndGet();
+				}
+				return o; // a result, or the failure of this flight: every waiter gets it at once
 			}
 			if (cancelled.getAsBoolean()) {
 				return null;
 			}
-			// the leader failed or was cancelled: try again (this caller may lead now)
+			// the leader was cancelled: try again (this caller may lead now)
 		}
 	}
 
-	private Result lead(Key k, CompletableFuture<Result> mine, LongSupplier modificationNow,
-			Supplier<Result> work) {
-		Result r = null;
+	private Outcome lead(Key k, CompletableFuture<Outcome> mine, LongSupplier modificationNow,
+			Supplier<Outcome> work) {
+		Outcome o = null;
 		try {
 			// a leader that finished between the lookup and putIfAbsent stored its result already
-			r = cached(k);
-			if (r != null) {
+			Result c = cached(k);
+			if (c != null) {
 				hits.incrementAndGet();
-				return r;
+				o = c;
+				return c;
 			}
 			misses.incrementAndGet();
-			r = work.get();
-			if (r != null) {
-				if (modificationNow.getAsLong() == k.modification()) {
-					store(k, r);
-				}
-				else {
-					unstored.incrementAndGet();
-				}
+			o = work.get();
+			if (o instanceof Result r) {
+				offer(k, r, modificationNow);
 			}
-			return r;
+			return o;
 		}
 		finally {
 			inflight.remove(k, mine);
-			mine.complete(r);
+			mine.complete(o);
+		}
+	}
+
+	/** Stores {@code r} of {@code k} when the program is still at the key's modification. */
+	void offer(Key k, Result r, LongSupplier modificationNow) {
+		if (modificationNow.getAsLong() == k.modification()) {
+			store(k, r);
+		}
+		else {
+			unstored.incrementAndGet();
 		}
 	}
 
 	private synchronized Result cached(Key k) {
 		return lru.get(k);
+	}
+
+	private void forget(Key k, Result r) {
+		bytes -= r.weight();
+		long[] p = programs.get(k.program());
+		if (p != null && --p[1] <= 0) {
+			programs.remove(k.program());
+		}
 	}
 
 	private synchronized void store(Key k, Result r) {
@@ -216,37 +268,46 @@ final class DecompileCache {
 			unstored.incrementAndGet();
 			return;
 		}
-		Long prev = newest.get(k.program());
-		if (prev != null && prev > k.modification()) {
+		long[] p = programs.get(k.program());
+		if (p != null && p[0] > k.modification()) {
 			unstored.incrementAndGet();
 			return; // the program changed since: this result can never be asked for again
 		}
-		if (prev != null && prev < k.modification()) {
+		if (p != null && p[0] < k.modification()) {
 			// the program changed: its older entries are unreachable, drop them now
 			Iterator<Map.Entry<Key, Result>> it = lru.entrySet().iterator();
 			while (it.hasNext()) {
 				Map.Entry<Key, Result> e = it.next();
 				if (e.getKey().program() == k.program() &&
 					e.getKey().modification() < k.modification()) {
-					bytes -= e.getValue().weight();
 					it.remove();
+					forget(e.getKey(), e.getValue());
 					dropped.incrementAndGet();
 				}
 			}
 		}
-		newest.put(k.program(), k.modification());
+		p = programs.computeIfAbsent(k.program(), x -> new long[2]);
+		p[0] = k.modification();
 		Result old = lru.put(k, r);
 		if (old != null) {
 			bytes -= old.weight();
+		}
+		else {
+			p[1]++;
 		}
 		bytes += w;
 		Iterator<Map.Entry<Key, Result>> it = lru.entrySet().iterator();
 		while (bytes > budget && it.hasNext()) {
 			Map.Entry<Key, Result> e = it.next();
-			bytes -= e.getValue().weight();
 			it.remove();
+			forget(e.getKey(), e.getValue());
 			evicted.incrementAndGet();
 		}
+	}
+
+	/** The program tokens with entries (bounded by the entries: none leaks). */
+	synchronized int programs() {
+		return programs.size();
 	}
 
 	synchronized int entries() {
@@ -281,6 +342,8 @@ final class DecompileCache {
 		Json.put(o, "evicted", evicted.get());
 		Json.put(o, "dropped", dropped.get());
 		Json.put(o, "unstored", unstored.get());
+		Json.put(o, "sharedFailures", shared.get());
+		Json.put(o, "waitsExpired", expired.get());
 		Json.put(o, "inflight", inflight.size());
 		return o;
 	}

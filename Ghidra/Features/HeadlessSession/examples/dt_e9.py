@@ -250,7 +250,11 @@ def t_selftest(c):
             "ok   decompileCache: a result whose program changed during the decompile is not stored",
             "ok   decompileCache: a changed program is decompiled again",
             "ok   decompileCache: a cancelled waiter stops waiting",
-            "ok   decompileCache: the LRU stays within its budget")
+            "ok   decompileCache: the LRU stays within its budget",
+            "ok   decompileCache: 8 callers of a failing decompile get its failure at once",
+            "ok   decompileCache: a waiter stops waiting at its own budget",
+            "ok   decompileCache: the per-program bookkeeping is bounded by the entries",
+            "ok   decompileCache: the set-up hash is made from the constants")
     for w in want:
         dt.check(any(ln.startswith(w) for ln in lines), f"self-test check missing or failed: {w}")
     n = sum(1 for ln in lines if ln.startswith("ok"))

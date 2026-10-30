@@ -665,6 +665,7 @@ public class HeadlessSession implements GhidraLaunchable {
 				DecompileCache.defaultBytes(512L << 20) == 16L << 20 &&
 					DecompileCache.defaultBytes(128L << 20) == 0 &&
 					DecompileCache.defaultBytes(64L << 30) == 256L << 20);
+			long W = 10_000_000_000L; // a waiter's budget: ample
 			DecompileCache c = new DecompileCache(1L << 20);
 			DecompileCache.Key k = new DecompileCache.Key(1, 5, 0, 0x1000, 7);
 			java.util.concurrent.atomic.AtomicInteger runs =
@@ -682,7 +683,7 @@ public class HeadlessSession implements GhidraLaunchable {
 					catch (InterruptedException e) {
 						return;
 					}
-					got[j] = c.compute(k, () -> false, () -> 5, () -> {
+					got[j] = (DecompileCache.Result) c.compute(k, () -> false, W, () -> 5, () -> {
 						runs.incrementAndGet();
 						try {
 							Thread.sleep(300);
@@ -711,7 +712,7 @@ public class HeadlessSession implements GhidraLaunchable {
 			check("decompileCache: 8 callers of one key at once run one decompile and all get " +
 				"its result (runs " + runs.get() + ", joined " + c.joined() + ")",
 				runs.get() == 1 && same && c.misses() == 1);
-			c.compute(k, () -> false, () -> 5, () -> {
+			c.compute(k, () -> false, W, () -> 5, () -> {
 				throw new IllegalStateException("a later caller must be served from the cache");
 			});
 			check("decompileCache: a later caller of an unchanged program is a hit", c.hits() >= 1);
@@ -720,11 +721,11 @@ public class HeadlessSession implements GhidraLaunchable {
 			DecompileCache.Key f = new DecompileCache.Key(1, 5, 0, 0x2000, 7);
 			java.util.concurrent.atomic.AtomicInteger fr =
 				new java.util.concurrent.atomic.AtomicInteger();
-			DecompileCache.Result none = c.compute(f, () -> false, () -> 5, () -> {
+			DecompileCache.Outcome none = c.compute(f, () -> false, W, () -> 5, () -> {
 				fr.incrementAndGet();
 				return null;
 			});
-			DecompileCache.Result again = c.compute(f, () -> false, () -> 5, () -> {
+			DecompileCache.Outcome again = c.compute(f, () -> false, W, () -> 5, () -> {
 				fr.incrementAndGet();
 				return null;
 			});
@@ -733,9 +734,9 @@ public class HeadlessSession implements GhidraLaunchable {
 
 			// a change of the program during the decompile: answered, not stored
 			DecompileCache.Key moving = new DecompileCache.Key(1, 5, 0, 0x3000, 7);
-			c.compute(moving, () -> false, () -> 6, () -> new DecompileCache.Result("s", "c"));
+			c.compute(moving, () -> false, W, () -> 6, () -> new DecompileCache.Result("s", "c"));
 			int[] w = { 0 };
-			c.compute(moving, () -> false, () -> 6, () -> {
+			c.compute(moving, () -> false, W, () -> 6, () -> {
 				w[0]++;
 				return new DecompileCache.Result("s", "c");
 			});
@@ -746,11 +747,11 @@ public class HeadlessSession implements GhidraLaunchable {
 			int before = c.entries();
 			DecompileCache.Key newer = new DecompileCache.Key(1, 6, 0, 0x1000, 7);
 			int[] nr = { 0 };
-			c.compute(newer, () -> false, () -> 6, () -> {
+			c.compute(newer, () -> false, W, () -> 6, () -> {
 				nr[0]++;
 				return new DecompileCache.Result("int f(void)", "int f(void) { return 2; }");
 			});
-			DecompileCache.Result old = c.compute(k, () -> false, () -> 6, () -> null);
+			DecompileCache.Outcome old = c.compute(k, () -> false, W, () -> 6, () -> null);
 			check("decompileCache: a changed program is decompiled again and its older entries " +
 				"are dropped (entries " + before + " -> " + c.entries() + ")",
 				nr[0] == 1 && before == 1 && c.entries() == 1 && old == null);
@@ -758,7 +759,7 @@ public class HeadlessSession implements GhidraLaunchable {
 			// a cancelled waiter returns at once while the leader keeps going
 			DecompileCache.Key slow = new DecompileCache.Key(2, 1, 0, 0x10, 7);
 			java.util.concurrent.CountDownLatch started = new java.util.concurrent.CountDownLatch(1);
-			Thread leader = new Thread(() -> c.compute(slow, () -> false, () -> 1, () -> {
+			Thread leader = new Thread(() -> c.compute(slow, () -> false, W, () -> 1, () -> {
 				started.countDown();
 				try {
 					Thread.sleep(400);
@@ -773,7 +774,7 @@ public class HeadlessSession implements GhidraLaunchable {
 			try {
 				started.await(5, java.util.concurrent.TimeUnit.SECONDS);
 				long t0 = System.nanoTime();
-				DecompileCache.Result cr = c.compute(slow, () -> true, () -> 1, () -> null);
+				DecompileCache.Outcome cr = c.compute(slow, () -> true, W, () -> 1, () -> null);
 				cancelledFast = cr == null && System.nanoTime() - t0 < 300_000_000L;
 				leader.join(5000);
 			}
@@ -783,24 +784,113 @@ public class HeadlessSession implements GhidraLaunchable {
 			}
 			check("decompileCache: a cancelled waiter stops waiting for the leader", cancelledFast);
 
+			// a failed leader (timeout, crash, declined): its waiters all get its failure at once,
+			// the work runs once (not once per waiter, one after another), nothing is stored
+			DecompileCache.Key hang = new DecompileCache.Key(4, 1, 0, 0x20, 7);
+			java.util.concurrent.atomic.AtomicInteger hangRuns =
+				new java.util.concurrent.atomic.AtomicInteger();
+			java.util.concurrent.CountDownLatch go2 = new java.util.concurrent.CountDownLatch(1);
+			DecompileCache.Outcome[] fgot = new DecompileCache.Outcome[n];
+			Thread[] fts = new Thread[n];
+			for (int i = 0; i < n; i++) {
+				int j = i;
+				fts[i] = new Thread(() -> {
+					try {
+						go2.await();
+					}
+					catch (InterruptedException e) {
+						return;
+					}
+					fgot[j] = c.compute(hang, () -> false, W, () -> 1, () -> {
+						hangRuns.incrementAndGet();
+						try {
+							Thread.sleep(400);
+						}
+						catch (InterruptedException e) {
+							Thread.currentThread().interrupt();
+						}
+						return new DecompileCache.Failure("timed out");
+					});
+				});
+				fts[i].start();
+			}
+			long f0 = System.nanoTime();
+			go2.countDown();
+			for (Thread t : fts) {
+				try {
+					t.join(20_000);
+				}
+				catch (InterruptedException e) {
+					Thread.currentThread().interrupt();
+				}
+			}
+			long fms = (System.nanoTime() - f0) / 1_000_000;
+			boolean allFailed = true;
+			for (DecompileCache.Outcome o : fgot) {
+				allFailed &= o instanceof DecompileCache.Failure fl &&
+					"timed out".equals(fl.payload());
+			}
+			int[] afterRuns = { 0 };
+			c.compute(hang, () -> false, W, () -> 1, () -> {
+				afterRuns[0]++;
+				return new DecompileCache.Failure("timed out");
+			});
+			check("decompileCache: 8 callers of a failing decompile get its failure at once " +
+				"(runs " +
+				hangRuns.get() + ", " + fms + " ms for a 400 ms failure) and it is not stored",
+				hangRuns.get() == 1 && allFailed && fms < 1600 && afterRuns[0] == 1);
+
+			// a waiter stops at its own budget even though the leader keeps going
+			DecompileCache.Key slow2 = new DecompileCache.Key(4, 1, 0, 0x30, 7);
+			java.util.concurrent.CountDownLatch started2 =
+				new java.util.concurrent.CountDownLatch(1);
+			Thread leader2 = new Thread(() -> c.compute(slow2, () -> false, W, () -> 1, () -> {
+				started2.countDown();
+				try {
+					Thread.sleep(800);
+				}
+				catch (InterruptedException e) {
+					Thread.currentThread().interrupt();
+				}
+				return new DecompileCache.Result("s", "c");
+			}));
+			leader2.start();
+			boolean expiredFast;
+			try {
+				started2.await(5, java.util.concurrent.TimeUnit.SECONDS);
+				long t0 = System.nanoTime();
+				DecompileCache.Outcome eo =
+					c.compute(slow2, () -> false, 100_000_000L, () -> 1, () -> null);
+				long took = System.nanoTime() - t0;
+				expiredFast = eo == DecompileCache.WAIT_EXPIRED && took < 600_000_000L;
+				leader2.join(5000);
+			}
+			catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				expiredFast = false;
+			}
+			check("decompileCache: a waiter stops waiting at its own budget", expiredFast);
+
 			// the LRU stays within its budget and keeps the recently used entry
 			DecompileCache small = new DecompileCache(64L << 10);
 			String body = "x".repeat(2000); // about 4 KB per entry, the budget holds about 15
 			DecompileCache.Key first = new DecompileCache.Key(3, 1, 0, 0, 7);
-			small.compute(first, () -> false, () -> 1, () -> new DecompileCache.Result("s", body));
+			small.compute(first, () -> false, W, () -> 1,
+				() -> new DecompileCache.Result("s", body));
 			for (int i = 1; i < 60; i++) {
-				small.compute(first, () -> false, () -> 1, () -> null); // touch: most recent
+				small.compute(first, () -> false, W, () -> 1, () -> null); // touch: most recent
 				DecompileCache.Key ki = new DecompileCache.Key(3, 1, 0, i, 7);
-				small.compute(ki, () -> false, () -> 1, () -> new DecompileCache.Result("s", body));
+				small.compute(ki, () -> false, W, () -> 1,
+					() -> new DecompileCache.Result("s", body));
 			}
 			int[] firstRuns = { 0 };
-			small.compute(first, () -> false, () -> 1, () -> {
+			small.compute(first, () -> false, W, () -> 1, () -> {
 				firstRuns[0]++;
 				return null;
 			});
 			DecompileCache.Key gone = new DecompileCache.Key(3, 1, 0, 1, 7);
 			int[] goneRuns = { 0 };
-			small.compute(gone, () -> false, () -> 1, () -> {
+			small.compute(gone, () -> false, W, () -> 1, () -> {
 				goneRuns[0]++;
 				return null;
 			});
@@ -808,6 +898,23 @@ public class HeadlessSession implements GhidraLaunchable {
 				(64 << 10) + " bytes, " + small.entries() + " entries) and keeps the recently " +
 				"used entry", small.bytes() <= 64L << 10 && small.entries() < 60 &&
 					firstRuns[0] == 0 && goneRuns[0] == 1);
+
+			// the per-program bookkeeping leaves with a program's last entry: 200 program objects
+			// (reopened views, forks) through a cache that holds about 15 entries
+			DecompileCache many = new DecompileCache(64L << 10);
+			for (int i = 0; i < 200; i++) {
+				DecompileCache.Key ki = new DecompileCache.Key(1000 + i, 1, 0, 0, 7);
+				many.compute(ki, () -> false, W, () -> 1,
+					() -> new DecompileCache.Result("s", body));
+			}
+			check("decompileCache: the per-program bookkeeping is bounded by the entries (" +
+				many.programs() + " programs, " + many.entries() + " entries)",
+				many.programs() == many.entries() && many.entries() < 20);
+			check("decompileCache: the set-up hash is made from the constants newDecompiler uses",
+				ProgramEntry.DECOMPILER_SETUP == ("DecompileOptions.grabFromProgram|toggleCCode=" +
+					ProgramEntry.DECOMPILER_C_CODE + "|toggleSyntaxTree=" +
+					ProgramEntry.DECOMPILER_SYNTAX_TREE + "|style=" + ProgramEntry.DECOMPILER_STYLE)
+						.hashCode());
 		}
 
 		/**

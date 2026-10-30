@@ -22,6 +22,7 @@ import static ghidra.app.util.headless.session.Requests.MAX_TEXT_CAP;
 import static ghidra.app.util.headless.session.Requests.cancelled;
 
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
@@ -125,25 +126,97 @@ final class QueryCommands {
 		boolean v3 = caller != null && caller.v3();
 		DecompileCache cache = DecompileCache.get();
 		if (cache == null) {
-			return fresh(prog, e, f, timeout, cap, v3, m, null);
+			return fresh(prog, e, f, timeout, cap, v3, m, null, null);
 		}
 		// goal 4: an unchanged program's result is served from the cache, and N callers of one
 		// function at once share one decompile; the reply is the one a fresh decompile gives
 		DecompileCache.Key k = cache.key(prog, f);
 		JsonObject[] own = new JsonObject[1];
-		DecompileCache.Result r = cache.compute(k, m::isCancelled, prog::getModificationNumber,
-			() -> {
+		boolean[] led = { false };
+		// a waiter waits no longer than this request could have taken on its own: a decompiler
+		// permit (decompilerWaitS) plus its own timeout
+		long waitNanos = TimeUnit.SECONDS.toNanos(timeout + (long) Budgets.decompilerWaitS());
+		DecompileCache.Outcome o = cache.compute(k, m::isCancelled, waitNanos,
+			prog::getModificationNumber, () -> {
+				led[0] = true;
 				DecompileCache.Result[] out = new DecompileCache.Result[1];
-				own[0] = fresh(prog, e, f, timeout, cap, v3, m, out);
-				return out[0];
+				boolean[] fault = { false };
+				try {
+					own[0] = fresh(prog, e, f, timeout, cap, v3, m, out, fault);
+				}
+				catch (RuntimeException ex) {
+					if (m.isCancelled()) {
+						throw ex; // a cancelled leader: one of its waiters leads again
+					}
+					return new DecompileCache.Failure(
+						new Flight(null, ex, v3, fault[0]));
+				}
+				if (out[0] != null) {
+					return out[0];
+				}
+				return new DecompileCache.Failure(
+					new Flight(own[0], null, v3, fault[0]));
 			});
-		if (own[0] != null) {
-			return own[0];
-		}
-		if (r == null) {
+		if (led[0]) {
+			if (own[0] != null) {
+				return own[0];
+			}
+			if (o instanceof DecompileCache.Failure fl && fl.payload() instanceof Flight x &&
+				x.error() != null) {
+				throw x.error();
+			}
 			throw cancelled(m);
 		}
-		return reply(f, r, cap);
+		if (o == null) {
+			throw cancelled(m);
+		}
+		if (o instanceof DecompileCache.Result r) {
+			return reply(f, r, cap);
+		}
+		if (o == DecompileCache.WAIT_EXPIRED) {
+			// this request's own budget passed while another request's decompile of the same
+			// function ran: answered as a timeout of this request (not a fault of a process)
+			String msg = "the decompile of " + f.getName(true) + " by another request did not " +
+				"finish within this request's timeout (" + timeout + " s) and decompilerWaitS";
+			if (v3) {
+				throw failed(f, "timeout", msg + "; retry", 1000, false);
+			}
+			JsonObject r = Json.of("name", f.getName(true), "entry", hex(f.getEntryPoint()));
+			Json.put(r, "completed", false);
+			Json.put(r, "error", msg);
+			Json.put(r, "timedOut", true);
+			return r;
+		}
+		// the leader's decompile did not complete. A deterministic answer (the decompiler
+		// declined the function, or the breaker refused it) goes to every waiter of that flight
+		// at once. A fault of the leader's process (a crash, a hang, a timeout) or an unexpected
+		// error says nothing sure about this request: it decompiles itself, in parallel with the
+		// other waiters, as it would without the cache (never N decompiles one after another)
+		Flight x = (Flight) ((DecompileCache.Failure) o).payload();
+		boolean reusable = x.v3() == v3 && !x.fault() &&
+			(x.reply() != null || x.error() instanceof SessionException se &&
+				DECOMPILER_FAILED.equals(se.code()));
+		if (reusable) {
+			if (x.reply() != null) {
+				return x.reply().deepCopy();
+			}
+			SessionException se = (SessionException) x.error();
+			throw se.rewrap(se.getMessage(), se.details() == null ? null : se.details().deepCopy());
+		}
+		DecompileCache.Result[] out = new DecompileCache.Result[1];
+		JsonObject rep = fresh(prog, e, f, timeout, cap, v3, m, out, null);
+		if (out[0] != null) {
+			cache.offer(k, out[0], prog::getModificationNumber);
+		}
+		return rep;
+	}
+
+	/**
+	 * How the leader's decompile of a flight failed: its non-completed reply or its error, its
+	 * protocol and whether it was a fault of the native process, which decide whether a waiter may
+	 * answer the same.
+	 */
+	private record Flight(JsonObject reply, RuntimeException error, boolean v3, boolean fault) {
 	}
 
 	/** The reply of a completed decompile, fresh or cached (one shape for both). */
@@ -163,7 +236,7 @@ final class QueryCommands {
 	 * {@code out} is given) for the cache.
 	 */
 	private JsonObject fresh(Program prog, Decompilers e, Function f, int timeout, int cap,
-			boolean v3, RequestMonitor m, DecompileCache.Result[] out) {
+			boolean v3, RequestMonitor m, DecompileCache.Result[] out, boolean[] faultOut) {
 		// E9: a function that crashed or hung the native process more than three times in a minute
 		// is refused for ten minutes (the circuit breaker), before a permit or a process is spent
 		long banned = DecompilerGate.Breaker.negativeLeftMs(prog, f);
@@ -198,6 +271,9 @@ final class QueryCommands {
 				// function with a message of its own, which is deterministic and harmless)
 				boolean fault = res == null || timedOut || res.failedToStart() ||
 					err != null && err.startsWith("Exception while decompiling");
+				if (faultOut != null) {
+					faultOut[0] = fault;
+				}
 				if (fault) {
 					boolean tripped = DecompilerGate.Breaker.failed(prog, f);
 					if (v3) {
