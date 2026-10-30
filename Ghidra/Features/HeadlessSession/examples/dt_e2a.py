@@ -48,6 +48,12 @@ Tests:
   the ``.gpr`` (a test hook holds the publish there) leaves a ``.rep`` alone; the next daemon start
   on the same state directory sweeps it with no fork and no open; a dead publisher's sidecar
   ``.tmp`` on a committed fork is finished by ``open_project`` in its directory.
+* ``e2a_open_probe`` (8.13, A61): the empty ``tmp<digits>.tmp`` time probe a killed writable open
+  leaves in a ``.rep`` root (Ghidra's ``LocalDatabaseItem.CleanupRunnable``) is removed by the next
+  writable open; a read-only open and every other file are untouched.
+* ``e2a_sidecar_tmp_writer`` (8.13, A62): a sidecar's temporary file names its writer
+  (``<name>.fork.json.<pid>.tmp``); the sweep of ``open_project`` removes one whose process is gone
+  and keeps a live writer's and an old build's ``<name>.fork.json.tmp``.
 """
 import contextlib
 import json
@@ -617,6 +623,66 @@ def t_e2a_sweep_at_start(c):
             "(c) killed between the renames: .rep alone, the next daemon start removed it, the fork then succeeded")
 
 
+def t_e2a_open_probe(c):
+    """8.13 (A61), red on a build without it: a writable open of a Ghidra project creates an empty time probe
+    ``tmp<digits>.tmp`` in each file system root of the ``.rep`` (``LocalDatabaseItem.CleanupRunnable``) and deletes
+    it at once; a kill in between (the 9.15 fork batch: the ``open`` of a committed fork) leaves it for good. The
+    daemon's writable open removes such probes; a read-only open changes nothing; a non-empty file or another name is
+    kept."""
+    src = pathlib.Path(make_source(c, "probe"))
+    rep = src.with_suffix(".rep")
+    probes = [rep / "user" / "tmp4210726980031067834.tmp", rep / "idata" / "tmp17.tmp"]
+    keep = [rep / "user" / "tmp5.tmp", rep / "user" / "tmpX.tmp", rep / "idata" / "notes.tmp"]
+    for p in probes + keep:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"x" if p.name == "tmp5.tmp" else b"")
+    d = c.daemon("e2a-probe")
+    with d.connect("e2a-probe", "tests") as s:
+        o = s.call("open_project", path=str(src))
+        s.call("close_project", project=o["id"])
+        check(all(p.exists() for p in probes + keep), "a read-only open removed a file of the project")
+        o = s.call("open_project", path=str(src), writable=True)
+        s.call("close_project", project=o["id"])
+    d.stop()
+    left = [p.name for p in probes if p.exists()]
+    check(not left, f"the writable open left the killed open's time probes: {left}")
+    lost = [p.name for p in keep if not p.exists()]
+    check(not lost, f"the writable open removed what is not a time probe: {lost}")
+    return "the empty tmp<digits>.tmp probes went at the writable open; a read-only open and other files untouched"
+
+
+def t_e2a_sidecar_tmp_writer(c):
+    """8.13 (A62), red on a build without it: a sidecar write is ``<name>.fork.json.<pid>.tmp`` then a rename; a kill
+    in between after the staging folder is gone (the promote marker of ``promote_overlay``) leaves a temporary file no
+    intent names. The sweep of ``open_project`` removes one whose process is gone (also ``SEALED.json.<pid>.tmp``), keeps
+    a live process's and an old build's ``<name>.fork.json.tmp`` (no owner to prove dead), and a fork leaves no
+    temporary file at all."""
+    src = make_source(c, "sctmp")
+    base = c.work / "e2a-sctmp"
+    if base.exists():
+        shutil.rmtree(base)
+    base.mkdir(parents=True)
+    done = subprocess.Popen([sys.executable, "-c", "pass"])
+    done.wait()
+    dead = done.pid
+    d = c.daemon("e2a-sctmp")
+    with d.connect("e2a-sctmp", "tests") as s:
+        s.call("fork_project", project=str(src), path=str(base), name="P", mode="full", wait=60000)
+        left = sorted(e for e in os.listdir(base) if e.endswith(".tmp"))
+        check(not left, f"a fork left temporary files: {left}")
+        gone = [f"P.fork.json.{dead}.tmp", f"SEALED.json.{dead}.tmp"]
+        kept = [f"P.fork.json.{os.getpid()}.tmp", "P.fork.json.tmp", f"Q.json.{dead}.tmp"]
+        for n in gone + kept:
+            (base / n).write_text('{"state":"complete"}')
+        o = s.call("open_project", path=str(base / "P.gpr"))
+        s.call("close_project", project=o["id"])
+    d.stop()
+    names = set(os.listdir(base))
+    check(not names & set(gone), f"the sweep of open_project kept a dead writer's temporary file: {sorted(names & set(gone))}")
+    check(set(kept) <= names, f"the sweep removed what it cannot prove dead: {sorted(set(kept) - names)}")
+    return f"a dead writer's {gone} removed at open_project; a live writer's, an old build's and a non-sidecar file kept"
+
+
 def t_e2a_self_leftover(c):
     """A staging folder that THIS daemon left behind (its delete failed, e.g. against a handle
     holder) carries the daemon's own pid and start time in its intent. It is nobody's work in
@@ -1028,6 +1094,7 @@ def t_e2a_rollback_holder(c):
 
 TESTS = {"e2a_kill_fork": t_e2a_kill_fork, "e2a_client_kill": t_e2a_client_kill,
          "e2a_sweeper": t_e2a_sweeper, "e2a_sweep_at_start": t_e2a_sweep_at_start,
+         "e2a_open_probe": t_e2a_open_probe, "e2a_sidecar_tmp_writer": t_e2a_sidecar_tmp_writer,
          "e2a_self_leftover": t_e2a_self_leftover,
          "e2a_handle_holder": t_e2a_handle_holder,
          "e2a_rollback_holder": t_e2a_rollback_holder}

@@ -230,6 +230,7 @@ final class ProjectCommands {
 
 	private void reopenWritable(Client c, ProjectEntry p, long wait) {
 		ProjectLocator locator = new ProjectLocator(p.resolved.dir().getPath(), p.resolved.name());
+		GhidraProbes.removeStale(p.resolved.dir(), p.resolved.name()); // 8.13 (A61)
 		String rev;
 		try {
 			rev = Revision.of(p.resolved);
@@ -306,6 +307,9 @@ final class ProjectCommands {
 				"Ghidra cannot open this path: " + e.getMessage());
 		}
 		long t0 = System.nanoTime();
+		if (writable) {
+			GhidraProbes.removeStale(r.dir(), r.name()); // 8.13 (A61), before the revision is read
+		}
 		String revision;
 		try {
 			revision = Revision.of(r);

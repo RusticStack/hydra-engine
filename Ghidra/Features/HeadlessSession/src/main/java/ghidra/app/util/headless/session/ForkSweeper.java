@@ -52,6 +52,8 @@ import utilities.util.FileUtilities;
  * <li>a fork whose {@code .gpr} is in place but whose sidecar still says {@code publishing} and
  * whose intent names a dead process: the sidecar is rewritten {@code complete} (the {@code .gpr} is
  * the commit point, so the fork is complete; this finishes what the dead publisher did);</li>
+ * <li>the temporary file {@code <name>.fork.json.<pid>.tmp} (or {@code SEALED.json.<pid>.tmp}) of a
+ * sidecar write whose process is gone (8.13, A62);</li>
  * <li>{@code tmp*.tmp}, {@code tmp*.ps} and {@code .ghidra.test.lock~~} older than
  * {@link #AGE_MS} in the parent directory.</li>
  * </ul>
@@ -391,6 +393,11 @@ final class ForkSweeper {
 				if (k.isDirectory() && ForkIntent.isStagingName(k.getName())) {
 					staging(destDir, k, onlyName, now, r);
 				}
+				else if (k.isFile() && deadWritersTmp(k, onlyName)) {
+					// 8.13 (A62): a sidecar or seal marker write whose process is gone
+					Files.deleteIfExists(k.toPath());
+					r.removed().add(k.getName());
+				}
 				else if (onlyName == null && k.isFile() && old(k, now) &&
 					(TMP_FILE.matcher(k.getName()).matches() || k.getName().equals(TEST_LOCK))) {
 					Files.deleteIfExists(k.toPath());
@@ -419,6 +426,37 @@ final class ForkSweeper {
 				r.removed() + ", resumed " + r.resumed() + ", left (reported) " + r.reported());
 		}
 		return r;
+	}
+
+	/** {@code <x>.fork.json.<pid>.tmp} or {@code <seal marker>.<pid>.tmp} ({@link ProjectFork#tmpOf}). */
+	private static final Pattern WRITER_TMP = Pattern.compile("(.+)\\.(\\d{1,10})\\.tmp");
+
+	/**
+	 * 8.13 (A62): true for the temporary file of a sidecar (or seal marker) write whose writer is
+	 * gone: the process its name gives is not running, or started after the file was made (a
+	 * reused id). A live writer's file, this process's included, is never one. With
+	 * {@code onlyName}, only that fork's sidecar is looked at.
+	 */
+	static boolean deadWritersTmp(File f, String onlyName) {
+		java.util.regex.Matcher m = WRITER_TMP.matcher(f.getName());
+		if (!m.matches()) {
+			return false;
+		}
+		String base = m.group(1);
+		boolean sidecar = base.endsWith(ProjectFork.SIDECAR_SUFFIX) &&
+			(onlyName == null || base.equals(onlyName + ProjectFork.SIDECAR_SUFFIX));
+		boolean marker = onlyName == null && base.equals(Seals.MARKER);
+		if (!sidecar && !marker) {
+			return false;
+		}
+		long pid;
+		try {
+			pid = Long.parseLong(m.group(2));
+		}
+		catch (NumberFormatException e) {
+			return false;
+		}
+		return !pidOwnsFolder(pid, f);
 	}
 
 	private static long ownPid() {
@@ -514,10 +552,13 @@ final class ForkSweeper {
 				r.resumed().add(name);
 			}
 			// 8.13: the dead publisher's temporary sidecar (killed between the write of
-			// <name>.fork.json.tmp and its rename) is removed with its staging folder
-			Path scTmp = Path.of(sidecar.getPath() + ".tmp");
-			if (mine && Files.deleteIfExists(scTmp)) {
-				r.removed().add(scTmp.getFileName().toString());
+			// <name>.fork.json.<pid>.tmp, or <name>.fork.json.tmp of an older build, and its
+			// rename) is removed with its staging folder
+			for (Path scTmp : List.of(Path.of(sidecar.getPath() + ".tmp"),
+				ProjectFork.tmpOf(sidecar, i.pid()).toPath())) {
+				if (mine && Files.deleteIfExists(scTmp)) {
+					r.removed().add(scTmp.getFileName().toString());
+				}
 			}
 		}
 		else if (ForkIntent.MOVING.equals(i.phase()) && Files.isDirectory(rep) && !liveOther) {
@@ -525,6 +566,7 @@ final class ForkSweeper {
 				FileUtilities.deleteDir(rep.toFile());
 				Files.deleteIfExists(sidecar.toPath());
 				Files.deleteIfExists(Path.of(sidecar.getPath() + ".tmp"));
+				Files.deleteIfExists(ProjectFork.tmpOf(sidecar, i.pid()).toPath());
 				// a backup moves its manifest and seal marker in before the .gpr (E2): with no
 				// .gpr they belong to the half fork that is going, if they name it
 				removeIfNamed(destDir.toPath().resolve(ProjectBackup.FILE), name, true);

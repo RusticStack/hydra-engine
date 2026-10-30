@@ -3954,7 +3954,7 @@ protection" stay as written, as limits). A gate report names these parts "not te
 
 A coordinator amendment, recorded on branch `w2/GATE2` (from Hydra `integration/w3` at `3c3c100d8b`) during the hydra.4
 release-gate runs, after the first counted 9.15 run. GATE2 is not one of the 52 package ids; like FIX4 (8.11) its edits are
-recorded here as facts, numbered A57 to A60 (after 8.14's A42 to A56), and the matrix is unchanged. Where this section differs from an earlier one, it governs.
+recorded here as facts, numbered A57 to A62 (after 8.14's A42 to A56), and the matrix is unchanged. Where this section differs from an earlier one, it governs.
 
 **Evidence.** The 330 counted trigger-timed `fork_project` kills of the first gate run (NTFS, candidate `3b8a2f751a`,
 `D:/Projects/Hydra/_logs/gate-crash/gate-run/`, 6 shards of `chaos_tests.py --profile gate`): right after the kill, 12
@@ -3976,6 +3976,18 @@ the right one. What must hold instead:
   dead publisher left its `<name>.fork.json.tmp` loses that file in the same sweep;
 * (b) a visible project (`.gpr`) is never without its `.rep`, at any instant;
 * (c) after the sweep, 0 orphans.
+
+**When the sweep runs (exhaustive; K6 oracles such as 9.17's read "after the sweep" as "after one of these ran on that
+directory since the kill").** (1) **Daemon start**: before the daemon answers its first request, every directory recorded in
+*that daemon's* state directory (`<stateDir>/fork-parents`) is swept whole; a directory that no `fork_project` of that state
+directory staged in is not recorded, and a daemon with another state directory does not sweep it. A record is dropped at a start
+that finds no staging folder in its directory, so a later leftover there that no staging folder accompanies (the promote
+marker's temporary file of A62) waits for (2) or (3). (2) **`open_project`**, read-only
+or writable: the directory that holds the named `.gpr` (or the named directory) is swept whole, before the open, and a
+failure of the sweep never fails the open. (3) **`fork_project`**: the destination name is swept before the staging, and the
+first `fork_project` of a daemon into a parent directory sweeps that directory whole (D41). Nothing else sweeps: not
+`list_projects`, `project_status`, `close_project`, a timer, or a client's exit. The removal of Ghidra's time probes (A61) is
+not a sweep: it runs only at a writable open, in that project's `.rep`.
 
 Test: `dt_e2a.py` `e2a_sweep_at_start`: (a) a planted dead publisher's `.rep` in a recorded directory is removed by the next
 daemon start with no fork and no open; (b) a dead publisher's sidecar `.tmp` is finished by `open_project`; (c) a daemon killed
@@ -4009,6 +4021,31 @@ published, `CURRENT.log` unchanged, or fully published; D50 counts it apart from
 (`tests/test_views.py --worker`, `views.run_publish_job` against Hydralysis' fake daemon, whose effects are on disk), from a
 read-only Hydralysis checkout (`HYDRALYSIS_SRC`), trigger-timed on the lineage folder listing, and runs K1-K17 after each kill
 and after the next leader. At least 200 counted kills; the 200 `promote_overlay` kills are their own batch.
+
+**A61 (the time probe of a killed writable open).** The counted fork batch on the rebased candidate (`b15968514c` plus
+GATE2) found 2 of 330 counted kills (g3fork4/it017, g3fork0/it074) with a complete fork whose data equalled the canonical
+project but whose `.rep/user` (`.rep/versioned`) held an empty `tmp<digits>.tmp` that stayed after the next open. The kill came after the commit point, during the `open` of the
+new fork. Every writable open of a Ghidra project starts `LocalDatabaseItem.CleanupRunnable` for each file system root of the
+`.rep`: it creates an empty `File.createTempFile("tmp", ".tmp", root)` to read the file system's clock, then deletes it; a kill
+in between leaves the file for good. The daemon's writable open (`open_project` writable, and the reopen writable in place)
+now removes empty `tmp<digits>.tmp` files directly in `idata`, `user` and `versioned` before it reads the revision
+(`GhidraProbes`). A read-only open never does (it changes nothing), and removing a live process's probe is harmless to it (its
+`lastModified()` reads 0 and its cleanup removes nothing). Test `e2a_open_probe`: red without it, green with it. The harness
+reports the probe right after a kill as the pre-sweep class `GHIDRA_PROBE_BEFORE_OPEN` and counts one still there after the
+oracle's writable open as `LEFT_AFTER_SWEEP` (K6).
+
+**A62 (the sidecar's temporary file names its writer).** The counted `promote_overlay` batch on the same candidate found 8 of
+480 iterations (218 counted kills) with an `analysis.fork.json.tmp` that the next daemon's sweeps kept (K6 `sidecar_tmp_left`). `promote_overlay`
+rewrites the sidecar of a fork that is already complete (the promote marker, `ProjectFork.markPromote`), after its staging
+folder is gone; a kill between the write of the temporary file and its rename leaves a file no intent names, and the sweeper
+removes only what it can prove dead. `ProjectFork.writeSidecar` now writes `<file>.<pid>.tmp`, and every sweep (daemon start,
+`open_project`, `fork_project`) removes a `<name>.fork.json.<pid>.tmp` or `SEALED.json.<pid>.tmp` whose process is not running
+or started after the file was made (`ForkSweeper.pidOwnsFolder`, the rule of the staging folders). A live writer's file, and
+the `<name>.fork.json.tmp` of an older build that no intent names, are kept. Two processes no longer share one temporary file.
+Test `e2a_sidecar_tmp_writer`: red without it, green with it. The promote scenario of the harness (`run_c.py` d2) now uses the
+8.13 classes of the fork scenario: `.rep` without `.gpr` and the sidecar's temporary file right after a kill are reported
+(`REP_WITHOUT_GPR_BEFORE_SWEEP`, `SIDECAR_TMP_BEFORE_SWEEP`, 3 of the batch were counted as `PARTIAL_DEST_VISIBLE` before), a
+`.gpr` without `.rep` is counted at any instant, and what the oracle's sweeps leave is counted (`LEFT_AFTER_SWEEP`).
 
 | 9.15 part | Now reads |
 |---|---|

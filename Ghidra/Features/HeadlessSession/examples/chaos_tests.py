@@ -117,7 +117,7 @@ K_ALL = ["K%d" % i for i in range(1, 18)]
 BAD_PREFIX_OK = ()      # no anomaly class is tolerated
 #: the harness classes of the state right after a kill, before any sweep (8.13): reported, never counted; what is left
 #: after the sweep is ``LEFT_AFTER_SWEEP`` (counted). The same tuple as ``conc/kcheck.PRE_SWEEP``
-PRE_SWEEP = ("ORPHAN_TMP_LEFT", "REP_WITHOUT_GPR_BEFORE_SWEEP", "SIDECAR_TMP_BEFORE_SWEEP")
+PRE_SWEEP = ("ORPHAN_TMP_LEFT", "REP_WITHOUT_GPR_BEFORE_SWEEP", "SIDECAR_TMP_BEFORE_SWEEP", "GHIDRA_PROBE_BEFORE_OPEN")
 
 
 def wilson_upper(failures: int, n: int, z: float = 1.6448536) -> float:

@@ -78,7 +78,7 @@ CLASS_MAP = {
     "K10": re.compile(r"DAEMON_DIED|SURVIVOR_PING_ERR|TAKEOVER_FAILED|DRAIN_TIMEOUT"),
 }
 #: harness classes that are reported and not counted: the state right after the kill, before the sweep (8.13)
-PRE_SWEEP = ("ORPHAN_TMP_LEFT", "REP_WITHOUT_GPR_BEFORE_SWEEP", "SIDECAR_TMP_BEFORE_SWEEP")
+PRE_SWEEP = ("ORPHAN_TMP_LEFT", "REP_WITHOUT_GPR_BEFORE_SWEEP", "SIDECAR_TMP_BEFORE_SWEEP", "GHIDRA_PROBE_BEFORE_OPEN")
 
 
 def snapshot_canon(canon) -> dict:

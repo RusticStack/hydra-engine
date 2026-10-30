@@ -416,6 +416,11 @@ def t_oracle_invariants_fail(c):
         side.with_name(side.name + ".tmp").write_text(side.read_text())
     case("k6_sidecar_tmp", sidecar_tmp, "K6:sidecar_tmp_left")
 
+    def sidecar_tmp_pid(env):    # A62: the same under the writer's pid
+        side = env.fork_gpr.with_name(env.fork_gpr.stem + ".fork.json")
+        side.with_name(side.name + ".4242.tmp").write_text(side.read_text())
+    case("k6_sidecar_tmp_pid", sidecar_tmp_pid, "K6:sidecar_tmp_left")
+
     # K7: temp growth
     def grow(env):
         for i in range(40):

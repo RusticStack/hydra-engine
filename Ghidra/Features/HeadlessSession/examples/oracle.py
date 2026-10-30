@@ -454,9 +454,11 @@ def check_k6(gpr, kind: str = "fork", base_tree: str | None = None, require_side
         rep.violation("K6", "gpr_without_rep", f"{gpr.name} exists and {rp.name} does not", gpr)
         return rep
     side = gpr.with_name(gpr.stem + ".fork.json")
-    if side.with_name(side.name + ".tmp").exists():
-        # 8.13: the sidecar's temporary file of a killed publisher is gone after the sweep
-        rep.violation("K6", "sidecar_tmp_left", f"{side.name}.tmp is next to a complete fork", side.with_name(side.name + ".tmp"))
+    # 8.13: the sidecar's temporary file of a killed writer is gone after the sweep; A62: it is
+    # <name>.fork.json.<pid>.tmp (<name>.fork.json.tmp of an older build)
+    for t in sorted(side.parent.glob(side.name + ".*tmp")):
+        if re.fullmatch(re.escape(side.name) + r"(\.\d+)?\.tmp", t.name):
+            rep.violation("K6", "sidecar_tmp_left", f"{t.name} is next to a complete fork", t)
     if not side.exists():
         if require_sidecar:
             rep.violation("K6", "no_sidecar", "a complete fork without its sidecar", side)

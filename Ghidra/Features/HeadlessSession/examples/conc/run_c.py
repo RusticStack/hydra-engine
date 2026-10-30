@@ -177,7 +177,7 @@ class Run:
         for e in os.listdir(dest):
             if e.endswith(".rep") and not (dest / (e[:-4] + ".gpr")).exists():
                 out.append("rep_without_gpr:" + e)
-            elif e.endswith(".fork.json.tmp"):
+            elif re.fullmatch(r".+\.fork\.json(\.\d+)?\.tmp", e):
                 out.append("sidecar_tmp:" + e)
             elif e.startswith(".") and ".fork-" in e and e.endswith(".tmp"):
                 out.append("staging:" + e)
@@ -405,14 +405,20 @@ class Run:
             def _scratch(k):
                 # 8.13: the sidecar's own temporary file is not project data; it is reported as a pre-sweep
                 # leftover (SIDECAR_TMP_BEFORE_SWEEP) and must be gone after the sweep (LEFT_AFTER_SWEEP)
-                return k.endswith((".fork.json", ".fork.json.tmp", ".lock", ".lock~", ".lock~~")) or any(q.startswith(".") and ".fork-" in q and q.endswith(".tmp") for q in k.replace("\\", "/").split("/"))
-            dth = {k: v for k, v in _tree_rows(dest).items() if not _scratch(k)}
+                return k.endswith((".fork.json", ".lock", ".lock~", ".lock~~")) or re.fullmatch(r".+\.fork\.json(\.\d+)?\.tmp", k) or any(q.startswith(".") and ".fork-" in q and q.endswith(".tmp") for q in k.replace("\\", "/").split("/"))
+            # 8.13 (A61): the time probe of a killed writable open (the open of the committed fork) is reported as a
+            # pre-sweep class (GHIDRA_PROBE_BEFORE_OPEN) and must be gone after the oracle's writable open
+            probes = set(ghidra_probes(dest))
+            dth = {k: v for k, v in _tree_rows(dest).items() if not _scratch(k) and k not in probes}
             rec["dest_files_equal_canon"] = (cth == dth)
             rec["dest_diff_files"] = sorted(set(cth) ^ set(dth))[:10] + [k for k in cth if k in dth and cth[k] != dth[k]][:10]
-        rec["dest_has_sidecar_tmp"] = (dest / (s.b["gpr"].replace(".gpr", ".fork.json.tmp"))).exists()
+        # A62: <name>.fork.json.<pid>.tmp (an older build: <name>.fork.json.tmp)
+        rec["dest_has_sidecar_tmp"] = bool(sidecar_tmps(dest))
+        rec["dest_ghidra_probe_after_kill"] = ghidra_probes(dest)
         o2 = s.oracle(d, {"dest": (dest, gpr), "canon": (d / "canon", s.canon_gpr(d))}, do_w=True)
         # 8.13: the fresh daemon's start-up sweep ran (the same state directory recorded the destination)
         rec["dest_after_start_sweep"] = s.leftovers(dest)
+        rec["dest_ghidra_probe_after_open"] = ghidra_probes(dest)      # after the oracle's writable open (A61)
         t = o2["targets"]["dest"]
         ro = main_scan(t.get("ro"), s.ctx) if t.get("ro") else None
         w = main_scan(t.get("w"), s.ctx) if t.get("w") else None
@@ -458,6 +464,10 @@ class Run:
             anomalies.append("REP_WITHOUT_GPR_BEFORE_SWEEP")
         if rec["dest_has_sidecar_tmp"]:
             anomalies.append("SIDECAR_TMP_BEFORE_SWEEP")
+        if rec["dest_ghidra_probe_after_kill"]:
+            anomalies.append("GHIDRA_PROBE_BEFORE_OPEN")
+        if rec["dest_ghidra_probe_after_open"]:
+            anomalies.append("LEFT_AFTER_SWEEP:open:" + ",".join(rec["dest_ghidra_probe_after_open"])[:120])
         for stage in ("dest_after_start_sweep", "dest_after_retry_sweep"):
             if rec[stage]:
                 anomalies.append("LEFT_AFTER_SWEEP:%s:%s" % (stage, ",".join(rec[stage])[:120]))
@@ -684,7 +694,10 @@ class Run:
         rec["dest_has_gpr"] = gpr.exists()
         rec["dest_has_rep"] = (dest / s.b["gpr"].replace(".gpr", ".rep")).exists()
         rec["dest_has_fork_tmp"] = any(".fork-" in k for k in inventory(dest))
+        rec["dest_has_sidecar_tmp"] = bool(sidecar_tmps(dest))
         o2 = s.oracle(d, {"dest": (dest, gpr), "canon": (d / "canon", s.canon_gpr(d))}, do_w=True)
+        # 8.13: the fresh daemon's start-up sweep and the sweep of its open_project ran
+        rec["dest_after_sweep"] = s.leftovers(dest)
         t = o2["targets"]["dest"]
         rec["restart_ms"] = o2["restart_ms"]
         rec["oracle_log"] = o2["log"]
@@ -710,8 +723,16 @@ class Run:
                 anomalies.append("DEST_CORRUPT_OR_UNOPENABLE")
             if rec.get("acked_before_kill") and rec["dest_ro"] != "post":
                 anomalies.append("LOSS_OF_ACKED_PROMOTE")
-            if rec["dest_has_rep"] != rec["dest_has_gpr"]:
-                anomalies.append("PARTIAL_DEST_VISIBLE")
+            # 8.13: a .gpr without its .rep never; a .rep without its .gpr and the sidecar's temporary file only
+            # before the sweep (reported), never after it (LEFT_AFTER_SWEEP, counted)
+            if rec["dest_has_gpr"] and not rec["dest_has_rep"]:
+                anomalies.append("GPR_WITHOUT_REP")
+            if rec["dest_has_rep"] and not rec["dest_has_gpr"]:
+                anomalies.append("REP_WITHOUT_GPR_BEFORE_SWEEP")
+            if rec["dest_has_sidecar_tmp"]:
+                anomalies.append("SIDECAR_TMP_BEFORE_SWEEP")
+            if rec["dest_after_sweep"]:
+                anomalies.append("LEFT_AFTER_SWEEP:oracle:" + ",".join(rec["dest_after_sweep"])[:120])
             if rec["dest_ro"] == "pre":
                 rec["note"] = "fork complete but overlay edits not applied/saved"
         else:
@@ -719,8 +740,35 @@ class Run:
                 anomalies.append("APPLY_LEFT_A_FORK")
         rec["anomalies"] = anomalies
         s.emit(rec)
-        s.end_iter(d, anomalies)
+        s.end_iter(d, [a for a in anomalies if a not in kcheck.PRE_SWEEP])
         return rec
+
+
+def sidecar_tmps(dest):
+    """A62: the temporary files of sidecar writes in ``dest``: ``<name>.fork.json.<pid>.tmp`` (``.fork.json.tmp`` of an
+    older build)."""
+    dest = pathlib.Path(dest)
+    return sorted(e for e in os.listdir(dest) if re.fullmatch(r".+\.fork\.json(\.\d+)?\.tmp", e)) if dest.is_dir() else []
+
+
+GHIDRA_PROBE = re.compile(r"[^/]+\.rep/(idata|user|versioned)/tmp\d+\.tmp")
+
+
+def ghidra_probes(root):
+    """8.13 (A61): the empty time probes ``tmp<digits>.tmp`` a killed writable open leaves in a ``.rep`` root (Ghidra's
+    ``LocalDatabaseItem.CleanupRunnable``). Not project data; the next writable open of the daemon removes them."""
+    root = pathlib.Path(root)
+    out = []
+    for dp, _dn, files in os.walk(root):
+        for n in files:
+            p = pathlib.Path(dp, n)
+            rel = p.relative_to(root).as_posix()
+            try:
+                if GHIDRA_PROBE.fullmatch(rel) and p.stat().st_size == 0:
+                    out.append(rel)
+            except OSError:
+                pass
+    return sorted(out)
 
 
 def _tree_rows(root):
