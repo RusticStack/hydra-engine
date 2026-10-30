@@ -3222,6 +3222,10 @@ def run_test(c, n, secs):
 
 
 def main():
+    # The tests' state dirs are fresh: keep the user's shared AOT store (Launch.aot_dirs) out of
+    # them, so a daemon starts with the cache the test seeded or with none, never with whatever
+    # this machine's user trained. A caller that tests the shared store sets it explicitly.
+    os.environ.setdefault("GHIDRA_SESSION_AOT_DIR", "none")
     ap = argparse.ArgumentParser()
     ap.add_argument("--ghidra", required=True)
     ap.add_argument("--selftest", action="store_true",

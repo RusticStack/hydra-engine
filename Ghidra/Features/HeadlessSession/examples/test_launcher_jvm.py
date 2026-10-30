@@ -143,15 +143,19 @@ class DaemonJvmOptions(unittest.TestCase):
         self.assertEqual(opt(self.argv(), "-Xms"), ["64m"])
         self.assertEqual(opt(self.argv(minHeap="1g"), "-Xms"), ["1g"])
 
-    def test_g1_time_ratio(self):
-        self.assertEqual(opt(self.argv(), "-XX:GCTimeRatio="), ["4"])
-        self.assertEqual(opt(self.argv(gcTimeRatio=0), "-XX:GCTimeRatio="), [])
+    def test_g1_time_ratio_is_opt_in(self):
+        self.assertEqual(opt(self.argv(), "-XX:GCTimeRatio="), [])
+        self.assertEqual(opt(self.argv(gcTimeRatio=4), "-XX:GCTimeRatio="), ["4"])
         self.assertEqual(opt(self.argv(gc="zgc"), "-XX:GCTimeRatio="), [])
+
+    def test_jit_threads_default_is_the_jdks(self):
+        with mock.patch.object(gs, "granted_cpus", return_value=24):
+            self.assertEqual(opt(self.argv(), "-XX:CICompilerCount="), [])
 
     def test_jit_threads_follow_the_granted_cpus(self):
         for cpus, want in ((1, "2"), (8, "2"), (12, "3"), (16, "4"), (64, "4")):
             with mock.patch.object(gs, "granted_cpus", return_value=cpus):
-                self.assertEqual(opt(self.argv(), "-XX:CICompilerCount="), [want], cpus)
+                self.assertEqual(opt(self.argv(jitThreads=0), "-XX:CICompilerCount="), [want], cpus)
         self.assertEqual(opt(self.argv(jitThreads=6), "-XX:CICompilerCount="), ["6"])
         self.assertEqual(opt(self.argv(jitThreads=-1), "-XX:CICompilerCount="), [])
 
@@ -163,18 +167,92 @@ class DaemonJvmOptions(unittest.TestCase):
     def test_granted_cpus_is_positive(self):
         self.assertGreaterEqual(gs.granted_cpus(), 1)
 
+    @unittest.skipUnless(os.name == "nt", "Windows affinity mask")
+    def test_granted_cpus_follows_the_affinity_mask_on_windows(self):
+        import subprocess
+        code = ("import importlib.util,sys;s=importlib.util.spec_from_file_location('g',sys.argv[1]);"
+                "m=importlib.util.module_from_spec(s);s.loader.exec_module(m);print(m.granted_cpus())")
+        # "start /affinity 3" runs the child on 2 CPUs (its affinity mask), as a job scheduler would.
+        out = subprocess.run(["cmd.exe", "/d", "/c", "start", "/b", "/wait", "/affinity", "3",
+                              sys.executable, "-I", "-c", code,
+                              str(HERE.parent / "support" / "ghidra_session.py")],
+                             capture_output=True, text=True, timeout=60)
+        self.assertEqual(out.stdout.strip(), "2", out.stderr)
+
+
+class AotStoreUpkeep(unittest.TestCase):
+    """The shared store does not fill with caches no install matches any more, and a cache that a
+    running JVM has mapped (Windows: cannot be replaced) does not fail a retrain or leak its temp."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = pathlib.Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def cache(self, name, age_s, now):
+        f = self.store / f"{name}.aot"
+        f.write_bytes(b"x")
+        (self.store / f"{name}.log").write_bytes(b"")
+        os.utime(f, (now - age_s, now - age_s))
+        return f
+
+    def test_prune_keeps_current_and_recent_removes_old_and_excess(self):
+        now = 2_000_000_000.0
+        cur = self.cache("cur", 90 * 86400, now)
+        old = self.cache("old", 30 * 86400, now)
+        recent = [self.cache(f"r{i}", i * 60, now) for i in range(gs.AOT_STORE_KEEP + 2)]
+        bld = self.store / "x.123-abc.building"
+        bld.write_bytes(b"x")
+        os.utime(bld, (now - 2 * 86400, now - 2 * 86400))
+        removed = gs.prune_aot_store(self.store, keep={"cur"}, log=lambda *_: None, now=now)
+        self.assertTrue(cur.exists())
+        self.assertFalse(old.exists())
+        self.assertFalse((self.store / "old.log").exists())
+        self.assertFalse(bld.exists())
+        self.assertEqual([f.exists() for f in recent],
+                         [True] * gs.AOT_STORE_KEEP + [False, False])
+        self.assertEqual(len(removed), 4)
+
+    def test_cache_in_use_is_kept_and_new_one_dropped(self):
+        out = self.store / "k.aot"
+        out.write_bytes(b"old")
+        tmp = self.store / "k.1-x.building"
+        tmp.write_bytes(b"new")
+        with mock.patch.object(gs.os, "replace", side_effect=PermissionError(5, "denied")):
+            gs.install_aot(tmp, out, log=lambda *_: None)
+        self.assertEqual(out.read_bytes(), b"old")
+
+    def test_permission_error_without_a_cache_is_raised(self):
+        tmp = self.store / "k.1-x.building"
+        tmp.write_bytes(b"new")
+        with mock.patch.object(gs.os, "replace", side_effect=PermissionError(5, "denied")):
+            with self.assertRaises(PermissionError):
+                gs.install_aot(tmp, self.store / "k.aot", log=lambda *_: None)
+
 
 class LaunchPropertiesHeap(unittest.TestCase):
     """Every launch.properties JVM (analyzeHeadless, the GUI, pyghidra) starts with a small heap:
     without -Xms the JVM commits 1/64 of physical memory at start (1 GiB of a 64 GiB machine)."""
 
-    def test_small_initial_heap(self):
+    def vmargs(self):
         f = HERE.parents[2] / "RuntimeScripts" / "support" / "launch.properties"
         if not f.is_file():
             self.skipTest(f"{f} is not in this tree (an install)")
-        xms = [v[4:] for k, v in gs._read_properties(f) if k == "VMARGS" and v.startswith("-Xms")]
-        self.assertTrue(xms, "launch.properties sets no -Xms")
-        self.assertLessEqual(gs.heap_bytes(xms[-1]), 128 << 20, xms)
+        return [v for k, v in gs._read_properties(f) if k == "VMARGS"]
+
+    def test_small_initial_heap(self):
+        pct = [float(v.split("=", 1)[1]) for v in self.vmargs()
+               if v.startswith("-XX:InitialRAMPercentage=")]
+        self.assertTrue(pct, "launch.properties sets no -XX:InitialRAMPercentage")
+        self.assertLessEqual(pct[-1], 0.2, pct)   # 128 MB of 64 GiB
+
+    def test_no_fixed_initial_heap(self):
+        """A fixed -Xms above a launcher's smaller MAXMEM (-Xmx) makes the JVM refuse to start;
+        an initial-heap percentage is lowered to the maximum instead."""
+        self.assertEqual([v for v in self.vmargs()
+                          if v.startswith(("-Xms", "-XX:InitialHeapSize"))], [])
 
 
 if __name__ == "__main__":

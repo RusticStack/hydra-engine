@@ -631,8 +631,35 @@ def heap_bytes(text) -> int | None:
         return None
 
 
+def _windows_affinity_cpus() -> int | None:
+    """Windows: the CPUs in this process's affinity mask (``os.process_cpu_count`` ignores it
+    there and returns the machine's count). None when the machine has more than one processor
+    group (over 64 CPUs: the mask covers only one group) or the call fails."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        if k32.GetActiveProcessorGroupCount() > 1:
+            return None
+        proc, system = ctypes.c_size_t(), ctypes.c_size_t()
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        k32.GetProcessAffinityMask.argtypes = [wintypes.HANDLE, ctypes.POINTER(ctypes.c_size_t),
+                                               ctypes.POINTER(ctypes.c_size_t)]
+        if not k32.GetProcessAffinityMask(k32.GetCurrentProcess(), ctypes.byref(proc),
+                                          ctypes.byref(system)):
+            return None
+        return bin(proc.value).count("1") or None
+    except (OSError, AttributeError):
+        return None
+
+
 def granted_cpus() -> int:
-    """The CPUs this process may run on (its affinity / CPU set; the machine's count elsewhere)."""
+    """The CPUs this process may run on: its affinity mask (Windows, one processor group), its
+    affinity / CPU set (``os.process_cpu_count``, ``sched_getaffinity``); else the machine's count."""
+    if IS_WINDOWS:
+        n = _windows_affinity_cpus()
+        if n:
+            return n
     f = getattr(os, "process_cpu_count", None)
     if f:
         n = f()
@@ -658,10 +685,12 @@ DEFAULTS = {
     "minHeap": "64m",        # -Xms: the heap starts small and grows as the work needs (to maxHeap);
                              # G1 gives the unused part back after an idle periodic collection
     "gc": "g1",              # g1 | zgc | parallel | default (the JDK's choice)
-    "gcTimeRatio": 4,        # G1: -XX:GCTimeRatio (heap grows when GC takes over 1/(1+n) of the time;
-                             # the JDK's 12 grows it at 8 %); 0: the JDK's
-    "jitThreads": 0,         # -XX:CICompilerCount; 0: a quarter of the CPUs this process may use,
-                             # 2..4; -1: the JDK's choice (about 12 with 24 CPUs)
+    "gcTimeRatio": 0,        # G1: -XX:GCTimeRatio n (heap grows when GC takes over 1/(1+n) of the
+                             # time; the JDK's 12 grows it at 8 %); 0: the JDK's. Opt-in: 4 kept
+                             # less heap but showed no CPU gain in the bench (see gc_args)
+    "jitThreads": -1,        # -XX:CICompilerCount; -1: the JDK's choice (from the CPUs the JVM may
+                             # use; about 12 with 24); 0: a quarter of the CPUs this process may
+                             # use, 2..4; n: n (at least 2). Opt-in (see jit_args)
     "vmargs": [],            # extra JVM options, appended last
     "tmpdir": None,          # java.io.tmpdir: where Ghidra keeps unsaved database buffers
     "mode": "fast",          # fast (app class loader, AOT-capable) | standard (GhidraClassLoader)
@@ -847,9 +876,12 @@ class Launch:
         gc = self.cfg["gc"]
         if gc == "g1":
             # Return unused heap to the OS while the daemon idles; dedup the many equal strings
-            # of a large program's symbols. GCTimeRatio: the JDK's 12 grows the heap whenever GC
-            # takes more than 8 % of the time, which under a burst of requests left the daemon
-            # with 900 MB committed for 300 MB live; at 4 (20 %) it stays nearer what is live.
+            # of a large program's symbols. GCTimeRatio (opt-in, gcTimeRatio): the JDK's 12 grows
+            # the heap whenever GC takes more than 8 % of the time, which under a burst of
+            # requests left the daemon with 900 MB committed for 300 MB live; 4 (20 %) stays
+            # nearer what is live, but in the multi-agent bench it brought no CPU gain and the
+            # runs with it (and jitThreads 0) had connect timeouts the JDK defaults never had, so
+            # the default is the JDK's until a quiet-machine A/B shows otherwise.
             ratio = int(self.cfg.get("gcTimeRatio") or 0)
             return ["-XX:+UseG1GC", "-XX:+UseStringDeduplication",
                     "-XX:G1PeriodicGCInterval=300000"] + (
@@ -864,8 +896,10 @@ class Launch:
         """``-XX:CICompilerCount``: the JDK sizes its JIT compiler threads from all the machine's
         CPUs (12 with 24), and every daemon, test or headless JVM on the machine compiles its
         start-up at once with that many; each C2 thread also holds its own arena (150 MB at the
-        peak of the multi-agent bench). A quarter of the CPUs this process may use, 2 to 4, keeps
-        the compiled code and leaves the CPUs to the agents' requests."""
+        peak of the multi-agent bench). ``jitThreads`` 0 uses a quarter of the CPUs this process
+        may use, 2 to 4, leaving the CPUs to the agents' requests; it is opt-in (default -1, the
+        JDK's choice) because under heavy load it slowed warm-up and the bench saw connect
+        timeouts with it, with no measured CPU gain."""
         n = int(self.cfg.get("jitThreads") or 0)
         if n < 0:
             return []
@@ -2484,9 +2518,67 @@ def build_aot(ghidra: str | None, state: str | None, project: str | None,
         proc.communicate(timeout=1800)
     if not tmp.is_file():
         raise LaunchError(f"the JVM wrote no AOT cache (exit {proc.returncode}); see {errlog}")
-    os.replace(tmp, out)
+    try:
+        install_aot(tmp, out, log)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
     log(f"AOT cache {out} ({out.stat().st_size >> 20} MiB) in {time.perf_counter() - t0:.1f} s")
+    if shared:
+        prune_aot_store(out.parent, keep={out.stem}, log=log)
     return out
+
+
+def install_aot(tmp: Path, out: Path, log=print):
+    """Moves a new cache into place. On Windows the rename fails while a running daemon (of any
+    state dir, with the shared store) has the old file mapped; the same key means the same JDK,
+    install, classpath and options, so the cache already there serves as well and is kept."""
+    try:
+        os.replace(tmp, out)
+    except PermissionError:
+        if not out.is_file():
+            raise
+        log(f"AOT cache {out} is in use by a running JVM; kept it (same key, same inputs)")
+
+
+AOT_STORE_KEEP = 8                     # newest caches kept in the shared store
+AOT_STORE_MAX_AGE_S = 14 * 24 * 3600   # older unused caches are removed
+AOT_BUILDING_MAX_AGE_S = 24 * 3600     # an abandoned training run's temp file
+
+
+def prune_aot_store(store: Path, keep: set[str] = frozenset(), log=print,
+                    now: float | None = None) -> list[Path]:
+    """Removes stale caches from the shared AOT store: a re-stamp or reinstall changes a jar's
+    time (and with hard-linked installs, of every install sharing it), so its old cache is never
+    matched again. Keeps ``keep`` (stems) and, of the others, the ``AOT_STORE_KEEP`` newest that
+    were written or used within ``AOT_STORE_MAX_AGE_S``; a cache still mapped by a running JVM cannot be removed on Windows
+    and stays until a later prune. Returns what was removed."""
+    now = time.time() if now is None else now
+    removed = []
+    caches = []
+    for f in store.glob("*.aot"):
+        with contextlib.suppress(OSError):
+            st = f.stat()
+            caches.append((max(st.st_mtime, st.st_atime), f))
+    caches.sort(reverse=True)
+    for i, (t, f) in enumerate(caches):
+        if f.stem in keep or i < AOT_STORE_KEEP and now - t < AOT_STORE_MAX_AGE_S:
+            continue
+        try:
+            f.unlink()
+        except OSError:
+            continue
+        removed.append(f)
+        with contextlib.suppress(OSError):
+            f.with_suffix(".log").unlink()
+    for f in store.glob("*.building"):
+        with contextlib.suppress(OSError):
+            if now - f.stat().st_mtime > AOT_BUILDING_MAX_AGE_S:
+                f.unlink()
+                removed.append(f)
+    if removed:
+        log(f"AOT store {store}: removed {len(removed)} stale file(s)")
+    return removed
 
 
 # ---- command line ---------------------------------------------------------------------------
