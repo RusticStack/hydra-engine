@@ -18,6 +18,9 @@ package ghidra.app.util.headless.session;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.ArrayDeque;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.*;
 
 import com.google.gson.*;
@@ -34,6 +37,11 @@ import ghidra.util.Msg;
  * multiplex several callers over one connection). Every request is registered as soon as it is
  * read, so {@code cancel} reaches it while it still waits its turn. Responses carry the request's
  * {@code id}; {@code progress} events carry it too.
+ * <p>
+ * With the setting {@code orderPerScope} (default off, PROTOCOL-3.md 8.18) a protocol 3 connection
+ * keeps one ordered lane per caller scope instead of one for the whole connection: the requests of
+ * one {@code client}/{@code harness} label still run in the order sent, while the requests of
+ * other labels run beside them. Unlabelled requests keep the connection's own lane.
  */
 final class Connection {
 
@@ -56,6 +64,11 @@ final class Connection {
 	/** What a protocol 3 connection dispatches in parallel unless the request says {@code ordered} (BP15). */
 	private static final java.util.Set<String> READ_CLASS = java.util.Set.of("info", "functions",
 		"decompile", "list", "project", "projects", "programs", "journal", "overlays");
+	/**
+	 * The ordered lanes of the labelled scopes (setting {@code orderPerScope}): the requests of a
+	 * scope that wait for the one drainer of that scope. A scope has an entry while its drainer runs.
+	 */
+	private final Map<String, ArrayDeque<Runnable>> scoped = new HashMap<>();
 
 	Connection(Session session, InputStream in, OutputStream out, String transport,
 			boolean launcher, String token, Runnable onShutdown) {
@@ -217,8 +230,17 @@ final class Connection {
 			send(error(id, e, 0));
 			return;
 		}
+		// a labelled request of a v3 connection gets its scope's own ordered lane (orderPerScope)
+		String scope = !par && client.v3() && Settings.bool("orderPerScope", false)
+				? who.scope()
+				: null;
 		try {
-			(par ? parallel : worker).execute(() -> respond(req, id, cmd, m));
+			if (scope != null) {
+				executeScoped(scope, () -> respond(req, id, cmd, m));
+			}
+			else {
+				(par ? parallel : worker).execute(() -> respond(req, id, cmd, m));
+			}
 		}
 		catch (RejectedExecutionException e) {
 			if (implicit && !parallel.isShutdown()) {
@@ -239,6 +261,66 @@ final class Connection {
 						"this client already runs " + MAX_PARALLEL + " parallel requests")
 					: new SessionException(SessionException.CONFLICT, "connection closing"),
 				0));
+		}
+	}
+
+	/**
+	 * Runs {@code r} after every earlier request of {@code scope} (setting {@code orderPerScope}).
+	 * One drainer per scope takes the scope's requests in arrival order, on a thread of the
+	 * parallel pool, or on the connection's own lane when all {@link #MAX_PARALLEL} are busy (the
+	 * order of the scope is kept either way: the scope never has two drainers).
+	 *
+	 * @throws RejectedExecutionException when the connection is closing
+	 */
+	private void executeScoped(String scope, Runnable r) {
+		synchronized (scoped) {
+			ArrayDeque<Runnable> q = scoped.get(scope);
+			if (q != null) {
+				q.add(r); // the scope's drainer runs: it takes r in turn
+				return;
+			}
+			q = new ArrayDeque<>();
+			q.add(r);
+			scoped.put(scope, q);
+		}
+		Runnable drain = () -> drainScope(scope);
+		try {
+			try {
+				parallel.execute(drain);
+			}
+			catch (RejectedExecutionException e) {
+				if (parallel.isShutdown()) {
+					throw e;
+				}
+				worker.execute(drain);
+			}
+		}
+		catch (RejectedExecutionException e) {
+			synchronized (scoped) {
+				scoped.remove(scope); // r is the only request of a scope that had no drainer
+			}
+			throw e;
+		}
+	}
+
+	private void drainScope(String scope) {
+		while (true) {
+			Runnable r;
+			synchronized (scoped) {
+				ArrayDeque<Runnable> q = scoped.get(scope);
+				r = q.poll();
+				if (r == null) {
+					scoped.remove(scope);
+					return;
+				}
+			}
+			try {
+				r.run();
+			}
+			catch (RuntimeException e) {
+				// respond answers every failure itself; this keeps the scope's lane alive regardless
+				Msg.error(this, client.label() + ": a request of a scoped lane failed", e);
+			}
 		}
 	}
 

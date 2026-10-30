@@ -161,7 +161,8 @@ public class HeadlessSession implements GhidraLaunchable {
 				: Settings.integer("maxLong", Scheduler.defaultLongSlots(cpus));
 		int maintSlots = Math.max(1, Settings.integer("maintSlots", Scheduler.DEFAULT_MAINT_SLOTS));
 		Scheduler scheduler = new Scheduler(maxQuick, maxLong, maintSlots);
-		int maxImports = o.maxImports > 0 ? o.maxImports : ImportGate.defaultPermits(cpus);
+		int maxImports =
+			o.maxImports > 0 ? o.maxImports : ImportGate.defaultPermits(Budgets.maxHeapBytes());
 		ImportGate.GLOBAL.setPermits(maxImports);
 		// what hello reports to a protocol 3 client (3.2); the other packages set their own
 		Advertised.limit("maxQuick", () -> maxQuick);
@@ -621,6 +622,7 @@ public class HeadlessSession implements GhidraLaunchable {
 			preflight();
 			cancelHooks();
 			waiterCaps();
+			scheduling();
 			closeVsViewChange();
 			dbVersions();
 			health();
@@ -1410,6 +1412,8 @@ public class HeadlessSession implements GhidraLaunchable {
 		 * caller is never capped, and the counter returns to 0.
 		 */
 		private static void waiterCaps() {
+			// a lane of 4 slots: the cap is 2 (half the lane, PROTOCOL-3.md 8.18)
+			Waits.slots(lane -> 4);
 			java.util.concurrent.locks.ReentrantLock lock = new java.util.concurrent.locks.ReentrantLock();
 			java.util.concurrent.atomic.AtomicInteger waiters = new java.util.concurrent.atomic.AtomicInteger();
 			Client v3 = new Client(60, "selftest", false, null);
@@ -1496,7 +1500,61 @@ public class HeadlessSession implements GhidraLaunchable {
 			}
 			finally {
 				release.countDown();
+				Waits.slots(lane -> 8);
 			}
+		}
+
+		/**
+		 * The scheduling amendment (PROTOCOL-3.md 8.18): the waiter cap and the import permits are
+		 * not derived from the CPU count, a release wakes only its own lane's waiters, and the
+		 * collections that only measure are opt-in.
+		 */
+		private static void scheduling() {
+			String yieldWas = Settings.string("yieldSlots", null);
+			Settings.remove("yieldSlots");
+			check("the waiter cap is max(4, slots/4), at most half the lane (at least 2): " +
+				"2, 2, 4, 4, 8 for 2, 4, 8, 12, 32 slots",
+				Waits.cap(2) == 2 && Waits.cap(4) == 2 && Waits.cap(8) == 4 && Waits.cap(12) == 4 &&
+					Waits.cap(32) == 8);
+			Settings.set("lockWaitersMin", "2");
+			boolean configured = Waits.cap(8) == 2 && Waits.cap(32) == 8;
+			Settings.remove("lockWaitersMin");
+			Settings.set("yieldSlots", "true");
+			boolean yielded = Waits.cap(4) == 4;
+			Settings.remove("yieldSlots");
+			if (yieldWas != null) {
+				Settings.set("yieldSlots", yieldWas);
+			}
+			check("lockWaitersMin sets the least cap; with yieldSlots the half-lane bound goes",
+				configured && yielded);
+			long gb = 1L << 30;
+			check("the default maxImports is 4, one per 2 GB of heap, at least 1, whatever the CPUs",
+				ImportGate.defaultPermits(gb) == 1 && ImportGate.defaultPermits(4 * gb) == 2 &&
+					ImportGate.defaultPermits(8 * gb) == 4 &&
+					ImportGate.defaultPermits(64 * gb) == 4);
+			Scheduler s = new Scheduler(1, 1, 1);
+			Client c = new Client(70, "selftest", false, null);
+			Scheduler.Ticket q = s.admit(c, "decompile", new JsonObject(), null, 100);
+			Scheduler.Ticket l = s.admit(c, "analyze", new JsonObject(), null, 100);
+			long quickBefore = s.signals(Scheduler.Lane.QUICK);
+			long longBefore = s.signals(Scheduler.Lane.LONG);
+			l.close();
+			boolean ownLane = s.signals(Scheduler.Lane.QUICK) == quickBefore &&
+				s.signals(Scheduler.Lane.LONG) == longBefore + 1;
+			q.close();
+			check("a release wakes the waiters of its own lane only",
+				ownLane && s.signals(Scheduler.Lane.QUICK) == quickBefore + 1);
+			String gcWas = Settings.string("forcedGc", null);
+			Settings.remove("forcedGc");
+			boolean off = !Governor.measuringGcs();
+			Settings.set("forcedGc", "true");
+			boolean on = Governor.measuringGcs();
+			Settings.remove("forcedGc");
+			if (gcWas != null) {
+				Settings.set("forcedGc", gcWas);
+			}
+			check("the collections that only measure a first open are opt-in (forcedGc, off)",
+				off && on);
 		}
 
 		/**

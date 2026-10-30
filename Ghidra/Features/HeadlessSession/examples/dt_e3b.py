@@ -281,9 +281,10 @@ def _cancel_while_waiting(c, protocol, races, first=0):
     exe = prepare(c)
     tag = f"{protocol}-{first}" if first else f"{protocol}"
     gpr = c.copy_fixture(f"e3bCw{tag}")
-    # three requests wait on one lock: the protocol 3 cap max(2, slots/4) must admit them. The
-    # defaults derive the slots from the CPUs (quick = CPUs, long = max(8, CPUs)), so a 4-CPU host
-    # has a cap of 2 and refuses the third with lock_queue_full; 12 slots per lane give a cap of 3
+    # three requests wait on one lock: the protocol 3 cap must admit them. The defaults derive the
+    # slots from the CPUs (quick = CPUs, long = max(8, CPUs)), and the cap is at most half the lane
+    # (PROTOCOL-3.md 8.18), so a 4-CPU host has a cap of 2 and refuses the third with
+    # lock_queue_full; 12 slots per lane give a cap of 4
     d = c.daemon(f"e3b-cw{tag}", maxQuick=12, maxLong=12)
     H = R = X = None
     try:
@@ -964,6 +965,49 @@ def t_parallel_reads(c):
         d.stop(force=True)
 
 
+# ---- scope_order ----------------------------------------------------------------------------
+
+def t_scope_order(c):
+    """``orderPerScope`` (PROTOCOL-3.md 8.18). One protocol 3 connection, two labels: ``a`` sends a 4 s
+    script and then a short one, ``b`` a short one. With the setting, ``b`` runs beside ``a``'s long
+    script and ``a``'s short script still starts only after its long one ended (the order of a label is
+    kept); without it (the default) ``b`` waits behind ``a`` on the connection's one ordered lane."""
+    prepare(c)
+    notes = []
+    for on in (False, True):
+        d = c.daemon(f"e3b-so{int(on)}", engine={"orderPerScope": True} if on else None)
+        X = None
+        try:
+            X = c.connect(d, "multi", "e3b", 3)
+            warm(c, X)
+            # ordered labelled views (the library's labelled() sends parallel:true, which has no order)
+            a = c.gs.Labelled(X, "agent-a", "e3b", parallel=False)
+            b = c.gs.Labelled(X, "agent-b", "e3b", parallel=False)
+            sleep = c.script("TestSleep.java")
+            a1 = a.send("script", script=sleep, program=None, args=["4000"], wait=120000)
+            a2 = a.send("script", script=sleep, program=None, args=["10"], wait=120000)
+            time.sleep(0.5)
+            t = time.perf_counter()
+            b.call("script", script=sleep, program=None, args=["10"], wait=120000)
+            b_ms = (time.perf_counter() - t) * 1000
+            _, e1 = times(a.wait(a1)["output"])
+            s2, _ = times(a.wait(a2)["output"])
+            dt.check(e1 is not None and s2 is not None and s2 + 5 >= e1,
+                     f"orderPerScope={on}: a label's second request started at {s2}, before its first "
+                     f"ended at {e1}")
+            if on:
+                dt.check(b_ms < 2000, f"with orderPerScope another label waited {b_ms:.0f} ms behind a 4 s "
+                         f"script")
+            else:
+                dt.check(b_ms > 2000, f"without orderPerScope the connection's order was not kept "
+                         f"({b_ms:.0f} ms)")
+            notes.append(f"{'on' if on else 'off'}: b {b_ms:.0f} ms")
+        finally:
+            close_all(X)
+            d.stop(force=True)
+    return "beside a 4 s script of another label, " + "; ".join(notes) + "; a label's order kept both ways"
+
+
 # ---- registry_unnested ----------------------------------------------------------------------
 
 def t_registry_unnested(c):
@@ -1007,13 +1051,14 @@ def t_registry_unnested(c):
 
 def t_waiter_caps(c):
     """BP9(a): without a cap, waiters for one program lock each keep a quick slot, and a client of
-    another project gets ``busy`` for a slot. With ``maxQuick`` 8 the cap is 2: two waiters hold two
-    slots, the other six are told ``busy{lock_queue_full}`` at once and keep none, and a client of
-    another project is served immediately."""
+    another project gets ``busy`` for a slot. With ``maxQuick`` 8 and ``lockWaitersMin`` 2 (the least cap
+    was 2 before PROTOCOL-3.md 8.18) the cap is 2: two waiters hold two slots, the other six are told
+    ``busy{lock_queue_full}`` at once and keep none, and a client of another project is served
+    immediately."""
     exe = prepare(c)
     g1 = c.copy_fixture("e3bWc1")
     g2 = c.copy_fixture("e3bWc2")
-    d = c.daemon("e3b-wc", maxQuick=8)
+    d = c.daemon("e3b-wc", maxQuick=8, engine={"lockWaitersMin": 2})
     H = V = None
     rs = []
     try:
@@ -1163,6 +1208,7 @@ TESTS = {
     "applied_flag": t_applied_flag,
     "stalled_socket": t_stalled_socket,
     "parallel_reads": t_parallel_reads,
+    "scope_order": t_scope_order,
     "registry_unnested": t_registry_unnested,
     "orphan_ttl": t_orphan_ttl,
     "waiter_caps": t_waiter_caps,

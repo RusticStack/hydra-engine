@@ -171,7 +171,6 @@ final class Scheduler {
 	private static final int ETA_DOMINATED_FACTOR = 5;
 
 	private final ReentrantLock lock = new ReentrantLock();
-	private final Condition changed = lock.newCondition();
 	private final Map<Lane, State> lanes = new EnumMap<>(Lane.class);
 
 	Scheduler(int quickSlots, int longSlots) {
@@ -179,9 +178,9 @@ final class Scheduler {
 	}
 
 	Scheduler(int quickSlots, int longSlots, int maintSlots) {
-		lanes.put(Lane.QUICK, new State(Lane.QUICK, Math.max(1, quickSlots)));
-		lanes.put(Lane.LONG, new State(Lane.LONG, Math.max(1, longSlots)));
-		lanes.put(Lane.MAINT, new State(Lane.MAINT, Math.max(1, maintSlots)));
+		lanes.put(Lane.QUICK, new State(Lane.QUICK, Math.max(1, quickSlots), lock.newCondition()));
+		lanes.put(Lane.LONG, new State(Lane.LONG, Math.max(1, longSlots), lock.newCondition()));
+		lanes.put(Lane.MAINT, new State(Lane.MAINT, Math.max(1, maintSlots), lock.newCondition()));
 		// what a protocol 3 hello reports (3.2); the other packages enable their own
 		Advertised.capability("laneHint", 1);
 		Advertised.capability("maintLane", 1);
@@ -192,6 +191,17 @@ final class Scheduler {
 	/** The slots of a lane, for {@code hello.limits}. */
 	int slots(Lane lane) {
 		return lanes.get(lane).slots;
+	}
+
+	/** How often the waiters of {@code lane} were woken (the self-test of the per-lane wake-up). */
+	long signals(Lane lane) {
+		lock.lock();
+		try {
+			return lanes.get(lane).signals;
+		}
+		finally {
+			lock.unlock();
+		}
 	}
 
 	/** The per-key running caps, for {@code hello.limits.maxRunningPerKey}. */
@@ -208,6 +218,13 @@ final class Scheduler {
 		final int slots;
 		/** Most requests of one key that run at once while another key waits under its own cap. */
 		final int cap;
+		/**
+		 * Signalled when this lane changes (a slot freed, a waiter left): only this lane's waiters
+		 * wake, a release in one lane does not wake the waiters of the others (PROTOCOL-3.md 8.18).
+		 */
+		final Condition changed;
+		/** How often this lane's waiters were signalled (the self-test of the per-lane wake-up). */
+		long signals;
 		int inUse;
 		/** Waiting tickets by key; iteration order is the round-robin order. */
 		final LinkedHashMap<String, ArrayDeque<Ticket>> queue = new LinkedHashMap<>();
@@ -222,9 +239,10 @@ final class Scheduler {
 		long queuedTotal;
 		long completions;
 
-		State(Lane lane, int slots) {
+		State(Lane lane, int slots, Condition changed) {
 			this.lane = lane;
 			this.slots = slots;
+			this.changed = changed;
 			int c = defaultCap(lane, slots);
 			c = Settings.integer("maxRunningPerKey", c);
 			c = Settings.integer("maxRunningPerKey." + lane.json(), c);
@@ -461,7 +479,7 @@ final class Scheduler {
 					throw ex;
 				}
 				try {
-					changed.awaitNanos(Math.min(left, TimeUnit.MILLISECONDS.toNanos(100)));
+					s.changed.awaitNanos(Math.min(left, TimeUnit.MILLISECONDS.toNanos(100)));
 				}
 				catch (InterruptedException e) {
 					Thread.currentThread().interrupt();
@@ -510,12 +528,12 @@ final class Scheduler {
 				}
 				if (m.isCancelled()) {
 					s.background.remove(t);
-					changed.signalAll();
+					signal(s);
 					throw new SessionException(SessionException.CANCELLED,
 						"cancelled while queued for a background slot");
 				}
 				try {
-					changed.awaitNanos(TimeUnit.MILLISECONDS.toNanos(100));
+					s.changed.awaitNanos(TimeUnit.MILLISECONDS.toNanos(100));
 				}
 				catch (InterruptedException e) {
 					Thread.currentThread().interrupt();
@@ -527,6 +545,12 @@ final class Scheduler {
 		finally {
 			lock.unlock();
 		}
+	}
+
+	/** Called with the lock held: wakes the waiters of {@code s}'s lane, and only those. */
+	private static void signal(State s) {
+		s.signals++;
+		s.changed.signalAll();
 	}
 
 	private void grant(State s, Ticket t) {
@@ -561,7 +585,7 @@ final class Scheduler {
 			State s = lanes.get(t.lane);
 			free(s, t, true);
 			handOver(s);
-			changed.signalAll();
+			signal(s);
 		}
 		finally {
 			lock.unlock();
@@ -629,7 +653,7 @@ final class Scheduler {
 			State s = lanes.get(t.lane);
 			free(s, t, false); // a yield records no hold time and no completion (E3a review)
 			handOver(s);
-			changed.signalAll();
+			signal(s);
 		}
 		finally {
 			lock.unlock();
