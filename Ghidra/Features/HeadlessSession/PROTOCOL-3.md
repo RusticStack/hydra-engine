@@ -1165,7 +1165,7 @@ them in the README. No new environment variable is added.
 | `watchdogStallMs` / `starveMs` | 15000 / 30000 | `health` thresholds | E5 |
 | `minXmxMb`, `maxViews`, `maxViewsPerClient`, `heapSoftPct`, `heapHardPct`, `nativeBudgetMb` | 512, 32, 4, 70, 85, 50% of RAM minus `-Xmx` | the governor (3.11) | E9 |
 | `scriptMaxS`, `yieldSlots`, `writeStallMs` | 600, off, 5000 | runaway-script wall budget, the optional slot yield (D39), the stalled-socket disconnect | E4, E3c, E3b |
-| `orderPerScope`, `lockWaitersMin`, `forcedGc` | off, 4, off | revision 8.14 (8.18): one ordered lane per caller label of a v3 connection; the least waiter cap of 3.5; the collections that only measure a first open | rust/p2-daemon-sched |
+| `orderPerScope`, `lockWaitersMin`, `forcedGc` | off, 4 (least 2), on | revision 8.14 (8.18): one ordered lane per caller label of a v3 connection; the least waiter cap of 3.5; the collections that only measure a first open | rust/p2-daemon-sched |
 | `viewDiskBudget`, `diskReserve`, `viewIdleEvictS` | 20 GB, `max(5 GB, 5%)`, 600 | disk admission (3.11) and the client-side eviction time | E9, Y5 |
 | `publishBatchMax`, `SYNC_LOCK_S`, `BASE_WAIT_S` | 1, 30, 30 | Hydralysis: changesets per generation, the per-view lock bound, the shared-base wait (4.10) | Y3, Y2 |
 | `generationKeep`, `viewIdleDeleteS`, `viewKeepWarmRecords` | 3, 86400, 1000 (*unmeasured*, set from Z2's replay run, D61) | Hydralysis, retention (OD8, decided): the doctor lists every generation except the newest 3, generation 0, the head, a revert target and any live view's base as removable, and `backend action=backups options.op=remove` deletes one only on `confirm:true`, never automatically (D28); a view idle for 24 h has its fork folder deleted, which loses nothing because the store holds its records (a disposable cache, D43); a view with at least `viewKeepWarmRecords` pending records is never closed by idle time (D61). All three are configurable | Y2, Y5 |
@@ -4254,39 +4254,46 @@ of the post-release performance and Java-to-Rust investigation.
 
 An amendment of the Rust plan's rank 10 (phase 0 findings S1, S2, S4, S6, S7, S16, S17, S18, S20), under the owner's
 delegation of engine defaults (2026-10-30: defaults and PROTOCOL-3 amendments allowed when documented here). It changes
-three defaults and adds three settings (3.7); every change that alters what a client sees is either behind a setting
-that is off by default or only ever admits more than before.
+two defaults and adds three settings (3.7); every change that alters what a client sees is either behind a setting
+that is off by default, or on by default where off is the change (`forcedGc`), or only ever admits more than before.
 
 * (a) **One ordered lane per caller label (S1, S2; BP15 extended).** With `orderPerScope` (default **off**) a protocol 3
   connection runs each labelled caller's (`client`/`harness`, 3.5 fair key) non-read requests on that label's own ordered
   lane: one label's requests still run in the order sent, other labels run beside them, unlabelled requests keep the
   connection's single lane, and a protocol 2 connection is unchanged. A label's lane takes a thread of the connection's
   parallel pool (`MAX_PARALLEL`, 32) and falls back to the connection's own lane when all are busy; a label never has two
-  requests running at once. It is off by default because a client that sends two labels' requests over one connection
+  requests running at once. A label's lane runs one request per turn and then hands its next turn back to the pools
+(parallel pool first), so a lane that fell back to the connection's own lane does not hold the connection's unlabelled
+ordered requests behind a label that keeps sending; the label lanes share the parallel pool with `parallel:true`
+requests, so with the setting on, a client that also sends many `parallel:true` requests can see BUSY "already runs 32
+parallel requests" sooner. The abandon step of 3.5 (`shutdownNow`) stops the label lanes and drops their queued
+requests as it drops the pools' queues. It is off by default because a client that sends two labels' requests over one connection
   today sees them in the order sent; a client that multiplexes independent agents turns it on. `parallel:true` and the
   read class of BP15 are unchanged (the launcher library's `labelled()` view sends `parallel:true` by default, which runs
   a label's requests with no order at all; `orderPerScope` is for a client that wants each label's order kept). Test: `dt_e3b` `scope_order` (both settings).
 * (b) **The waiter cap no longer shrinks with the host (S7).** The protocol 3 waiter cap of 3.5 / D39 was
-  `max(2, slots/4)` of the request's lane. It is now `max(lockWaitersMin, slots/4)` with `lockWaitersMin` 4, and at most
+  `max(2, slots/4)` of the request's lane. It is now `max(lockWaitersMin, slots/4)` with `lockWaitersMin` 4 (a value below 2 counts as 2), and at most
   half the lane (at least 2), which is what the cap protects (one lock's queue never takes the lane, BP9); the bound holds
   with `yieldSlots` on too (`dt_e3c` `yield_slots_stress` failed without it: not every wait yields its slot). For every lane size the new cap is at least the old one
   (2, 2, 4, 4, 8 waiters for 2, 4, 8, 12, 32 slots, against 2, 2, 2, 3, 8): a request that was admitted to a lock queue is
   still admitted, some that were refused `lock_queue_full` now wait. `dt_e3b` `waiter_caps` pins `lockWaitersMin` 2 (its
   premise is the cap of 2 on 8 quick slots). Self-test: "the waiter cap is max(4, slots/4) ...".
 * (c) **Import permits from the heap, not the CPUs (S18).** The default `maxImports` was `max(1, min(4, CPUs/4))`, one on
-  a 4-CPU host whatever its heap. It is now `max(1, min(4, maxHeap / 2 GB))` (a load holds about 0.7 GB of heap for a
-  25 MB PE, measured); `maxImports` still overrides it, and the governor's import admission (3.11) is unchanged.
-  Self-test: "the default maxImports is 4 ...".
+  a 4-CPU host whatever its heap. It is now `max(1, min(4, max(CPUs/4, maxHeap / 2 GB)))`, CPUs as the OS grants them
+  (`availableProcessors`): a host with few CPUs and a large heap runs more imports at once (a load holds about 0.7 GB of
+  heap for a 25 MB PE, measured), and no host gets fewer than before; `maxImports` still overrides it, and the governor's import admission (3.11) is unchanged.
+  Self-test: "the default maxImports is CPU/4 or heap/2 GB, the more ..." (16 CPUs and 4 GB still give 4).
 * (d) **Per-lane wake-ups (S4).** The scheduler kept one condition for all lanes and every release woke every waiter of
   every lane (`signalAll`). Each lane now has its own condition under the same scheduler lock; a release, a yield and a
   background cancel wake only their lane. Admission, hand-over order, the 100 ms cancel check and every reply are
   unchanged. Self-test: "a release wakes the waiters of its own lane only".
-* (e) **No forced collection to measure (S16).** The governor ran `System.gc()` twice for every first open of a program
-  on a heap under 1 GB (at the admission and after the open) to learn the program's cost. These measuring collections
-  are now opt-in (`forcedGc`, default **off**); without them the first open is not measured and the estimate of 3.11
-  (`max(8 MB, 6%` of the database`)`) stays in use. The collection made just before a refusal on a possibly stale heap
+* (e) **The forced collections that measure can be turned off (S16).** The governor runs `System.gc()` twice for every
+  first open of a program on a heap under 1 GB (at the admission and after the open) to learn the program's cost. They
+  stay on by default (`forcedGc`, default **on**): turning them off changes admission (the first open is then not
+  measured, `Budgets` learns nothing and the estimate of 3.11, `max(8 MB, 6%` of the database`)`, stays in use, which
+  can be larger or smaller than the real cost), so it waits for the JFR GC-cause and WaitStats evidence of rank 10. The collection made just before a refusal on a possibly stale heap
   figure, and the periodic one above the hard watermark, are kept: they can only turn a refusal into an admission.
-  Self-test: "the collections that only measure a first open are opt-in".
+  Self-test: "the collections that only measure a first open are on by default and can be turned off".
 * (f) **Not done in this revision.** `yieldSlots` stays off (SP9 has not run, D39); S6 (the quick per-key cap
   `slots/2`), S17 (synchronized view admission) and S20 (the global script compile monitor) are unchanged. No
   measurement under 4-core affinity was made (the rank-10 measurement column of the phase 0 report stays open).

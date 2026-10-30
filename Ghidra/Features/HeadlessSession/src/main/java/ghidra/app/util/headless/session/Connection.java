@@ -69,6 +69,8 @@ final class Connection {
 	 * scope that wait for the one drainer of that scope. A scope has an entry while its drainer runs.
 	 */
 	private final Map<String, ArrayDeque<Runnable>> scoped = new HashMap<>();
+	/** Set when the release of 3.5 reaches {@code shutdownNow}: the scoped lanes stop too. */
+	private volatile boolean abandoned;
 
 	Connection(Session session, InputStream in, OutputStream out, String transport,
 			boolean launcher, String token, Runnable onShutdown) {
@@ -132,6 +134,7 @@ final class Connection {
 					Msg.warn(this, client.label() + ": " + client.running.size() +
 						" request(s) still run " + Session.cleanupGraceMs() / 1000 +
 						" s after the connection closed; interrupting them");
+					abandoned = true;
 					worker.shutdownNow();
 					parallel.shutdownNow();
 					if (!awaitBoth(Session.abandonWaitMs())) {
@@ -303,12 +306,20 @@ final class Connection {
 		}
 	}
 
+	/**
+	 * Runs the next request of a scope, then hands the scope's next turn back to the pools (the
+	 * parallel pool first) instead of keeping this thread: a drainer that fell back to the
+	 * connection's own lane gives it up after each request, so the connection's unlabelled ordered
+	 * requests are not held behind a label that keeps sending. Only when both pools refuse (the
+	 * connection is closing) does it drain the rest here. Stops after {@code shutdownNow}
+	 * (abandoned), which drops the scope's queued requests the way it drops the pools' queues.
+	 */
 	private void drainScope(String scope) {
 		while (true) {
 			Runnable r;
 			synchronized (scoped) {
 				ArrayDeque<Runnable> q = scoped.get(scope);
-				r = q.poll();
+				r = abandoned ? null : q.poll();
 				if (r == null) {
 					scoped.remove(scope);
 					return;
@@ -320,6 +331,26 @@ final class Connection {
 			catch (RuntimeException e) {
 				// respond answers every failure itself; this keeps the scope's lane alive regardless
 				Msg.error(this, client.label() + ": a request of a scoped lane failed", e);
+			}
+			synchronized (scoped) {
+				if (abandoned || scoped.get(scope).isEmpty()) {
+					scoped.remove(scope);
+					return;
+				}
+			}
+			Runnable next = () -> drainScope(scope);
+			try {
+				parallel.execute(next);
+				return;
+			}
+			catch (RejectedExecutionException e) {
+				try {
+					worker.execute(next);
+					return;
+				}
+				catch (RejectedExecutionException closing) {
+					// both pools are shut down: drain the rest of the scope on this thread
+				}
 			}
 		}
 	}

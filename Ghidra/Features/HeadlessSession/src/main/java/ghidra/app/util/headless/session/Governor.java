@@ -254,12 +254,12 @@ final class Governor {
 
 	/**
 	 * True when the governor may force a collection to measure the first open of a program (setting
-	 * {@code forcedGc}, default off since PROTOCOL-3.md 8.18): two {@code System.gc()} per first
-	 * open stop every thread of the daemon. Without it the first open is not measured and the
-	 * estimate of 3.11 stays in use; the collection before a refusal is kept either way.
+	 * {@code forcedGc}, default on; PROTOCOL-3.md 8.18): two {@code System.gc()} per first open
+	 * stop every thread of the daemon. Turned off, the first open is not measured and the estimate
+	 * of 3.11 stays in use; the collection before a refusal is kept either way.
 	 */
 	static boolean measuringGcs() {
-		return Settings.bool("forcedGc", false);
+		return Settings.bool("forcedGc", true);
 	}
 
 	/**

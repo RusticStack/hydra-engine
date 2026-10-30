@@ -147,7 +147,7 @@ Lowest to highest: defaults, `<state>/config.json`, environment, command-line op
 | `keepWarm` | `GHIDRA_SESSION_KEEP_WARM` | `3600` | Seconds an unused read-only program or project stays open, so the next client gets it at once with warm decompilers; `0`: close at once. |
 | `maxQuick` | | CPU count | Concurrent quick requests. |
 | `maxLong` | | `max(8, CPUs)` | Concurrent long requests (analyze, import, script; `save`, `fork_project`, `refresh`, `reopen` and `promote_overlay` on a protocol 2 connection; protocol 3 runs those in the maint lane). Hydra Engine 12.3-hydra.3 and earlier: CPU / 4, at least 2. |
-| `maxImports` | | CPU / 4, between 1 and 4 | Concurrent imports, in any projects (see "Parallel imports"). Each running import also holds a long slot, so at most `min(maxImports, maxLong)` run at once. Each holds its whole program in memory until it is saved: budget about 0.7 GB of heap per 25 MB PE. |
+| `maxImports` | | CPU / 4 or max heap / 2 GB, the more, between 1 and 4 | Concurrent imports, in any projects (see "Parallel imports"). Each running import also holds a long slot, so at most `min(maxImports, maxLong)` run at once. Each holds its whole program in memory until it is saved: budget about 0.7 GB of heap per 25 MB PE. |
 | `scriptPath` | | `[]` | Extra GhidraScript directories. |
 | `log` | | `<state>/<instance>.log` | The daemon's log (Ghidra's log and stderr). |
 | `upgradeCache` | `GHIDRA_SESSION_UPGRADE_CACHE` (`off`, `false`, `0`: off) | `true` | Serve read-only opens of programs saved in an older database format from an upgraded copy (below). |
@@ -176,6 +176,9 @@ listed. The design text for keys that belong to packages not yet part of the rel
 | `orphanKeepS` | 0 (never) | When above 0: after this many seconds the unsaved edits of a shared program whose last writer died are written to `<state>/recovery/` and discarded. |
 | `starveMs` | 30000 | A lane with a request waiting longer than this reports `starving` in `status`. |
 | `writeStallMs` | 5000 | A client that does not read its socket for this long is disconnected. |
+| `orderPerScope` | false | Protocol 3: each `client`/`harness` label of a connection gets its own ordered lane, so one label's requests keep their order and other labels run beside them (PROTOCOL-3.md 8.18). |
+| `lockWaitersMin` | 4 | The least protocol 3 lock waiter cap, at least 2; the cap is `max(lockWaitersMin, slots/4)`, at most half the lane. |
+| `forcedGc` | true | The two `System.gc()` that measure a program's first open on a heap under 1 GB; false skips them and keeps the estimate. |
 | `scriptMaxS`, `scriptGraceS` | 600, 5 | Wall-clock budget of a script, and the seconds a script that ignores its cancel may run on before it is quarantined. |
 
 #### Stamping a local build
@@ -806,7 +809,7 @@ whether the answer is to retry, to fork, or to open read-only.
 
 ### Parallel imports
 
-Up to **`maxImports`** imports load and save at once (default: one per four CPUs, between 1 and
+Up to **`maxImports`** imports load and save at once (default: one per four CPUs or one per 2 GB of max heap, the more, between 1 and
 4), into different projects or into one; the others queue (below). Each runs in its own request
 thread: its own `ProgramLoader`, handed its own project, its own `MessageLog` and monitor, then
 its own save. The open and the analysis of `analyze: true` follow outside the gate, in the
@@ -1403,7 +1406,7 @@ The distribution also leaves out `__pycache__` folders and `.pyc` files that run
   this module"), and so is removing the cache files a killed daemon left behind (the session
   truncates each one first, in the background); put `tmpdir` on a fast NTFS or ext4 disk with
   room if you can.
-- At most `maxImports` imports run at once (default one per four CPUs, 1 to 4), each holding
+- At most `maxImports` imports run at once (default one per four CPUs or per 2 GB of heap, the more, 1 to 4), each holding
   its program in memory until it is saved; more queue, visibly. The library search path set
   that loaders use to find libraries is one per process, not per project (as it always was);
   see "Parallel imports".
