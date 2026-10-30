@@ -153,6 +153,7 @@ model {
 			} // end sources
 			binaries {
 				all{ b ->
+					b.cppCompiler.define "HYDRA_ALLOC_IDLE"	// ghidra_process.cc calls hydra_alloc_idle() between commands
 					if (b.toolChain in VisualCpp) {
 						b.linker.args "advapi32.lib"	// mimalloc (hydra_alloc.cc): large-page privilege lookup
 					}

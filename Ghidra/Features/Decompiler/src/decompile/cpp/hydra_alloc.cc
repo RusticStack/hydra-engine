@@ -56,3 +56,16 @@
 #include "../mimalloc/src/static.c"
 #include "mimalloc-new-delete.h"
 #endif
+
+// Called by the command loop (ghidra_process.cc, when HYDRA_ALLOC_IDLE is defined) after each command
+// has been answered, just before the process blocks for the next one. mimalloc purges freed pages
+// lazily, from inside later allocations, so without this an idle pooled decompile.exe keeps the
+// pages of its last function committed: in the multi-agent benchmark the decompile.exe processes
+// held about 100 MB at the memory peak instead of about 25 MB with the process heap.
+// mi_collect(true) returns them to the OS; it runs after the reply is flushed, off the latency path.
+extern "C" void hydra_alloc_idle(void)
+{
+#if defined(_WIN32) && !defined(HYDRA_NO_MIMALLOC)
+  mi_collect(true);
+#endif
+}
