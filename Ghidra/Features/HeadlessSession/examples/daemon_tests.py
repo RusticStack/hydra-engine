@@ -1803,6 +1803,33 @@ def tree_state(folder):
             for f in folder.rglob("*") if f.is_file()}
 
 
+def t_fork_timing(c: Ctx):
+    """With the engine setting forkTiming (PROTOCOL-3.md A67 a) a fork's reply carries stepsMs:
+    the time of each step, in the order the steps ran. The reply is otherwise the reply of a
+    fork without it (t_fork checks that the default reply has no stepsMs)."""
+    src = c.copy_fixture("projForkSrc")
+    forks = c.work / "forks-timing"
+    if forks.exists():
+        shutil.rmtree(forks)
+    d = c.daemon("fork-timing", keepWarm=0, engine={"forkTiming": True})
+    with d.connect("timer", "harness-a") as a:
+        pa = a.call("open_project", path=str(src))
+        r = a.call("fork_project", project=pa["id"], path=str(forks / "t1"), mode="full",
+                   open=False, wait=600000)
+        steps = r.get("stepsMs")
+        check(isinstance(steps, dict), f"no stepsMs with forkTiming: {sorted(r)}")
+        names = list(steps)
+        want = ["cost", "revision", "copy", "recheck", "force", "commit", "complete"]
+        order = [names.index(k) for k in want if k in names]
+        check(all(k in names for k in want) and order == sorted(order),
+              f"stepsMs steps {names}, want {want} in that order")
+        check(all(isinstance(v, (int, float)) and v >= 0 for v in steps.values()),
+              f"stepsMs values: {steps}")
+        a.call("close_project")
+    d.stop(force=True)
+    return "stepsMs " + ", ".join(f"{k} {v}" for k, v in steps.items())
+
+
 def t_fork(c: Ctx):
     """fork_project makes a working copy while the master's read-only view stays open and in
     use: the fork is writable by its maker, records its source and base revision, and leaves the
@@ -1837,6 +1864,7 @@ def t_fork(c: Ctx):
         check(side["baseRevision"] == r["baseRevision"] and side["source"]["gpr"] and
               side["by"]["name"] == "writer", f"sidecar: {side}")
         check(not list(forks.glob("*/.*.tmp")), "a temporary folder was left")
+        check("stepsMs" not in r, f"stepsMs in a reply without forkTiming: {sorted(r)}")
         notes.append(f"fork {r['bytes']} bytes/{r['files']} files by {r['method']} "
                      f"(cloned {r['cloned']}) in {r['copyMs']} ms")
         # the reader's view is unaffected and still answers
@@ -3063,7 +3091,8 @@ def _import_write_kill(c: Ctx, fracs, tag=""):
 TESTS = ["two_harnesses", "two_projects", "dll_import", "client_kill", "daemon_restart",
          "fairness", "cancel_all", "import_queue", "import_isolation", "parallel_imports",
          "import_kill", "import_write_kill", "import_readers", "import_speed", "caller_labels",
-         "idle_shutdown", "keep_warm", "stdio", "upgrade_cache", "holders", "fork", "revisions",
+         "idle_shutdown", "keep_warm", "stdio", "upgrade_cache", "holders", "fork", "fork_timing",
+         "revisions",
          "refresh_force", "overlays", "overlay_owned", "legacy_overlay", "multi_writer",
          "shared", "edit", "orphan_shutdown", "shared_stress"]
 

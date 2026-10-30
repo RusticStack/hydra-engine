@@ -937,12 +937,36 @@ final class UpgradeCache {
 	 */
 	static void copyProject(Path base, String name, Path dest, RequestMonitor m)
 			throws IOException, CancelledException {
+		copyProject(base, name, dest, m,
+			sourceFiles(base.resolve(name + ProjectLocator.getProjectExtension()), name), false);
+	}
+
+	/**
+	 * {@link #copyProject(Path, String, Path, RequestMonitor)} of the files of a listing already
+	 * made by {@link #sourceFiles} for this project (a fork walks its source once). A file of the
+	 * listing that is gone by the time it is copied is left out: the listing is older than the
+	 * copy, and the fork's walk after the copy sees the removal (a {@code conflict}), as it did
+	 * when the copy listed the source itself.
+	 */
+	static void copyProject(Path base, String name, Path dest, RequestMonitor m,
+			SortedMap<String, Path> files) throws IOException, CancelledException {
+		copyProject(base, name, dest, m, files, true);
+	}
+
+	private static void copyProject(Path base, String name, Path dest, RequestMonitor m,
+			SortedMap<String, Path> files, boolean skipGone)
+			throws IOException, CancelledException {
 		Files.createDirectories(dest);
-		Path gpr = base.resolve(name + ProjectLocator.getProjectExtension());
-		SortedMap<String, Path> files = sourceFiles(gpr, name);
 		long total = 0;
 		for (Path p : files.values()) {
-			total += Files.size(p);
+			try {
+				total += Files.size(p);
+			}
+			catch (NoSuchFileException e) {
+				if (!skipGone) {
+					throw e;
+				}
+			}
 		}
 		m.initialize(total);
 		m.setMessage("copying " + files.size() + " files");
@@ -950,8 +974,16 @@ final class UpgradeCache {
 			m.checkCancelled();
 			Path to = dest.resolve(base.relativize(src).toString());
 			Files.createDirectories(to.getParent());
-			Files.copy(src, to, StandardCopyOption.COPY_ATTRIBUTES);
-			m.incrementProgress(Files.size(src));
+			try {
+				Files.copy(src, to, StandardCopyOption.COPY_ATTRIBUTES);
+			}
+			catch (NoSuchFileException e) {
+				if (!skipGone || Files.exists(src, LinkOption.NOFOLLOW_LINKS)) {
+					throw e;
+				}
+				continue;
+			}
+			m.incrementProgress(Files.size(to));
 		}
 		// empty folders of the .rep matter to the file system's layout
 		Path rep = base.resolve(name + ProjectLocator.getProjectDirExtension());

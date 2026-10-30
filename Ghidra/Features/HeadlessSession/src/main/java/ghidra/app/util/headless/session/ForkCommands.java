@@ -134,6 +134,7 @@ final class ForkCommands {
 	 */
 	JsonElement forkProject(Client c, JsonObject req, RequestMonitor m) {
 		long t0 = System.nanoTime();
+		ProjectFork.Steps steps = new ProjectFork.Steps();
 		Spec spec = specOf(c, req); // before any work: a v3 request with a bad field fails here
 		String srcKey = Json.str(req, "project", c.activeProject);
 		if (srcKey == null) {
@@ -203,6 +204,7 @@ final class ForkCommands {
 		ForkSweeper.sweepFor(destDir, name);
 		// 8.13: recorded before anything is staged, so a daemon start sweeps it after a kill
 		ForkSweeper.registerParent(destDir);
+		steps.mark("sweep");
 		String id = ProjectFork.newId();
 		ForkSweeper.Claim claim;
 		long giveUpAt = System.nanoTime() + waitMs(req) * 1_000_000L;
@@ -216,6 +218,7 @@ final class ForkCommands {
 			}
 			if (a.kind() == ForkSweeper.Kind.CLAIMED) {
 				claim = a.claim();
+				steps.mark("admit");
 				break;
 			}
 			if (a.kind() == ForkSweeper.Kind.EXISTS) {
@@ -249,7 +252,7 @@ final class ForkCommands {
 		}
 		try {
 			return forkClaimed(c, req, m, t0, r, src, canonical, mode, writable, limit, destDir,
-				name, destGpr, id, rk);
+				name, destGpr, id, rk, steps);
 		}
 		finally {
 			claim.release();
@@ -331,12 +334,12 @@ final class ForkCommands {
 	private JsonElement forkClaimed(Client c, JsonObject req, RequestMonitor m, long t0,
 			ProjectResolver.Resolved r, ProjectEntry src, String canonical, String mode,
 			boolean writable, long limit, File destDir, String name, File destGpr, String id,
-			String rk) {
+			String rk, ProjectFork.Steps steps) {
 		java.util.concurrent.atomic.AtomicReference<ProjectFork.Staged> staging =
 			new java.util.concurrent.atomic.AtomicReference<>();
 		try {
 			return forkStaged(c, req, m, t0, r, src, canonical, mode, writable, limit, destDir,
-				name, destGpr, id, rk, staging);
+				name, destGpr, id, rk, staging, steps);
 		}
 		finally {
 			ProjectFork.Staged st = staging.get();
@@ -350,7 +353,8 @@ final class ForkCommands {
 	private JsonElement forkStaged(Client c, JsonObject req, RequestMonitor m, long t0,
 			ProjectResolver.Resolved r, ProjectEntry src, String canonical, String mode,
 			boolean writable, long limit, File destDir, String name, File destGpr, String id,
-			String rk, java.util.concurrent.atomic.AtomicReference<ProjectFork.Staged> staging) {
+			String rk, java.util.concurrent.atomic.AtomicReference<ProjectFork.Staged> staging,
+			ProjectFork.Steps steps) {
 		Spec spec = specOf(c, req);
 		ProjectLocator locator = new ProjectLocator(r.dir().getPath(), r.name());
 		Lock held = null;
@@ -384,6 +388,7 @@ final class ForkCommands {
 				}
 				held = lockProject(src, true, waitMs(req), "fork_project");
 				src.exclusiveClient = c;
+				steps.mark("lock");
 			}
 			else if (ProjectLocks.held(locator)) {
 				JsonObject d = Json.of("gpr", r.gpr().getPath(), "name", r.name());
@@ -395,8 +400,13 @@ final class ForkCommands {
 						"meanwhile. Retry once it has closed the project",
 					d);
 			}
+			// one walk of the source gives the cost, the revision and the copy; the check after
+			// the copy walks it again, so a file added or changed meanwhile is still seen
+			SortedMap<String, java.nio.file.Path> listing;
 			try {
-				cost = ProjectFork.cost(r, destDir);
+				listing = UpgradeCache.sourceFiles(r.gpr().toPath(), r.name());
+				cost = ProjectFork.cost(r, destDir, listing);
+				steps.mark("cost");
 			}
 			catch (IOException e) {
 				throw new SessionException(SessionException.FAILED, e.getMessage(), null, e);
@@ -427,10 +437,11 @@ final class ForkCommands {
 					costJson);
 			}
 			try {
-				Map<String, String> filesBefore = Revision.files(r);
-				baseRevision = Revision.of(r);
+				Map<String, String> filesBefore = Revision.files(r, listing);
+				baseRevision = Revision.of(r, listing);
+				steps.mark("revision");
 				m.setMessage("forking " + r.name() + " (" + cost.files() + " files)");
-				copied = ProjectFork.stage(r, destDir, name, id, rk, m);
+				copied = ProjectFork.stage(r, destDir, name, id, rk, m, listing, steps);
 				staging.set(copied);
 				if (spec.backup()) {
 					// a backup is compared with its source after the copy (hash: every file of both
@@ -448,6 +459,7 @@ final class ForkCommands {
 							Json.of("verify", Json.of("ok", false, "level", spec.verify(),
 								"mismatches", mm)));
 					}
+					steps.mark("verify");
 				}
 				String after = Revision.of(r);
 				if (!after.equals(baseRevision)) {
@@ -459,6 +471,7 @@ final class ForkCommands {
 							", now " + after + "); the copy was removed. Retry",
 						d);
 				}
+				steps.mark("recheck");
 			}
 			catch (CancelledException e) {
 				throw cancelled(m);
@@ -549,10 +562,11 @@ final class ForkCommands {
 			ProjectBackup.freeze(new File(destDir, ProjectBackup.FILE).toPath());
 			Seals.recordRegistry(fr, marker); // the third record of D66; best effort
 		}
+		steps.mark("seal");
 		Msg.info(s, c.label() + " forked " + r.gpr() + " (revision " + baseRevision + ") to " +
 			destGpr + ": " + cost.bytes() + " bytes, " + cost.files() + " files, " +
 			(cost.cloneCapable() ? "clone" : "copy") + " in " + copied.ms() + " ms, " + consumed +
-			" bytes of free space used, purpose " + spec.purpose());
+			" bytes of free space used, purpose " + spec.purpose() + "; steps: " + steps);
 		JsonObject info = null;
 		if (spec.open()) {
 			JsonObject open = Json.of("path", destGpr.getPath(), "writable", writable);
@@ -560,6 +574,7 @@ final class ForkCommands {
 				open.add("wait", req.get("wait"));
 			}
 			info = (JsonObject) s.projectCmds.openProject(c, open);
+			steps.mark("open");
 		}
 		JsonObject out = Json.of("project", info == null ? null : info.get("id"), "path",
 			destDir.getPath(), "gpr", destGpr.getPath(), "name", name, "writable",
@@ -580,6 +595,10 @@ final class ForkCommands {
 		}
 		if (info != null) {
 			out.add("info", info);
+		}
+		if (Settings.bool("forkTiming", false)) {
+			// diagnostics, off by default: the reply of every client stays as it was
+			out.add("stepsMs", steps.json());
 		}
 		return out;
 	}

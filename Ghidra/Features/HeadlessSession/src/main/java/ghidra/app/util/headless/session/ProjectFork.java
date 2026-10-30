@@ -346,9 +346,18 @@ final class ProjectFork {
 	}
 
 	static Cost cost(ProjectResolver.Resolved r, File destDir) throws IOException {
+		return cost(r, destDir, UpgradeCache.sourceFiles(r.gpr().toPath(), r.name()));
+	}
+
+	/**
+	 * {@link #cost(ProjectResolver.Resolved, File)} of a listing already made by
+	 * {@link UpgradeCache#sourceFiles}.
+	 */
+	static Cost cost(ProjectResolver.Resolved r, File destDir, SortedMap<String, Path> sourceFiles)
+			throws IOException {
 		long bytes = 0;
 		int files = 0;
-		for (Path p : UpgradeCache.sourceFiles(r.gpr().toPath(), r.name()).values()) {
+		for (Path p : sourceFiles.values()) {
 			try {
 				bytes += Files.size(p);
 				files++;
@@ -389,11 +398,12 @@ final class ProjectFork {
 	 * {@code unfinished} is set by {@link #publish} when the fork is committed (its {@code .gpr}
 	 * is in place) but the sidecar could not be rewritten {@code complete} (a handle holder on it,
 	 * SP6): the staging folder, whose intent proves the fork is this engine's, is then kept so
-	 * that the next sweep of the name finishes the sidecar.
+	 * that the next sweep of the name finishes the sidecar. {@code steps} is the request's
+	 * {@link Steps}, to which {@link #publish} adds its own.
 	 */
 	record Staged(File dir, String id, ForkIntent intent, String sourceName, long ms,
 			long freeBefore, long freeAfter,
-			java.util.concurrent.atomic.AtomicBoolean unfinished) {
+			java.util.concurrent.atomic.AtomicBoolean unfinished, Steps steps) {
 
 		boolean keep() {
 			return unfinished.get();
@@ -429,6 +439,18 @@ final class ProjectFork {
 	 */
 	static Staged stage(ProjectResolver.Resolved r, File destDir, String name, String id,
 			String rk, RequestMonitor m) throws IOException, CancelledException {
+		return stage(r, destDir, name, id, rk, m,
+			UpgradeCache.sourceFiles(r.gpr().toPath(), r.name()), new Steps());
+	}
+
+	/**
+	 * {@link #stage(ProjectResolver.Resolved, File, String, String, String, RequestMonitor)} of a
+	 * listing already made by {@link UpgradeCache#sourceFiles} (a fork walks its source once: the
+	 * same listing gives the cost, the revision and the copy), timed into {@code steps}.
+	 */
+	static Staged stage(ProjectResolver.Resolved r, File destDir, String name, String id,
+			String rk, RequestMonitor m, SortedMap<String, Path> sourceFiles, Steps steps)
+			throws IOException, CancelledException {
 		Files.createDirectories(destDir.toPath());
 		FileStore store = Files.getFileStore(destDir.toPath());
 		long freeBefore = store.getUsableSpace();
@@ -437,11 +459,12 @@ final class ProjectFork {
 		Files.createDirectory(tmp.toPath());
 		ForkIntent intent = ForkIntent.create(id, rk, name);
 		intent.write(tmp.toPath());
-		UpgradeCache.copyProject(r.dir().toPath(), r.name(), tmp.toPath(), m);
+		UpgradeCache.copyProject(r.dir().toPath(), r.name(), tmp.toPath(), m, sourceFiles);
 		m.checkCancelled();
 		long ms = (System.nanoTime() - t0) / 1_000_000;
+		steps.mark("copy");
 		return new Staged(tmp, id, intent, r.name(), ms, freeBefore, store.getUsableSpace(),
-			new java.util.concurrent.atomic.AtomicBoolean());
+			new java.util.concurrent.atomic.AtomicBoolean(), steps);
 	}
 
 	/** Removes a staging folder (and warns when it cannot). */
@@ -522,6 +545,7 @@ final class ProjectFork {
 		// E12: every staged byte and name is on the disk before anything is moved, so that the
 		// .gpr (the commit point) can never be durable while a file it names is not
 		forceTree(st.dir().toPath());
+		st.steps().mark("force");
 		// the intent says the .rep may be ours from here on, and which one it is
 		st.intent().withPhase(ForkIntent.MOVING, ForkSweeper.creationMs(stagedRep))
 				.write(st.dir().toPath());
@@ -558,11 +582,13 @@ final class ProjectFork {
 				}
 			}
 		}
+		st.steps().mark("commit");
 		sidecar.addProperty("state", completeState);
 		IOException last = null;
 		for (int i = 0; i < RETRIES; i++) {
 			try {
 				writeSidecar(sc, sidecar);
+				st.steps().mark("complete");
 				return;
 			}
 			catch (IOException e) {
@@ -587,6 +613,7 @@ final class ProjectFork {
 		// sweep of the name (the staging folder is kept for it: its intent proves the fork ours)
 		// or, once this process is gone, by any sweep
 		st.unfinished().set(true);
+		st.steps().mark("complete");
 		ghidra.util.Msg.warn(ProjectFork.class,
 			"fork_project: could not finish the sidecar of " + destGpr + ": " + last);
 	}
@@ -598,18 +625,23 @@ final class ProjectFork {
 	 * copied with its attributes) is made writable for the flush and read-only again: on Windows
 	 * {@code FlushFileBuffers} needs a handle with write access, and a read-only channel's
 	 * {@code force} does nothing there.
+	 * <p>
+	 * The files are forced side by side ({@link #forceFiles}: a flush waits on the device, not on
+	 * a CPU), and this returns only when every one of them has been forced: the rule of E12 is
+	 * unchanged, nothing is moved before the whole tree is on the disk.
 	 *
 	 * @throws IOException when a file cannot be forced (nothing has been moved yet: the caller
 	 *             discards the staging folder)
 	 */
 	static void forceTree(Path root) throws IOException {
+		List<Path> files = new ArrayList<>();
 		List<Path> dirs = new ArrayList<>();
 		Files.walkFileTree(root, new SimpleFileVisitor<>() {
 			@Override
 			public FileVisitResult visitFile(Path f, java.nio.file.attribute.BasicFileAttributes a)
 					throws IOException {
 				if (a.isRegularFile()) {
-					forceFile(f);
+					files.add(f);
 				}
 				return FileVisitResult.CONTINUE;
 			}
@@ -623,8 +655,104 @@ final class ProjectFork {
 				return FileVisitResult.CONTINUE;
 			}
 		});
+		forceFiles(files);
 		for (Path d : dirs) {
 			syncDirectory(d);
+		}
+	}
+
+	/**
+	 * The threads that force the files of a fork ({@link #forceFiles}): half the CPUs this process
+	 * is granted ({@link Runtime#availableProcessors} follows the affinity mask), at least one,
+	 * unless {@code -Dghidra.session.forkFlushThreads} says otherwise. One pool for the process,
+	 * of daemon threads made on first use.
+	 */
+	static final int FLUSH_THREADS = Math.max(1, Integer.getInteger(
+		"ghidra.session.forkFlushThreads", Runtime.getRuntime().availableProcessors() / 2));
+	static final java.util.concurrent.ExecutorService FLUSHERS =
+		java.util.concurrent.Executors.newFixedThreadPool(FLUSH_THREADS, task -> {
+			Thread t = new Thread(task, "fork-flush");
+			t.setDaemon(true);
+			return t;
+		});
+
+	/**
+	 * Forces {@code files} ({@link #forceFile}), up to {@link #FLUSH_THREADS} at a time; returns
+	 * when every one is forced, or throws the first failure once every flush has ended (so that
+	 * no flush still runs while the caller removes the folder). The calling thread forces files
+	 * too, and helpers of the pool take the next file of the same list; a helper that has not
+	 * started when the list is done does nothing. So a fork never waits behind the flushes of
+	 * another fork: at worst it forces its own files on its own thread, as before the pool.
+	 */
+	static void forceFiles(List<Path> files) throws IOException {
+		if (files.size() <= 1 || FLUSH_THREADS == 1) {
+			for (Path f : files) {
+				forceFile(f);
+			}
+			return;
+		}
+		java.util.concurrent.atomic.AtomicInteger next =
+			new java.util.concurrent.atomic.AtomicInteger();
+		java.util.Queue<IOException> failures =
+			new java.util.concurrent.ConcurrentLinkedQueue<>();
+		Runnable drain = () -> {
+			for (int i; (i = next.getAndIncrement()) < files.size();) {
+				try {
+					forceFile(files.get(i));
+				}
+				catch (IOException e) {
+					failures.add(e);
+				}
+				catch (RuntimeException e) {
+					failures.add(new IOException("could not force a file: " + e, e));
+				}
+			}
+		};
+		// each helper is claimed once: by the pool thread that runs it (1) or, if the list is done
+		// before it started, by this thread (2), which then does not wait for it
+		int helpers = Math.min(FLUSH_THREADS, files.size()) - 1;
+		List<java.util.concurrent.atomic.AtomicInteger> claims = new ArrayList<>(helpers);
+		java.util.concurrent.CountDownLatch ended = new java.util.concurrent.CountDownLatch(helpers);
+		for (int h = 0; h < helpers; h++) {
+			java.util.concurrent.atomic.AtomicInteger claim =
+				new java.util.concurrent.atomic.AtomicInteger();
+			claims.add(claim);
+			FLUSHERS.execute(() -> {
+				if (claim.compareAndSet(0, 1)) {
+					try {
+						drain.run();
+					}
+					finally {
+						ended.countDown();
+					}
+				}
+			});
+		}
+		drain.run();
+		for (java.util.concurrent.atomic.AtomicInteger claim : claims) {
+			if (claim.compareAndSet(0, 2)) {
+				ended.countDown();
+			}
+		}
+		boolean interrupted = false;
+		while (true) {
+			try {
+				ended.await(); // every started flush is still waited for; the interrupt is kept
+				break;
+			}
+			catch (InterruptedException e) {
+				interrupted = true;
+			}
+		}
+		if (interrupted) {
+			Thread.currentThread().interrupt();
+		}
+		IOException failed = failures.poll();
+		if (failed != null) {
+			for (IOException more; (more = failures.poll()) != null;) {
+				failed.addSuppressed(more);
+			}
+			throw failed;
 		}
 	}
 
@@ -713,6 +841,40 @@ final class ProjectFork {
 		if (tmp.exists()) {
 			ghidra.util.Msg.warn(ProjectFork.class,
 				"fork_project: could not remove the temporary folder " + tmp);
+		}
+	}
+
+	/**
+	 * The time each step of one {@code fork_project} took, in the order the steps ran: each
+	 * {@link #mark} closes the step that ran since the previous mark (or since the request began).
+	 * For the log line of the fork and, with the setting {@code forkTiming}, its reply.
+	 */
+	static final class Steps {
+		private long last = System.nanoTime();
+		private final Map<String, Long> micros = new LinkedHashMap<>();
+
+		synchronized void mark(String step) {
+			long now = System.nanoTime();
+			micros.merge(step, (now - last) / 1_000, Long::sum);
+			last = now;
+		}
+
+		/** Each step in milliseconds, to a tenth. */
+		synchronized JsonObject json() {
+			JsonObject o = new JsonObject();
+			micros.forEach((k, v) -> o.addProperty(k, Math.round(v / 100.0) / 10.0));
+			return o;
+		}
+
+		@Override
+		public synchronized String toString() {
+			StringBuilder b = new StringBuilder();
+			micros.forEach((k, v) -> b.append(b.length() == 0 ? "" : ", ")
+					.append(k)
+					.append(' ')
+					.append(Math.round(v / 100.0) / 10.0)
+					.append(" ms"));
+			return b.toString();
 		}
 	}
 }

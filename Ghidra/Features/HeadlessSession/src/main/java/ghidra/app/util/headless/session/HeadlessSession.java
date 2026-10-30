@@ -627,9 +627,219 @@ public class HeadlessSession implements GhidraLaunchable {
 			dbVersions();
 			health();
 			governor();
+			fork();
 			System.out.println(
 				bad == 0 ? "all self-test checks held" : bad + " self-test check(s) FAILED");
 			return bad == 0 ? 0 : 1;
+		}
+
+		/**
+		 * The per-call cost of fork_project: one walk of the source for the cost, the revision
+		 * and the copy; the files forced side by side; the admission per destination.
+		 */
+		private static void fork() {
+			int cpus = Runtime.getRuntime().availableProcessors();
+			check("the fork's flush pool is half the granted CPUs, at least one",
+				ProjectFork.FLUSH_THREADS == Math.max(1, Integer.getInteger(
+					"ghidra.session.forkFlushThreads", cpus / 2)));
+			java.nio.file.Path dir = null;
+			try {
+				dir = java.nio.file.Files.createTempDirectory("selftest-fork");
+				java.nio.file.Path rep = dir.resolve("P.rep");
+				java.nio.file.Files.createDirectories(rep.resolve("idata/00"));
+				java.nio.file.Files.writeString(dir.resolve("P.gpr"), "gpr");
+				java.nio.file.Files.writeString(rep.resolve("project.prp"), "prp");
+				java.nio.file.Files.writeString(rep.resolve("projectState"), "state");
+				java.util.List<java.nio.file.Path> ro = new ArrayList<>();
+				for (int i = 0; i < 12; i++) {
+					java.nio.file.Path f = rep.resolve("idata/00/~0000000" + i + ".db");
+					java.nio.file.Files.write(f, new byte[4096 + i]);
+					ro.add(f);
+				}
+				ProjectResolver.Resolved r = new ProjectResolver.Resolved(dir.toFile(), "P");
+				java.util.SortedMap<String, java.nio.file.Path> listing =
+					UpgradeCache.sourceFiles(dir.resolve("P.gpr"), "P");
+				check("the revision of one listing is the revision of a fresh walk",
+					Revision.of(r, listing).equals(Revision.of(r)) &&
+						Revision.files(r, listing).equals(Revision.files(r)));
+				ProjectFork.Cost once = ProjectFork.cost(r, dir.toFile(), listing);
+				ProjectFork.Cost walked = ProjectFork.cost(r, dir.toFile());
+				check("the cost of one listing is the cost of a fresh walk",
+					once.bytes() == walked.bytes() && once.files() == walked.files() &&
+						once.sameVolume() == walked.sameVolume());
+				if (WINDOWS_HOST) {
+					for (java.nio.file.Path f : ro) {
+						java.nio.file.Files.getFileAttributeView(f,
+							java.nio.file.attribute.DosFileAttributeView.class).setReadOnly(true);
+					}
+				}
+				ProjectFork.forceTree(dir);
+				boolean stillRo = !WINDOWS_HOST || ro.stream().allMatch(f -> {
+					try {
+						return java.nio.file.Files.readAttributes(f,
+							java.nio.file.attribute.DosFileAttributes.class).isReadOnly();
+					}
+					catch (java.io.IOException e) {
+						return false;
+					}
+				});
+				boolean pooled = ProjectFork.FLUSH_THREADS == 1 || Thread.getAllStackTraces()
+						.keySet()
+						.stream()
+						.anyMatch(t -> t.getName().equals("fork-flush"));
+				check("forceTree forces a tree on the flush pool and keeps read-only files read-only",
+					stillRo && pooled);
+				java.nio.file.Path gone = rep.resolve("idata/00/missing.db");
+				check("forceFiles reports a file it cannot force once every flush has ended",
+					throwsIo(() -> ProjectFork.forceFiles(List.of(ro.get(0), gone, ro.get(1)))));
+				// a fork's flushes do not queue behind another fork's: with every pool thread
+				// busy, forceFiles still ends (its own thread forces the files)
+				java.util.concurrent.CountDownLatch busy =
+					new java.util.concurrent.CountDownLatch(1);
+				for (int i = 0; i < ProjectFork.FLUSH_THREADS; i++) {
+					ProjectFork.FLUSHERS.execute(() -> {
+						try {
+							busy.await();
+						}
+						catch (InterruptedException e) {
+							Thread.currentThread().interrupt();
+						}
+					});
+				}
+				java.util.concurrent.FutureTask<Void> own =
+					new java.util.concurrent.FutureTask<>(() -> {
+						ProjectFork.forceFiles(ro);
+						return null;
+					});
+				Thread ownThread = new Thread(own, "selftest-force");
+				ownThread.setDaemon(true);
+				ownThread.start();
+				boolean ended;
+				try {
+					own.get(30, java.util.concurrent.TimeUnit.SECONDS);
+					ended = true;
+				}
+				catch (Exception e) {
+					ended = false;
+				}
+				finally {
+					busy.countDown();
+				}
+				check("forceFiles ends while every thread of the flush pool is busy", ended);
+				if (WINDOWS_HOST) {
+					for (java.nio.file.Path f : ro) {
+						java.nio.file.Files.getFileAttributeView(f,
+							java.nio.file.attribute.DosFileAttributeView.class).setReadOnly(false);
+					}
+				}
+				// a file gone between the fork's listing and its copy is left out of the copy, so
+				// the walk after the copy answers conflict (not a failed copy)
+				java.nio.file.Path late = rep.resolve("idata/00/late.db");
+				java.nio.file.Files.write(late, new byte[100]);
+				java.util.SortedMap<String, java.nio.file.Path> before =
+					UpgradeCache.sourceFiles(dir.resolve("P.gpr"), "P");
+				String revBefore = Revision.of(r, before);
+				java.nio.file.Files.delete(late);
+				java.nio.file.Path copyDir = dir.resolve("copy");
+				boolean copiedWithout;
+				try {
+					UpgradeCache.copyProject(dir, "P", copyDir, new RequestMonitor(null, null),
+						before);
+					copiedWithout = java.nio.file.Files.isRegularFile(
+						copyDir.resolve("P.rep/projectState")) &&
+						!java.nio.file.Files.exists(copyDir.resolve("P.rep/idata/00/late.db"));
+				}
+				catch (Exception e) {
+					copiedWithout = false;
+				}
+				check("a file gone before the copy is left out, and the revision shows it",
+					copiedWithout && !Revision.of(r).equals(revBefore));
+			}
+			catch (java.io.IOException e) {
+				check("the fork checks could set up their folder: " + e, false);
+			}
+			finally {
+				if (dir != null) {
+					utilities.util.FileUtilities.deleteDir(dir.toFile());
+				}
+			}
+			// the admission no longer takes one monitor of the process: a thread that holds the
+			// class's monitor (what "static synchronized" took) does not stop a fork's admission
+			java.io.File dest = new java.io.File(System.getProperty("java.io.tmpdir"),
+				"selftest-fork-admit-" + ProcessHandle.current().pid());
+			Object classMonitor = ForkSweeper.class;
+			java.util.concurrent.CountDownLatch holding = new java.util.concurrent.CountDownLatch(1);
+			java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
+			Thread holder = new Thread(() -> {
+				synchronized (classMonitor) {
+					holding.countDown();
+					try {
+						done.await(10, java.util.concurrent.TimeUnit.SECONDS);
+					}
+					catch (InterruptedException e) {
+						Thread.currentThread().interrupt();
+					}
+				}
+			}, "selftest-fork-holder");
+			holder.setDaemon(true);
+			holder.start();
+			ForkSweeper.Admission[] got = new ForkSweeper.Admission[2];
+			try {
+				holding.await(10, java.util.concurrent.TimeUnit.SECONDS);
+				java.util.concurrent.ExecutorService ex =
+					java.util.concurrent.Executors.newSingleThreadExecutor();
+				java.util.concurrent.Future<ForkSweeper.Admission> a = ex.submit(
+					() -> ForkSweeper.admit(dest, "A", "id-a", null));
+				boolean blocked = false;
+				try {
+					got[0] = a.get(5, java.util.concurrent.TimeUnit.SECONDS);
+				}
+				catch (java.util.concurrent.TimeoutException e) {
+					blocked = true;
+				}
+				done.countDown();
+				if (blocked) {
+					got[0] = a.get(10, java.util.concurrent.TimeUnit.SECONDS);
+				}
+				ex.shutdown();
+				check("a fork's admission does not wait for a monitor of the whole process",
+					!blocked && got[0].kind() == ForkSweeper.Kind.CLAIMED);
+				got[1] = ForkSweeper.admit(dest, "A", "id-b", null);
+				check("a second request for the same destination is still told it is in progress",
+					got[1].kind() == ForkSweeper.Kind.IN_PROGRESS && got[1].claim() == null);
+			}
+			catch (Exception e) {
+				check("the admission checks ran: " + e, false);
+			}
+			finally {
+				done.countDown();
+				if (got[0] != null && got[0].claim() != null) {
+					got[0].claim().release();
+				}
+			}
+			ProjectFork.Steps st = new ProjectFork.Steps();
+			st.mark("cost");
+			st.mark("copy");
+			st.mark("cost");
+			check("the fork's steps keep their order and add up a repeated step",
+				List.of("cost", "copy").equals(new ArrayList<>(st.json().keySet())));
+		}
+
+		private static final boolean WINDOWS_HOST =
+			System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).startsWith("windows");
+
+		private interface IoRun {
+			void run() throws java.io.IOException;
+		}
+
+		private static boolean throwsIo(IoRun r) {
+			try {
+				r.run();
+				return false;
+			}
+			catch (java.io.IOException e) {
+				return true;
+			}
 		}
 
 		/** E5: the state rules of 3.4, the contributor list, and testHooks as a setting. */
