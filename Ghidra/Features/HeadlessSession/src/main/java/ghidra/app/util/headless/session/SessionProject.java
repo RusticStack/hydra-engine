@@ -20,6 +20,7 @@ import java.io.IOException;
 import ghidra.framework.data.DefaultProjectData;
 import ghidra.framework.main.AppInfo;
 import ghidra.framework.model.ProjectLocator;
+import ghidra.framework.model.ToolChest;
 import ghidra.framework.project.DefaultProject;
 import ghidra.framework.project.DefaultProjectManager;
 import ghidra.framework.store.LockException;
@@ -70,9 +71,25 @@ final class SessionProject extends DefaultProject {
 
 	/**
 	 * Like the headless analyzer's project manager: never touches the user's GUI preferences
-	 * (last opened project, recent projects).
+	 * (last opened project, recent projects), and builds the user's tool chest only when something
+	 * asks for it (see {@link LazyToolChest}): a headless session has no tools, so the parse of
+	 * every {@code .tool} file the base constructor did on each project open is not done at all.
+	 * This also defers the base class's seeding of the default tools into an empty user tools
+	 * folder: a session no longer writes those {@code .tool} files on open (which parallel
+	 * sessions used to race on); the folder is seeded on the chest's first use instead, and the
+	 * GUI's project manager still seeds it as before.
 	 */
-	private static final class Manager extends DefaultProjectManager {
+	static final class Manager extends DefaultProjectManager {
+		@Override
+		protected ToolChest createUserToolChest() {
+			return new LazyToolChest(this::loadUserToolChest);
+		}
+
+		/** The tool chest exactly as {@link DefaultProjectManager} builds it. */
+		private ToolChest loadUserToolChest() {
+			return super.createUserToolChest();
+		}
+
 		@Override
 		public void setLastOpenedProject(ProjectLocator projectLocator) {
 			// a session must not change what the window reopens
