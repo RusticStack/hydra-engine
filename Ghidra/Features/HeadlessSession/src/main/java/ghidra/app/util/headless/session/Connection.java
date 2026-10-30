@@ -79,18 +79,68 @@ final class Connection {
 		this.onShutdown = onShutdown;
 		this.client = session.connect(transport, launcher, this::send);
 		this.client.authenticated = token == null;
-		this.worker = Executors.newSingleThreadExecutor(r -> {
-			Thread t = new Thread(r, "session-" + client.label().replace(' ', '-'));
-			t.setDaemon(true);
-			return t;
-		});
+		// The ordered lane: at most one thread, FIFO, so one client's requests still run in the
+		// order sent. Its thread ends after laneIdleMs without work (it used to live as long as
+		// the connection), so an idle client holds no lane thread (Goal 2, async I/O).
+		ThreadPoolExecutor lane = new ThreadPoolExecutor(1, 1, laneIdleMs(), TimeUnit.MILLISECONDS,
+			new LinkedBlockingQueue<>(), r -> {
+				Thread t = new Thread(r, "session-" + client.label().replace(' ', '-'));
+				t.setDaemon(true);
+				return t;
+			});
+		lane.allowCoreThreadTimeOut(true);
+		this.worker = lane;
 		this.parallel = new ThreadPoolExecutor(0, MAX_PARALLEL, 30, TimeUnit.SECONDS,
 			new SynchronousQueue<>(), r -> {
 				Thread t = new Thread(r, "session-" + client.label().replace(' ', '-') + "-p");
 				t.setDaemon(true);
 				return t;
 			});
-		this.outbound = new Outbound();
+		this.outbound = new Outbound(virtualIo() && "socket".equals(transport));
+	}
+
+	/**
+	 * Whether a socket connection's reader and writer run on virtual threads ({@code -set
+	 * connectionThreads=virtual}, the default; {@code platform} restores one platform thread
+	 * each). They only wait on the socket and on monitors (which no longer pin a carrier since
+	 * JDK 24, JEP 491), so an idle client costs no platform thread. Requests never run on them
+	 * except the inline ones ({@code ping}, {@code status}, {@code cancel}, {@code health}) and
+	 * the authenticating {@code hello}, as before. The release of a client that left (closing its
+	 * programs and projects, Ghidra DB code) runs on a platform thread of its own, not on the
+	 * virtual reader (see {@link #run()}).
+	 */
+	static boolean virtualIo() {
+		String v = Settings.string("connectionThreads", "virtual").trim();
+		return switch (v) {
+			case "virtual" -> true;
+			case "platform" -> false;
+			default -> throw new IllegalArgumentException(
+				"-set connectionThreads=" + v + ": not virtual or platform");
+		};
+	}
+
+	/**
+	 * Start-up validation of {@code connectionThreads} and {@code laneIdleMs}: a bad value is a
+	 * usage error at launch, not a failure of every later socket connection.
+	 *
+	 * @throws IllegalArgumentException with a usage message
+	 */
+	static void validateSettings() {
+		virtualIo();
+		laneIdleMs();
+	}
+
+	/** How long an idle ordered lane keeps its thread ({@code -set laneIdleMs}, default 10 s). */
+	static long laneIdleMs() {
+		return Math.max(1, Settings.integer("laneIdleMs", 10_000));
+	}
+
+	/** A thread for a connection's socket I/O: virtual unless {@link #virtualIo()} says not. */
+	static Thread ioThread(String name, Runnable body) {
+		Thread t = virtualIo() ? Thread.ofVirtual().name(name).unstarted(body)
+				: Thread.ofPlatform().name(name).daemon(true).unstarted(body);
+		t.start();
+		return t;
 	}
 
 	Client client() {
@@ -99,6 +149,9 @@ final class Connection {
 
 	/** Reads until end of input, then releases what the client held. */
 	void run() {
+		synchronized (readerGuard) {
+			reader = Thread.currentThread();
+		}
 		try {
 			byte[] line;
 			while (open && (line = readLine()) != null) {
@@ -111,42 +164,74 @@ final class Connection {
 			}
 		}
 		finally {
-			open = false;
-			client.leaving = true;
-			// cancel first: the worker must not finish a long request for a client that is gone;
-			// a request parked in a lock wait is interrupted by its cancel (Waits, 3.5)
-			client.running.values().forEach(RequestMonitor::cancel);
-			worker.shutdown();
-			parallel.shutdown();
-			// bounded release (3.5): cancel, wait cleanupGraceS, shutdownNow (interrupts lock waits
-			// and I/O, not busy loops), wait abandonWaitS, then disconnect regardless
-			try {
-				if (exiting) {
-					// the process is going down on this connection's own thread (shutdown): that
-					// thread must not be interrupted, it is the one closing the session. Only
-					// the process-ending shutdown request gets here and its own thread then
-					// ends the process, so the long bound is never reached in practice.
-					awaitBoth(3_600_000L);
-				}
-				else if (!awaitBoth(Session.cleanupGraceMs())) {
-					Msg.warn(this, client.label() + ": " + client.running.size() +
-						" request(s) still run " + Session.cleanupGraceMs() / 1000 +
-						" s after the connection closed; interrupting them");
-					worker.shutdownNow();
-					parallel.shutdownNow();
-					if (!awaitBoth(Session.abandonWaitMs())) {
-						Msg.warn(this, client.label() + ": " + client.running.size() +
-							" request(s) ignore cancel and interrupt; releasing the client anyway " +
-							"(the program locks they hold are flagged abandoned)");
+			synchronized (readerGuard) {
+				reader = null; // close() no longer interrupts this thread
+				Thread.interrupted(); // an interrupt from close() only meant: stop reading
+			}
+			if (Thread.currentThread().isVirtual()) {
+				// the release closes programs and projects (Ghidra DB, lock files) and waits up to
+				// cleanupGraceS + abandonWaitS: it runs on a platform thread, so the virtual
+				// reader only ever does socket I/O and many clients leaving at once do not hold
+				// the carriers of the virtual scheduler
+				Thread r = Thread.ofPlatform().name("session-" +
+					client.label().replace(' ', '-') + "-release").daemon(true).start(this::release);
+				boolean interrupted = false;
+				while (true) {
+					try {
+						r.join();
+						break;
+					}
+					catch (InterruptedException e) {
+						interrupted = true;
 					}
 				}
+				if (interrupted) {
+					Thread.currentThread().interrupt();
+				}
 			}
-			catch (InterruptedException e) {
-				Thread.currentThread().interrupt();
+			else {
+				release();
 			}
-			session.disconnect(client);
-			outbound.finish();
 		}
+	}
+
+	/** Releases what the client held (3.5): cancel, bounded waits, disconnect, drain the writer. */
+	private void release() {
+		open = false;
+		client.leaving = true;
+		// cancel first: the worker must not finish a long request for a client that is gone;
+		// a request parked in a lock wait is interrupted by its cancel (Waits, 3.5)
+		client.running.values().forEach(RequestMonitor::cancel);
+		worker.shutdown();
+		parallel.shutdown();
+		// bounded release (3.5): cancel, wait cleanupGraceS, shutdownNow (interrupts lock waits
+		// and I/O, not busy loops), wait abandonWaitS, then disconnect regardless
+		try {
+			if (exiting) {
+				// the process is going down on this connection's own thread (shutdown): that
+				// thread must not be interrupted, it is the one closing the session. Only
+				// the process-ending shutdown request gets here and its own thread then
+				// ends the process, so the long bound is never reached in practice.
+				awaitBoth(3_600_000L);
+			}
+			else if (!awaitBoth(Session.cleanupGraceMs())) {
+				Msg.warn(this, client.label() + ": " + client.running.size() +
+					" request(s) still run " + Session.cleanupGraceMs() / 1000 +
+					" s after the connection closed; interrupting them");
+				worker.shutdownNow();
+				parallel.shutdownNow();
+				if (!awaitBoth(Session.abandonWaitMs())) {
+					Msg.warn(this, client.label() + ": " + client.running.size() +
+						" request(s) ignore cancel and interrupt; releasing the client anyway " +
+						"(the program locks they hold are flagged abandoned)");
+				}
+			}
+		}
+		catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+		}
+		session.disconnect(client);
+		outbound.finish();
 	}
 
 	private boolean awaitBoth(long ms) throws InterruptedException {
@@ -567,9 +652,12 @@ final class Connection {
 
 		private final java.util.concurrent.ScheduledFuture<?> watch;
 
-		Outbound() {
-			thread = new Thread(this, "session-" + client.label().replace(' ', '-') + "-out");
-			thread.setDaemon(true);
+		Outbound(boolean virtual) {
+			String name = "session-" + client.label().replace(' ', '-') + "-out";
+			// a virtual writer parks in a socket write instead of holding a platform thread; the
+			// stdio writer (a file write would hold the carrier anyway) stays a platform thread
+			thread = virtual ? Thread.ofVirtual().name(name).unstarted(this)
+					: Thread.ofPlatform().name(name).daemon(true).unstarted(this);
 			thread.start();
 			watch = STALL_WATCH.scheduleWithFixedDelay(() -> {
 				if (writerStalled()) {
@@ -631,6 +719,13 @@ final class Connection {
 			}
 		}
 
+		/** Wakes a virtual writer parked in a socket write (the connection is closing). */
+		void interruptIfVirtual() {
+			if (thread.isVirtual()) {
+				thread.interrupt();
+			}
+		}
+
 		/** After the last reply: lets the writer drain (bounded), then stops it. */
 		void finish() {
 			watch.cancel(false);
@@ -656,6 +751,14 @@ final class Connection {
 							wait();
 						}
 						catch (InterruptedException e) {
+							// close() interrupted this virtual writer: it ends for good, so nothing
+							// queued later could be written. Stop taking replies and empty the queue,
+							// or finish() would wait writeStallMs for a queue nobody drains.
+							open = false;
+							stopping = true;
+							queue.clear();
+							queued = 0;
+							notifyAll();
 							return;
 						}
 					}
@@ -693,7 +796,20 @@ final class Connection {
 		catch (IOException e) {
 			// already closed
 		}
+		// A virtual reader or writer parked in a socket operation is woken by an interrupt at
+		// once (the socket is closed under it); a platform one ignores it, as before. Without it
+		// a closed connection could wait for the poller to notice before it is released.
+		synchronized (readerGuard) {
+			if (reader != null && reader.isVirtual()) {
+				reader.interrupt();
+			}
+		}
+		outbound.interruptIfVirtual();
 	}
+
+	private final Object readerGuard = new Object();
+	/** The thread in {@link #run()}'s read loop, null once it left it. */
+	private Thread reader;
 
 	private final ByteArrayOutputStream buf = new ByteArrayOutputStream();
 

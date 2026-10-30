@@ -117,6 +117,7 @@ public class HeadlessSession implements GhidraLaunchable {
 			requireExpect = Settings.bool("requireExpect", false); // a bad value is a usage error
 			Scheduler.validateSettings(); // so is a bad lane setting
 			Health.validateSettings(); // and testHooks as a setting: it is a launch property only
+			Connection.validateSettings(); // and connectionThreads / laneIdleMs (Goal 2)
 			Budgets.validate(); // E9: the budgets, and -Xmx against minXmxMb
 		}
 		catch (IllegalArgumentException e) {
@@ -336,9 +337,20 @@ public class HeadlessSession implements GhidraLaunchable {
 					}
 					throw t;
 				}
-				Thread ct = new Thread(() -> serveSocket(s, token), "session-socket");
-				ct.setDaemon(true);
-				ct.start();
+				// the reader of one client: a virtual thread by default, so a client that waits
+				// between requests holds no platform thread (Connection.virtualIo)
+				try {
+					Connection.ioThread("session-socket", () -> serveSocket(s, token));
+				}
+				catch (Throwable t) {
+					try {
+						s.close(); // a client that cannot be served is not left without a reply
+					}
+					catch (IOException ignored) {
+						// the connection is dropped either way
+					}
+					throw t;
+				}
 			}
 		});
 	}
@@ -628,6 +640,8 @@ public class HeadlessSession implements GhidraLaunchable {
 			health();
 			governor();
 			fork();
+			journal();
+			connectionSettings();
 			System.out.println(
 				bad == 0 ? "all self-test checks held" : bad + " self-test check(s) FAILED");
 			return bad == 0 ? 0 : 1;
@@ -840,6 +854,158 @@ public class HeadlessSession implements GhidraLaunchable {
 			catch (java.io.IOException e) {
 				return true;
 			}
+		}
+
+		/**
+		 * S21: the indexed journal answers like a scan of every entry (byRk, since with and without
+		 * a client, newestFirst, lastAt), also after the oldest entries were dropped; and its
+		 * lookups do not scan: 20,000 misses of lastAt, since and byRk on a full journal of
+		 * {@link Journal#CAP} entries take well under a second (a scan of 200,000 entries each
+		 * would take minutes).
+		 */
+		private static void journal() {
+			java.util.Random rnd = new java.util.Random(21);
+			Client[] cs = { new Client(1, "selftest", false, null),
+				new Client(2, "selftest", false, null), new Client(3, "selftest", false, null) };
+			String[] ops = { "rename", "label", "comment", "signature", "data_type", "revert" };
+			String[] types = { "eol", "pre", "plate" };
+			Journal j = new Journal(300);
+			List<JsonObject> ref = new ArrayList<>(); // what the journal must hold, oldest first
+			boolean same = true;
+			String firstBad = "";
+			for (int i = 0; i < 2000 && same; i++) {
+				Client c = cs[rnd.nextInt(cs.length)];
+				JsonObject ch = new JsonObject();
+				String op = ops[rnd.nextInt(ops.length)];
+				ch.addProperty("op", op);
+				if (rnd.nextInt(10) > 0) {
+					ch.addProperty("address", "0x" + Integer.toHexString(0x1000 + rnd.nextInt(40)));
+				}
+				if (op.equals("comment") && rnd.nextBoolean()) {
+					ch.addProperty("type", types[rnd.nextInt(types.length)]);
+				}
+				if (rnd.nextInt(3) == 0) {
+					ch.addProperty("rk", "rk" + rnd.nextInt(60));
+				}
+				long sq = j.add(c, "edit", ch);
+				JsonObject r = ch.deepCopy();
+				r.addProperty("seq", sq);
+				r.addProperty("client", c.id);
+				ref.add(r);
+				if (ref.size() > 300) {
+					ref.remove(0);
+				}
+				if (i % 7 != 0) {
+					continue;
+				}
+				// every lookup, against a scan of ref
+				String rk = "rk" + rnd.nextInt(60);
+				List<Long> want = new ArrayList<>();
+				for (JsonObject e : ref) {
+					if (e.has("rk") && e.get("rk").getAsString().equals(rk)) {
+						want.add(e.get("seq").getAsLong());
+					}
+				}
+				same &= want.equals(seqs(j.byRk(rk)));
+				long after = sq - rnd.nextInt(400);
+				Integer who = rnd.nextBoolean() ? null : cs[rnd.nextInt(cs.length)].id;
+				int limit = rnd.nextInt(50);
+				want = new ArrayList<>();
+				for (JsonObject e : ref) {
+					if (e.get("seq").getAsLong() > after &&
+						(who == null || e.get("client").getAsInt() == who) && want.size() < limit) {
+						want.add(e.get("seq").getAsLong());
+					}
+				}
+				List<Long> got = new ArrayList<>();
+				for (com.google.gson.JsonElement e : j.since(after, who, limit)) {
+					got.add(e.getAsJsonObject().get("seq").getAsLong());
+				}
+				same &= want.equals(got);
+				want = new ArrayList<>();
+				for (int k = ref.size() - 1; k >= 0 && ref.get(k).get("seq").getAsLong() > after; k--) {
+					want.add(ref.get(k).get("seq").getAsLong());
+				}
+				same &= want.equals(seqs(j.newestFirst(after)));
+				String addr = "0x" + Integer.toHexString(0x1000 + rnd.nextInt(42));
+				for (String f : List.of("name", "comment:eol", "comment:pre", "signature",
+					"data_type", "revert")) {
+					Long w = null;
+					for (JsonObject e : ref) {
+						if (e.has("address") && e.get("address").getAsString().equals(addr) &&
+							Journal.fieldOf(e).equals(f)) {
+							w = e.get("seq").getAsLong();
+						}
+					}
+					JsonObject g = j.lastAt(addr, f);
+					same &= java.util.Objects.equals(w, g == null ? null : g.get("seq").getAsLong());
+				}
+				if (!same) {
+					firstBad = " (first difference after seq " + sq + ")";
+				}
+			}
+			check("journal: indexed lookups answer like a scan, across drops" + firstBad,
+				same && j.dropped() == 1700 && j.seq() == 2000);
+			check("journal: since(after >= seq) and limit 0 are empty",
+				j.since(2000, null, 10).size() == 0 && j.since(Long.MAX_VALUE, 1, 10).size() == 0 &&
+					j.since(0, null, 0).size() == 0 && j.since(Long.MIN_VALUE, null, 1).size() == 1);
+
+			Journal big = new Journal();
+			for (int i = 0; i < Journal.CAP + 1000; i++) {
+				JsonObject ch = new JsonObject();
+				ch.addProperty("op", "rename");
+				ch.addProperty("address", "0x" + Integer.toHexString(i));
+				ch.addProperty("rk", "k" + (i % 5000));
+				big.add(cs[i % 2], "edit", ch);
+			}
+			long t0 = System.nanoTime();
+			int found = 0;
+			for (int i = 0; i < 20_000; i++) {
+				found += big.lastAt("0xmissing" + i, "name") == null ? 0 : 1;
+				found += big.since(big.seq() - 1, 3, 10).size(); // client 3 has no entries
+				found += big.byRk("absent" + i).size();
+				found += big.since(big.seq() - 2, cs[0].id, 10).size() > 1 ? 1 : 0;
+			}
+			long ms = (System.nanoTime() - t0) / 1_000_000;
+			check("journal: 80,000 lookups on " + Journal.CAP + " entries take " + ms +
+				" ms (indexed, under 1000 ms)", ms < 1000 && found == 0 &&
+					big.lastAt("0x" + Integer.toHexString(Journal.CAP + 999), "name") != null &&
+					big.lastAt("0x0", "name") == null && big.dropped() == 1000);
+		}
+
+		private static List<Long> seqs(List<JsonObject> l) {
+			List<Long> out = new ArrayList<>();
+			for (JsonObject e : l) {
+				out.add(e.get("seq").getAsLong());
+			}
+			return out;
+		}
+
+		/** Goal 2: the connection thread settings and their defaults. */
+		private static void connectionSettings() {
+			check("connectionThreads defaults to virtual threads; laneIdleMs to 10 s",
+				Connection.virtualIo() && Connection.laneIdleMs() == 10_000);
+			Settings.set("connectionThreads", "bogus");
+			check("connectionThreads refuses a value that is not virtual or platform",
+				throwsIllegal(Connection::virtualIo));
+			check("a bad connectionThreads fails start-up validation (not every later client)",
+				throwsIllegal(Connection::validateSettings));
+			Settings.clear();
+			Settings.set("laneIdleMs", "soon");
+			check("a laneIdleMs that is not an integer fails start-up validation",
+				throwsIllegal(Connection::validateSettings));
+			Settings.clear();
+			Settings.set("connectionThreads", "platform");
+			boolean platform = !Connection.virtualIo();
+			Thread t = Connection.ioThread("selftest-io", () -> {
+			});
+			boolean wasPlatform = !t.isVirtual();
+			Settings.set("connectionThreads", "virtual");
+			Thread v = Connection.ioThread("selftest-io", () -> {
+			});
+			check("connectionThreads=platform gives a platform thread, virtual a virtual one",
+				platform && wasPlatform && v.isVirtual());
+			Settings.clear(); // runs after governor(), which also leaves the settings empty
 		}
 
 		/** E5: the state rules of 3.4, the contributor list, and testHooks as a setting. */
