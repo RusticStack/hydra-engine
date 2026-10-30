@@ -2965,6 +2965,12 @@
    "lane_starvation",
    "script_shared_visibility"
   ],
+  "Ghidra/Features/HeadlessSession/examples/dt_cpu.py": [
+   "cpu_granted_limits",
+   "cpu_profile_identical",
+   "cpu_profile_override",
+   "cpu_selftest"
+  ],
   "Ghidra/Features/HeadlessSession/examples/dt_e12.py": [
    "e12_commit_data_failure",
    "e12_control_commit_data_failure",

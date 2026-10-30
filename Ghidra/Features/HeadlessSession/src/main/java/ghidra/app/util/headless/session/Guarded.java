@@ -187,6 +187,9 @@ final class Guarded {
 	 * thread then ends too. An interrupt ends it as well.
 	 */
 	static Thread start(String name, Body body) {
+		// not placed on a hybrid CPU: these loops mostly sleep or block (accept), so placement
+		// gains nothing, and the governor is the memory-safety sampler that must not share a
+		// small E-core set with saturating analysis threads
 		Thread t = new Thread(() -> loop(name, body), name);
 		t.setDaemon(true);
 		STATES.computeIfAbsent(name, k -> new State()).thread = t;

@@ -21,6 +21,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import ghidra.util.SystemUtilities;
+import ghidra.util.cpu.HydraCpu;
 
 /**
  * Class for managing and sharing thread pools. The GThreadPool is simplified version of the
@@ -208,6 +209,16 @@ public class GThreadPool {
 // Inner Classes
 //==================================================================================================
 
+	/**
+	 * The pool's threads are background work (analysis, parallel decompiles): on a hybrid CPU the
+	 * active tuning profile may place them on efficiency cores, within its budget
+	 * ({@link HydraCpu#place(HydraCpu.Role)}); elsewhere this is the plain named daemon factory.
+	 */
+	private static ThreadFactory backgroundThreads(String name) {
+		ThreadFactory f = new NamedDaemonThreadFactory(name);
+		return r -> f.newThread(HydraCpu.placed(HydraCpu.Role.BACKGROUND, r));
+	}
+
 	private class GThreadPoolExecutor extends ThreadPoolExecutor {
 		private volatile int maxThreadCount = SystemUtilities.getDefaultThreadPoolSize();
 		private volatile int minThreadCount = 0;
@@ -215,7 +226,7 @@ public class GThreadPool {
 
 		public GThreadPoolExecutor() {
 			super(0, Integer.MAX_VALUE, DEFAULT_KEEP_ALIVE, TimeUnit.SECONDS,
-				new LinkedBlockingQueue<Runnable>(), new NamedDaemonThreadFactory(name));
+				new LinkedBlockingQueue<Runnable>(), backgroundThreads(name));
 		}
 
 		public int getMinThreadCount() {

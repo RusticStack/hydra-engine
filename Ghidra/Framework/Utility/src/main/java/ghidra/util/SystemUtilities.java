@@ -25,6 +25,7 @@ import java.util.function.Supplier;
 
 import javax.swing.SwingUtilities;
 
+import ghidra.util.cpu.HydraCpu;
 import ghidra.util.exception.AssertException;
 import utilities.util.reflection.ReflectionUtilities;
 
@@ -461,7 +462,10 @@ public class SystemUtilities {
 	 * @return the default pool size.
 	 */
 	public static int getDefaultThreadPoolSize() {
-		return getDefaultThreadPoolSize(Runtime.getRuntime().availableProcessors(),
+		// Hydra: the CPUs the OS grants the process (affinity, job object CPU cap), through the
+		// active tuning profile (ghidra.util.cpu.HydraCpu, whose pool size is granted + 1); the
+		// JVM count when nothing native is available. The cap and cpu.core.* still apply.
+		return getDefaultThreadPoolSize(HydraCpu.defaultPoolSize() - 1,
 			getCPUOverride(), getCPUCoreLimit(), Boolean.getBoolean(CPU_CORE_UNCAPPED_PROPERTY));
 	}
 
