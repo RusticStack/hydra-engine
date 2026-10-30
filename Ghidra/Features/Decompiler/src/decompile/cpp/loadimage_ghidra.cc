@@ -25,6 +25,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#undef LoadImage		// windows.h maps it to LoadImageA, which hides ghidra::LoadImage
 #else
 #include <fcntl.h>
 #include <sys/mman.h>

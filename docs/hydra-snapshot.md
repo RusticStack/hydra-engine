@@ -47,6 +47,28 @@ the same time with no lock and no round trip.
 Regions are sorted by (space index, offset) and never overlap; readers reject anything else, a bad version, or a
 table or region that runs past the end of the file.
 
+### Measured (2026-10-30, quick A/B on a loaded machine, not a profile)
+
+`SnapshotABScript` (fixed golden options, one sequential `DecompInterface`, passes off/on/off/on in one JVM) on
+copies of the gate-1 fixture projects and the first 400 non-thunk functions of KotOR (`swkotor.exe`):
+
+| program | functions | C output on vs off | getBytes callbacks per pass off -> on | wall ms per pass (off, on, off, on) |
+|---|---|---|---|---|
+| x64 diff1 | 487 | identical | 994 -> 1 | 9971, 6286, 5886, 7478 |
+| x64 diff2 | 487 | identical | 994 -> 1 | 7389, 6129, 6621, 7016 |
+| x64 flow | 387 | identical | 916 -> 1 | 4614, 3784, 3662, 3612 |
+| x64 vcall | 401 | identical | 914 -> 1 | 4721, 3569, 3517, 3479 |
+| x86 diff1 | 575 | identical | 507 -> 0 | 8366, 7335, 6047, 5866 |
+| x86 diff2 | 575 | identical | 507 -> 0 | 8655, 6735, 6425, 5645 |
+| x86 flow | 465 | identical | 456 -> 0 | 4482, 3524, 3415, 3618 |
+| x86 vcall | 481 | identical | 452 -> 0 | 4770, 3692, 7582, 5551 |
+| KotOR (400) | 400 | identical | 628 -> 0 | 6820, 5662, 5415, 6479 |
+
+Every byte callback but one per x64 program (a range the snapshot does not hold whole) is gone. Wall time does not
+move beyond the noise of a busy machine: byte queries are a small share of the callbacks (p-code dominates), so the
+gain this step unlocks comes with the p-code section below. The engine-written files validate with the Rust reader
+(`HYSNAP_SAMPLE=<file> cargo test --test snapshot engine_written`).
+
 ## Extending to a callback-free decompiler (rank 12)
 
 The order follows the expected callback volume per decompiled function (D3: one p-code query per instruction, one
