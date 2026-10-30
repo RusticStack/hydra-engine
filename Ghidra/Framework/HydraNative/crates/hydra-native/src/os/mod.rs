@@ -38,7 +38,8 @@ mod tests {
         let s = topo.summary();
         assert!(s.affinity_cpus >= 1 && s.affinity_cpus <= s.system_cpus);
         assert_eq!(s.performance_cpus + s.efficiency_cpus, s.affinity_cpus);
-        assert!(s.performance_cores >= 1);
+        // An affinity of E-cores only grants no performance core.
+        assert!(s.performance_cores + s.efficiency_cores >= 1);
         assert!(s.llc_groups >= 1);
         assert!(limits.physical_memory > 0);
         assert!(limits.granted_cpus(s.affinity_cpus) <= s.affinity_cpus);

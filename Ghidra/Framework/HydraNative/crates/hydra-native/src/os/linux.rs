@@ -20,12 +20,15 @@ fn read_u32(path: &str) -> Option<u32> {
     read(path)?.trim().parse().ok()
 }
 
-/// The CPUs sched_getaffinity grants (None when the call fails).
+/// The CPUs sched_getaffinity grants the process (None when the call fails). Linux keeps a mask
+/// per thread; the process's is its main thread's (pid), not the calling thread's (0), so a pool
+/// thread pinned to some cores does not shrink what the whole process is granted.
 fn affinity() -> Option<Vec<bool>> {
     // SAFETY: all zeroes is an empty cpu_set_t.
     let mut set: libc::cpu_set_t = unsafe { zeroed() };
+    let pid = std::process::id() as libc::pid_t;
     // SAFETY: `set` is a cpu_set_t of the size passed.
-    if unsafe { libc::sched_getaffinity(0, size_of::<libc::cpu_set_t>(), &mut set) } != 0 {
+    if unsafe { libc::sched_getaffinity(pid, size_of::<libc::cpu_set_t>(), &mut set) } != 0 {
         return None;
     }
     let max = 8 * size_of::<libc::cpu_set_t>();
@@ -87,41 +90,9 @@ fn topology() -> Topology {
     Topology { cpus }
 }
 
-/// The lowest limit `parse` finds in `file` of the cgroup or any of its ancestors.
-fn lowest(base: &str, path: &str, file: &str, parse: impl Fn(&str) -> Option<u64>) -> Option<u64> {
-    sysfs::ancestors(path)
-        .iter()
-        .filter_map(|dir| read(&format!("{base}{}/{file}", dir.trim_end_matches('/'))))
-        .filter_map(|s| parse(&s))
-        .min()
-}
-
 fn limits() -> Limits {
     let cgroup = read("/proc/self/cgroup").unwrap_or_default();
-    let (cpu_quota_milli, memory_limit) = match sysfs::cgroup_v2_path(&cgroup) {
-        Some(path) => (
-            lowest(CGROUP, path, "cpu.max", sysfs::cpu_max),
-            lowest(CGROUP, path, "memory.max", sysfs::memory_max),
-        ),
-        None => {
-            let cpu = sysfs::cgroup_v1_path(&cgroup, "cpu").and_then(|p| {
-                let dir = format!("{CGROUP}/cpu{}", p.trim_end_matches('/'));
-                sysfs::cfs_quota(
-                    &read(&format!("{dir}/cpu.cfs_quota_us"))?,
-                    &read(&format!("{dir}/cpu.cfs_period_us"))?,
-                )
-            });
-            let memory = sysfs::cgroup_v1_path(&cgroup, "memory").and_then(|p| {
-                lowest(
-                    &format!("{CGROUP}/memory"),
-                    p,
-                    "memory.limit_in_bytes",
-                    sysfs::memory_max,
-                )
-            });
-            (cpu, memory)
-        }
-    };
+    let (cpu_quota_milli, memory_limit) = sysfs::cgroup_limits(&cgroup, CGROUP, read);
     // SAFETY: sysconf has no preconditions.
     let (pages, page) = unsafe {
         (
@@ -142,4 +113,32 @@ fn limits() -> Limits {
 
 pub fn detect() -> (Topology, Limits) {
     (topology(), limits())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn affinity_is_the_process_not_the_calling_thread() {
+        let process = affinity().unwrap();
+        let Some(first) = process.iter().position(|&g| g) else {
+            return;
+        };
+        let pinned = std::thread::spawn(move || {
+            // SAFETY: all zeroes is an empty cpu_set_t; `set` is a cpu_set_t of the size passed.
+            unsafe {
+                let mut set: libc::cpu_set_t = zeroed();
+                libc::CPU_SET(first, &mut set);
+                assert_eq!(
+                    libc::sched_setaffinity(0, size_of::<libc::cpu_set_t>(), &set),
+                    0
+                );
+            }
+            affinity().unwrap()
+        })
+        .join()
+        .unwrap();
+        assert_eq!(pinned, process);
+    }
 }
