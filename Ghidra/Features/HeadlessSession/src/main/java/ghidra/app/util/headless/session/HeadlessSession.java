@@ -28,7 +28,9 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
 
 import generic.jar.ResourceFile;
 import ghidra.GhidraApplicationLayout;
@@ -666,9 +668,136 @@ public class HeadlessSession implements GhidraLaunchable {
 			journal();
 			connectionSettings();
 			decompileCache();
+			readPlane();
 			System.out.println(
 				bad == 0 ? "all self-test checks held" : bad + " self-test check(s) FAILED");
 			return bad == 0 ? 0 : 1;
+		}
+
+		/**
+		 * The Rust read plane: every page of made-up function listings (every ASCII character,
+		 * U+2028/U+2029, accents, a supplementary character, a lone surrogate) is byte for byte
+		 * the reply Gson writes for the Java table, and so is the whole reply line.
+		 */
+		private static void readPlane() {
+			ReadPlane rp = ReadPlane.get();
+			check("readPlane: hydra_native with the read-plane ABI is found next to the install " +
+				"(" + (rp == null ? "missing" : rp.library) + ")", rp != null);
+			if (rp == null) {
+				return;
+			}
+			int n = 300;
+			String[] names = new String[n];
+			String[] entries = new String[n];
+			long[] sizes = new long[n];
+			byte[] flags = new byte[n];
+			String[] specials = { "\u2028", "\u2029", "\u00e9", "\u00ff", "\u0100", "\u4e2d",
+				"\ud83d\ude00", "\u007f" };
+			for (int i = 0; i < n; i++) {
+				StringBuilder sb = new StringBuilder(i % 3 == 0 ? "FUN_" : "ns::f");
+				sb.append(i).append((char) (i % 128));
+				if (i % 7 == 0) {
+					sb.append(specials[i % specials.length]);
+				}
+				if (i % 11 == 0) {
+					sb.append("\"q\\b");
+				}
+				names[i] = sb.toString();
+				entries[i] = i % 50 == 0 ? "EXTERNAL:" + Integer.toHexString(i)
+						: String.format("%08x", 0x401000 + 16 * i);
+				sizes[i] = i % 13 == 0 ? 0 : (long) i * 37 + (i == 5 ? 1L << 40 : 0);
+				flags[i] = (byte) (i % 4);
+			}
+			FunctionTable t = FunctionTable.of(names, entries, sizes, flags);
+			check("readPlane: a table is exported to Rust", t.isNative());
+			String[] subs = { null, "", "FUN_", "ns::f1", "\"", "\\", "\u2028", "\u00e9", "\ud83d\ude00",
+				"\u007f", "\u0000", "zz_none", "1" };
+			int[] offs = { 0, 1, 5, 99, 299, 300, 301, 5000 };
+			int[] lims = { 1, 7, 200, 10_000 };
+			int compared = 0, differ = 0, raw = 0;
+			String firstBad = null;
+			for (String sub : subs) {
+				for (int off : offs) {
+					for (int lim : lims) {
+						byte[] want = Json.GSON.toJson(t.page(null, sub, off, lim))
+								.getBytes(StandardCharsets.UTF_8);
+						JsonElement got = t.page(null, sub, off, lim, true);
+						byte[] have = got instanceof ReadPlane.RawJson r ? r.bytes
+								: Json.GSON.toJson(got).getBytes(StandardCharsets.UTF_8);
+						raw += got instanceof ReadPlane.RawJson ? 1 : 0;
+						compared++;
+						if (!java.util.Arrays.equals(want, have)) {
+							differ++;
+							if (firstBad == null) {
+								firstBad = sub + "/" + off + "/" + lim;
+							}
+						}
+					}
+				}
+			}
+			check("readPlane: " + compared + " pages (" + raw + " from Rust) byte-identical to " +
+				"Gson's" + (firstBad == null ? "" : "; first difference at " + firstBad),
+				differ == 0 && raw == compared);
+			// a lone surrogate: unfiltered pages still identical ('?' both ways), contains on Java
+			FunctionTable lone = FunctionTable.of(new String[] { "a\ud800b", "c\udc00", "ok" },
+				new String[] { "00000001", "00000002", "00000003" }, new long[] { 1, 2, 3 },
+				new byte[] { 0, 1, 2 });
+			JsonElement unf = lone.page(null, null, 0, 10, true);
+			JsonElement flt = lone.page(null, "a", 0, 10, true);
+			check("readPlane: lone surrogates: an unfiltered page from Rust equals Gson's bytes, " +
+				"a contains page stays on Java",
+				unf instanceof ReadPlane.RawJson ur &&
+					java.util.Arrays.equals(ur.bytes,
+						Json.GSON.toJson(lone.page(null, null, 0, 10))
+								.getBytes(StandardCharsets.UTF_8)) &&
+					!(flt instanceof ReadPlane.RawJson));
+			// the whole reply line: the raw result spliced where Gson writes the tree
+			boolean lines = true;
+			for (JsonElement id : new JsonElement[] { null, new JsonPrimitive(7),
+				new JsonPrimitive("x\"result\":null,\u2028"), obj("{\"a\":[1,\"ok\"]}") }) {
+				JsonObject a = new JsonObject();
+				JsonObject b = new JsonObject();
+				for (JsonObject o : new JsonObject[] { a, b }) {
+					if (id != null) {
+						o.add("id", id);
+					}
+					o.addProperty("ok", true);
+				}
+				a.add("result", t.page(null, "FUN_", 3, 7, true));
+				b.add("result", t.page(null, "FUN_", 3, 7));
+				for (JsonObject o : new JsonObject[] { a, b }) {
+					o.add("stale", obj("{\"s\":\"\\n\"}"));
+					o.addProperty("ms", 12);
+				}
+				lines &= java.util.Arrays.equals(Connection.encode(a), Connection.encode(b));
+			}
+			check("readPlane: reply lines with a Rust result equal Gson's, with every kind of id",
+				lines);
+			// a RawJson in a tree prints as its JSON (toString), never throws
+			JsonElement rj = t.page(null, "FUN_", 3, 7, true);
+			JsonObject wrap = new JsonObject();
+			wrap.add("result", rj);
+			boolean printed;
+			try {
+				printed = rj.toString().equals(Json.GSON.toJson(t.page(null, "FUN_", 3, 7))) &&
+					wrap.get("result").toString().equals(rj.toString());
+			}
+			catch (RuntimeException e) {
+				printed = false;
+			}
+			check("readPlane: a Rust result prints as its JSON text (toString)", printed);
+			// a dropped table frees its Rust rows now (no GC needed); later pages take the Java
+			// path with the same bytes
+			long before = rp.live.get();
+			FunctionTable d = FunctionTable.of(names, entries, sizes, flags);
+			long made = rp.live.get();
+			d.release();
+			long after = rp.live.get();
+			JsonElement late = d.page(null, "FUN_", 3, 7, true);
+			check("readPlane: release frees the Rust table at once (live " + before + " -> " + made +
+				" -> " + after + ") and later pages are Java's, identical",
+				made == before + 1 && after == before && !(late instanceof ReadPlane.RawJson) &&
+					Json.GSON.toJson(late).equals(rj.toString()));
 		}
 
 		/**

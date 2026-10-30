@@ -75,4 +75,30 @@ size_t hydra_cpu_info_size(void);
 int32_t hydra_cpu_query(const uint8_t *profile_override, size_t override_len, HydraCpuInfo *out,
 	size_t out_size);
 
+/*
+ * The read plane (src/readplane.rs; Java: HeadlessSession ReadPlane): immutable tables of a
+ * program state whose pages come back as reply JSON bytes. Its own ABI version, separate from
+ * hydra_native_abi_version().
+ */
+typedef struct HydraRpFunctionTable HydraRpFunctionTable;
+
+uint32_t hydra_rp_abi_version(void);
+
+/* n rows: UTF-8 arenas cut at name_ends/entry_ends (end offsets), sizes and flags (1 thunk,
+ * 2 external). NULL when an argument is NULL or not UTF-8. Free with hydra_rp_ft_free. */
+HydraRpFunctionTable *hydra_rp_ft_new(uint32_t n, const uint8_t *names, uint64_t names_len,
+	const uint32_t *name_ends, const uint8_t *entries, uint64_t entries_len,
+	const uint32_t *entry_ends, const int64_t *sizes, const uint8_t *flags);
+
+uint64_t hydra_rp_ft_len(const HydraRpFunctionTable *t);
+
+uint64_t hydra_rp_ft_weight(const HydraRpFunctionTable *t);
+
+/* The `functions` result for (contains or NULL, offset, limit) copied into out when it fits;
+ * returns its length (call again with a buffer that large when it is above out_cap), -1 on NULL. */
+int64_t hydra_rp_ft_page(const HydraRpFunctionTable *t, const uint8_t *contains,
+	uint64_t contains_len, uint64_t offset, uint64_t limit, uint8_t *out, uint64_t out_cap);
+
+void hydra_rp_ft_free(HydraRpFunctionTable *t);
+
 #endif

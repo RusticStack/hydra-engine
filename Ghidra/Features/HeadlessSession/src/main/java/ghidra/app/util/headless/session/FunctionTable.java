@@ -60,6 +60,11 @@ final class FunctionTable {
 	private final long[] sizes;
 	private final byte[] flags;
 	private final long weight;
+	/**
+	 * The same rows in the Rust read plane (pages rendered there), or null. Exported only when the
+	 * daemon stores this table ({@link #exportNative}), freed when it drops it ({@link #release}).
+	 */
+	private volatile ReadPlane.NativeFunctions nat;
 
 	private FunctionTable(String[] names, String[] entries, long[] sizes, byte[] flags) {
 		this.names = names;
@@ -71,7 +76,47 @@ final class FunctionTable {
 			// a String header and its array header, Latin-1 or UTF-16 bytes
 			w += 56 + 2L * names[i].length() + 56 + entries[i].length();
 		}
+		// the Java rows only: the budget decides what is stored as before the read plane; the
+		// Rust copy of a stored table is counted apart (health functionTable.nativeBytes)
 		this.weight = w;
+	}
+
+	/** A table of these rows, exported to Rust (the self-test's made-up listings). */
+	static FunctionTable of(String[] names, String[] entries, long[] sizes, byte[] flags) {
+		FunctionTable t = new FunctionTable(names, entries, sizes, flags);
+		t.exportNative();
+		return t;
+	}
+
+	/** Gives this table's rows to the Rust read plane (once; nothing when it is off). */
+	void exportNative() {
+		ReadPlane rp = ReadPlane.get();
+		if (rp != null && nat == null) {
+			nat = rp.functions(names, entries, sizes, flags);
+		}
+	}
+
+	/**
+	 * Frees the Rust copy now (the table was dropped by the daemon): pages already reading it
+	 * finish first, later pages take the Java path. The Cleaner is only the backstop.
+	 */
+	void release() {
+		ReadPlane.NativeFunctions n = nat;
+		if (n != null) {
+			nat = null;
+			n.close();
+		}
+	}
+
+	/** Bytes of the Rust copy (0 when there is none). */
+	long nativeWeight() {
+		ReadPlane.NativeFunctions n = nat;
+		return n == null ? 0 : n.weight;
+	}
+
+	/** True when this table's pages can come from the Rust read plane. */
+	boolean isNative() {
+		return nat != null;
 	}
 
 	/** The table of {@code p} as it stands now: one walk of its functions. */
@@ -118,6 +163,22 @@ final class FunctionTable {
 	 * program state this table was built from.
 	 */
 	JsonObject page(Pattern pat, String sub, int offset, int limit) {
+		return (JsonObject) page(pat, sub, offset, limit, false);
+	}
+
+	/**
+	 * As {@link #page(Pattern, String, int, int)}; with {@code raw}, a page without {@code regex}
+	 * comes from the Rust read plane as the reply's bytes ({@link ReadPlane.RawJson}) when the
+	 * table is there.
+	 */
+	JsonElement page(Pattern pat, String sub, int offset, int limit, boolean raw) {
+		ReadPlane.NativeFunctions nf = nat;
+		if (raw && nf != null && pat == null) {
+			ReadPlane.RawJson r = ReadPlane.get().page(nf, sub, offset, limit);
+			if (r != null) {
+				return r;
+			}
+		}
 		JsonArray a = new JsonArray();
 		boolean truncated = false;
 		int n = names.length;
@@ -246,13 +307,22 @@ final class FunctionTable {
 		 */
 		JsonObject functions(Program prog, Pattern pat, String sub, int offset, int limit,
 				long waitMs) {
+			return (JsonObject) functions(prog, pat, sub, offset, limit, waitMs, false);
+		}
+
+		/**
+		 * As {@link #functions(Program, Pattern, String, int, int, long)}; with {@code raw} a page
+		 * served from a table may be the Rust read plane's bytes ({@link ReadPlane.RawJson}).
+		 */
+		JsonElement functions(Program prog, Pattern pat, String sub, int offset, int limit,
+				long waitMs, boolean raw) {
 			long mod = prog.getModificationNumber();
 			Holder h = holder(prog);
 			h.used = clock.incrementAndGet();
 			Snap s = h.snap;
 			if (s != null && s.mod() == mod) {
 				hits.incrementAndGet();
-				return s.table().page(pat, sub, offset, limit);
+				return s.table().page(pat, sub, offset, limit, raw);
 			}
 			if (h.listedMod != mod) {
 				// the first listing of this state (an edit, analysis): the walk stops at
@@ -272,7 +342,7 @@ final class FunctionTable {
 				walks.incrementAndGet();
 				return walk(prog, pat, sub, offset, limit);
 			}
-			return t.page(pat, sub, offset, limit);
+			return t.page(pat, sub, offset, limit, raw);
 		}
 
 		/**
@@ -304,9 +374,14 @@ final class FunctionTable {
 					// moved during the build (this answer is as consistent as a walk during the
 					// same change) or too big to keep: answer from it, keep nothing
 					unstored.incrementAndGet();
-					return t;
+					return t; // answered from the Java rows, never exported to Rust
 				}
+				t.exportNative();
+				Snap old = h.snap;
 				h.snap = new Snap(t, mod);
+				if (old != null && old.table() != t) {
+					old.table().release();
+				}
 				trim(h);
 				return t;
 			}
@@ -333,25 +408,30 @@ final class FunctionTable {
 				if (total <= budget || oldest == null) {
 					return;
 				}
+				FunctionTable dropped = oldest.snap.table();
 				oldest.snap = null;
+				dropped.release();
 				evicted.incrementAndGet();
 			}
 		}
 
 		synchronized JsonObject describe() {
 			long bytes = 0;
+			long nativeBytes = 0;
 			int tables = 0;
 			for (Holder h : holders.values()) {
 				Snap s = h.snap;
 				if (s != null) {
 					tables++;
 					bytes += s.table().weight();
+					nativeBytes += s.table().nativeWeight();
 				}
 			}
 			JsonObject o = new JsonObject();
 			o.addProperty("budget", budget);
 			o.addProperty("tables", tables);
 			o.addProperty("bytes", bytes);
+			o.addProperty("nativeBytes", nativeBytes);
 			o.addProperty("hits", hits.get());
 			o.addProperty("builds", builds.get());
 			o.addProperty("walks", walks.get());

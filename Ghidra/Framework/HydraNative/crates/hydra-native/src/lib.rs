@@ -10,6 +10,7 @@ pub mod cpuid;
 pub mod limits;
 pub mod os;
 pub mod profile;
+pub mod readplane;
 pub mod topology;
 
 use cpuid::CpuId;

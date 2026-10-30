@@ -76,6 +76,15 @@ final class QueryCommands {
 	}
 
 	JsonElement functions(Program prog, JsonObject req) {
+		return functions(prog, req, false);
+	}
+
+	/**
+	 * {@code functions}; with {@code raw} (the caller sends the result as it is, never edits it) a
+	 * page served from a table may come from the Rust read plane as reply bytes
+	 * ({@link ReadPlane.RawJson}).
+	 */
+	JsonElement functions(Program prog, JsonObject req, boolean raw) {
 		Pattern pat = null;
 		if (Json.has(req, "regex")) {
 			try {
@@ -94,7 +103,7 @@ final class QueryCommands {
 		if (tables == null) {
 			return FunctionTable.walk(prog, pat, sub, offset, limit);
 		}
-		return tables.functions(prog, pat, sub, offset, limit, Requests.waitMs(req));
+		return tables.functions(prog, pat, sub, offset, limit, Requests.waitMs(req), raw);
 	}
 
 	/** The code of a decompile that failed in the native process (E9, 3.11): retryable. */
