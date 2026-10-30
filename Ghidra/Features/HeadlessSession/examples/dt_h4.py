@@ -60,6 +60,10 @@ BROKEN = """public class H4Broken$SFX {
 """
 
 
+#: daemon-async's ScriptClasses (scriptClassCache) answers a repeat run first; off here so H4's
+#: ScriptClassCache (-Dhydra.script.classCache) is what these tests measure
+H4 = {"scriptClassCache": "false"}
+
 def _write(path, text):
     """Writes ``text`` and makes sure the modification time moves (a coarse clock could leave an
     edit within the same tick as the compile)."""
@@ -132,7 +136,7 @@ def _cache(s):
 
 
 def t_script_cache_fresh(c):
-    d = c.daemon("h4-cache")
+    d = c.daemon("h4-cache", engine=H4)
     s = None
     try:
         s = c.connect(d, "h4", "dt_h4", protocol=3)
@@ -175,7 +179,7 @@ def _norm(out):
 def t_script_cache_identical(c):
     seqs = {}
     for tag, sfx, vm in (("on", "On", None), ("off", "Off", ["-Dhydra.script.classCache=false"])):
-        d = c.daemon("h4-" + tag, vmargs=vm) if vm else c.daemon("h4-" + tag)
+        d = c.daemon("h4-" + tag, vmargs=vm, engine=H4) if vm else c.daemon("h4-" + tag, engine=H4)
         s = None
         try:
             s = c.connect(d, "h4" + tag, "dt_h4", protocol=3)
@@ -220,7 +224,7 @@ public class H4Other$SFX extends GhidraScript {
 
 def t_script_cache_rebuild_frees(c):
     """A rebuild of a bundle drops every cache entry: none keeps an old bundle's class loader."""
-    d = c.daemon("h4-frees")
+    d = c.daemon("h4-frees", engine=H4)
     s = None
     files = _two_probes(c, "F")
     try:
@@ -268,7 +272,7 @@ def _compiled_manifests(c, name):
 def t_script_cache_binary_wiped(c):
     """Another process wiping the shared compiled bundle makes the next call a miss (the usual
     path recompiles it), with the same output."""
-    d = c.daemon("h4-wiped")
+    d = c.daemon("h4-wiped", engine=H4)
     s = None
     files = _two_probes(c, "W")
     try:
@@ -301,7 +305,7 @@ def t_script_cache_parallel_edit(c):
     """Parallel hits on four sessions while the sibling class is edited: every reply is the old
     output or the new one, never an error."""
     import threading
-    d = c.daemon("h4-par")
+    d = c.daemon("h4-par", engine=H4)
     files = _two_probes(c, "P")
     sessions = []
     try:
@@ -342,7 +346,7 @@ def t_script_run_bound(c):
     """With one run permit (and a long wait), two parallel sleeping scripts run one after the
     other; health counts the wait; both succeed."""
     import threading
-    d = c.daemon("h4-bound", vmargs=["-Dhydra.script.maxConcurrent=1",
+    d = c.daemon("h4-bound", engine=H4, vmargs=["-Dhydra.script.maxConcurrent=1",
                                      "-Dhydra.script.maxConcurrentWaitMs=60000"])
     sessions = []
     try:
