@@ -350,14 +350,40 @@ public class SortedRangeList implements Iterable<Range> {
 	}
 
 	/**
-	 * Removes all the ranges that are in the specified other list from this list.
+	 * Removes all the ranges that are in the specified other list from this list. The work is
+	 * proportional to the smaller of the two lists.
 	 * @param other the other sorted range list.
 	 */
 	public void remove(SortedRangeList other) {
-		Iterator<Range> it = other.getRanges();
-		while (it.hasNext()) {
-			Range r = it.next();
-			removeRange(r.min, r.max);
+		if (other.set.size() <= set.size()) {
+			Iterator<Range> it = other.getRanges();
+			while (it.hasNext()) {
+				Range r = it.next();
+				removeRange(r.min, r.max);
+			}
+			return;
+		}
+		// The other list is bigger: only remove its ranges that overlap one of ours.
+		// Collect them first, since removeRange changes the ranges of this list.
+		ArrayList<Range> overlapping = new ArrayList<>();
+		for (Range r : set) {
+			Range key = new Range(r.min, r.min);
+			Range before = other.set.lower(key);
+			if (before != null && before.max >= r.min) {
+				addOnce(overlapping, before);
+			}
+			for (Range o : other.set.subSet(key, true, new Range(r.max, r.max), true)) {
+				addOnce(overlapping, o);
+			}
+		}
+		for (Range o : overlapping) {
+			removeRange(o.min, o.max);
+		}
+	}
+
+	private static void addOnce(ArrayList<Range> sortedRanges, Range range) {
+		if (sortedRanges.isEmpty() || sortedRanges.get(sortedRanges.size() - 1) != range) {
+			sortedRanges.add(range);
 		}
 	}
 

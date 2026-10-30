@@ -18,6 +18,7 @@ package ghidra.program.database.map;
 import static org.junit.Assert.*;
 
 import java.util.Iterator;
+import java.util.Random;
 
 import org.junit.*;
 
@@ -449,6 +450,61 @@ public class NormalizedAddressSetTest extends AbstractGhidraHeadedIntegrationTes
 				checkAddress = checkAddress.subtract(1L);
 			}
 		}
+	}
+
+	@Test
+	public void testDeleteNormalizedSetMatchesDeleteView() {
+		Random random = new Random(4321);
+		for (int i = 0; i < 300; i++) {
+			// a small set against a big one and the other way around
+			NormalizedAddressSet small = randomSet(random, random.nextInt(10));
+			NormalizedAddressSet big = randomSet(random, 200 + random.nextInt(200));
+			checkDelete(small, big);
+			checkDelete(big, small);
+			checkDelete(small, randomSet(random, random.nextInt(10)));
+		}
+	}
+
+	private void checkDelete(NormalizedAddressSet target, NormalizedAddressSet toDelete) {
+		NormalizedAddressSet expected = copy(target);
+		expected.delete((AddressSetView) toDelete);
+		NormalizedAddressSet expectedToDelete = copy(toDelete);
+
+		NormalizedAddressSet actual = copy(target);
+		actual.delete(toDelete);
+
+		assertTrue(expected.hasSameAddresses(actual));
+		assertEquals(expected.getNumAddressRanges(), actual.getNumAddressRanges());
+		assertEquals(expected.getMinAddress(), actual.getMinAddress());
+		assertEquals(expected.getMaxAddress(), actual.getMaxAddress());
+		assertTrue(expectedToDelete.hasSameAddresses(toDelete));
+	}
+
+	private NormalizedAddressSet copy(NormalizedAddressSet source) {
+		NormalizedAddressSet copy = new NormalizedAddressSet(addrMap);
+		copy.add(source);
+		return copy;
+	}
+
+	/**
+	 * Ranges near the ends of a few 32-bit address bases, some of them across two bases, and a few
+	 * register ranges.
+	 */
+	private NormalizedAddressSet randomSet(Random random, int numRanges) {
+		AddressSpace regSpace = addressFactory.getRegisterSpace();
+		NormalizedAddressSet randomSet = new NormalizedAddressSet(addrMap);
+		for (int i = 0; i < numRanges; i++) {
+			int length = random.nextInt(random.nextBoolean() ? 4 : 0x400);
+			if (random.nextInt(10) == 0) {
+				long start = random.nextInt(0x200);
+				randomSet.addRange(regSpace.getAddress(start), regSpace.getAddress(start + length));
+				continue;
+			}
+			long base = (random.nextInt(3) + 1L) << 32;
+			long start = base + random.nextInt(0x2000) - 0x1000;
+			randomSet.addRange(addr(start), addr(start + length));
+		}
+		return randomSet;
 	}
 
 }

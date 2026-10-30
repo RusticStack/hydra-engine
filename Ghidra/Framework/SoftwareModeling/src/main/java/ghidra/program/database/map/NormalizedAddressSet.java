@@ -141,6 +141,34 @@ public class NormalizedAddressSet implements AddressSetView {
 		}
 	}
 
+	/**
+	 * Removes all the addresses in the given set from this set. The two sets share the address
+	 * keys, so the work is proportional to the smaller set, not to the given one.
+	 * @param set the set of addresses to remove.
+	 */
+	public void delete(NormalizedAddressSet set) {
+		if (set == this) {
+			clear();
+			return;
+		}
+		if (set.addrMap != addrMap) {
+			delete((AddressSetView) set);
+			return;
+		}
+		for (Long baseKey : new ArrayList<>(bases)) {
+			SortedRangeList otherList = set.baseLists.get(baseKey);
+			if (otherList == null) {
+				continue;
+			}
+			SortedRangeList list = baseLists.get(baseKey);
+			list.remove(otherList);
+			if (list.isEmpty()) {
+				baseLists.remove(baseKey);
+				bases.remove(baseKey);
+			}
+		}
+	}
+
 	private void deleteRange(long minKey, long maxKey) {
 		long baseKey = minKey & AddressMapDB.BASE_MASK;
 		SortedRangeList set = baseLists.get(baseKey);
