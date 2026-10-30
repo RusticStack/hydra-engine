@@ -588,7 +588,18 @@ final class ProgramEntry implements Decompilers, DecompilerGate.Pool {
 	 * ({@code grabFromProgram}) are program state, covered by the modification number.
 	 */
 	static final boolean DECOMPILER_C_CODE = true;
-	static final boolean DECOMPILER_SYNTAX_TREE = true;
+	/**
+	 * Hydra (H5): the pooled decompilers are a text-only profile. Their one consumer, the
+	 * {@code decompile} command ({@code QueryCommands.fresh}), answers from
+	 * {@code getDecompiledFunction()} (the C text and the signature), which is printed from the C
+	 * markup alone. Without the syntax tree the native process does not encode the p-code AST and the
+	 * high variables, and Java does not decode them ({@code PcodeSyntaxTree.decode},
+	 * {@code decodeHighlist}); the C markup, the local scope and the prototype still come back, so the
+	 * text is byte-identical (decomp_identity {@code --tree-b notree}). A request that needs the
+	 * {@code HighFunction} (tokens with varnodes and p-code ops, high variables) must not use this
+	 * pool: it builds a decompiler with {@code toggleSyntaxTree(true)}.
+	 */
+	static final boolean DECOMPILER_SYNTAX_TREE = false;
 	static final String DECOMPILER_STYLE = "decompile";
 	/** The set-up {@link #newDecompiler} applies, made from the very constants it uses. */
 	static final String DECOMPILER_SETUP_TEXT = "DecompileOptions.grabFromProgram|toggleCCode=" +

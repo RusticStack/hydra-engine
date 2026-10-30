@@ -18,8 +18,9 @@
 // address order). The optional third argument is the decompile order: "address" (default) or
 // "shuffled:<seed>", which decompiles the same functions in a seeded random order and then decompiles
 // every tenth of them again, so state one function leaves in the decompiler would change the text of
-// a later one. Prints the decompile wall time, the native processes used and the accepted
-// flushFunctions commands as DECOMPILE_ALL.
+// a later one. The optional fourth argument is "tree" (default: toggleSyntaxTree(true)) or "notree"
+// (the text-only profile of the session's pooled decompilers). Prints the decompile wall time, the
+// native processes used and the accepted flushFunctions commands as DECOMPILE_ALL.
 //@category Hydra
 import java.io.*;
 import java.util.*;
@@ -36,6 +37,10 @@ public class DecompileAllC extends GhidraScript {
 		String out = args[0];
 		int limit = args.length > 1 ? Integer.parseInt(args[1]) : Integer.MAX_VALUE;
 		String order = args.length > 2 ? args[2] : "address";
+		String tree = args.length > 3 ? args[3] : "tree";
+		if (!tree.equals("tree") && !tree.equals("notree")) {
+			throw new IllegalArgumentException("syntax tree is tree or notree: " + tree);
+		}
 		List<Function> funcs = new ArrayList<>();
 		for (Function f : currentProgram.getFunctionManager().getFunctions(true)) {
 			if (funcs.size() >= limit) {
@@ -58,7 +63,7 @@ public class DecompileAllC extends GhidraScript {
 		o.grabFromProgram(currentProgram);
 		d.setOptions(o);
 		d.toggleCCode(true);
-		d.toggleSyntaxTree(true);
+		d.toggleSyntaxTree(tree.equals("tree"));
 		d.setSimplificationStyle("decompile");
 		d.openProgram(currentProgram);
 		// distinct native processes used: 1 unless a process was stopped and restarted

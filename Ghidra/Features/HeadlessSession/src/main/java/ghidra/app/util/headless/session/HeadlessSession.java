@@ -1059,6 +1059,10 @@ public class HeadlessSession implements GhidraLaunchable {
 					ProgramEntry.DECOMPILER_C_CODE + "|toggleSyntaxTree=" +
 					ProgramEntry.DECOMPILER_SYNTAX_TREE + "|style=" + ProgramEntry.DECOMPILER_STYLE)
 						.hashCode());
+			// H5: the pooled decompilers serve text-only replies, so they skip the syntax tree
+			check("decompileCache: the pooled decompilers are the text-only profile (no syntax tree)",
+				!ProgramEntry.DECOMPILER_SYNTAX_TREE && ProgramEntry.DECOMPILER_C_CODE &&
+					ProgramEntry.DECOMPILER_SETUP_TEXT.contains("|toggleSyntaxTree=false|"));
 		}
 
 		/**
