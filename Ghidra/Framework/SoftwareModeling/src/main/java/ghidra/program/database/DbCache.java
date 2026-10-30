@@ -17,6 +17,8 @@ package ghidra.program.database;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 
 import db.DBRecord;
 import generic.cache.WeakReferenceCache;
@@ -42,6 +44,10 @@ public class DbCache<T extends DbObject> {
 	protected DbFactory<T> factory;
 	protected WeakReferenceCache<Long, T> refCache;
 	private volatile int modificationCount;
+	// one monitor per key that is being instantiated, so misses on different keys do not wait
+	// for each other while misses on the same key still produce a single object
+	// (package access for tests)
+	final ConcurrentHashMap<Long, KeyMonitor> instantiating = new ConcurrentHashMap<>();
 
 	/**
 	 * Constructor
@@ -100,8 +106,9 @@ public class DbCache<T extends DbObject> {
 			if (t != null && t.refreshIfNeeded()) {
 				return t;
 			}
-			// note that the instantiateAndCacheSafely is synchronized and it will double check the cache
-			// to prevent multiple threads from getting here and then creating a dbObject.
+			// note that instantiateAndCacheSafely holds the monitor of the key and it will double
+			// check the cache to prevent multiple threads from getting here and then creating a
+			// dbObject for the same key.
 			return instantiateAndCacheSafely(key);
 		}
 	}
@@ -162,8 +169,9 @@ public class DbCache<T extends DbObject> {
 			if (t != null && t.refreshIfNeeded(dbRecord)) {
 				return t;
 			}
-			// note that the instantiateAndCacheSafely is synchronized and it will double check the cache
-			// to prevent multiple threads from getting here and then creating a dbObject.
+			// note that instantiateAndCacheSafely holds the monitor of the key and it will double
+			// check the cache to prevent multiple threads from getting here and then creating a
+			// dbObject for the same key.
 			return instantiateAndCacheSafely(dbRecord);
 		}
 	}
@@ -244,29 +252,53 @@ public class DbCache<T extends DbObject> {
 		return modificationCount;
 	}
 
-	private synchronized T instantiateAndCacheSafely(Long key) {
-		// check if another thread got here first
-		T t = refCache.get(key);
-		if (t != null && t.refreshIfNeeded()) {
+	private T instantiateAndCacheSafely(Long key) {
+		return instantiateAndCacheSafely(key, () -> {
+			T t = factory.instantiate(key);
+			if (t != null) {
+				add(t);
+			}
 			return t;
-		}
-
-		t = factory.instantiate(key);
-		if (t != null) {
-			add(t);
-		}
-		return t;
+		});
 	}
 
-	private synchronized T instantiateAndCacheSafely(DBRecord record) {
-		// check if another thread got here first
-		T t = refCache.get(record.getKey());
-		if (t != null && t.refreshIfNeeded()) {
-			return t;
+	private T instantiateAndCacheSafely(DBRecord record) {
+		return instantiateAndCacheSafely(record.getKey(), () -> add(factory.instantiate(record)));
+	}
+
+	private T instantiateAndCacheSafely(Long key, Supplier<T> instantiator) {
+		KeyMonitor monitor =
+			instantiating.compute(key, (k, m) -> m == null ? new KeyMonitor() : m.join());
+		try {
+			synchronized (monitor) {
+				// check if another thread got here first
+				T t = refCache.get(key);
+				if (t != null && t.refreshIfNeeded()) {
+					return t;
+				}
+				return instantiator.get();
+			}
 		}
-		t = factory.instantiate(record);
-		add(t);
-		return t;
+		finally {
+			instantiating.computeIfPresent(key, (k, m) -> m.leave() ? null : m);
+		}
+	}
+
+	/**
+	 * The monitor of one key being instantiated and the number of threads that use it. The count
+	 * only changes inside {@link ConcurrentHashMap#compute} for the key, which serializes it.
+	 */
+	private static class KeyMonitor {
+		private int users = 1;
+
+		KeyMonitor join() {
+			users++;
+			return this;
+		}
+
+		boolean leave() {
+			return --users == 0;
+		}
 	}
 
 	/**
