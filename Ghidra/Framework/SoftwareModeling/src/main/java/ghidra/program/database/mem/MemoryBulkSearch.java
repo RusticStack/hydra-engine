@@ -19,6 +19,7 @@ import java.util.Arrays;
 
 import ghidra.program.model.address.*;
 import ghidra.program.model.mem.MemoryAccessException;
+import ghidra.util.Msg;
 import ghidra.util.task.TaskMonitor;
 
 /**
@@ -26,22 +27,37 @@ import ghidra.util.task.TaskMonitor;
  * <p>
  * The legacy search ({@link #legacyFind}, the code that was in MemoryMapDB) visits one address at
  * a time and reads {@code pattern.length} bytes through the whole memory lock chain at each one.
- * The bulk search ({@link #bulkFind}) reads 64 KB chunks (plus {@code pattern.length - 1} bytes of
- * overlap) per address range and scans each chunk with a {@link ByteScanner} (native SIMD when
- * its library is loaded, Java otherwise). Its result is the same address: the legacy search
- * returns the first (forward) or last (backward) address of the set, in iteration order, whose
- * {@code pattern.length} bytes can be read in full and match; its skip step never jumps over a
- * match (it skips {@code j} only when the read window rules out every start before {@code j}).
- * Where a chunk read comes back short or fails, the bulk search decides those addresses with the
- * legacy per-address check, so read failures behave the same. Only progress and the moment a
- * cancel is noticed differ (per chunk instead of per address).
+ * The bulk search ({@link #bulkFind}) reads chunks per address range, starting at
+ * {@link #FIRST_CHUNK} candidates and doubling up to 64 KB (plus {@code pattern.length - 1} bytes
+ * of overlap), and scans each chunk with a {@link ByteScanner} (native SIMD when its library is
+ * loaded, Java otherwise; a failing native scanner falls back to Java). It returns the first
+ * (forward) or last (backward) address of the set, in iteration order, whose
+ * {@code pattern.length} bytes can be read in full and match, which is the legacy result (its
+ * skip step never jumps over a match: it skips {@code j} only when the read window rules out
+ * every start before {@code j}). Where a chunk read comes back short or fails, the read is
+ * retried smaller down to one window, or (backward) the window is decided by the legacy check.
+ * <p>
+ * Intended differences from the legacy search:
+ * <ul>
+ * <li>Progress and cancellation are noticed per chunk instead of per address.</li>
+ * <li>{@code findBytes(start, end = null, ...)} used to throw a NullPointerException; it now
+ * searches without an end.</li>
+ * <li>With an end address, forward: when the legacy skip step overflowed at the top of an
+ * address space it advanced its address iterator by {@code j} set addresses instead, which could
+ * jump past the first addresses of the next space or range and miss a match there. The bulk
+ * search does not skip them (the same result as the legacy search without an end address);
+ * see {@code MemoryBulkSearchTest#testLegacySkipOverflowQuirk}.</li>
+ * </ul>
  * <p>
  * System property {@code hydra.memory.findBytes.bulk=false} selects the legacy search.
  */
 public final class MemoryBulkSearch {
 
-	/** Candidate window starts per chunk. */
+	/** Maximum candidate window starts per chunk. */
 	static final int CHUNK = 64 * 1024;
+
+	/** Candidate window starts in the first chunk of a range (doubles up to {@link #CHUNK}). */
+	static final int FIRST_CHUNK = 32;
 
 	static final boolean BULK_ENABLED =
 		!"false".equalsIgnoreCase(System.getProperty("hydra.memory.findBytes.bulk"));
@@ -73,7 +89,7 @@ public final class MemoryBulkSearch {
 			byte[] masks, boolean forward, TaskMonitor monitor, ByteReader reader) {
 		if (BULK_ENABLED) {
 			return bulkFind(set, start, end, bytes, masks, forward, monitor, reader,
-				ByteScanner.preferred());
+				scannerFailed ? ByteScanner.JAVA : ByteScanner.preferred());
 		}
 		return legacyFind(set, start, end, bytes, masks, forward, monitor, reader);
 	}
@@ -102,7 +118,7 @@ public final class MemoryBulkSearch {
 		return bulkFind(set, start, end, bytes, masks, forward, monitor, reader, scanner, CHUNK);
 	}
 
-	/** {@link #bulkFind} with a chunk size (tests use small chunks to hit chunk edges). */
+	/** {@link #bulkFind} with a maximum chunk size (tests use small chunks to hit chunk edges). */
 	static Address bulkFind(AddressSetView set, Address start, Address end, byte[] bytes,
 			byte[] masks, boolean forward, TaskMonitor monitor, ByteReader reader,
 			ByteScanner scanner, int chunk) {
@@ -113,8 +129,7 @@ public final class MemoryBulkSearch {
 			// degenerate patterns keep their exact legacy behaviour
 			return legacyFind(set, start, end, bytes, masks, forward, monitor, reader);
 		}
-		byte[] buf = new byte[chunk + bytes.length - 1];
-		byte[] one = new byte[bytes.length];
+		Scan s = new Scan(bytes, masks, monitor, reader, scanner, chunk);
 		AddressRangeIterator ranges = set.getAddressRanges(start, forward);
 		while (ranges.hasNext()) {
 			if (monitor.isCancelled()) {
@@ -139,8 +154,7 @@ public final class MemoryBulkSearch {
 				if (lo.compareTo(hi) > 0) {
 					continue;
 				}
-				found = scanForward(lo, hi, bytes, masks, monitor, reader, scanner, buf, one,
-					chunk);
+				found = s.forward(lo, hi);
 			}
 			else {
 				if (hi.compareTo(start) > 0) {
@@ -157,8 +171,7 @@ public final class MemoryBulkSearch {
 				if (lo.compareTo(hi) > 0) {
 					continue;
 				}
-				found = scanBackward(lo, hi, bytes, masks, monitor, reader, scanner, buf, one,
-					chunk);
+				found = s.backward(lo, hi);
 			}
 			if (found != null || monitor.isCancelled()) {
 				return found;
@@ -167,98 +180,179 @@ public final class MemoryBulkSearch {
 		return null;
 	}
 
-	/** Bytes read at addr into buf[0, want), or 0 when the read fails. */
-	private static int read(ByteReader reader, Address addr, byte[] buf, int want) {
-		try {
-			int n = reader.getBytes(addr, buf, 0, want);
-			return Math.max(0, Math.min(n, want));
-		}
-		catch (Exception e) {
-			return 0;
-		}
+	/**
+	 * Set once a scanner other than {@link ByteScanner#JAVA} failed: {@link #find} then uses the
+	 * Java one for the rest of the process.
+	 */
+	private static volatile boolean scannerFailed;
+
+	/** @return whether a scanner failure switched {@link #find} to the Java scanner */
+	static boolean scannerFailed() {
+		return scannerFailed;
 	}
 
-	/** Candidates left from pos to last inclusive, capped at CHUNK (unsigned arithmetic). */
-	private static int chunkCount(long pos, long last, int chunk) {
+	/** Tests: forget a recorded scanner failure. */
+	static void resetScannerFailed() {
+		scannerFailed = false;
+	}
+
+	/** Candidates left from pos to last inclusive, capped at step (unsigned arithmetic). */
+	private static int chunkCount(long pos, long last, int step) {
 		long left = last - pos + 1; // 0 means 2^64 candidates
-		if (left == 0 || Long.compareUnsigned(left, chunk) > 0) {
-			return chunk;
+		if (left == 0 || Long.compareUnsigned(left, step) > 0) {
+			return step;
 		}
 		return (int) left;
 	}
 
-	private static Address scanForward(Address lo, Address hi, byte[] bytes, byte[] masks,
-			TaskMonitor monitor, ByteReader reader, ByteScanner scanner, byte[] buf, byte[] one,
-			int chunk) {
-		int len = bytes.length;
-		long last = hi.subtract(lo);
-		long pos = 0;
-		while (Long.compareUnsigned(pos, last) <= 0) {
-			if (monitor.isCancelled()) {
-				return null;
+	/**
+	 * One bulk search. The chunk size starts at {@link #FIRST_CHUNK} and doubles after every
+	 * chunk read in full up to the maximum, so a match near the start costs about one small
+	 * read (dense matches, repeated {@code findBytes(found + 1)}), and a long scan reaches 64 KB
+	 * reads after a few chunks. After a chunk read that comes back short or throws, the chunk
+	 * size is halved and the read retried, so a range whose end is followed by memory that
+	 * throws costs O(log chunk) failed reads, not one failed chunk read per address. A window
+	 * that cannot be read on its own (a one-candidate read of {@code pattern.length} bytes, the
+	 * same read the legacy check makes) does not match, as in the legacy search.
+	 */
+	private static final class Scan {
+		final byte[] bytes;
+		final byte[] masks;
+		final TaskMonitor monitor;
+		final ByteReader reader;
+		ByteScanner scanner;
+		final int chunk;
+		final int len;
+		byte[] buf;
+		final byte[] one;
+
+		Scan(byte[] bytes, byte[] masks, TaskMonitor monitor, ByteReader reader,
+				ByteScanner scanner, int chunk) {
+			this.bytes = bytes;
+			this.masks = masks;
+			this.monitor = monitor;
+			this.reader = reader;
+			this.scanner = scanner;
+			this.chunk = chunk;
+			this.len = bytes.length;
+			this.one = new byte[len];
+			this.buf = new byte[Math.min(FIRST_CHUNK, chunk) + len - 1];
+		}
+
+		/** Bytes read at addr into buf[0, want), or 0 when the read fails. */
+		int read(Address addr, int want) {
+			if (buf.length < want) {
+				buf = new byte[Math.max(want, Math.min(buf.length * 2, chunk + len - 1))];
 			}
-			int count = chunkCount(pos, last, chunk);
-			Address a = lo.add(pos);
-			int n = read(reader, a, buf, count + len - 1);
-			int full = Math.min(count, n - len + 1);
-			if (full > 0) {
-				int k = scanner.find(buf, full, bytes, masks, true);
-				if (k >= 0) {
-					return a.add(k);
-				}
-				monitor.incrementProgress(full);
-				pos += full;
+			try {
+				int n = reader.getBytes(addr, buf, 0, want);
+				return Math.max(0, Math.min(n, want));
 			}
-			else {
-				// the window at a cannot be read in full in bulk: decide it the legacy way
-				if (match(a, bytes, masks, one, true, reader) == 1) {
-					return a;
-				}
-				monitor.incrementProgress(1);
-				pos += 1;
-			}
-			if (pos == 0) {
-				break; // wrapped after the last address of a full 64-bit range
+			catch (Exception e) {
+				return 0;
 			}
 		}
-		return null;
-	}
 
-	private static Address scanBackward(Address lo, Address hi, byte[] bytes, byte[] masks,
-			TaskMonitor monitor, ByteReader reader, ByteScanner scanner, byte[] buf, byte[] one,
-			int chunk) {
-		int len = bytes.length;
-		long top = hi.subtract(lo); // highest candidate, relative to lo
-		while (true) {
-			if (monitor.isCancelled()) {
-				return null;
-			}
-			int count = chunkCount(0, top, chunk);
-			long base = top - count + 1;
-			Address a = lo.add(base);
-			int n = read(reader, a, buf, count + len - 1);
-			int full = Math.max(0, Math.min(count, n - len + 1));
-			// the highest candidates whose windows were not read in full: legacy check each
-			for (int i = count - 1; i >= full; i--) {
-				Address c = a.add(i);
-				if (match(c, bytes, masks, one, false, reader) == 1) {
-					return c;
+		/** The scanner, falling back to the Java one if a native scanner fails. */
+		int scan(int count, boolean forward) {
+			if (scanner != ByteScanner.JAVA) {
+				try {
+					return scanner.find(buf, count, bytes, masks, forward);
 				}
+				catch (RuntimeException e) {
+					if (!scannerFailed) {
+						scannerFailed = true;
+						Msg.warn(MemoryBulkSearch.class, "Byte scanner " + scanner.name() +
+							" failed (" + e + "); using the Java scanner from now on", e);
+					}
+					scanner = ByteScanner.JAVA;
+				}
+			}
+			return ByteScanner.JAVA.find(buf, count, bytes, masks, forward);
+		}
+
+		Address forward(Address lo, Address hi) {
+			long last = hi.subtract(lo);
+			long pos = 0;
+			int step = Math.min(FIRST_CHUNK, chunk);
+			while (Long.compareUnsigned(pos, last) <= 0) {
 				if (monitor.isCancelled()) {
 					return null;
 				}
-			}
-			if (full > 0) {
-				int k = scanner.find(buf, full, bytes, masks, false);
-				if (k >= 0) {
-					return a.add(k);
+				int count = chunkCount(pos, last, step);
+				Address a = lo.add(pos);
+				int n = read(a, count + len - 1);
+				int full = Math.max(0, Math.min(count, n - len + 1));
+				if (full > 0) {
+					int k = scan(full, true);
+					if (k >= 0) {
+						return a.add(k);
+					}
+				}
+				int done;
+				if (full == count) {
+					done = count;
+					step = Math.min(chunk, step * 2);
+				}
+				else if (full > 0) {
+					done = full; // retry the rest with a smaller read
+					step = Math.max(1, step / 2);
+				}
+				else if (count > 1) {
+					done = 0;
+					step = Math.max(1, Math.min(step, count) / 2);
+				}
+				else {
+					// one candidate whose len bytes cannot be read: the legacy check reads the
+					// same len bytes at the same address, so it does not match either
+					done = 1;
+				}
+				if (done > 0) {
+					monitor.incrementProgress(done);
+					pos += done;
+					if (pos == 0) {
+						break; // wrapped after the last address of a full 64-bit range
+					}
 				}
 			}
-			monitor.incrementProgress(count);
-			if (base == 0) {
-				return null;
+			return null;
+		}
+
+		Address backward(Address lo, Address hi) {
+			long top = hi.subtract(lo); // highest candidate, relative to lo
+			int step = Math.min(FIRST_CHUNK, chunk);
+			while (true) {
+				if (monitor.isCancelled()) {
+					return null;
+				}
+				int count = chunkCount(0, top, step);
+				long base = top - count + 1;
+				Address a = lo.add(base);
+				int n = read(a, count + len - 1);
+				int full = Math.max(0, Math.min(count, n - len + 1));
+				// the highest candidates whose windows were not read in full: legacy check each
+				for (int i = count - 1; i >= full; i--) {
+					Address c = a.add(i);
+					if (match(c, bytes, masks, one, false, reader) == 1) {
+						return c;
+					}
+					if (monitor.isCancelled()) {
+						return null;
+					}
+				}
+				if (full > 0) {
+					int k = scan(full, false);
+					if (k >= 0) {
+						return a.add(k);
+					}
+				}
+				monitor.incrementProgress(count);
+				if (base == 0) {
+					return null;
+				}
+				top = base - 1;
+				step = full == count ? Math.min(chunk, step * 2) : Math.min(FIRST_CHUNK, chunk);
 			}
-			top = base - 1;
 		}
 	}
 

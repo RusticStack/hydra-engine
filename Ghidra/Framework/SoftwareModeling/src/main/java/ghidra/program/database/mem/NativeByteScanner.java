@@ -27,8 +27,10 @@ import ghidra.util.Msg;
 
 /**
  * {@link ByteScanner} backed by the Rust crate {@code hydra_scan} (memchr / aho-corasick SIMD)
- * through FFM. The calls are {@link Linker.Option#critical(boolean) critical} with heap access,
- * so Java arrays are passed without a copy.
+ * through FFM. {@link #find} (one chunk of at most 64 KB) is a
+ * {@link Linker.Option#critical(boolean) critical} call with heap access, so Java arrays are passed
+ * without a copy. {@link #findAll} can scan a whole block, so it is an ordinary downcall (the JVM
+ * can reach a safepoint while it runs) on off-heap copies of its arguments.
  * <p>
  * The library is found from, in order: the system property {@code hydra.scan.native.lib} (a
  * file path), then the module's OS directory ({@code os/<platform>/hydra_scan.dll},
@@ -64,8 +66,7 @@ public final class NativeByteScanner implements ByteScanner {
 			critical);
 		findAll = linker.downcallHandle(lookup.find("hydra_scan_find_all").orElseThrow(),
 			FunctionDescriptor.of(JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS,
-				JAVA_INT, JAVA_INT, ADDRESS, ADDRESS, JAVA_LONG),
-			critical);
+				JAVA_INT, JAVA_INT, ADDRESS, ADDRESS, JAVA_LONG));
 	}
 
 	/**
@@ -89,10 +90,23 @@ public final class NativeByteScanner implements ByteScanner {
 		synchronized (NativeByteScanner.class) {
 			if (!resolved) {
 				instance = resolve();
-				resolved = true;
+				// before Application init the module os/ directory is unknown: decide later
+				resolved = instance != null || explicitlyConfigured() ||
+					Application.isInitialized();
 			}
 			return instance;
 		}
+	}
+
+	/** @return whether the lookup is final (tests) */
+	static boolean isResolved() {
+		return resolved;
+	}
+
+	private static boolean explicitlyConfigured() {
+		String path = System.getProperty("hydra.scan.native.lib");
+		return (path != null && !path.isBlank()) ||
+			"false".equalsIgnoreCase(System.getProperty("hydra.scan.native"));
 	}
 
 	private static NativeByteScanner resolve() {
@@ -173,32 +187,37 @@ public final class NativeByteScanner implements ByteScanner {
 			System.arraycopy(p, 0, concat, at, p.length);
 			at += p.length;
 		}
-		int cap = 1024;
-		while (true) {
-			long[] offs = new long[cap];
-			int[] pats = new int[cap];
-			long n;
-			try {
-				n = (long) findAll.invokeExact(MemorySegment.ofArray(data), (long) dataLen,
-					MemorySegment.ofArray(concat), (long) concat.length,
-					MemorySegment.ofArray(lens), patterns.length, asciiCaseInsensitive ? 1 : 0,
-					MemorySegment.ofArray(offs), MemorySegment.ofArray(pats), (long) cap);
+		long cap = Math.max(1024, dataLen / 64);
+		try (Arena arena = Arena.ofConfined()) {
+			MemorySegment dataSeg = arena.allocate(Math.max(1, dataLen));
+			MemorySegment.copy(data, 0, dataSeg, JAVA_BYTE, 0, dataLen);
+			MemorySegment patSeg = arena.allocateFrom(JAVA_BYTE, concat);
+			MemorySegment lenSeg = arena.allocateFrom(JAVA_INT, lens);
+			while (true) {
+				MemorySegment offs = arena.allocate(JAVA_LONG, cap);
+				MemorySegment pats = arena.allocate(JAVA_INT, cap);
+				long n;
+				try {
+					n = (long) findAll.invokeExact(dataSeg, (long) dataLen, patSeg,
+						(long) concat.length, lenSeg, patterns.length,
+						asciiCaseInsensitive ? 1 : 0, offs, pats, cap);
+				}
+				catch (Throwable t) {
+					throw new IllegalStateException("hydra_scan_find_all failed", t);
+				}
+				if (n < 0) {
+					throw new IllegalStateException("hydra_scan_find_all error " + n);
+				}
+				if (n <= cap) {
+					int k = (int) n;
+					return new Matches(offs.asSlice(0, k * 8L).toArray(JAVA_LONG),
+						pats.asSlice(0, k * 4L).toArray(JAVA_INT));
+				}
+				if (n > Integer.MAX_VALUE - 8) {
+					throw new IllegalStateException("too many matches: " + n);
+				}
+				cap = n;
 			}
-			catch (Throwable t) {
-				throw new IllegalStateException("hydra_scan_find_all failed", t);
-			}
-			if (n < 0) {
-				throw new IllegalStateException("hydra_scan_find_all error " + n);
-			}
-			if (n <= cap) {
-				int k = (int) n;
-				return new Matches(java.util.Arrays.copyOf(offs, k),
-					java.util.Arrays.copyOf(pats, k));
-			}
-			if (n > Integer.MAX_VALUE - 8) {
-				throw new IllegalStateException("too many matches: " + n);
-			}
-			cap = (int) n;
 		}
 	}
 

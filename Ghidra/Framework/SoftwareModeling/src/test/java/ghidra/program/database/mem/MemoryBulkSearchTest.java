@@ -16,6 +16,7 @@
 package ghidra.program.database.mem;
 
 import static org.junit.Assert.*;
+import static org.junit.Assume.assumeTrue;
 
 import java.nio.file.*;
 import java.util.*;
@@ -31,8 +32,9 @@ import ghidra.util.task.TaskMonitor;
  * The bulk {@link MemoryMapDB#findBytes} search ({@link MemoryBulkSearch#bulkFind}) against the
  * former per-address search ({@link MemoryBulkSearch#legacyFind}) on random memory layouts, and
  * the native scanner against the Java scanner. The native part runs when the system property
- * {@code hydra.scan.native.lib} names the built {@code hydra_scan} library (it is skipped, and
- * says so on stderr, otherwise).
+ * {@code hydra.scan.native.lib} names the built {@code hydra_scan} library; otherwise those tests
+ * are reported as skipped (JUnit assumptions), as is the fixture test without
+ * {@code hydra.scan.fixture}.
  */
 public class MemoryBulkSearchTest {
 
@@ -47,6 +49,7 @@ public class MemoryBulkSearchTest {
 		final Set<Address> broken = new HashSet<>(); // reads that touch these blocks throw
 		boolean stopAtBlockEnd; // reads never cross a block boundary
 		final AtomicLong calls = new AtomicLong();
+		final AtomicLong requested = new AtomicLong(); // bytes asked for, over all calls
 
 		void add(Address start, byte[] bytes) {
 			blocks.put(start, bytes);
@@ -64,6 +67,7 @@ public class MemoryBulkSearchTest {
 		public int getBytes(Address addr, byte[] dest, int destIndex, int size)
 				throws MemoryAccessException {
 			calls.incrementAndGet();
+			requested.addAndGet(size);
 			int n = 0;
 			Address a = addr;
 			while (n < size) {
@@ -101,11 +105,8 @@ public class MemoryBulkSearchTest {
 
 	private static ByteScanner nativeScanner() {
 		String lib = System.getProperty("hydra.scan.native.lib");
-		if (lib == null || !Files.isRegularFile(Path.of(lib))) {
-			System.err.println("MemoryBulkSearchTest: hydra.scan.native.lib not set, native " +
-				"comparisons skipped");
-			return null;
-		}
+		assumeTrue("hydra.scan.native.lib not set: native comparison skipped",
+			lib != null && Files.isRegularFile(Path.of(lib)));
 		try {
 			return NativeByteScanner.load(Path.of(lib));
 		}
@@ -202,7 +203,15 @@ public class MemoryBulkSearchTest {
 
 	@Test
 	public void testBulkFindEqualsLegacyOnRandomLayouts() {
-		ByteScanner nat = nativeScanner();
+		randomLayouts(ByteScanner.JAVA);
+	}
+
+	@Test
+	public void testNativeBulkFindEqualsLegacyOnRandomLayouts() {
+		randomLayouts(nativeScanner());
+	}
+
+	private static void randomLayouts(ByteScanner scanner) {
 		Random r = new Random(0x5CA45L);
 		int compared = 0;
 		int found = 0;
@@ -225,15 +234,11 @@ public class MemoryBulkSearchTest {
 			Address want = MemoryBulkSearch.legacyFind(set, start, end, p, mask, fwd,
 				TaskMonitor.DUMMY, m);
 			Address got = MemoryBulkSearch.bulkFind(set, start, end, p, mask, fwd,
-				TaskMonitor.DUMMY, m, ByteScanner.JAVA, chunk);
-			String ctx = "trial " + trial + " start=" + start + " end=" + end + " fwd=" + fwd +
+				TaskMonitor.DUMMY, m, scanner, chunk);
+			String ctx = scanner.name() + " trial " + trial + " start=" + start + " end=" + end + " fwd=" + fwd +
 				" chunk=" + chunk + " pat=" + Arrays.toString(p) + " mask=" +
 				Arrays.toString(mask) + " set=" + set;
 			assertEquals(ctx, want, got);
-			if (nat != null) {
-				assertEquals("native " + ctx, want, MemoryBulkSearch.bulkFind(set, start, end, p,
-					mask, fwd, TaskMonitor.DUMMY, m, nat, chunk));
-			}
 			compared++;
 			if (want != null) {
 				found++;
@@ -283,6 +288,144 @@ public class MemoryBulkSearchTest {
 			new byte[] { 2 }, null, true, cancelled, m));
 	}
 
+	/**
+	 * A range followed by memory whose reads throw (MemoryMapDB.getBytes throws for a mapped
+	 * block over uninitialized source after copying the earlier blocks): the bytes requested stay
+	 * linear in the range size instead of one failed 64 KB read per address.
+	 */
+	@Test
+	public void testThrowingReadPastRangeEndStaysLinear() {
+		int size = 64 * 1024;
+		for (boolean present : new boolean[] { false, true }) {
+			FakeMemory m = new FakeMemory();
+			byte[] a = new byte[size];
+			if (present) {
+				a[size - 2] = 1;
+				a[size - 1] = 2;
+			}
+			m.add(RAM.getAddress(0x10000), a);
+			m.add(RAM.getAddress(0x10000 + size), new byte[size]);
+			m.broken.add(RAM.getAddress(0x10000 + size));
+			AddressSet set = new AddressSet(RAM.getAddress(0x10000),
+				RAM.getAddress(0x10000 + size - 1));
+			byte[] p = { 1, 2 };
+			Address want = MemoryBulkSearch.legacyFind(set, set.getMinAddress(), null, p, null,
+				true, TaskMonitor.DUMMY, m);
+			m.requested.set(0);
+			m.calls.set(0);
+			Address got = MemoryBulkSearch.bulkFind(set, set.getMinAddress(), null, p, null, true,
+				TaskMonitor.DUMMY, m, ByteScanner.JAVA);
+			assertEquals(want, got);
+			assertEquals(present ? RAM.getAddress(0x10000 + size - 2) : null, got);
+			assertTrue("bytes requested: " + m.requested.get(), m.requested.get() < 4L * size);
+			assertTrue("reads: " + m.calls.get(), m.calls.get() < 200);
+		}
+	}
+
+	/** A match next to the start costs one small read, not a 64 KB one. */
+	@Test
+	public void testNearMatchReadsLittle() {
+		FakeMemory m = new FakeMemory();
+		byte[] b = new byte[1 << 20];
+		Arrays.fill(b, (byte) 0xCC);
+		m.add(RAM.getAddress(0x1000), b);
+		for (boolean fwd : new boolean[] { true, false }) {
+			m.requested.set(0);
+			m.calls.set(0);
+			Address st = fwd ? RAM.getAddress(0x1000) : RAM.getAddress(0x1000 + b.length - 1);
+			assertEquals(st, MemoryBulkSearch.bulkFind(m.all(), st, null,
+				new byte[] { (byte) 0xCC }, null, fwd, TaskMonitor.DUMMY, m, ByteScanner.JAVA));
+			assertEquals(1, m.calls.get());
+			assertTrue("bytes requested: " + m.requested.get(),
+				m.requested.get() <= MemoryBulkSearch.FIRST_CHUNK);
+		}
+		// a range of 3 addresses: the read is 3 + len - 1 bytes
+		m.requested.set(0);
+		AddressSet small = new AddressSet(RAM.getAddress(0x2000), RAM.getAddress(0x2002));
+		assertNull(MemoryBulkSearch.bulkFind(small, RAM.getAddress(0x2000), null,
+			new byte[] { 1, 2 }, null, true, TaskMonitor.DUMMY, m, ByteScanner.JAVA));
+		assertEquals(4, m.requested.get());
+	}
+
+	/**
+	 * Intended difference: the legacy with-end search, when its skip overflows at the top of a
+	 * space, advances its iterator by j set addresses and misses a match at the start of the
+	 * next space. The bulk search finds it, as does the legacy search without an end.
+	 */
+	@Test
+	public void testLegacySkipOverflowQuirk() {
+		AddressSpace a = new GenericAddressSpace("a", 16, AddressSpace.TYPE_RAM, 2);
+		AddressSpace bsp = new GenericAddressSpace("b", 16, AddressSpace.TYPE_RAM, 3);
+		FakeMemory m = new FakeMemory();
+		m.add(a.getAddress(0xFFF0), new byte[16]);
+		byte[] bb = new byte[16];
+		bb[0] = 1;
+		bb[1] = 2;
+		bb[2] = 3;
+		bb[3] = 4;
+		m.add(bsp.getAddress(0), bb);
+		AddressSet set = m.all();
+		byte[] p = { 1, 2, 3, 4 };
+		Address st = a.getAddress(0xFFF0);
+		Address end = bsp.getAddress(0xF);
+		assertNull(MemoryBulkSearch.legacyFind(set, st, end, p, null, true, TaskMonitor.DUMMY, m));
+		assertEquals(bsp.getAddress(0),
+			MemoryBulkSearch.legacyFind(set, st, null, p, null, true, TaskMonitor.DUMMY, m));
+		assertEquals(bsp.getAddress(0), MemoryBulkSearch.bulkFind(set, st, end, p, null, true,
+			TaskMonitor.DUMMY, m, ByteScanner.JAVA));
+	}
+
+	/** Before Application init the native lookup is not pinned to "absent" for the process. */
+	@Test
+	public void testNativeLookupRetriedAfterApplicationInit() {
+		assumeTrue("needs no explicit native configuration",
+			System.getProperty("hydra.scan.native.lib") == null &&
+				System.getProperty("hydra.scan.native") == null);
+		assumeTrue("needs an uninitialized Application",
+			!ghidra.framework.Application.isInitialized());
+		assertNull(NativeByteScanner.instance());
+		assertFalse(NativeByteScanner.isResolved());
+		assertSame(ByteScanner.JAVA, ByteScanner.preferred());
+	}
+
+	/** A failing scanner does not fail the search: the chunk is redone with the Java scanner. */
+	@Test
+	public void testFailingScannerFallsBackToJava() {
+		ByteScanner bad = new ByteScanner() {
+			@Override
+			public int find(byte[] data, int count, byte[] pattern, byte[] mask,
+					boolean forward) {
+				throw new IllegalStateException("hydra_scan_find error -2");
+			}
+
+			@Override
+			public Matches findAll(byte[] data, int dataLen, byte[][] patterns, boolean ci) {
+				throw new IllegalStateException();
+			}
+
+			@Override
+			public String name() {
+				return "bad";
+			}
+		};
+		FakeMemory m = new FakeMemory();
+		byte[] b = new byte[5000];
+		b[4000] = 7;
+		m.add(RAM.getAddress(0), b);
+		try {
+			for (boolean fwd : new boolean[] { true, false }) {
+				Address st = RAM.getAddress(fwd ? 0 : 4999);
+				assertEquals(RAM.getAddress(4000), MemoryBulkSearch.bulkFind(m.all(), st, null,
+					new byte[] { 7 }, null, fwd, TaskMonitor.DUMMY, m, bad));
+			}
+			assertTrue(MemoryBulkSearch.scannerFailed());
+		}
+		finally {
+			MemoryBulkSearch.resetScannerFailed();
+		}
+	}
+
+
 	// ---------------------------------------------------------------------------------------
 	// scanner kernels: Java vs native
 	// ---------------------------------------------------------------------------------------
@@ -314,9 +457,6 @@ public class MemoryBulkSearchTest {
 	@Test
 	public void testNativeFindEqualsJava() {
 		ByteScanner nat = nativeScanner();
-		if (nat == null) {
-			return;
-		}
 		Random r = new Random(11);
 		for (int t = 0; t < 20000; t++) {
 			int alpha = 1 + r.nextInt(r.nextBoolean() ? 4 : 256);
@@ -348,9 +488,6 @@ public class MemoryBulkSearchTest {
 	@Test
 	public void testNativeFindAllEqualsJava() {
 		ByteScanner nat = nativeScanner();
-		if (nat == null) {
-			return;
-		}
 		Random r = new Random(13);
 		byte[] alphabet = "aAbBzZ\0\u0001".getBytes(java.nio.charset.StandardCharsets.ISO_8859_1);
 		for (int t = 0; t < 3000; t++) {
@@ -384,10 +521,8 @@ public class MemoryBulkSearchTest {
 	public void testNativeEqualsJavaOnFixture() throws Exception {
 		ByteScanner nat = nativeScanner();
 		String fx = System.getProperty("hydra.scan.fixture");
-		if (nat == null || fx == null || !Files.isRegularFile(Path.of(fx))) {
-			System.err.println("MemoryBulkSearchTest: fixture comparison skipped");
-			return;
-		}
+		assumeTrue("hydra.scan.fixture not set: fixture comparison skipped",
+			fx != null && Files.isRegularFile(Path.of(fx)));
 		byte[] d = Files.readAllBytes(Path.of(fx));
 		byte[][] pats = { { 0x55, (byte) 0x8B, (byte) 0xEC }, { (byte) 0xCC, (byte) 0xCC },
 			"This program".getBytes(), "kernel32".getBytes(), { 0x6A, 0x00 },
