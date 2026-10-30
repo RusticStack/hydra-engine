@@ -61,7 +61,7 @@ branch), so every gate result is open.
 | GR10 | a fork path is absent or complete, and no staging artefact survives the next sweep | K6; at least 300 kills during `fork_project` | not run by R1 |
 | GR11 | a killed daemon is recoverable without manual repair, and operations in one project never change or delay another | K8, K9, K10; B's `s5`/`s13` | not run by R1 |
 
-"A deaf script is killed" may be written only after the E7 items of 9.14 pass; E7 is absent from the tree.
+"A deaf script is killed" may be written only after the E7 items of 9.14 pass; E7 is in the tree and its 9.14 items passed on the candidate (gate run 2026-10-30), while 9.14 as a whole waits on its throughput item.
 
 ## 2a. Limits the release states (PROTOCOL-3.md 6.2)
 
