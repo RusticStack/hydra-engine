@@ -391,6 +391,58 @@ public class JournalTest {
 		assertEquals(Journal.CAP, j.since(0, a.id, Integer.MAX_VALUE).size());
 	}
 
+	/**
+	 * A lock-free read never runs ahead of {@link Journal#seq()}: an entry that {@code byRk} or
+	 * {@code lastAt} returns is already published, so a {@code seq()} read after it covers it (as
+	 * under the synchronized journal). One writer appends to one address and key while readers
+	 * check each answer against the {@code seq} they read just after it.
+	 */
+	@Test
+	public void readsNeverRunAheadOfSeq() throws Exception {
+		Journal j = new Journal(1000);
+		Client a = client(1);
+		AtomicBoolean done = new AtomicBoolean();
+		AtomicReference<String> fault = new AtomicReference<>();
+		ExecutorService pool = Executors.newFixedThreadPool(3);
+		List<Future<?>> rs = new ArrayList<>();
+		for (int r = 0; r < 2; r++) {
+			boolean byKey = r == 0;
+			rs.add(pool.submit(() -> {
+				while (!done.get()) {
+					long got;
+					if (byKey) {
+						List<JsonObject> l = j.byRk("k");
+						got = l.isEmpty() ? 0 : seqOf(l.get(l.size() - 1));
+					}
+					else {
+						JsonObject e = j.lastAt("x", "name");
+						got = e == null ? 0 : seqOf(e);
+					}
+					long s = j.seq();
+					if (got > s) {
+						fault.compareAndSet(null,
+							(byKey ? "byRk" : "lastAt") + " returned seq " + got + " while seq() was " + s);
+					}
+				}
+				return null;
+			}));
+		}
+		Future<?> w = pool.submit(() -> {
+			long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+			while (System.nanoTime() < end && fault.get() == null) {
+				j.add(a, "edit", change("rename", "x", "k"));
+			}
+			return null;
+		});
+		w.get(60, TimeUnit.SECONDS);
+		done.set(true);
+		for (Future<?> f : rs) {
+			f.get(30, TimeUnit.SECONDS);
+		}
+		pool.shutdown();
+		assertNull(fault.get(), fault.get());
+	}
+
 	/** A dropped entry is released at once (no strong reference left in the journal). */
 	@Test
 	public void droppedEntryIsReleased() throws Exception {

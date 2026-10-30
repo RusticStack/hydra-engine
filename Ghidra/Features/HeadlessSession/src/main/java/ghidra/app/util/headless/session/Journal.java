@@ -38,15 +38,19 @@ import com.google.gson.*;
  * never waits for another writer here (the {@code append} monitor only keeps that true if a
  * caller ever journals outside the commit lock). Readers ({@code since}, {@code byRk},
  * {@code lastAt}, {@code newestFirst}, {@code seq}, {@code dropped}) take no lock: an entry is
- * immutable once appended and is published by the volatile {@code seq}.
+ * immutable once appended and is published by the volatile {@code seq}. The writer fills the
+ * indexes before it publishes, so a reader can find the entry being appended in an index before
+ * {@code seq} covers it; every read leaves such an entry out, so nothing a read returns runs
+ * ahead of {@link #seq()}, as under a lock.
  * <p>
  * Indexed (S21): entries sit in a ring of lazily allocated chunks indexed by {@code seq}, so the
  * entries after {@code since} cost what they return. The writer keeps three indexes so that no
  * lookup scans the journal: the {@code seq}s of each idempotency key and of each client, oldest
  * first (immutable {@link SeqRun} views, amortised O(1) per append and per drop), and the
  * {@code seq} of the last entry of each address and field. Dropping the oldest entry over the cap
- * clears its slot and removes it from the indexes. A reader that races a drop checks the slot's
- * {@code seq} and skips an entry dropped meanwhile, exactly as if it had read just after the drop.
+ * clears its slot and removes it from the indexes. A reader that finds an entry dropped under it
+ * (its slot no longer holds that {@code seq}) discards what it collected and resumes after it:
+ * drops go oldest first, so it returns one gap-free window, the one held when it found the drop.
  */
 final class Journal {
 
@@ -68,7 +72,7 @@ final class Journal {
 	private volatile long seq;
 	private final ConcurrentHashMap<String, SeqRun> rkIndex = new ConcurrentHashMap<>();
 	private final ConcurrentHashMap<Integer, SeqRun> clientIndex = new ConcurrentHashMap<>();
-	private final ConcurrentHashMap<String, Long> lastIndex = new ConcurrentHashMap<>();
+	private final ConcurrentHashMap<String, Last> lastIndex = new ConcurrentHashMap<>();
 	/** Serialises appends (the program's commit lock already does); readers never take it. */
 	private final Object append = new Object();
 
@@ -98,21 +102,23 @@ final class Journal {
 					e.add(f.getKey(), f.getValue());
 				}
 			}
+			// the keys first: a malformed entry throws before the journal changes
+			String rk = rkOf(e);
+			Integer cl = clientOf(e);
+			String key = lastKey(e);
 			if (s > cap) {
 				evict(s - cap); // the entry the cap drops now
 			}
 			put(s, e);
-			String rk = rkOf(e);
 			if (rk != null) {
 				SeqRun r = rkIndex.get(rk);
 				rkIndex.put(rk, r == null ? SeqRun.of(s) : r.plus(s));
 			}
-			Integer cl = clientOf(e);
 			SeqRun r = clientIndex.get(cl);
 			clientIndex.put(cl, r == null ? SeqRun.of(s) : r.plus(s));
-			String key = lastKey(e);
 			if (key != null) {
-				lastIndex.put(key, s);
+				Last l = lastIndex.get(key);
+				lastIndex.put(key, new Last(l == null ? 0 : l.cur, s));
 			}
 			seq = s; // publish: everything above happens-before a reader that sees s
 			return s;
@@ -136,7 +142,10 @@ final class Journal {
 		dropFirst(clientIndex, clientOf(old), s);
 		String ok = lastKey(old);
 		if (ok != null) {
-			lastIndex.remove(ok, s); // only while s is still the newest of its field
+			Last l = lastIndex.get(ok);
+			if (l != null && l.cur == s) {
+				lastIndex.remove(ok, l); // only while s is still the newest of its field
+			}
 		}
 	}
 
@@ -211,8 +220,13 @@ final class Journal {
 		if (run == null) {
 			return out;
 		}
+		long hi = seq; // read after the index, so run holds every seq of rk up to hi
 		for (int i = run.from; i < run.to; i++) {
-			JsonObject e = get(run.seqs[i]);
+			long s = run.seqs[i];
+			if (s > hi) {
+				break; // being appended: not published yet
+			}
+			JsonObject e = get(s);
 			if (e != null) {
 				out.add(e.deepCopy());
 			}
@@ -295,8 +309,20 @@ final class Journal {
 
 	/** The last change of {@code op} kind (rename/label share one) at an address, or null. */
 	JsonObject lastAt(String address, String field) {
-		Long s = lastIndex.get(address + '\u0000' + field);
-		return s == null ? null : get(s);
+		Last l = lastIndex.get(address + '\u0000' + field);
+		if (l == null) {
+			return null;
+		}
+		// seq is read after the index: cur > seq means cur is the one entry being appended now,
+		// and prev (published, since appends go one at a time) is the newest as of that seq
+		return get(l.cur <= seq ? l.cur : l.prev);
+	}
+
+	/**
+	 * The newest {@code seq} of one address and field, and the one it replaced ({@code 0} when
+	 * none), so a reader that finds {@code cur} not yet published answers with {@code prev}.
+	 */
+	private record Last(long prev, long cur) {
 	}
 
 	/**
