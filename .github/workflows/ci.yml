@@ -3,8 +3,10 @@ name: CI
 # The default build is headless (gradle buildHeadless): no window modules, help or javadoc.
 # The full Ghidra build with the window (gradle buildGhidra) runs weekly and on demand.
 
+# Pushes to main and pull requests only: a pushed work branch is tested by its pull request, not twice.
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
     inputs:
