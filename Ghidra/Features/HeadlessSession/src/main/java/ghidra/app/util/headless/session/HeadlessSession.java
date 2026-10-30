@@ -159,8 +159,12 @@ public class HeadlessSession implements GhidraLaunchable {
 		DeferredInit.add("script bundles",
 			() -> GhidraScriptUtil.acquireBundleHostReference().add(scriptDirs, true, true));
 
-		// the lanes are sized from the CPUs the OS grants the process (affinity, job CPU cap)
-		int cpus = HydraCpu.grantedCpus();
+		// the lanes are sized as before (the JVM's processor count), never below the CPUs the OS
+		// grants the process. Lane slots are request concurrency (most of a quick request waits on
+		// locks, the decompiler process or the disk), not CPU work: fewer slots than before refused
+		// readers busy that the old size served (lock waiter cap, chaos_oracle on a host whose
+		// affinity grants 16 of 24 CPUs). The CPU-bound pools use the granted CPUs (HydraCpu).
+		int cpus = Math.max(HydraCpu.grantedCpus(), Runtime.getRuntime().availableProcessors());
 		Msg.info(HeadlessSession.class, "cpu: " + HydraCpu.report());
 		int maxQuick = o.maxQuick > 0 ? o.maxQuick : cpus;
 		// the long default is max(8, CPUs) (D40; it was a quarter of the CPUs, at least 2, and a

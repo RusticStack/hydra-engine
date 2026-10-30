@@ -32,7 +32,8 @@ The daemon logs the same report at start-up (`cpu: {vendor=..., grantedCpus=...,
 | knob | generic | profile |
 | --- | --- | --- |
 | `SystemUtilities.getDefaultThreadPoolSize()` (analysis pool, `GThreadPool`s) | granted + 1 (the existing upper bound still applies) | the same: a profile moves threads, it does not shrink a pool |
-| daemon lanes (`maxQuick`, `maxLong` defaults) and decompiler gate permits | granted CPUs (gate: `min(granted, nativeBudget / 200 MB)`) | the same |
+| daemon lanes (`maxQuick`, `maxLong` defaults) | `max(granted, the JVM's processor count)`: never fewer slots than before (lane slots are request concurrency, not CPU work; on a host whose affinity grants 16 of 24 CPUs, 16 slots refused readers `busy` that 24 served) | the same |
+| decompiler gate permits | `min(granted, nativeBudget / 200 MB)` | the same |
 | thread placement | none | on a hybrid CPU: daemon request threads (`Connection` workers) select the performance CPU sets; a `GThreadPool` thread (analysis, parallel decompile) selects the efficiency CPU sets only when it starts while more pool threads are alive than there are performance CPUs (so a small pool is never confined to E-cores while P-cores idle). The daemon's guarded loops (accept, governor sampling, reaper) are never placed: they mostly sleep, and the governor is the memory-safety sampler |
 
 Placement uses `SetThreadSelectedCpuSets`. Each class takes at most as many placed threads as it has granted
