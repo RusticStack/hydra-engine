@@ -691,6 +691,10 @@ final class Session {
 				"labelled", me.labelled()));
 		}
 		o.add("upgradeCache", upgradeCache.describe());
+		if (HostDecompileBackend.enabled()) {
+			// only while the host backend is on, so the default reply is unchanged
+			o.add("decompileBackend", HostDecompileBackend.describe());
+		}
 		Json.put(o, "deferredInitMs", DeferredInit.doneMs());
 		return o;
 	}

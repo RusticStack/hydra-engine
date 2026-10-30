@@ -1017,6 +1017,16 @@ public class PcodeDataTypeManager {
 	}
 
 	/**
+	 * Hydra: the number of temporary ids assigned since the last {@link #clearTemporaryIds()}.
+	 * An encoding that assigned one is only valid within one decompilation, so the decompile
+	 * snapshot ({@code DecompileSnapshot}) never stores it.
+	 * @return the count of temporary ids handed out
+	 */
+	public long getTemporaryIdCount() {
+		return tempIDCounter;
+	}
+
+	/**
 	 * Encode the name and id associated with a given data-type to a stream as attributes
 	 * of the current element.
 	 * @param encoder is the stream encoder

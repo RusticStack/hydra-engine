@@ -143,3 +143,76 @@ non-external function, 3959 decompiles, reply JSON hashed per function): flag on
 with 1 client and with 4 concurrent clients; 4 clients vs 1 client identical. Wall, sum over the 8
 programs (on and off ran at the same time on a shared machine): 1 client off 40.3 s / on 40.0 s;
 4 clients off 12.7 s / on 12.5 s. The numbers measure the process path both times.
+
+## Step 6 status (rust/p6-snapshot-arch, 2026-10-30): the callback-free backend
+
+In place. With `-Dhydra.decomp.backend=host` a session decompile runs in this library's worker
+pool, in-process, with no call into Java while the decompiler runs.
+
+- **C++ `SnapshotArchitecture`** (`cpp/snapshot_arch.hh/.cc`, the xml_arch/sleigh_arch pattern):
+  the stock `ArchitectureGhidra` (ScopeGhidra, TypeFactoryGhidra, GhidraTranslate, ContextGhidra,
+  CommentDatabaseGhidra, PcodeInjectLibraryGhidra, ConstantPoolGhidra, GhidraStringManager,
+  LoadImageGhidra) over in-memory streams (`SnapshotChannel`). A query the decompiler writes is cut
+  from its output and answered from a `SnapshotStore` (key: the packed query payload, value: the
+  exact response bytes `DecompileProcess` writes). Registration is registerProgram (`init`), the
+  byte snapshot (`setSnapshot`, format v1, as in p2) and `setOptions`; each decompile is
+  `DecompileAt::rawAction` inside `GhidraCommand::doit`'s error handling, then `flushNative`, as
+  `DecompInterface.decompileFunction` does. Same components, same answers, so the same result.
+- **Snapshot v2 = the answer table**, exported by `DecompileSnapshot.java` (a copy of every
+  `DecompileProcess` query handler into a byte buffer, exception responses included), once per
+  program generation (modification number + encoded options; `HostDecompiler` keeps one store
+  per generation, retired when the program changes or closes). Classification: GLOBAL; SCOPED to
+  the decompiled function (its own symbol and external reference, code labels in a function
+  namespace); UNSTORABLE (p-code by pseudo-disassembly, injection at an address with no
+  instruction, any answer that handed out a temporary data-type id: the function falls back).
+- **Export**: per generation the registration answers (user-op names) and every register; per
+  function, before its first decompile, its symbol, tracked registers, comments (filter learned
+  from the first miss), the p-code of every instruction of its body, call-fixup injections of its
+  call sites, and symbol / code label / external reference of every reference target. A query the
+  store does not hold is a *miss*: optional answers (symbol: the one-byte hole the client gives;
+  external reference, comments, data type, string, register name: none; label: empty; name in
+  use: no) are fed a neutral answer and the run goes on, any other miss ends the run with an
+  exception. The host returns the misses and the answers it fed: if each fed answer is the real
+  one byte for byte, the run is used as is; otherwise the answers are exported and the decompile
+  runs again (at most 12 runs, `hydra.decomp.host.rounds`). A p-code miss inside another function
+  exports that function's p-code at once.
+- **Rust host** (`src/snapshot.rs`, cdylib `hydra_decomp_host.dll` shipped in
+  `Decompiler/os/<platform>` by the Gradle task `buildDecompHost_<platform>`): C ABI v2, a rayon
+  pool (16 MB stacks; size = granted CPUs or `hydra.decomp.host.threads`), per-worker
+  Architectures (LRU, `HYDRA_SNAPSHOT_ARCHS`, default 4), an SEH guard per job (a hardware
+  exception drops that worker's Architectures and the request falls back).
+- **Java**: `HostDecompiler` binds the library with FFM downcalls only, makes them from platform
+  threads (no virtual-thread pinning) with the request timeout, decodes the response with
+  `DecompileResults` as the process path does, and returns a result only when the decompile
+  completed. `HostDecompileBackend.tryDecompile` offers ProgramEntry decompiles; everything else,
+  and every host failure, takes the process path. `status.decompileBackend` reports hostedCount,
+  fallbackCount, the fallback reasons and the host's counters.
+
+Falls back (process path, reply unchanged): backend off; no library; not a ProgramEntry
+decompiler / non-default set-up; external, undefined or overlay function; a body with
+stack-depth overrides (CallDepthChangeInfo: callee answers would depend on the caller); an
+unstorable answer; misses left after 12 runs; a run that failed, crashed, did not complete or
+passed the timeout; any Java-side error.
+
+Measured (gate `_logs/rust-integration/gate/gate_p6.py`, copies of the 8 fixture projects, 3959
+functions, and the first 200 KotOR functions; replies hashed per function; each run under
+heavy.py with 16 cores on a shared machine):
+
+| set | clients | process wall | host wall | replies differ | hosted / fallback |
+|---|---|---|---|---|---|
+| fixtures, engine defaults | 1 | 20.17 s | 21.83 s | 0 | 3944 / 15 |
+| fixtures | 4 | 6.68 s | 7.38 s | 0 | 3945 / 14 |
+| fixtures | 8 | 5.72 s | 6.30 s | 0 | 3948 / 11 |
+| KotOR 200 | 1 | 1.96 s | 2.12 s | 0 | 197 / 3 |
+| KotOR 200 | 4 | 0.88 s | 1.61 s | 0 | 199 / 1 |
+| KotOR 200 | 8 | 0.74 s | 1.22 s | 0 | 199 / 1 |
+| fixtures, cache off, pass 2 (warm) | 1 | 19.34 s | 13.50 s | 0 | |
+| fixtures, cache off, pass 2 | 8 | 4.70 s | 3.09 s | 0 | |
+| KotOR 200, cache off, pass 2 | 4 | 0.71 s | 0.38 s | 0 | |
+| KotOR 200, cache off, pass 2 | 8 | 0.49 s | 0.27 s | 0 | |
+
+Identical replies everywhere. A function's first decompile in a generation is slower on the host
+(the export plus about 1.45 native runs per function, more contention at 4-8 clients); once the
+generation's answers are exported the host is 30-45 % faster than the process path. The backend
+stays off by default for that reason. Next: export the remaining per-function answers in bulk
+when a generation is made (data types, strings), and look at the cold-path contention at 4-8 clients.
