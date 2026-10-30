@@ -86,10 +86,16 @@ public class VarnodeTpl {
 	 * @throws DecoderException for an invalid encoding
 	 */
 	public static VarnodeTpl decodeShared(Decoder decoder) throws DecoderException {
-		VarnodeTpl v = new VarnodeTpl();
-		v.decode(decoder);
 		TemplateInterner interner = TemplateInterner.active();
-		return interner == null ? v : interner.intern(v);
+		if (interner == null) {
+			VarnodeTpl v = new VarnodeTpl();
+			v.decode(decoder);
+			return v;
+		}
+		// decode into the table's scratch object: a repeat allocates nothing
+		VarnodeTpl scratch = interner.varnodeScratch();
+		scratch.decode(decoder);
+		return interner.intern(scratch);
 	}
 
 	@Override

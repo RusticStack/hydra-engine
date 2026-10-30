@@ -190,6 +190,65 @@ public class TemplateInternerTest {
 	}
 
 	@Test
+	public void testScratchObjectsAreNeverHandedOut() throws Exception {
+		byte[] bytes = encodeOps();
+		try (TemplateInterner in = TemplateInterner.open()) {
+			OpTpl[] ops = decodeOps(bytes);
+			for (OpTpl op : ops) {
+				assertNotSame(in.varnodeScratch(), op.getOutput());
+				assertNotSame(in.constScratch(), op.getOutput().getSpace());
+				for (VarnodeTpl vn : op.getInput()) {
+					assertNotSame(in.varnodeScratch(), vn);
+					assertNotSame(in.constScratch(), vn.getSpace());
+					assertNotSame(in.constScratch(), vn.getOffset());
+					assertNotSame(in.constScratch(), vn.getSize());
+				}
+			}
+			// the kept copy of the last (handle) varnode still reads its own value
+			assertEquals(0x20003, ops[1].getInput()[2].getOffset().getReal());
+			assertEquals(ConstTpl.V_SIZE, ops[1].getInput()[2].getSize().getSelect());
+		}
+	}
+
+	@Test
+	public void testTableGrowsAndKeepsEveryValue() throws Exception {
+		int n = 20000; // well past the initial table sizes
+		PatchPackedEncode enc = new PatchPackedEncode();
+		enc.clear();
+		enc.openElement(ELEM_CONSTRUCT_TPL);
+		for (int round = 0; round < 2; round++) {
+			for (int i = 0; i < n; i++) {
+				varnode(enc, ram, 0x1000 + i, 1 + (i % 8));
+			}
+		}
+		enc.closeElement(ELEM_CONSTRUCT_TPL);
+		ByteArrayOutputStream out = new ByteArrayOutputStream();
+		enc.writeTo(out);
+		byte[] bytes = out.toByteArray();
+		PackedDecode decoder = new PackedDecode(addrFactory);
+		decoder.open(1 << 24, "test");
+		decoder.ingestBytes(bytes, 0, bytes.length);
+		decoder.endIngest();
+		VarnodeTpl[] first = new VarnodeTpl[n];
+		try (TemplateInterner in = TemplateInterner.open()) {
+			int el = decoder.openElement(ELEM_CONSTRUCT_TPL);
+			for (int i = 0; i < n; i++) {
+				first[i] = VarnodeTpl.decodeShared(decoder);
+				assertEquals(0x1000 + i, first[i].getOffset().getReal());
+				assertEquals(1 + (i % 8), first[i].getSize().getReal());
+				assertSame(ram, first[i].getSpace().getSpaceId());
+			}
+			for (int i = 0; i < n; i++) {
+				assertSame(first[i], VarnodeTpl.decodeShared(decoder));
+			}
+			decoder.closeElement(el);
+			assertEquals(n, in.distinctVarnodes());
+			// the ram space, n offsets and the sizes 1..8 (no offset is below 0x1000)
+			assertEquals(1 + n + 8, in.distinctConsts());
+		}
+	}
+
+	@Test
 	public void testNoTableDecodesNewObjects() throws Exception {
 		assertNull(TemplateInterner.active());
 		OpTpl[] ops = decodeOps(encodeOps());

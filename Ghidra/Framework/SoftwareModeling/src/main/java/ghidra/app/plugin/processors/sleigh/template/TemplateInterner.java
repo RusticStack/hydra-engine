@@ -15,10 +15,6 @@
  */
 package ghidra.app.plugin.processors.sleigh.template;
 
-import java.util.HashMap;
-
-import ghidra.program.model.address.AddressSpace;
-
 /**
  * Hydra: a flyweight table for the immutable {@link ConstTpl} and {@link VarnodeTpl} objects
  * decoded from a {@code .sla} file.
@@ -39,8 +35,13 @@ public final class TemplateInterner implements AutoCloseable {
 	private static final ThreadLocal<TemplateInterner> ACTIVE = new ThreadLocal<>();
 
 	private final TemplateInterner previous;
-	private final HashMap<ConstKey, ConstTpl> consts = new HashMap<>();
-	private final HashMap<VarnodeKey, VarnodeTpl> varnodes = new HashMap<>();
+	private final ConstTpl constScratch = new ConstTpl();
+	private final VarnodeTpl varnodeScratch = new VarnodeTpl();
+	// open-addressing tables (power-of-two size, linear probing): a lookup allocates nothing
+	private ConstTpl[] consts = new ConstTpl[1 << 12];
+	private int constCount;
+	private VarnodeTpl[] varnodes = new VarnodeTpl[1 << 12];
+	private int varnodeCount;
 	private long constLookups;
 	private long varnodeLookups;
 	private boolean closed;
@@ -79,23 +80,128 @@ public final class TemplateInterner implements AutoCloseable {
 		else {
 			ACTIVE.set(previous);
 		}
-		consts.clear();
-		varnodes.clear();
+		consts = new ConstTpl[0];
+		varnodes = new VarnodeTpl[0];
 	}
 
+	/** @return the object a ConstTpl is decoded into before {@link #intern(ConstTpl)} */
+	ConstTpl constScratch() {
+		return constScratch;
+	}
+
+	/** @return the object a VarnodeTpl is decoded into before {@link #intern(VarnodeTpl)} */
+	VarnodeTpl varnodeScratch() {
+		return varnodeScratch;
+	}
+
+	private static int mix(int h) {
+		h *= 0x9E3779B9;
+		return h ^ (h >>> 16);
+	}
+
+	private static int hash(ConstTpl c) {
+		int h = c.getType();
+		h = 31 * h + Long.hashCode(c.getReal());
+		h = 31 * h + System.identityHashCode(c.getSpaceId());
+		h = 31 * h + c.getHandleIndex();
+		h = 31 * h + c.getSelect();
+		return mix(h);
+	}
+
+	private static boolean same(ConstTpl a, ConstTpl b) {
+		// the address space by identity: a table never mixes two languages' spaces
+		return a.getType() == b.getType() && a.getReal() == b.getReal() &&
+			a.getSpaceId() == b.getSpaceId() && a.getHandleIndex() == b.getHandleIndex() &&
+			a.getSelect() == b.getSelect();
+	}
+
+	private static int hash(VarnodeTpl v) {
+		int h = System.identityHashCode(v.getSpace());
+		h = 31 * h + System.identityHashCode(v.getOffset());
+		h = 31 * h + System.identityHashCode(v.getSize());
+		return mix(h);
+	}
+
+	private static boolean same(VarnodeTpl a, VarnodeTpl b) {
+		// the parts are shared already, so identity is equality
+		return a.getSpace() == b.getSpace() && a.getOffset() == b.getOffset() &&
+			a.getSize() == b.getSize();
+	}
+
+	/**
+	 * @param c a template (possibly the scratch object, which is never stored)
+	 * @return the shared template equal to c
+	 */
 	ConstTpl intern(ConstTpl c) {
 		constLookups++;
-		return consts.computeIfAbsent(new ConstKey(c), k -> c);
+		int mask = consts.length - 1;
+		int i = hash(c) & mask;
+		for (ConstTpl e; (e = consts[i]) != null; i = (i + 1) & mask) {
+			if (same(e, c)) {
+				return e;
+			}
+		}
+		ConstTpl kept = c == constScratch ? new ConstTpl(c) : c;
+		consts[i] = kept;
+		if (++constCount * 2 > consts.length) {
+			consts = grow(consts, new ConstTpl[consts.length * 2]);
+		}
+		return kept;
 	}
 
+	/**
+	 * @param v a template (possibly the scratch object, which is never stored)
+	 * @return the shared template equal to v
+	 */
 	VarnodeTpl intern(VarnodeTpl v) {
 		varnodeLookups++;
-		return varnodes.computeIfAbsent(new VarnodeKey(v), k -> v);
+		int mask = varnodes.length - 1;
+		int i = hash(v) & mask;
+		for (VarnodeTpl e; (e = varnodes[i]) != null; i = (i + 1) & mask) {
+			if (same(e, v)) {
+				return e;
+			}
+		}
+		VarnodeTpl kept =
+			v == varnodeScratch ? new VarnodeTpl(v.getSpace(), v.getOffset(), v.getSize()) : v;
+		varnodes[i] = kept;
+		if (++varnodeCount * 2 > varnodes.length) {
+			varnodes = grow(varnodes, new VarnodeTpl[varnodes.length * 2]);
+		}
+		return kept;
+	}
+
+	private static ConstTpl[] grow(ConstTpl[] old, ConstTpl[] table) {
+		int mask = table.length - 1;
+		for (ConstTpl e : old) {
+			if (e != null) {
+				int i = hash(e) & mask;
+				while (table[i] != null) {
+					i = (i + 1) & mask;
+				}
+				table[i] = e;
+			}
+		}
+		return table;
+	}
+
+	private static VarnodeTpl[] grow(VarnodeTpl[] old, VarnodeTpl[] table) {
+		int mask = table.length - 1;
+		for (VarnodeTpl e : old) {
+			if (e != null) {
+				int i = hash(e) & mask;
+				while (table[i] != null) {
+					i = (i + 1) & mask;
+				}
+				table[i] = e;
+			}
+		}
+		return table;
 	}
 
 	/** @return the number of distinct {@link ConstTpl} values kept */
 	public int distinctConsts() {
-		return consts.size();
+		return constCount;
 	}
 
 	/** @return the number of {@link ConstTpl} objects decoded through this table */
@@ -105,78 +211,11 @@ public final class TemplateInterner implements AutoCloseable {
 
 	/** @return the number of distinct {@link VarnodeTpl} values kept */
 	public int distinctVarnodes() {
-		return varnodes.size();
+		return varnodeCount;
 	}
 
 	/** @return the number of {@link VarnodeTpl} objects decoded through this table */
 	public long varnodeLookups() {
 		return varnodeLookups;
-	}
-
-	/** Value of a ConstTpl, with the address space compared by identity. */
-	private static final class ConstKey {
-		private final int type;
-		private final long real;
-		private final AddressSpace space;
-		private final int handle;
-		private final int select;
-		private final int hash;
-
-		ConstKey(ConstTpl c) {
-			type = c.getType();
-			real = c.getReal();
-			space = c.getSpaceId();
-			handle = c.getHandleIndex();
-			select = c.getSelect();
-			int h = type;
-			h = 31 * h + Long.hashCode(real);
-			h = 31 * h + System.identityHashCode(space);
-			h = 31 * h + handle;
-			h = 31 * h + select;
-			hash = h;
-		}
-
-		@Override
-		public int hashCode() {
-			return hash;
-		}
-
-		@Override
-		public boolean equals(Object obj) {
-			if (!(obj instanceof ConstKey o)) {
-				return false;
-			}
-			return type == o.type && real == o.real && space == o.space && handle == o.handle &&
-				select == o.select;
-		}
-	}
-
-	/** A VarnodeTpl by the identity of its three (already shared) parts. */
-	private static final class VarnodeKey {
-		private final ConstTpl space;
-		private final ConstTpl offset;
-		private final ConstTpl size;
-		private final int hash;
-
-		VarnodeKey(VarnodeTpl v) {
-			space = v.getSpace();
-			offset = v.getOffset();
-			size = v.getSize();
-			hash = 31 * (31 * System.identityHashCode(space) + System.identityHashCode(offset)) +
-				System.identityHashCode(size);
-		}
-
-		@Override
-		public int hashCode() {
-			return hash;
-		}
-
-		@Override
-		public boolean equals(Object obj) {
-			if (!(obj instanceof VarnodeKey o)) {
-				return false;
-			}
-			return space == o.space && offset == o.offset && size == o.size;
-		}
 	}
 }

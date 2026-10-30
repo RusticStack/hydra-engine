@@ -290,13 +290,23 @@ public class ConstTpl {
 	 * @throws DecoderException for an invalid encoding
 	 */
 	public static ConstTpl decodeShared(Decoder decoder) throws DecoderException {
-		ConstTpl c = new ConstTpl();
-		c.decode(decoder);
 		TemplateInterner interner = TemplateInterner.active();
-		return interner == null ? c : interner.intern(c);
+		if (interner == null) {
+			ConstTpl c = new ConstTpl();
+			c.decode(decoder);
+			return c;
+		}
+		// decode into the table's scratch object: a repeat allocates nothing
+		ConstTpl scratch = interner.constScratch();
+		scratch.decode(decoder);
+		return interner.intern(scratch);
 	}
 
 	public void decode(Decoder decoder) throws DecoderException {
+		value_real = 0;
+		value_spaceid = null;
+		handle_index = 0;
+		select = 0;
 		int el = decoder.openElement();
 		if (el == ELEM_CONST_REAL.id()) {
 			type = REAL;
