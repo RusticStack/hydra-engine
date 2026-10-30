@@ -79,10 +79,8 @@ final class FunctionIndex {
 
 		/** Hydra reply-encode: the off-heap copy for the native encoder, made on first use. */
 		private volatile ReplyEncoder.Columns columns;
-		/** Encoded unfiltered pages by {@code from << 32 | to}, shared by every client. */
-		private final java.util.concurrent.ConcurrentHashMap<Long, byte[]> pages =
-			new java.util.concurrent.ConcurrentHashMap<>();
-		private final AtomicLong pageBytes = new AtomicLong();
+		/** Names this program state in the daemon-wide page cache (which keeps no reference to it). */
+		final long id = IDS.incrementAndGet();
 
 		ReplyEncoder.Columns columns() {
 			ReplyEncoder.Columns c = columns;
@@ -98,24 +96,24 @@ final class FunctionIndex {
 		}
 
 		/**
-		 * The JSON array of rows {@code from..to}, encoded natively once per page of this program
+		 * The JSON array of rows {@code from..to}, encoded natively, or taken from the daemon-wide
+		 * page cache when an earlier request of any client asked for the same page of this program
 		 * state; null when the native encoder failed.
 		 */
 		byte[] page(int from, int to) {
-			long key = ((long) from << 32) | (to & 0xffffffffL);
-			byte[] b = pages.get(key);
+			byte[] b = ReplyEncoder.cachedPage(id, from, to);
 			if (b != null) {
-				ReplyEncoder.pageHit();
 				return b;
 			}
 			b = ReplyEncoder.functionRows(this, null, 0, from, to);
-			if (b != null && pageBytes.get() + b.length <= ReplyEncoder.PAGE_CACHE_BYTES &&
-				pages.putIfAbsent(key, b) == null) {
-				pageBytes.addAndGet(b.length);
+			if (b != null) {
+				ReplyEncoder.cachePage(id, from, to, b);
 			}
 			return b;
 		}
 	}
+
+	private static final AtomicLong IDS = new AtomicLong();
 
 	/** The build of one program, or its finished snapshot. */
 	private static final class Slot {
@@ -136,6 +134,11 @@ final class FunctionIndex {
 	}
 
 	private FunctionIndex() {
+	}
+
+	/** Registers {@code health.functionIndex} at start-up, so health has one shape on every run. */
+	static void init() {
+		// the class initializer does it
 	}
 
 	static boolean enabled() {

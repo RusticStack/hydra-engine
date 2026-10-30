@@ -159,6 +159,11 @@ final class QueryCommands {
 	 * The {@code functions} reply with its rows encoded by {@link ReplyEncoder}: the same rows, in
 	 * the same order and with the same {@code returned}/{@code truncated}, as the tree path above;
 	 * null when the native encoder failed.
+	 * <p>
+	 * The result is for {@link Connection#encodeParts} only: its {@code functions} value is a
+	 * {@link RawJson}, which Gson refuses to write and whose {@code JsonPrimitive} cannot be hashed
+	 * or compared. Code that keeps, forwards, journals or compares a {@code functions} result must
+	 * call this command with {@code -set nativeReplies=false} semantics (the tree path above).
 	 */
 	private static JsonElement nativeRows(FunctionIndex.Snapshot ix, Pattern pat, String sub,
 			int offset, int limit) {

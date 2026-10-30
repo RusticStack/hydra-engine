@@ -21,7 +21,8 @@
   (``ReplyEncoder.java``, ``hydra_native`` ``reply.rs``) are byte-identical to those of a daemon with
   ``-set nativeReplies=false`` (the Gson tree) for every page shape of ``dt_da`` and paging 7 at a time, with
   only ``id`` and ``ms`` masked; ``health.replyEncode`` says native on one and off on the other; a page asked
-  again is served from the program state's page cache; 8 clients paging at once get the same bytes.
+  again is served from the daemon-wide page cache (at most 4 MB); 8 clients paging at once get the same
+  bytes; ``health`` has ``replyEncode`` and ``functionIndex`` before any ``functions`` request.
 * ``re_fn_rename``: after renames to names with characters JSON escapes or keeps as UTF-8 (a quote, a
   backslash, non-ASCII), every page shape is still byte-identical to the Gson daemon's, and the renamed
   names are in the listing (the page cache of the older program state is not served).
@@ -113,6 +114,10 @@ def t_fn_bytes(c):
     try:
         a, b = c.connect(dof, "a", "re", 3), c.connect(don, "b", "re", 3)
         ra, rb = Lines(a), Lines(b)
+        # health has its keys from the start, not from the first functions request
+        ka, kb = list(a.call("health")), list(b.call("health"))
+        dt.check(ka == kb and "replyEncode" in kb and "functionIndex" in kb,
+                 f"health before any functions request lacks replyEncode/functionIndex or differs: {ka} vs {kb}")
         e9.open_view(c, a, ga, exe)
         e9.open_view(c, b, gb, exe)
         la, lb = _shape_lines(a, ra), _shape_lines(b, rb)
@@ -135,6 +140,9 @@ def t_fn_bytes(c):
         with concurrent.futures.ThreadPoolExecutor(8) as ex:
             got = list(ex.map(lambda sr: _paged_lines(sr[0], sr[1], 11), clients))
         dt.check(all(g == ref for g in got), "a concurrent client's page lines differ from the Gson lines")
+        pc = _enc(b).get("pageCacheBytes")
+        dt.check(pc is not None and 0 < pc <= 4 << 20,
+                 f"the page cache is not one daemon-wide budget of at most 4 MB: {_enc(b)}")
         total = len(a.call("functions", limit=10000)["functions"])
         return (f"{total} functions; {len(SHAPES)} page shapes, paging 7 and 11 (8 clients at once) "
                 f"byte-identical to nativeReplies=false; {_enc(b)}")

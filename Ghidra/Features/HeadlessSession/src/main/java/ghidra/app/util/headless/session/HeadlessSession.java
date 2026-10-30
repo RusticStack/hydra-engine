@@ -195,6 +195,10 @@ public class HeadlessSession implements GhidraLaunchable {
 		session.startWatchdog();
 		// E9: the governor after the watchdog (admission, the decompiler gate, the guarded sampler)
 		Health.contribute("processJob", ProcessJob::describe); // after E3c's waits (the order is pinned)
+		// Hydra reply-encode: health.functionIndex and health.replyEncode from the start, not from
+		// the first functions request, so health has the same keys whatever clients asked before
+		FunctionIndex.init();
+		ReplyEncoder.init();
 		Governor.start(session);
 		// 8.13: what a killed publisher left in a directory this state directory forked into is
 		// swept before the daemon is ready (a .rep without its .gpr, a staging folder, a sidecar .tmp)
@@ -645,6 +649,61 @@ public class HeadlessSession implements GhidraLaunchable {
 			}
 			int[] idx = { 9, 1, 7, 7, 0 };
 			return samePage(s, ReplyEncoder.functionRows(s, idx, idx.length, 0, 0), 0, 0, idx);
+		}
+
+		/**
+		 * Pages of many program states, from many threads at once, more than the budget: the cache
+		 * never holds more than {@link ReplyEncoder#PAGE_CACHE_BYTES}, and a page still served is
+		 * the right one.
+		 */
+		private static boolean pageCacheBounded() {
+			int n = 400;
+			FunctionIndex.Snapshot[] states = new FunctionIndex.Snapshot[24];
+			for (int k = 0; k < states.length; k++) {
+				FunctionIndex.Snapshot s = new FunctionIndex.Snapshot(k, n);
+				for (int i = 0; i < n; i++) {
+					s.names[i] = "state" + k + "_fn_" + "x".repeat(i % 97) + i;
+					s.addresses[i] = String.format("%08x", 0x401000 + i);
+					s.sizes[i] = i;
+					s.flags[i] = (byte) (i % 4);
+				}
+				states[k] = s;
+			}
+			java.util.concurrent.atomic.AtomicBoolean ok =
+				new java.util.concurrent.atomic.AtomicBoolean(true);
+			Thread[] ts = new Thread[8];
+			for (int t = 0; t < ts.length; t++) {
+				int seed = t;
+				ts[t] = new Thread(() -> {
+					for (int round = 0; round < 3; round++) {
+						for (int k = 0; k < states.length; k++) {
+							FunctionIndex.Snapshot s = states[(k + seed) % states.length];
+							for (int from = 0; from < n; from += 50) {
+								int to = Math.min(n, from + 50 + seed);
+								byte[] b = s.page(from, to);
+								if (b == null || !java.util.Arrays.equals(b,
+									ReplyEncoder.functionRows(s, null, 0, from, to)) ||
+									ReplyEncoder.pageCacheBytes() > ReplyEncoder.PAGE_CACHE_BYTES) {
+									ok.set(false);
+								}
+							}
+						}
+					}
+				});
+				ts[t].start();
+			}
+			try {
+				for (Thread t : ts) {
+					t.join();
+				}
+			}
+			catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				return false;
+			}
+			return ok.get() && ReplyEncoder.pageCacheBytes() > 0 &&
+				ReplyEncoder.pageCacheBytes() <= ReplyEncoder.PAGE_CACHE_BYTES &&
+				samePage(states[3], states[3].page(100, 150), 100, 150, null);
 		}
 
 		private static boolean samePage(FunctionIndex.Snapshot s, byte[] rows, int from, int to,
@@ -1365,6 +1424,8 @@ public class HeadlessSession implements GhidraLaunchable {
 					? "a natively encoded functions page gives the bytes of the Gson rows"
 					: "native functions pages: no hydra_native encoder (skipped)",
 				!ReplyEncoder.available() || nativePageMatchesGson());
+			check("the functions page cache stays within its one daemon-wide budget",
+				!ReplyEncoder.available() || pageCacheBounded());
 			Health.contribute("selfTestFigure", () -> new com.google.gson.JsonPrimitive(7));
 			Health.contribute("selfTestBroken", () -> {
 				throw new IllegalStateException("boom");

@@ -41,8 +41,29 @@ import ghidra.util.HydraCpu;
  */
 final class ReplyEncoder {
 
-	/** The bytes of the cached pages of one program state, at most. */
-	static final long PAGE_CACHE_BYTES = 16L << 20;
+	/**
+	 * The bytes of encoded pages cached for the whole daemon, at most (every program state and
+	 * overlay together); the least recently used page leaves first.
+	 */
+	static final long PAGE_CACHE_BYTES = 4L << 20;
+	/** A page larger than this is not cached (it would push out many smaller ones). */
+	private static final long PAGE_CACHE_ENTRY = PAGE_CACHE_BYTES / 8;
+
+	private record PageKey(long snapshot, int from, int to) {
+	}
+
+	/** Guarded by itself; in access order, so the eldest entry is the least recently used. */
+	private static final java.util.LinkedHashMap<PageKey, byte[]> PAGES =
+		new java.util.LinkedHashMap<>(64, 0.75f, true);
+	private static long pageBytes; // guarded by PAGES
+
+	/** Reusable native scratch buffers, so a call neither allocates nor zero-fills one. */
+	private static final long SCRATCH_BYTES = 256L << 10;
+	private static final int SCRATCH_KEPT = 4;
+	private static final java.util.concurrent.ConcurrentLinkedQueue<MemorySegment> SCRATCH =
+		new java.util.concurrent.ConcurrentLinkedQueue<>();
+	private static final java.util.concurrent.atomic.AtomicInteger SCRATCH_FREE =
+		new java.util.concurrent.atomic.AtomicInteger();
 
 	private static final MethodHandle ROWS;
 	private static final String STATUS;
@@ -53,6 +74,8 @@ final class ReplyEncoder {
 	private static final AtomicLong PAGE_HITS = new AtomicLong();
 	private static final AtomicLong FAILED = new AtomicLong();
 	private static final AtomicLong COLUMNS = new AtomicLong();
+	private static final AtomicLong COLUMN_BYTES = new AtomicLong();
+	private static final AtomicLong PAGES_EVICTED = new AtomicLong();
 
 	static {
 		MethodHandle rows = null;
@@ -138,6 +161,11 @@ final class ReplyEncoder {
 		return null;
 	}
 
+	/** Registers {@code health.replyEncode} at start-up, so health has one shape on every run. */
+	static void init() {
+		// the class initializer does it
+	}
+
 	static boolean available() {
 		return ROWS != null;
 	}
@@ -182,6 +210,7 @@ final class ReplyEncoder {
 			sizes = arena.allocateFrom(JAVA_LONG, n == 0 ? new long[1] : s.sizes);
 			flags = arena.allocateFrom(JAVA_BYTE, n == 0 ? new byte[1] : s.flags);
 			COLUMNS.incrementAndGet();
+			COLUMN_BYTES.addAndGet(nt + at + 8L * (n + 1) + 9L * n);
 		}
 
 		/** Bytes enough for any row {@code i}: fixed text plus every byte escaped as \\u00xx. */
@@ -206,19 +235,23 @@ final class ReplyEncoder {
 				need += c.bound(idx[k]);
 			}
 		}
-		long len;
-		// one confined arena per call, for the output and the index list: freed at once on this
-		// thread (a shared arena's close would need a handshake with every thread of the daemon)
-		try (Arena call = Arena.ofConfined()) {
-			MemorySegment buf = call.allocate(need, 16);
+		long ixBytes = idx == null ? 0 : 4L * Math.max(1, nidx);
+		long outAt = (ixBytes + 15) & ~15L;
+		long total = outAt + need;
+		MemorySegment scratch = total <= SCRATCH_BYTES ? takeScratch() : null;
+		// a page too large for a scratch buffer gets one confined arena for this call, freed at
+		// once on this thread (a shared arena's close would need a handshake with every thread)
+		try (Arena call = scratch == null ? Arena.ofConfined() : null) {
+			MemorySegment mem = scratch != null ? scratch : call.allocate(total, 16);
+			MemorySegment buf = mem.asSlice(outAt, need);
 			MemorySegment ix = MemorySegment.NULL;
 			if (idx != null) {
-				ix = call.allocate(JAVA_INT, Math.max(1, nidx));
+				ix = mem.asSlice(0, ixBytes);
 				MemorySegment.copy(idx, 0, ix, JAVA_INT, 0, nidx);
 			}
-			len = (long) ROWS.invokeExact(c.names, c.nameOff, c.addrs, c.addrOff, c.sizes, c.flags,
-				(long) c.n, ix, (long) (idx == null ? 0 : nidx), (long) from, (long) to, buf,
-				buf.byteSize());
+			long len = (long) ROWS.invokeExact(c.names, c.nameOff, c.addrs, c.addrOff, c.sizes,
+				c.flags, (long) c.n, ix, (long) (idx == null ? 0 : nidx), (long) from, (long) to,
+				buf, buf.byteSize());
 			if (len < 0) {
 				FAILED.incrementAndGet();
 				return null;
@@ -234,16 +267,82 @@ final class ReplyEncoder {
 			FAILED.incrementAndGet();
 			return null;
 		}
+		finally {
+			if (scratch != null) {
+				giveScratch(scratch);
+			}
+		}
 	}
 
-	static void pageHit() {
-		PAGE_HITS.incrementAndGet();
+	/**
+	 * A scratch buffer of {@link #SCRATCH_BYTES} (zero-filled once, when it is made; the encoder
+	 * only writes into it). Its memory goes with its last reference, so nothing is closed.
+	 */
+	private static MemorySegment takeScratch() {
+		MemorySegment m = SCRATCH.poll();
+		if (m != null) {
+			SCRATCH_FREE.decrementAndGet();
+			return m;
+		}
+		return Arena.ofAuto().allocate(SCRATCH_BYTES, 16);
+	}
+
+	private static void giveScratch(MemorySegment m) {
+		if (SCRATCH_FREE.incrementAndGet() <= SCRATCH_KEPT) {
+			SCRATCH.offer(m);
+		}
+		else {
+			SCRATCH_FREE.decrementAndGet(); // not kept: the collector frees it
+		}
+	}
+
+	/** The cached page {@code from..to} of program state {@code snapshot}, or null. */
+	static byte[] cachedPage(long snapshot, int from, int to) {
+		byte[] b;
+		synchronized (PAGES) {
+			b = PAGES.get(new PageKey(snapshot, from, to));
+		}
+		if (b != null) {
+			PAGE_HITS.incrementAndGet();
+		}
+		return b;
+	}
+
+	/**
+	 * Keeps a page for later requests within the daemon-wide budget, checked and charged under
+	 * one lock: the least recently used pages leave to make room (a changed program's old pages
+	 * first, since nobody asks for them again).
+	 */
+	static void cachePage(long snapshot, int from, int to, byte[] b) {
+		if (b.length > PAGE_CACHE_ENTRY) {
+			return;
+		}
+		synchronized (PAGES) {
+			if (PAGES.putIfAbsent(new PageKey(snapshot, from, to), b) != null) {
+				return;
+			}
+			pageBytes += b.length;
+			var it = PAGES.values().iterator();
+			while (pageBytes > PAGE_CACHE_BYTES && it.hasNext()) {
+				pageBytes -= it.next().length;
+				it.remove();
+				PAGES_EVICTED.incrementAndGet();
+			}
+		}
+	}
+
+	/** The bytes the page cache holds now. */
+	static long pageCacheBytes() {
+		synchronized (PAGES) {
+			return pageBytes;
+		}
 	}
 
 	/** For {@code health.replyEncode}. */
 	static JsonObject describe() {
 		return Json.of("native", enabled(), "library", STATUS, "calls", CALLS.get(), "rows",
-			ROWS_WRITTEN.get(), "bytes", BYTES.get(), "pageHits", PAGE_HITS.get(), "columns",
-			COLUMNS.get(), "failed", FAILED.get());
+			ROWS_WRITTEN.get(), "bytes", BYTES.get(), "pageHits", PAGE_HITS.get(), "pageCacheBytes",
+			pageCacheBytes(), "pagesEvicted", PAGES_EVICTED.get(), "columns", COLUMNS.get(),
+			"columnBytesBuilt", COLUMN_BYTES.get(), "failed", FAILED.get());
 	}
 }
