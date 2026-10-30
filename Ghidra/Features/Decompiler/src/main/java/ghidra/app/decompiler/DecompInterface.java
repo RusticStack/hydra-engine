@@ -21,8 +21,10 @@ import static ghidra.program.model.pcode.ElementId.*;
 
 import java.io.*;
 import java.lang.ref.WeakReference;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Map;
+import java.util.Objects;
 import java.util.WeakHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -175,6 +177,8 @@ public class DecompInterface {
 	protected EncodeDecodeSet overlayEncodingSet;	// Encoders/decoders for functions in overlays
 	protected StringIngest stringResponse = new StringIngest();	// Ingester for simple responses
 	private DecompileDebug debug;
+	private ProgramSnapshotFile snapshot;		// Leased byte snapshot (Hydra), null if not in use
+	private Path snapshotSent;			// Snapshot the current process maps, null if none
 	protected CancelledListener monitorListener = new CancelledListener() {
 		@Override
 		public void cancelled() {
@@ -362,6 +366,7 @@ public class DecompInterface {
 		baseEncodingSet = new EncodeDecodeSet(program);
 
 		decompCallback.setErrorMessage("");
+		snapshotSent = null;
 		decompProcess.registerProgram(decompCallback, specs.pspecxml, specs.cspecxml, specs.tspec,
 			specs.coretypes, program);
 		String nativeMessage = decompCallback.getErrorMessage();
@@ -453,6 +458,7 @@ public class DecompInterface {
 	public synchronized boolean openProgram(Program prog) {
 		dropKeptTypes();
 		errorMessage = "";
+		releaseSnapshot();
 		program = prog;
 		Language lang = prog.getLanguage();
 		if (!lang.supportsPcode()) {
@@ -523,6 +529,7 @@ public class DecompInterface {
 				// don't care
 			}
 			stopProcess();
+			releaseSnapshot();
 		}
 	}
 
@@ -948,6 +955,7 @@ public class DecompInterface {
 			EncodeDecodeSet activeSet = setupEncodeDecode(funcEntry);
 			decoder = activeSet.mainResponse;
 			verifyProcess();
+			syncSnapshot();
 			activeSet.mainQuery.clear();
 			AddressXML.encode(activeSet.mainQuery, funcEntry);
 			decompProcess.sendCommandTimeout("decompileAt", timeoutSecs, activeSet);
@@ -994,6 +1002,33 @@ public class DecompInterface {
 
 		return new DecompileResults(func, pcodelanguage, compilerSpec, dtmanage, errorMessage,
 			decoder, processState);
+	}
+
+	/**
+	 * Give the decompiler process the byte snapshot of the program's current generation, or take
+	 * it away when snapshots are off or a debug dump needs every byte request (Hydra prototype,
+	 * see {@link ProgramSnapshotFile}). A snapshot the process cannot use leaves it on callbacks.
+	 * @throws IOException for problems with the pipe to the decompiler process
+	 * @throws DecompileException for problems executing the command
+	 */
+	private void syncSnapshot() throws IOException, DecompileException {
+		boolean wanted = ProgramSnapshotFile.isEnabled() && debug == null;
+		if (wanted) {
+			snapshot = ProgramSnapshotFile.acquire(program, snapshot);
+		}
+		Path path = wanted && snapshot != null ? snapshot.getPath() : null;
+		if (Objects.equals(path, snapshotSent)) {
+			return;
+		}
+		decompProcess.sendCommand2Params("setSnapshot", path == null ? "" : path.toString(), "",
+			stringResponse);
+		snapshotSent = stringResponse.toString().equals("t") ? path : null;
+	}
+
+	private void releaseSnapshot() {
+		ProgramSnapshotFile.release(snapshot);
+		snapshot = null;
+		snapshotSent = null;
 	}
 
 	/**

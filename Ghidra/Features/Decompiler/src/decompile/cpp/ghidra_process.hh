@@ -247,6 +247,22 @@ public:
   virtual void rawAction(void);
 };
 
+/// \brief Command to give the program's LoadImage a memory-mapped \b snapshot of its bytes (Hydra)
+///
+/// The command expects 3 string parameters: the encoded integer id of the program, the path of
+/// a snapshot file (see SnapshotImage), and an unused string. An empty path stops using a snapshot.
+/// Requests the snapshot does not cover still go to the client. The command returns 't' if the
+/// snapshot is in use (or was dropped on request) and 'f' if the file could not be used.
+class SetSnapshot : public GhidraCommand {
+  string path;				///< The snapshot file, or empty to drop the snapshot
+  string unused;			///< Second parameter, reserved
+  virtual void loadParameters(void);
+  virtual void sendResult(const string &errorMsg);
+public:
+  bool res;				///< Set to \b true if the request succeeded
+  virtual void rawAction(void);
+};
+
 #ifdef __REMOTE_SOCKET__
 extern void connect_to_console(Funcdata *fd);
 #endif

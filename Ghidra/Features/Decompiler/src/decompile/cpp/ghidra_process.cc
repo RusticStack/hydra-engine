@@ -16,6 +16,7 @@
 #include "ghidra_process.hh"
 #include "flow.hh"
 #include "blockaction.hh"
+#include "loadimage_ghidra.hh"
 
 #ifdef _WINDOWS
 #include <fcntl.h>
@@ -419,6 +420,42 @@ void SetAction::sendResult(const string &errorMsg)
   GhidraCommand::sendResult(errorMsg);
 }
 
+void SetSnapshot::loadParameters(void)
+
+{
+  GhidraCommand::loadParameters();
+  path.clear();
+  unused.clear();
+  ArchitectureGhidra::readStringStream(sin,path);
+  ArchitectureGhidra::readStringStream(sin,unused);
+}
+
+void SetSnapshot::rawAction(void)
+
+{
+  res = false;
+  LoadImageGhidra *image = dynamic_cast<LoadImageGhidra *>(ghidra->loader);
+  if (image == (LoadImageGhidra *)0)
+    return;
+  try {
+    image->setSnapshot(path);
+    res = true;
+  }
+  catch(LowlevelError &err) {
+    res = false;		// No snapshot in use: every request goes to the client
+  }
+}
+
+void SetSnapshot::sendResult(const string &errorMsg)
+
+{
+  if (res)
+    ArchitectureGhidra::writeStringStream(sout,"t");
+  else
+    ArchitectureGhidra::writeStringStream(sout,"f");
+  GhidraCommand::sendResult(errorMsg);
+}
+
 void SetOptions::loadParameters(void)
 
 {
@@ -508,6 +545,7 @@ void GhidraDecompCapability::initialize(void)
   commandmap["structureGraph"] = new StructureGraph();
   commandmap["setAction"] = new SetAction();
   commandmap["setOptions"] = new SetOptions();
+  commandmap["setSnapshot"] = new SetSnapshot();
 }
 
 /// Catch the signal so the OS doesn't pop up a dialog
