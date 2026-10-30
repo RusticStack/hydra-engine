@@ -669,7 +669,7 @@ final class ProjectFork {
 	 */
 	static final int FLUSH_THREADS = Math.max(1, Integer.getInteger(
 		"ghidra.session.forkFlushThreads", Runtime.getRuntime().availableProcessors() / 2));
-	private static final java.util.concurrent.ExecutorService FLUSHERS =
+	static final java.util.concurrent.ExecutorService FLUSHERS =
 		java.util.concurrent.Executors.newFixedThreadPool(FLUSH_THREADS, task -> {
 			Thread t = new Thread(task, "fork-flush");
 			t.setDaemon(true);
@@ -679,7 +679,10 @@ final class ProjectFork {
 	/**
 	 * Forces {@code files} ({@link #forceFile}), up to {@link #FLUSH_THREADS} at a time; returns
 	 * when every one is forced, or throws the first failure once every flush has ended (so that
-	 * no flush still runs while the caller removes the folder).
+	 * no flush still runs while the caller removes the folder). The calling thread forces files
+	 * too, and helpers of the pool take the next file of the same list; a helper that has not
+	 * started when the list is done does nothing. So a fork never waits behind the flushes of
+	 * another fork: at worst it forces its own files on its own thread, as before the pool.
 	 */
 	static void forceFiles(List<Path> files) throws IOException {
 		if (files.size() <= 1 || FLUSH_THREADS == 1) {
@@ -688,42 +691,67 @@ final class ProjectFork {
 			}
 			return;
 		}
-		List<java.util.concurrent.Future<?>> pending = new ArrayList<>(files.size());
-		for (Path f : files) {
-			pending.add(FLUSHERS.submit(() -> {
-				forceFile(f);
-				return null;
-			}));
-		}
-		IOException failed = null;
-		boolean interrupted = false;
-		for (java.util.concurrent.Future<?> p : pending) {
-			while (true) {
+		java.util.concurrent.atomic.AtomicInteger next =
+			new java.util.concurrent.atomic.AtomicInteger();
+		java.util.Queue<IOException> failures =
+			new java.util.concurrent.ConcurrentLinkedQueue<>();
+		Runnable drain = () -> {
+			for (int i; (i = next.getAndIncrement()) < files.size();) {
 				try {
-					p.get();
-					break;
+					forceFile(files.get(i));
 				}
-				catch (InterruptedException e) {
-					interrupted = true; // every flush is still waited for; the interrupt is kept
+				catch (IOException e) {
+					failures.add(e);
 				}
-				catch (java.util.concurrent.ExecutionException e) {
-					Throwable c = e.getCause();
-					IOException io = c instanceof IOException ioe ? ioe
-							: new IOException("could not force a file: " + c, c);
-					if (failed == null) {
-						failed = io;
+				catch (RuntimeException e) {
+					failures.add(new IOException("could not force a file: " + e, e));
+				}
+			}
+		};
+		// each helper is claimed once: by the pool thread that runs it (1) or, if the list is done
+		// before it started, by this thread (2), which then does not wait for it
+		int helpers = Math.min(FLUSH_THREADS, files.size()) - 1;
+		List<java.util.concurrent.atomic.AtomicInteger> claims = new ArrayList<>(helpers);
+		java.util.concurrent.CountDownLatch ended = new java.util.concurrent.CountDownLatch(helpers);
+		for (int h = 0; h < helpers; h++) {
+			java.util.concurrent.atomic.AtomicInteger claim =
+				new java.util.concurrent.atomic.AtomicInteger();
+			claims.add(claim);
+			FLUSHERS.execute(() -> {
+				if (claim.compareAndSet(0, 1)) {
+					try {
+						drain.run();
 					}
-					else {
-						failed.addSuppressed(io);
+					finally {
+						ended.countDown();
 					}
-					break;
 				}
+			});
+		}
+		drain.run();
+		for (java.util.concurrent.atomic.AtomicInteger claim : claims) {
+			if (claim.compareAndSet(0, 2)) {
+				ended.countDown();
+			}
+		}
+		boolean interrupted = false;
+		while (true) {
+			try {
+				ended.await(); // every started flush is still waited for; the interrupt is kept
+				break;
+			}
+			catch (InterruptedException e) {
+				interrupted = true;
 			}
 		}
 		if (interrupted) {
 			Thread.currentThread().interrupt();
 		}
+		IOException failed = failures.poll();
 		if (failed != null) {
+			for (IOException more; (more = failures.poll()) != null;) {
+				failed.addSuppressed(more);
+			}
 			throw failed;
 		}
 	}

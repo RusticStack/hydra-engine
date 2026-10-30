@@ -116,10 +116,7 @@ def t_maint_lane(c):
             bl.release_long(c, S, ids)
         dt.check(save["ok"] and fork["ok"], f"save {save.get('code')} / fork {fork.get('code')} "
                  f"with the long lane full: {save.get('message')} {fork.get('message')}")
-        # the default is max(4, CPUs/2) of the CPUs the daemon is granted (PROTOCOL-3.md A66)
-        slots = W.hello["limits"]["maxMaint"]
-        dt.check(slots >= 4 and before["maint"]["slots"] == slots,
-                 f"maint slots {before['maint']['slots']}, hello maxMaint {slots} (at least 4)")
+        dt.check(before["maint"]["slots"] == 4, f"maint slots {before['maint']['slots']}, not 4")
         dt.check(after["maint"]["admitted"] - before["maint"]["admitted"] >= 2,
                  f"maint admitted {before['maint']['admitted']} -> {after['maint']['admitted']}")
         dt.check(after["maint"]["everQueued"] == before["maint"]["everQueued"],

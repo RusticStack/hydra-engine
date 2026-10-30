@@ -166,7 +166,7 @@ listed. The design text for keys that belong to packages not yet part of the rel
 
 | Key | Default | Meaning |
 |---|---|---|
-| `maintSlots` | `max(4, CPUs/2)` | Slots of the maint lane (protocol 3 `save`, `fork_project`, `refresh`, `reopen`, `promote_overlay`). |
+| `maintSlots` | 4 | Slots of the maint lane (protocol 3 `save`, `fork_project`, `refresh`, `reopen`, `promote_overlay`). |
 | `maxLong` | `max(8, CPUs)` | Same as the `maxLong` option above. |
 | `quickScriptMaxS` | 60 (at most 120) | Longest `timeout` for a script that asks for `lane:"quick"`. |
 | `maxRunningPerKey` (and `.quick`, `.long`, `.maint`) | quick `max(1, slots / 2)`, long `max(1, slots - 1)`, maint 1 | The work-conserving cap of running requests per connection while another connection waits. |

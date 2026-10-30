@@ -90,8 +90,7 @@ public class HeadlessSession implements GhidraLaunchable {
 		                than this (default 2048)
 		  -set          an engine setting (PROTOCOL-3.md 3.7); repeat it. The launcher passes every
 		                entry of the "engine" object of config.json this way. Lane settings:
-		                maintSlots (default max(4, CPUs/2): the slots of the maint lane,
-		                protocol 3),
+		                maintSlots (default 4: the slots of the maint lane, protocol 3),
 		                maxRunningPerKey[.quick|.long|.maint] (the per-key running cap),
 		                quickScriptMaxS (default 60, at most 120)
 		  -selfTest     check the engine's registries and seams, print one line each and exit
@@ -160,8 +159,7 @@ public class HeadlessSession implements GhidraLaunchable {
 		// 7th client's tiny script, save and fork waited 10 s behind six long ones)
 		int maxLong = o.maxLong > 0 ? o.maxLong
 				: Settings.integer("maxLong", Scheduler.defaultLongSlots(cpus));
-		int maintSlots =
-			Math.max(1, Settings.integer("maintSlots", Scheduler.defaultMaintSlots(cpus)));
+		int maintSlots = Math.max(1, Settings.integer("maintSlots", Scheduler.DEFAULT_MAINT_SLOTS));
 		Scheduler scheduler = new Scheduler(maxQuick, maxLong, maintSlots);
 		int maxImports = o.maxImports > 0 ? o.maxImports : ImportGate.defaultPermits(cpus);
 		ImportGate.GLOBAL.setPermits(maxImports);
@@ -635,14 +633,10 @@ public class HeadlessSession implements GhidraLaunchable {
 
 		/**
 		 * The per-call cost of fork_project: one walk of the source for the cost, the revision
-		 * and the copy; the files forced side by side; the admission per destination; the maint
-		 * lane sized from the granted CPUs.
+		 * and the copy; the files forced side by side; the admission per destination.
 		 */
 		private static void fork() {
 			int cpus = Runtime.getRuntime().availableProcessors();
-			check("maintSlots defaults to max(4, CPUs/2) of the granted CPUs",
-				Scheduler.defaultMaintSlots(1) == 4 && Scheduler.defaultMaintSlots(8) == 4 &&
-					Scheduler.defaultMaintSlots(16) == 8 && Scheduler.defaultMaintSlots(cpus) >= 4);
 			check("the fork's flush pool is half the granted CPUs, at least one",
 				ProjectFork.FLUSH_THREADS == Math.max(1, Integer.getInteger(
 					"ghidra.session.forkFlushThreads", cpus / 2)));
@@ -696,12 +690,68 @@ public class HeadlessSession implements GhidraLaunchable {
 				java.nio.file.Path gone = rep.resolve("idata/00/missing.db");
 				check("forceFiles reports a file it cannot force once every flush has ended",
 					throwsIo(() -> ProjectFork.forceFiles(List.of(ro.get(0), gone, ro.get(1)))));
+				// a fork's flushes do not queue behind another fork's: with every pool thread
+				// busy, forceFiles still ends (its own thread forces the files)
+				java.util.concurrent.CountDownLatch busy =
+					new java.util.concurrent.CountDownLatch(1);
+				for (int i = 0; i < ProjectFork.FLUSH_THREADS; i++) {
+					ProjectFork.FLUSHERS.execute(() -> {
+						try {
+							busy.await();
+						}
+						catch (InterruptedException e) {
+							Thread.currentThread().interrupt();
+						}
+					});
+				}
+				java.util.concurrent.FutureTask<Void> own =
+					new java.util.concurrent.FutureTask<>(() -> {
+						ProjectFork.forceFiles(ro);
+						return null;
+					});
+				Thread ownThread = new Thread(own, "selftest-force");
+				ownThread.setDaemon(true);
+				ownThread.start();
+				boolean ended;
+				try {
+					own.get(30, java.util.concurrent.TimeUnit.SECONDS);
+					ended = true;
+				}
+				catch (Exception e) {
+					ended = false;
+				}
+				finally {
+					busy.countDown();
+				}
+				check("forceFiles ends while every thread of the flush pool is busy", ended);
 				if (WINDOWS_HOST) {
 					for (java.nio.file.Path f : ro) {
 						java.nio.file.Files.getFileAttributeView(f,
 							java.nio.file.attribute.DosFileAttributeView.class).setReadOnly(false);
 					}
 				}
+				// a file gone between the fork's listing and its copy is left out of the copy, so
+				// the walk after the copy answers conflict (not a failed copy)
+				java.nio.file.Path late = rep.resolve("idata/00/late.db");
+				java.nio.file.Files.write(late, new byte[100]);
+				java.util.SortedMap<String, java.nio.file.Path> before =
+					UpgradeCache.sourceFiles(dir.resolve("P.gpr"), "P");
+				String revBefore = Revision.of(r, before);
+				java.nio.file.Files.delete(late);
+				java.nio.file.Path copyDir = dir.resolve("copy");
+				boolean copiedWithout;
+				try {
+					UpgradeCache.copyProject(dir, "P", copyDir, new RequestMonitor(null, null),
+						before);
+					copiedWithout = java.nio.file.Files.isRegularFile(
+						copyDir.resolve("P.rep/projectState")) &&
+						!java.nio.file.Files.exists(copyDir.resolve("P.rep/idata/00/late.db"));
+				}
+				catch (Exception e) {
+					copiedWithout = false;
+				}
+				check("a file gone before the copy is left out, and the revision shows it",
+					copiedWithout && !Revision.of(r).equals(revBefore));
 			}
 			catch (java.io.IOException e) {
 				check("the fork checks could set up their folder: " + e, false);
