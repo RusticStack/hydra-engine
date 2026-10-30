@@ -473,7 +473,13 @@ def _steady(c, protocol, run_after_s=25.0, n_readers=8, hold_ms=50):
         waited = w_start - w_sent
         with lock:
             pre = [x[3] - x[0] for x in log if w_sent - 2000 <= x[3] <= w_sent]
-            late = [x for x in log if x[0] >= w_sent + 300]
+            # A request reaches the lock queue only after its path through the daemon (read, parse,
+            # script look-up), which grows on a loaded machine: the least send-to-start time of the
+            # readers just before the writer measures it. Readers sent within that time (plus the
+            # old 300 ms margin) after the writer may fairly reach the queue first.
+            path = [x[1] - x[0] for x in log if w_sent - 2000 <= x[0] <= w_sent]
+            grace = 300 + max(0.0, min(path)) if path else 300
+            late = [x for x in log if x[0] >= w_sent + grace]
         cycle = max(pre) if pre else 1000.0
         # The wait is the rest of the holds that are ahead of it: measured 1 to 4 reader cycles on a
         # loaded machine (the holds serialise on the script framework's instance creation). A wait
@@ -486,7 +492,7 @@ def _steady(c, protocol, run_after_s=25.0, n_readers=8, hold_ms=50):
                                  f"steady readers (their cycle {cycle:.0f} ms, bound {bound:.0f}); "
                                  f"the readers ran another {run_after_s:.0f} s",
                                  {"waitedMs": waited, "cycleMs": cycle})
-        dt.check(not before, f"{len(before)} reader(s) that arrived 300 ms after the writer "
+        dt.check(not before, f"{len(before)} reader(s) that arrived {grace:.0f} ms after the writer "
                  f"started before it ended (FIFO broken): {before[:3]} writer {w_start}-{w_end}")
         return (f"protocol {protocol}: the exclusive script acquired {waited:.0f} ms after it was "
                 f"sent among {n_readers} readers looping on {hold_ms} ms holds (a reader cycle "
@@ -984,8 +990,8 @@ def t_scope_order(c):
     """``orderPerScope`` (PROTOCOL-3.md 8.18). One protocol 3 connection, two labels: ``a`` sends a 4 s
     script and then a short one, ``b`` a short one. With the setting, ``b`` runs beside ``a``'s long
     script and ``a``'s short script still starts only after its long one ended (the order of a label is
-    kept; the default since Hydra daemon-async); with ``orderPerScope=false`` ``b`` waits behind ``a`` on
-    the connection's one ordered lane."""
+    kept); without it (the default) ``b`` waits behind ``a`` on the connection's one ordered lane. Both
+    settings are passed explicitly."""
     prepare(c)
     notes = []
     for on in (False, True):

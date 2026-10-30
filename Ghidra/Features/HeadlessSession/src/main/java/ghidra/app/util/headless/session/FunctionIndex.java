@@ -43,8 +43,16 @@ import ghidra.program.model.listing.Program;
  * number did not change while it read. Builds of one program are single-flight: concurrent first
  * requests wait for the one build instead of each reading the table.
  * <p>
- * <b>Memory.</b> One index per open program object, held weakly (a closed program's index goes
- * with it): two strings and a few primitives per function.
+ * <b>Cost.</b> The first page of a program state ({@code offset 0}, no filter) is read from the
+ * database as before when no index of that state exists ({@link #fresh}): a client that edits and
+ * then looks at the first page of a large program does not pay for a whole listing; the index is
+ * built by the first deeper page or filtered listing of a state.
+ * <p>
+ * <b>Memory.</b> At most one index per open program object, held weakly (a closed program's index
+ * goes with it): two strings and a few primitives per function. A stale index is dropped as soon
+ * as a look-up finds the program changed, and the indexes of all programs together keep at most
+ * {@code functionIndexMaxRows} rows (default 1,000,000): above it the least recently used
+ * indexes are dropped (and rebuilt when needed).
  * <p>
  * The setting {@code functionIndex} ({@code -set functionIndex=false}) turns it off: every page is
  * read from the database as before.
@@ -82,7 +90,11 @@ final class FunctionIndex {
 	private static final class Slot {
 		Snapshot snapshot; // guarded by this
 		long building = -1; // the modification number being read now, -1: none; guarded by this
+		long used; // the last use (USE clock), guarded by this
 	}
+
+	private static final AtomicLong USE = new AtomicLong();
+	private static final AtomicLong EVICTED = new AtomicLong();
 
 	private static final Map<Program, Slot> SLOTS = new WeakHashMap<>();
 
@@ -103,6 +115,35 @@ final class FunctionIndex {
 		return Settings.bool("functionIndex", true);
 	}
 
+	static long maxRows() {
+		return Math.max(0, Settings.integer("functionIndexMaxRows", 1_000_000));
+	}
+
+	/**
+	 * The index of {@code p} as it stands now if one was built, else null (without building one);
+	 * a stale index is dropped. The caller holds the program's shared lock.
+	 */
+	static Snapshot fresh(Program p) {
+		Slot slot;
+		synchronized (SLOTS) {
+			slot = SLOTS.get(p);
+		}
+		if (slot == null) {
+			return null;
+		}
+		long mod = p.getModificationNumber();
+		synchronized (slot) {
+			Snapshot s = slot.snapshot;
+			if (s != null && s.modification == mod) {
+				HITS.incrementAndGet();
+				slot.used = USE.incrementAndGet();
+				return s;
+			}
+			slot.snapshot = null; // stale: not kept for a state that is gone
+			return null;
+		}
+	}
+
 	/**
 	 * The listing of {@code p} as it stands now. The caller holds the program's shared lock, as for
 	 * any read.
@@ -118,8 +159,10 @@ final class FunctionIndex {
 				Snapshot s = slot.snapshot;
 				if (s != null && s.modification == mod) {
 					HITS.incrementAndGet();
+					slot.used = USE.incrementAndGet();
 					return s;
 				}
+				slot.snapshot = null; // stale: not kept for a state that is gone
 				if (slot.building != mod) {
 					break; // nobody reads this state: this caller does
 				}
@@ -136,6 +179,7 @@ final class FunctionIndex {
 			slot.building = mod;
 		}
 		Snapshot built = null;
+		boolean kept = false;
 		try {
 			built = build(p, mod);
 			return built;
@@ -148,12 +192,52 @@ final class FunctionIndex {
 				if (built != null) {
 					if (p.getModificationNumber() == mod) {
 						slot.snapshot = built;
+						slot.used = USE.incrementAndGet();
+						kept = true;
 					}
 					else {
 						RACED.incrementAndGet(); // the program changed while it was read: not kept
 					}
 				}
 				slot.notifyAll();
+			}
+			if (kept) {
+				trim(slot);
+			}
+		}
+	}
+
+	/**
+	 * Drops the least recently used indexes (other than {@code keep}'s) while all indexes together
+	 * hold more than {@link #maxRows()} rows. Takes {@code SLOTS} then each slot, as
+	 * {@link #describe} does; no caller holds a slot's monitor here.
+	 */
+	private static void trim(Slot keep) {
+		long max = maxRows();
+		synchronized (SLOTS) {
+			while (true) {
+				long rows = 0;
+				Slot oldest = null;
+				long oldestUse = Long.MAX_VALUE;
+				for (Slot s : SLOTS.values()) {
+					synchronized (s) {
+						if (s.snapshot == null) {
+							continue;
+						}
+						rows += s.snapshot.size();
+						if (s != keep && s.used < oldestUse) {
+							oldestUse = s.used;
+							oldest = s;
+						}
+					}
+				}
+				if (rows <= max || oldest == null) {
+					return;
+				}
+				synchronized (oldest) {
+					oldest.snapshot = null;
+				}
+				EVICTED.incrementAndGet();
 			}
 		}
 	}
@@ -206,6 +290,6 @@ final class FunctionIndex {
 		}
 		return Json.of("enabled", enabled(), "programs", programs, "rows", rows, "hits",
 			HITS.get(), "builds", BUILDS.get(), "joined", JOINED.get(), "raced", RACED.get(),
-			"rowsRead", ROWS.get());
+			"rowsRead", ROWS.get(), "evicted", EVICTED.get(), "maxRows", maxRows());
 	}
 }

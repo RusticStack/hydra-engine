@@ -92,9 +92,13 @@ final class QueryCommands {
 		JsonArray a = new JsonArray();
 		int seen = 0;
 		boolean truncated = false;
-		if (FunctionIndex.enabled()) {
-			// Hydra (daemon-async): pages are slices of the program state's one shared listing
-			FunctionIndex.Snapshot ix = FunctionIndex.of(prog);
+		// Hydra (daemon-async): pages are slices of the program state's one shared listing; the
+		// first unfiltered page of a state with no listing yet is read from the database (it stops
+		// after limit rows), so an edit-then-look loop does not build a whole listing each time
+		FunctionIndex.Snapshot ix = !FunctionIndex.enabled() ? null
+				: pat == null && sub == null && offset == 0 ? FunctionIndex.fresh(prog)
+				: FunctionIndex.of(prog);
+		if (ix != null) {
 			int n = ix.size();
 			if (pat == null && sub == null) {
 				int from = (int) Math.min(n, (long) offset);

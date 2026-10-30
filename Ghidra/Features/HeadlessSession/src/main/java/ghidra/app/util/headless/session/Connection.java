@@ -39,12 +39,10 @@ import ghidra.util.cpu.HydraCpu;
  * read, so {@code cancel} reaches it while it still waits its turn. Responses carry the request's
  * {@code id}; {@code progress} events carry it too.
  * <p>
- * With the setting {@code orderPerScope} (default on since Hydra daemon-async, PROTOCOL-3.md 8.18;
- * {@code -set orderPerScope=false} restores one lane per connection) a protocol 3 connection keeps
- * one ordered lane per caller scope instead of one for the whole connection: the requests of one
- * {@code client}/{@code harness} label still run in the order sent, while the requests of other
- * labels run beside them, so agents multiplexed over one connection no longer queue behind each
- * other. Unlabelled requests keep the connection's own lane.
+ * With the setting {@code orderPerScope} (default off, PROTOCOL-3.md 8.18) a protocol 3 connection
+ * keeps one ordered lane per caller scope instead of one for the whole connection: the requests of
+ * one {@code client}/{@code harness} label still run in the order sent, while the requests of
+ * other labels run beside them. Unlabelled requests keep the connection's own lane.
  */
 final class Connection {
 
@@ -329,7 +327,7 @@ final class Connection {
 			return;
 		}
 		// a labelled request of a v3 connection gets its scope's own ordered lane (orderPerScope)
-		String scope = !par && client.v3() && Settings.bool("orderPerScope", true)
+		String scope = !par && client.v3() && Settings.bool("orderPerScope", false)
 				? who.scope()
 				: null;
 		try {

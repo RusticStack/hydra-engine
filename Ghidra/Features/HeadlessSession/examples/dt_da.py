@@ -22,13 +22,16 @@
   functionIndex=false``) for every page shape (offset/limit pages to past the end, ``regex``, ``contains``,
   both at once, a filter that matches nothing), and 8 clients paging at once build the index once
   (``health.functionIndex.builds``); a daemon with the setting off reports no builds.
-* ``da_fn_index_invalidate``: after a rename (and after a plate comment, which does not change the listing
+* ``da_fn_index_invalidate``: the first page after an edit is read from the database (no build, the stale
+  index is dropped: ``rows`` 0); after a rename (and after a plate comment, which does not change the listing
   but does change the program) in a writable view the next listing shows the new name, equal to the
   database daemon's listing after the same rename: the index of the older program state is never served.
 * ``da_script_cache``: a Java script run again from an unchanged source bundle is instantiated from its kept
   class (``health.scriptClasses.hits``) with output identical to a daemon with ``-set
   scriptClassCache=false``; after its source is edited the next run prints the new text on both daemons
   (the kept class is stale and loaded again); 8 clients running it at once all get the same output.
+* ``da_script_cache_dep``: a script that imports another script directory's package (``@importpackage``)
+  prints the dependency's new text after the dependency is edited, as with the cache off.
 """
 import concurrent.futures
 import pathlib
@@ -140,6 +143,10 @@ def t_fn_index_invalidate(c):
         for s in (a, b):
             s.call("rename", address=x, name="da_renamed_fn")
         after = b.call("functions", limit=50)["functions"]
+        st_first = _stats(b)
+        # the first page of the new state is read from the database: no build, the stale index dropped
+        dt.check(st_first["builds"] == builds0 and st_first.get("rows") == 0,
+                 f"the first page after the rename built an index or kept the stale one: {st_first}")
         dt.check(any(f["address"] == x and f["name"].endswith("da_renamed_fn") for f in after),
                  f"the listing after the rename shows the old name at {x}")
         dt.check(_listing(a) == _listing(b), "after the rename the indexed listing differs from the database's")
@@ -220,8 +227,67 @@ def t_script_cache(c):
             path.unlink()
 
 
+DEP_LIB = """package dalib;
+public class DaLib {
+    public static String v() { return "%s"; }
+}
+"""
+
+DEP_SCRIPT = """// @category HeadlessSession.Test
+// @importpackage dalib
+import ghidra.app.script.GhidraScript;
+import dalib.DaLib;
+public class DaDepProbe extends GhidraScript {
+    @Override protected void run() throws Exception {
+        println("dep " + DaLib.v());
+    }
+}
+"""
+
+
+def t_script_cache_dep(c):
+    """A script whose bundle imports another script directory's package (``@importpackage``): after the
+    dependency's source is edited the next run prints the dependency's new text, equal to a daemon with
+    ``scriptClassCache=false`` (the kept-class path would skip the activation that rebuilds the dependency,
+    so such a bundle is never kept)."""
+    import time
+    e9.fixture_args(c)
+    lib = c.work / "da-dep-lib"
+    sdir = c.work / "da-dep-scripts"
+    (lib / "dalib").mkdir(parents=True, exist_ok=True)
+    sdir.mkdir(parents=True, exist_ok=True)
+    libf = lib / "dalib" / "DaLib.java"
+    libf.write_text(DEP_LIB % "lib-v1")
+    path = sdir / "DaDepProbe.java"
+    path.write_text(DEP_SCRIPT)
+    sp = [str(c.scripts), str(lib), str(sdir)]
+    da = c.daemon("da-dep-off", engine={"scriptClassCache": "false"}, scriptPath=sp)
+    db = c.daemon("da-dep-on", engine=ON, scriptPath=sp)
+    a = b = None
+    try:
+        a, b = c.connect(da, "a", "da", 3), c.connect(db, "b", "da", 3)
+
+        def run(s):
+            return _out(s.call("script", script=str(path), program=None, args=[], wait=120000))
+
+        oa1, ob1 = run(a), run(b)
+        ob2 = run(b)
+        dt.check("dep lib-v1" in ob1 and oa1 == ob1 == ob2, f"first runs differ: {oa1} / {ob1} / {ob2}")
+        time.sleep(1.1)  # a new modification time on any file system
+        libf.write_text(DEP_LIB % "lib-v2-edited")
+        oa3, ob3 = run(a), run(b)
+        dt.check("dep lib-v2-edited" in oa3, f"the cache-off daemon did not pick up the dependency edit: {oa3}")
+        dt.check(oa3 == ob3, f"after the dependency edit the cached daemon prints {ob3!r}, the full path {oa3!r}")
+        return f"dependency edit seen by both daemons ({_sc(b)})"
+    finally:
+        e9.close_all(a, b)
+        e9.stop(da)
+        e9.stop(db)
+
+
 TESTS = {
     "da_script_cache": t_script_cache,
+    "da_script_cache_dep": t_script_cache_dep,
     "da_fn_index": t_fn_index,
     "da_fn_index_invalidate": t_fn_index_invalidate,
 }

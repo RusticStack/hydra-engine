@@ -19,10 +19,14 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.osgi.framework.Bundle;
+import org.osgi.framework.Constants;
+import org.osgi.framework.wiring.BundleWire;
+import org.osgi.framework.wiring.BundleWiring;
 
 import com.google.gson.JsonObject;
 
@@ -48,6 +52,9 @@ import ghidra.app.script.*;
  * <li>the fingerprint is unchanged (no source or resource of the bundle was added, removed or
  * modified: then the bundle activation would rebuild nothing either);</li>
  * <li>the bundle had no build errors at the load (an activation would report them again);</li>
+ * <li>the bundle imports packages only from the system bundle (a bundle wired to another bundle,
+ * such as a script directory it names in {@code @importpackage}, is never kept: only the full
+ * path rebuilds a changed dependency);</li>
  * <li>the bundle is still {@code ACTIVE} and loading the class name from it still gives the kept
  * class (a bundle another load rebuilt, refreshed or stopped gives a new class or none).</li>
  * </ul>
@@ -115,7 +122,8 @@ final class ScriptClasses {
 				String cn = b.classNameForScript(src);
 				File d = b.getFile().getFile(false);
 				if (osgi == null || d == null || !d.equals(dir) ||
-					osgi.getState() != Bundle.ACTIVE || osgi.loadClass(cn) != s.getClass()) {
+					osgi.getState() != Bundle.ACTIVE || osgi.loadClass(cn) != s.getClass() ||
+					!wiredOnlyToSystem(osgi)) {
 					ENTRIES.remove(key);
 					return;
 				}
@@ -125,6 +133,30 @@ final class ScriptClasses {
 				ENTRIES.remove(key);
 			}
 		}
+	}
+
+	/**
+	 * Whether every package {@code osgi} imports comes from the system bundle (Ghidra's own
+	 * classes). A bundle wired to another bundle ({@code @importpackage} of another script
+	 * directory, a jar bundle) is never kept: the fingerprint covers only the script's own
+	 * directory, and only the full load ({@code activateAll}) rebuilds a changed dependency and
+	 * refreshes its dependents, so a kept class could run a dependency's old code.
+	 */
+	static boolean wiredOnlyToSystem(Bundle osgi) {
+		BundleWiring w = osgi.adapt(BundleWiring.class);
+		if (w == null) {
+			return false;
+		}
+		List<BundleWire> wires = w.getRequiredWires(null);
+		if (wires == null) {
+			return false;
+		}
+		for (BundleWire wire : wires) {
+			if (wire.getProvider().getBundle().getBundleId() != Constants.SYSTEM_BUNDLE_ID) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	/** The look-up of {@code src}; never throws. */
