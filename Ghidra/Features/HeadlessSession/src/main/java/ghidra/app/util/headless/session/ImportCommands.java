@@ -178,7 +178,21 @@ final class ImportCommands {
 			if (req.has("wait")) {
 				openReq.add("wait", req.get("wait"));
 			}
-			JsonObject info = (JsonObject) s.programCmds.openProgram(c, openReq, m);
+			JsonObject info;
+			try {
+				info = (JsonObject) s.programCmds.openProgram(c, openReq, m);
+			}
+			catch (SessionException ex) {
+				if (!HeldFiles.isHeld(ex)) {
+					throw ex;
+				}
+				// saved, but its files are held for a moment (GATE10, A63): say so; a retry of
+				// the import finds it by its SHA-256, or open_program opens it
+				JsonObject d = ex.details() == null ? new JsonObject() : ex.details().deepCopy();
+				Json.put(d, "imported", saved);
+				throw ex.rewrap("the import saved " + saved + " in project " + p.id +
+					", but it cannot be opened yet: " + ex.getMessage(), d);
+			}
 			JsonObject r = Json.of("imported", true, "project", p.id, "path", saved, "key",
 				p.id + ":" + saved, "sha256", sha, "importSeconds", importS, "program", info);
 			Json.put(r, "queue", gate.describeWait());

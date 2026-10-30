@@ -30,6 +30,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from c_lib import *  # noqa
+import kcheck  # noqa: E402  (K1-K17 after every kill, gate 9.15)
 
 
 
@@ -84,6 +85,19 @@ class Run:
 
     # -- helpers
     def emit(s, rec):
+        if "anomalies" in rec and getattr(s, "k_dir", None) is not None:
+            # gate 9.15: K1-K17 after every kill, on the iteration folder before it is deleted (kcheck.py)
+            try:
+                ks, extra = kcheck.per_kill(s, rec, s.k_dir)
+                rec["k"] = ks
+                for a in extra:
+                    if a not in rec["anomalies"]:
+                        rec["anomalies"].append(a)
+                s.k_failed = bool(extra) or any(v.get("ok") is False for v in ks.values())
+            except Exception:  # noqa: BLE001
+                import traceback
+                rec["k_error"] = traceback.format_exc()[-1500:]
+                s.k_failed = True
         s.res.write(json.dumps(rec, default=str) + "\n")
         s.res.flush()
 
@@ -93,13 +107,15 @@ class Run:
             shutil.rmtree(d, ignore_errors=True)
         d.mkdir(parents=True)
         shutil.copytree(s.b["base"], d / "canon")
+        s.k_dir, s.k_live, s.k_failed = d, None, False
+        s.k_canon_snap = kcheck.snapshot_canon(d / "canon")
         return d, tree_hash(d / "canon")["tree_sha256"]
 
     def canon_gpr(s, d):
         return d / "canon" / s.b["gpr"]
 
     def end_iter(s, d, anomalies):
-        if anomalies and s.keep < 6:
+        if (anomalies or getattr(s, "k_failed", False)) and s.keep < 6:
             s.keep += 1
             return
         shutil.rmtree(d, ignore_errors=True)
@@ -139,6 +155,7 @@ class Run:
                     full[l]["w"] = inspect(c, g, True, s.ctx, deep=deep, prefix=prefix, progs_filter=progs_filter)
                     full[l]["w_total_ms"] = ms(tw0)
         out["log"] = s.rig.log_since(off)
+        s.k_live = kcheck.capture_live(c)          # K10, K13, K14 of the fresh daemon (kcheck.py)
         out["stop"] = s.rig.stop()
         s.rig.cancel_watchdog()
         for l, (dr, g) in targets.items():
@@ -148,6 +165,22 @@ class Run:
             t["residue_final"] = residue_tags(inv)
             t["inv_final"] = inv_diff(inv0[l], inv)
         out["targets"] = full
+        return out
+
+    def leftovers(s, dest):
+        """8.13: what must not be in a fork's destination once a sweep ran: a ``.rep`` without its ``.gpr``,
+        a ``<name>.fork.json.tmp``, a staging folder."""
+        dest = pathlib.Path(dest)
+        if not dest.is_dir():
+            return []
+        out = []
+        for e in os.listdir(dest):
+            if e.endswith(".rep") and not (dest / (e[:-4] + ".gpr")).exists():
+                out.append("rep_without_gpr:" + e)
+            elif re.fullmatch(r".+\.fork\.json(\.\d+)?\.tmp", e):
+                out.append("sidecar_tmp:" + e)
+            elif e.startswith(".") and ".fork-" in e and e.endswith(".tmp"):
+                out.append("staging:" + e)
         return out
 
     def classify_main(s, scan, bases):
@@ -368,10 +401,24 @@ class Run:
         # complete dest must be byte-identical to canonical (data files)
         if rec["dest_has_gpr"] and rec["dest_has_rep"]:
             cth = {k: v for k, v in _tree_rows(d / "canon").items()}
-            dth = {k: v for k, v in _tree_rows(dest).items() if not k.endswith(".fork.json") and not k.endswith((".lock", ".lock~"))}
+            # the staging folder (.<name>.fork-<id>.tmp, left until the next sweep) and the test lock are not project data (K6)
+            def _scratch(k):
+                # 8.13: the sidecar's own temporary file is not project data; it is reported as a pre-sweep
+                # leftover (SIDECAR_TMP_BEFORE_SWEEP) and must be gone after the sweep (LEFT_AFTER_SWEEP)
+                return k.endswith((".fork.json", ".lock", ".lock~", ".lock~~")) or re.fullmatch(r".+\.fork\.json(\.\d+)?\.tmp", k) or any(q.startswith(".") and ".fork-" in q and q.endswith(".tmp") for q in k.replace("\\", "/").split("/"))
+            # 8.13 (A61): the time probe of a killed writable open (the open of the committed fork) is reported as a
+            # pre-sweep class (GHIDRA_PROBE_BEFORE_OPEN) and must be gone after the oracle's writable open
+            probes = set(ghidra_probes(dest))
+            dth = {k: v for k, v in _tree_rows(dest).items() if not _scratch(k) and k not in probes}
             rec["dest_files_equal_canon"] = (cth == dth)
             rec["dest_diff_files"] = sorted(set(cth) ^ set(dth))[:10] + [k for k in cth if k in dth and cth[k] != dth[k]][:10]
+        # A62: <name>.fork.json.<pid>.tmp (an older build: <name>.fork.json.tmp)
+        rec["dest_has_sidecar_tmp"] = bool(sidecar_tmps(dest))
+        rec["dest_ghidra_probe_after_kill"] = ghidra_probes(dest)
         o2 = s.oracle(d, {"dest": (dest, gpr), "canon": (d / "canon", s.canon_gpr(d))}, do_w=True)
+        # 8.13: the fresh daemon's start-up sweep ran (the same state directory recorded the destination)
+        rec["dest_after_start_sweep"] = s.leftovers(dest)
+        rec["dest_ghidra_probe_after_open"] = ghidra_probes(dest)      # after the oracle's writable open (A61)
         t = o2["targets"]["dest"]
         ro = main_scan(t.get("ro"), s.ctx) if t.get("ro") else None
         w = main_scan(t.get("w"), s.ctx) if t.get("w") else None
@@ -404,10 +451,27 @@ class Run:
         s.rig.stop()
         s.rig.cancel_watchdog()
         rec["leftover_fork_tmp_after_retry"] = [k for k in inventory(d / "fork") if ".fork-" in k][:5] + [k for k in inventory(d / "fork2") if ".fork-" in k][:5]
+        rec["dest_after_retry_sweep"] = s.leftovers(dest) + s.leftovers(d / "fork2")
         rec["canonical_unchanged"] = tree_hash(d / "canon")["tree_sha256"] == th0
         if not rec["canonical_unchanged"]:
             anomalies.append("CANONICAL_CHANGED")
-        if rec["dest_state"] in ("rep_only_NO_GPR", "other") or rec["dest_state"].endswith("NO_SIDECAR"):
+        # 8.13: a .gpr without its .rep is never allowed, at any instant (read right after the kill)
+        if rec["dest_has_gpr"] and not rec["dest_has_rep"]:
+            anomalies.append("GPR_WITHOUT_REP")
+        # a .rep without its .gpr, and the sidecar's .tmp, are allowed before the sweep (reported, not counted)
+        # and counted when they are still there after it (the daemon start, then the next fork_project)
+        if rec["dest_state"] == "rep_only_NO_GPR":
+            anomalies.append("REP_WITHOUT_GPR_BEFORE_SWEEP")
+        if rec["dest_has_sidecar_tmp"]:
+            anomalies.append("SIDECAR_TMP_BEFORE_SWEEP")
+        if rec["dest_ghidra_probe_after_kill"]:
+            anomalies.append("GHIDRA_PROBE_BEFORE_OPEN")
+        if rec["dest_ghidra_probe_after_open"]:
+            anomalies.append("LEFT_AFTER_SWEEP:open:" + ",".join(rec["dest_ghidra_probe_after_open"])[:120])
+        for stage in ("dest_after_start_sweep", "dest_after_retry_sweep"):
+            if rec[stage]:
+                anomalies.append("LEFT_AFTER_SWEEP:%s:%s" % (stage, ",".join(rec[stage])[:120]))
+        if rec["dest_state"] == "other" or rec["dest_state"].endswith("NO_SIDECAR"):
             anomalies.append("PARTIAL_DEST_VISIBLE:" + rec["dest_state"])
         if rec["dest_state"].startswith("complete") and (rec["dest_outcome_ro"] != "pre" or not rec.get("dest_files_equal_canon")):
             anomalies.append("COMPLETE_DEST_NOT_EQUAL_CANON")
@@ -419,7 +483,7 @@ class Run:
             anomalies.append("RETRY_BLOCKED")
         rec["anomalies"] = anomalies
         s.emit(rec)
-        s.end_iter(d, [a for a in anomalies if a not in ("ORPHAN_TMP_LEFT",)])
+        s.end_iter(d, [a for a in anomalies if a not in kcheck.PRE_SWEEP])
         return rec
 
     # ======================================================== scenario c (import + analysis)
@@ -630,7 +694,10 @@ class Run:
         rec["dest_has_gpr"] = gpr.exists()
         rec["dest_has_rep"] = (dest / s.b["gpr"].replace(".gpr", ".rep")).exists()
         rec["dest_has_fork_tmp"] = any(".fork-" in k for k in inventory(dest))
+        rec["dest_has_sidecar_tmp"] = bool(sidecar_tmps(dest))
         o2 = s.oracle(d, {"dest": (dest, gpr), "canon": (d / "canon", s.canon_gpr(d))}, do_w=True)
+        # 8.13: the fresh daemon's start-up sweep and the sweep of its open_project ran
+        rec["dest_after_sweep"] = s.leftovers(dest)
         t = o2["targets"]["dest"]
         rec["restart_ms"] = o2["restart_ms"]
         rec["oracle_log"] = o2["log"]
@@ -656,8 +723,16 @@ class Run:
                 anomalies.append("DEST_CORRUPT_OR_UNOPENABLE")
             if rec.get("acked_before_kill") and rec["dest_ro"] != "post":
                 anomalies.append("LOSS_OF_ACKED_PROMOTE")
-            if rec["dest_has_rep"] != rec["dest_has_gpr"]:
-                anomalies.append("PARTIAL_DEST_VISIBLE")
+            # 8.13: a .gpr without its .rep never; a .rep without its .gpr and the sidecar's temporary file only
+            # before the sweep (reported), never after it (LEFT_AFTER_SWEEP, counted)
+            if rec["dest_has_gpr"] and not rec["dest_has_rep"]:
+                anomalies.append("GPR_WITHOUT_REP")
+            if rec["dest_has_rep"] and not rec["dest_has_gpr"]:
+                anomalies.append("REP_WITHOUT_GPR_BEFORE_SWEEP")
+            if rec["dest_has_sidecar_tmp"]:
+                anomalies.append("SIDECAR_TMP_BEFORE_SWEEP")
+            if rec["dest_after_sweep"]:
+                anomalies.append("LEFT_AFTER_SWEEP:oracle:" + ",".join(rec["dest_after_sweep"])[:120])
             if rec["dest_ro"] == "pre":
                 rec["note"] = "fork complete but overlay edits not applied/saved"
         else:
@@ -665,8 +740,35 @@ class Run:
                 anomalies.append("APPLY_LEFT_A_FORK")
         rec["anomalies"] = anomalies
         s.emit(rec)
-        s.end_iter(d, anomalies)
+        s.end_iter(d, [a for a in anomalies if a not in kcheck.PRE_SWEEP])
         return rec
+
+
+def sidecar_tmps(dest):
+    """A62: the temporary files of sidecar writes in ``dest``: ``<name>.fork.json.<pid>.tmp`` (``.fork.json.tmp`` of an
+    older build)."""
+    dest = pathlib.Path(dest)
+    return sorted(e for e in os.listdir(dest) if re.fullmatch(r".+\.fork\.json(\.\d+)?\.tmp", e)) if dest.is_dir() else []
+
+
+GHIDRA_PROBE = re.compile(r"[^/]+\.rep/(idata|user|versioned)/tmp\d+\.tmp")
+
+
+def ghidra_probes(root):
+    """8.13 (A61): the empty time probes ``tmp<digits>.tmp`` a killed writable open leaves in a ``.rep`` root (Ghidra's
+    ``LocalDatabaseItem.CleanupRunnable``). Not project data; the next writable open of the daemon removes them."""
+    root = pathlib.Path(root)
+    out = []
+    for dp, _dn, files in os.walk(root):
+        for n in files:
+            p = pathlib.Path(dp, n)
+            rel = p.relative_to(root).as_posix()
+            try:
+                if GHIDRA_PROBE.fullmatch(rel) and p.stat().st_size == 0:
+                    out.append(rel)
+            except OSError:
+                pass
+    return sorted(out)
 
 
 def _tree_rows(root):
@@ -686,7 +788,16 @@ def main():
     hdr = {"scenario": scen, "proj": proj, "fs": fs, "n": n, "seed": seed, "start": time.strftime("%Y-%m-%d %H:%M:%S"),
            "engine": INSTALL, "base_tree": s.base_tree, "data_root": str(s.data)}
     (s.out / "header.json").write_text(json.dumps(hdr, indent=1))
-    if scen in ("a", "ctl"):
+    # CALIB_IN (scenarios a and b): take the window and the baselines from the calibration another run of the same
+    # scenario wrote (red_table.py's shards share the one calibration of their first shard instead of each measuring
+    # its own under a different load); CALIB_OUT: also write this run's calibration there.
+    cal_in = os.environ.get("CALIB_IN") if scen in ("a", "ctl", "b") else None
+    if cal_in:
+        cal = json.loads(pathlib.Path(cal_in).read_text(encoding="utf-8"))
+        s.bases = cal["bases"]
+        cal["shared_from"] = cal_in
+        f = (lambda i, dl: s.scen_b(i, dl)) if scen == "b" else (lambda i, dl: s.scen_a(i, dl))
+    elif scen in ("a", "ctl"):
         cal = s.calib_a()
         f = lambda i, dl: s.scen_a(i, dl)
     elif scen == "b":
@@ -710,7 +821,12 @@ def main():
     else:
         raise SystemExit("unknown scenario")
     (s.out / "calibration.json").write_text(json.dumps(cal, indent=1, default=str))
-    print("calibrated", s.name, "window_s=%.3f" % cal.get("window_s", -1), flush=True)
+    if os.environ.get("CALIB_OUT") and not cal_in and scen in ("a", "ctl", "b"):
+        out = pathlib.Path(os.environ["CALIB_OUT"])
+        tmp = out.with_suffix(".tmp")
+        tmp.write_text(json.dumps(dict(cal, bases=s.bases), indent=1, default=str), encoding="utf-8")
+        os.replace(tmp, out)            # a reader sees the whole calibration or none
+    print("calibrated" if not cal_in else "calibration shared", s.name, "window_s=%.3f" % cal.get("window_s", -1), flush=True)
     window = cal["window_s"]
     if os.environ.get("WINDOW_S"):
         window = float(os.environ["WINDOW_S"])

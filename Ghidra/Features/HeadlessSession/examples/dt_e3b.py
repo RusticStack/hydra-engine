@@ -45,6 +45,8 @@ protocol 2 behaviour is ``cc_e3b.py``'s):
   the exclusive leave waits at most ``cleanupGraceS + abandonWaitS``, readers wait no longer.
 * ``lock_queue_full``: more than ``max(2, slots/4)`` waiters on one lock are answered ``busy`` at
   once with ``reason:"lock_queue_full"`` and ``retryAfterMs``.
+* ``v2_program_shape`` (protocol 2 and 3): a protocol 2 ``status.programs[]`` and ``list`` ``open`` have
+  hydra.3's keys exactly (no ``lockWaiters``); a protocol 3 ``status`` adds ``lockWaiters``.
 * ``applied_flag``: ``cancelled.details.applied`` for ``rename``, ``comment``, ``save`` and an owner
   script.
 * ``stalled_socket`` (BP23): a client that stops reading holds no lock of anyone else for longer than
@@ -273,10 +275,13 @@ def t_cancel_queued(c):
 
 # ---- cancel_while_waiting -------------------------------------------------------------------
 
-def _cancel_while_waiting(c, protocol, races):
+def _cancel_while_waiting(c, protocol, races, first=0):
+    """Part (a) and ``races`` races of part (b), numbered from ``first`` (the race number picks the
+    offset of the cancel against the release, so shards that split 0..199 cover the same offsets)."""
     exe = prepare(c)
-    gpr = c.copy_fixture(f"e3bCw{protocol}")
-    d = c.daemon(f"e3b-cw{protocol}")
+    tag = f"{protocol}-{first}" if first else f"{protocol}"
+    gpr = c.copy_fixture(f"e3bCw{tag}")
+    d = c.daemon(f"e3b-cw{tag}")
     H = R = None
     try:
         H = owner(c, d, gpr, exe, protocol=protocol)
@@ -320,7 +325,7 @@ def _cancel_while_waiting(c, protocol, races):
         dur = sorted(durs)[len(durs) // 2]
         counts = {"ok": 0, "cancelled": 0}
         phases = {}
-        for i in range(races):
+        for i in range(first, first + races):
             off = ((i % 41) - 20) / 1000.0
             t0 = time.perf_counter()
             hid = H.send("script", script=c.script("TestSleep.java"), args=["40"], parallel=True)
@@ -347,17 +352,26 @@ def _cancel_while_waiting(c, protocol, races):
         log = log_text(d)
         dt.check("ClosedByInterruptException" not in log,
                  "the daemon log has ClosedByInterruptException")
+        which = f" (#{first}-{first + races - 1})" if first or races != CW_RACES else ""
         return (f"protocol {protocol}: cancelled in {ms_cancel:.0f} ms, order behind it kept; "
-                f"{races} races: {counts['cancelled']} cancelled {phases or ''}, "
+                f"{races} races{which}: {counts['cancelled']} cancelled {phases or ''}, "
                 f"{counts['ok']} completed, no leak")
     finally:
         close_all(H, R)
         d.stop(force=True)
 
 
+CW_RACES = 200      # races per protocol
+CW_SHARDS = 4       # shards per protocol when run as shards (each also runs part (a))
+
+
 def t_cancel_while_waiting(c):
-    notes = [_cancel_while_waiting(c, 3, 200), _cancel_while_waiting(c, 2, 200)]
+    notes = [_cancel_while_waiting(c, 3, CW_RACES), _cancel_while_waiting(c, 2, CW_RACES)]
     return "; ".join(notes)
+
+
+def _cw_shard(protocol, first, count):
+    return lambda c: _cancel_while_waiting(c, protocol, count, first)
 
 
 # ---- deadline_in_lock_wait ------------------------------------------------------------------
@@ -461,6 +475,8 @@ def _steady(c, protocol, run_after_s=25.0, n_readers=8, hold_ms=50):
 
 
 def t_writer_vs_steady_readers(c):
+    # each half keeps the readers looping run_after_s = 25 s after the writer arrives (a designed
+    # wait: a wait that re-joins the queue's tail must have the time to show)
     return "; ".join([_steady(c, 3), _steady(c, 2)])
 
 
@@ -679,43 +695,94 @@ def t_owner_leave_bounded(c):
 # ---- lock_queue_full ------------------------------------------------------------------------
 
 def t_lock_queue_full(c):
+    """The holder holds until the test cancels it (no fixed run time), the third waiter is sent
+    once the daemon counts both earlier waits on the program lock (``lockWaiters``), and "at once"
+    is the daemon's own ``waitedMs: 0``, not a wall-clock bound. The waiters read with
+    ``functions`` (a shared program read that queues behind the exclusive holder like any other):
+    the native decompiler is not what this test is about (E9 owns its failures)."""
     exe = prepare(c)
     gpr = c.copy_fixture("e3bQf")
     d = c.daemon("e3b-qf", maxQuick=4)       # max(2, 4 / 4) = 2 waiters
-    H = None
+    H = M = None
     rs = []
     try:
         H = owner(c, d, gpr, exe)
         rs = [reader(c, d, gpr, exe, f"w{i}") for i in range(5)]
-        fn = bl.first_function(H)
-        hold = script(c, H, 25000)
-        dt.wait_for(lambda: holds(rs[0], exe), "the holder's script to hold the program", 30)
-        waiting = [rs[i].send("decompile", address=fn, wait=40000, parallel=True) for i in range(2)]
-        time.sleep(1.0)
+        M = c.connect(d, "M", "e3b", 3)       # reads the daemon's wait counters, joins nothing
+        hold = script(c, H, 3600000)
+        dt.wait_for(lambda: holds(rs[0], exe), "the holder's script to hold the program", 120)
+
+        def queued():
+            pg = program(M, exe)
+            return pg.get("lockWaiters") if pg else None
+        dt.check(queued() == 0, f"lockWaiters before the waiters: {program(M, exe)}")
+        waiting = [rs[i].send("functions", limit=1, wait=3600000, parallel=True) for i in range(2)]
+        dt.wait_for(lambda: queued() == 2, "both waiters to queue behind the holder", 120)
         t = time.perf_counter()
         try:
-            rs[2].call("decompile", address=fn, wait=40000)
+            rs[2].call("functions", limit=1, wait=3600000)
             raise dt.Fail("the third waiter waited instead of being refused")
         except c.gs.SessionError as e:
             ms = (time.perf_counter() - t) * 1000
             dt.check(e.code == "busy" and (e.details or {}).get("reason") == "lock_queue_full",
                      f"third waiter: {e.code} {e.details}")
-            dt.check(ms < 800, f"it was told after {ms:.0f} ms")
+            dt.check((e.details or {}).get("waitedMs") == 0, f"it waited before the refusal: {e.details}")
             err = rs[2].last_response["error"]
             dt.check(err.get("retryAfterMs") == 1000, f"retryAfterMs: {err.get('retryAfterMs')}")
             dt.check((e.details or {}).get("waitersMax") == 2, f"details: {e.details}")
         # a request on another lock of the same connection is not affected
         dt.check(bl.timed(c, rs[2], "projects")["ok"], "an unrelated request was refused")
+        dt.check(holds(rs[0], exe), "the holder ended before the cancel: the scenario did not hold")
         # the first two keep waiting and are served when the holder ends
         finish(H, hold)
         out = [attempt(c, rs[i], waiting[i])[0] for i in range(2)]
         dt.check(out == ["ok", "ok"], f"the two waiters ended with {out}")
         # when the lock is free the cap is not a limit on callers
-        dt.check(all(bl.timed(c, s, "decompile", address=fn)["ok"] for s in rs[2:]),
+        dt.check(all(bl.timed(c, s, "functions", limit=1)["ok"] for s in rs[2:]),
                  "readers were refused on a free lock")
         return "2 waiters wait, the 3rd gets busy{lock_queue_full} in %.0f ms with retryAfterMs 1000" % ms
     finally:
-        close_all(H, *rs)
+        close_all(H, M, *rs)
+        d.stop(force=True)
+
+
+# ---- v2_program_shape -----------------------------------------------------------------------
+
+#: the keys of a ``status.programs[]`` entry and of a ``list`` entry's ``open`` on hydra.3, in order:
+#: what a protocol 2 connection must see (the protocol-2 characterization goldens, gate 9.8)
+V2_PROGRAM_KEYS = ["project", "path", "mode", "owner", "idleMs", "users", "ownerLabel", "busy",
+                   "writers", "journalSeq", "unsavedEdits", "orphanedMs", "revision",
+                   "cachedUpgrade", "cacheBuild"]
+
+
+def t_v2_program_shape(c):
+    """A protocol 2 connection gets hydra.3's ``status.programs[]`` and ``list`` ``open`` keys,
+    exactly and in order; the protocol 3 figures (``lockWaiters``, ``abandonedRequests``, ...)
+    are on a protocol 3 connection's ``status`` only."""
+    exe = prepare(c)
+    gpr = c.copy_fixture("e3bShape")
+    d = c.daemon("e3b-shape")
+    P = Q = None
+    try:
+        P = reader(c, d, gpr, exe, "p2", protocol=2)
+        Q = reader(c, d, gpr, exe, "p3", protocol=3)
+        dt.check(P.hello.get("protocol", 2) == 2 and Q.hello.get("protocol") == 3,
+                 f"protocols: {P.hello.get('protocol')} / {Q.hello.get('protocol')}")
+        v2 = program(P, exe)
+        dt.check(v2 is not None and list(v2) == V2_PROGRAM_KEYS,
+                 f"a protocol 2 status.programs[] is not hydra.3's: {list(v2 or {})}")
+        opened = [e["open"] for e in P.call("list", programsOnly=True, metadata=False)["entries"]
+                  if e["path"] == "/" + exe]
+        dt.check(len(opened) == 1 and list(opened[0]) == V2_PROGRAM_KEYS,
+                 f"a protocol 2 list entry's open is not hydra.3's: {[list(o or {}) for o in opened]}")
+        v3 = program(Q, exe)
+        dt.check(v3 is not None and v3.get("lockWaiters") == 0
+                 and list(v3)[:len(V2_PROGRAM_KEYS)] == V2_PROGRAM_KEYS,
+                 f"a protocol 3 status.programs[]: {v3}")
+        extra = [k for k in v3 if k not in V2_PROGRAM_KEYS]
+        return f"protocol 2: hydra.3's {len(V2_PROGRAM_KEYS)} keys; protocol 3 adds {extra}"
+    finally:
+        close_all(P, Q)
         d.stop(force=True)
 
 
@@ -1083,6 +1150,7 @@ TESTS = {
     "abandoned_holder": t_abandoned_holder,
     "owner_leave_bounded": t_owner_leave_bounded,
     "lock_queue_full": t_lock_queue_full,
+    "v2_program_shape": t_v2_program_shape,
     "applied_flag": t_applied_flag,
     "stalled_socket": t_stalled_socket,
     "parallel_reads": t_parallel_reads,
@@ -1093,3 +1161,12 @@ TESTS = {
 }
 
 BASELINE = {}
+
+#: the shards run_parallel.py runs at once: cancel_while_waiting as its two protocol halves, each with
+#: its 200 races split over CW_SHARDS processes (same race numbers, part (a) in every shard), and
+#: writer_vs_steady_readers as its two protocol halves.
+SHARDS = {
+    "cancel_while_waiting": {f"p{p}r{first}": _cw_shard(p, first, cnt)
+                             for p in (3, 2) for first, cnt in dt.split_n(CW_RACES, CW_SHARDS)},
+    "writer_vs_steady_readers": {"p3": lambda c: _steady(c, 3), "p2": lambda c: _steady(c, 2)},
+}

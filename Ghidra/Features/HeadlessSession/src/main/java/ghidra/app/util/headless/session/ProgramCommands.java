@@ -96,6 +96,11 @@ final class ProgramCommands {
 		}
 		DomainFile df = findFile(p, name);
 		if (!Program.class.isAssignableFrom(df.getDomainObjectClass())) {
+			// a program whose files another process holds reads as Unknown-File: busy, never a
+			// client mistake; read again once the hold is gone (GATE10, A63)
+			df = HeldFiles.recheck("open_program", df);
+		}
+		if (!Program.class.isAssignableFrom(df.getDomainObjectClass())) {
 			throw new SessionException(SessionException.BAD_REQUEST,
 				df.getPathname() + " is not a program (" + df.getContentType() + ")");
 		}
@@ -149,6 +154,7 @@ final class ProgramCommands {
 					if (e.program == null) {
 						e.file = df;
 						e.program = writable ? openWritable(c, e, df, req, m) : openReadOnly(e, df, m);
+						bindView(e, ProjectEntry.pinnedView(p));
 						e.mode = !writable ? ProgramEntry.Mode.READ_ONLY
 								: share ? ProgramEntry.Mode.SHARED : ProgramEntry.Mode.WRITABLE;
 						e.stampRevision();
@@ -187,7 +193,9 @@ final class ProgramCommands {
 						Program np = openWritable(c, e, df, req, m);
 						e.disposeDecompilers();
 						releaseProgramObject(e);
+						e.file = df;
 						e.program = np;
+						bindView(e, ProjectEntry.pinnedView(p));
 						e.mode = share ? ProgramEntry.Mode.SHARED : ProgramEntry.Mode.WRITABLE;
 						e.stampRevision();
 						e.setOwner(share ? null : c);
@@ -205,7 +213,7 @@ final class ProgramCommands {
 					}
 					throw corruptNewest(c, p, e, ex);
 				}
-				JsonObject info = useProgram(c, e, e.openMs);
+				JsonObject info = useProgram(c, e, e.openMs, true);
 				if (c.v3()) {
 					// D42: what the open repaired in this project (a quarantined newest version)
 					JsonArray repairs = Seals.repairsSince(p.resolved, p.openedAt - 1000);
@@ -245,10 +253,34 @@ final class ProgramCommands {
 		}
 	}
 
-	/** Records that {@code c} uses {@code e} and makes it its active program. */
-	private JsonObject useProgram(Client c, ProgramEntry e, long openMs) {
+	/**
+	 * Records that {@code c} uses {@code e} and makes it its active program.
+	 *
+	 * @param exclusive true when the caller holds the program's exclusive lock (the open path, which
+	 *            may just have made {@code c} the owner or a writer); false for a join under the
+	 *            shared lock (which changes nothing but the users)
+	 */
+	private JsonObject useProgram(Client c, ProgramEntry e, long openMs, boolean exclusive) {
 		synchronized (e.users) {
 			e.users.add(c);
+		}
+		if (c.leaving) {
+			// the request of a client that is gone finished after its leave: it must not register
+			// (the leave removes users without the program lock, E3c; the flag is set before it)
+			if (exclusive && !c.programs.contains(e.key)) {
+				// what this request set up for c (the program opened for it, c made its owner or a
+				// shared writer) was not seen by the leave: undo it here as the leave would have done
+				// (the owner and writers released, the program back to read-only for its other users
+				// or disposed), so that no dead owner holds the program and no writer waits for it
+				abandonOpen(c, e);
+			}
+			else {
+				synchronized (e.users) {
+					e.users.remove(c);
+				}
+			}
+			throw new SessionException(SessionException.CANCELLED,
+				c.label() + " is gone; " + e.key + " was not joined");
 		}
 		c.programs.add(e.key);
 		c.active = e.key;
@@ -256,6 +288,30 @@ final class ProgramCommands {
 		JsonObject info = programInfo(e, c);
 		Json.put(info, "openMs", openMs);
 		return info;
+	}
+
+	/**
+	 * The open of a client that is gone ended after its leave: its use of {@code e} is released the
+	 * way its leave releases one ({@link #releaseUseHeld} with discard; the unsaved work of other
+	 * shared writers is kept as orphaned work there). Held: the project's pin and the program's
+	 * exclusive lock.
+	 */
+	private void abandonOpen(Client c, ProgramEntry e) {
+		try {
+			releaseUseHeld(c, e, true);
+			Msg.info(s, c.label() + " is gone; its open of " + e.key + " was undone");
+		}
+		catch (RuntimeException ex) {
+			Msg.error(s, c.label() + " is gone; could not undo its open of " + e.key, ex);
+			synchronized (e.users) {
+				e.users.remove(c);
+				e.writers.remove(c);
+			}
+			if (e.owner == c) {
+				e.setOwner(null);
+			}
+			c.programs.remove(e.key);
+		}
 	}
 
 	/**
@@ -277,7 +333,7 @@ final class ProgramCommands {
 				return null;
 			}
 			boolean restarted = !writable && retryCacheBuild(e);
-			JsonObject info = useProgram(c, e, 0);
+			JsonObject info = useProgram(c, e, 0, false);
 			if (restarted) {
 				Json.put(info, "cacheBuild", "started");
 			}
@@ -584,6 +640,9 @@ final class ProgramCommands {
 	 * {@link #keepWarmMs}. Returns true when changes were discarded. Held: the project's lock.
 	 */
 	boolean releaseUse(Client c, ProgramEntry e, boolean discard, long wait) {
+		if (leavesWithoutLock(c, e)) {
+			return false;
+		}
 		if (c.leaving && e.holdsBy(c)) {
 			// its own request ignored cancel and interrupt and still holds the lock: nothing to wait
 			// for (3.5); the leave is finished when that request ends
@@ -596,6 +655,114 @@ final class ProgramCommands {
 		}
 		finally {
 			e.release(l);
+		}
+	}
+
+	/**
+	 * The leave of a plain reader (E3c, D63b; the rev5 fast path of 3.5, built once): a client that is
+	 * neither the owner nor a shared writer of the program and has no overlay on it has nothing to
+	 * dispose, downgrade or discard, so it leaves by changing a counter and takes <b>no program
+	 * lock</b>: no reader of the program, running or arriving, waits behind a leave (a queued
+	 * exclusive on the fair lock refused every later reader for as long as the running reads lasted).
+	 * The check and the removal are one step under {@code synchronized (e.users)}, so two
+	 * concurrent leavers can never both conclude that the other remains. The last user is removed the
+	 * same way; its program is then disposed (or kept warm) exactly as before, but only when the lock
+	 * is free right now ({@link #disposeIdle}): otherwise it is left to the release of the lock that
+	 * stood in the way and to the reap. Returns false when {@code c} is not a plain reader (the
+	 * owner, writer, overlay holder and {@code discard} paths are unchanged).
+	 */
+	private boolean leavesWithoutLock(Client c, ProgramEntry e) {
+		boolean last;
+		synchronized (e.users) {
+			if (!e.users.contains(c) || e.owner == c || e.writers.contains(c) ||
+				hasOverlay(c, e)) {
+				return false;
+			}
+			e.users.remove(c);
+			last = e.users.isEmpty();
+		}
+		if (c.leaving && e.holdsBy(c)) {
+			// its own request ignored cancel and interrupt and still holds the lock (3.5): it stays
+			// listed as abandoned, and nobody waits for it
+			e.markAbandoned(c);
+		}
+		c.programs.remove(e.key);
+		if (e.key.equals(c.active)) {
+			c.active = firstOf(c.programs);
+		}
+		if (last) {
+			disposeIdle(e);
+		}
+		return true;
+	}
+
+	private boolean hasOverlay(Client c, ProgramEntry e) {
+		for (Overlay o : s.overlayCmds.overlaysOf(e)) {
+			if (o.client == c) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** True when a program whose last user left is to be disposed now rather than kept warm. */
+	boolean disposeNow(ProgramEntry e) {
+		return e.userCount() == 0 && !e.holdsOrphanedWork() && (e.program == null ||
+			e.mode != ProgramEntry.Mode.READ_ONLY || s.keepWarmMs == 0 || e.project.closed);
+	}
+
+	/**
+	 * The disposal of a program whose last user left, without waiting for anything (NB2): when it is
+	 * to be disposed and its lock is free now it is disposed here, else {@link ProgramEntry#disposePending}
+	 * is set and {@link Session#completeLeaves} finishes it when the lock that stood in the way is
+	 * released (or at the next reap).
+	 */
+	void disposeIdle(ProgramEntry e) {
+		if (!disposeNow(e)) {
+			return;
+		}
+		e.disposePending = true;
+		tryDisposeNow(e);
+	}
+
+	/** Disposes {@code e} if it is idle and both locks are free this instant. Never waits. */
+	boolean tryDisposeNow(ProgramEntry e) {
+		ProjectEntry p = e.project;
+		ProjectEntry.Pin pin = p.tryPin();
+		if (pin == null) {
+			return false;
+		}
+		try {
+			Lock wl = e.lock.writeLock();
+			if (!wl.tryLock()) {
+				return false;
+			}
+			try {
+				if (p.programs.get(e.path) == e && disposeNow(e)) {
+					disposeProgram(e);
+					Msg.info(s, "closed idle program " + e.key + " (its last user left)");
+				}
+				e.disposePending = false;
+				return true;
+			}
+			finally {
+				wl.unlock();
+			}
+		}
+		finally {
+			pin.unlock();
+		}
+	}
+
+	/**
+	 * Records that {@code e}'s file and program come from {@code v} (one reference on it is held and
+	 * the one held for the previous view is given back).
+	 */
+	void bindView(ProgramEntry e, ProjectEntry.View v) {
+		ProjectEntry.View old = e.view;
+		e.view = v;
+		if (old != null) {
+			old.release();
 		}
 	}
 
@@ -701,6 +868,13 @@ final class ProgramCommands {
 		e.mode = null;
 		e.setOwner(null);
 		e.project.programs.remove(e.path, e);
+		e.disposePending = false;
+		e.reopenPendingSince = 0;
+		ProjectEntry.View v = e.view;
+		e.view = null;
+		if (v != null) {
+			v.release(); // the view closes when this was the last thing that used it
+		}
 	}
 
 	/**

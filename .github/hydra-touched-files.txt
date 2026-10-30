@@ -12,3 +12,10 @@ Ghidra/Framework/SoftwareModeling/src/main/java/ghidra/app/plugin/processors/sle
 # storage integrity (E8)
 Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/db/VersionedDatabase.java
 Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/local/LocalDatabaseItem.java
+# a save whose folder listing is held (GATE8)
+Ghidra/Framework/DB/src/main/java/db/Database.java
+# script loads and lock probes of one JVM (GATE9)
+Ghidra/Features/Base/src/main/java/ghidra/app/plugin/core/osgi/OSGiParallelLock.java
+Ghidra/Framework/Generic/src/main/java/generic/util/FileChannelLock.java
+# a held property file keeps its item (GATE10)
+Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/local/LocalFolderItem.java

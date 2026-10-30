@@ -495,8 +495,9 @@ Existing codes and their meanings are unchanged (`SessionException.java:27-51`).
 | `script_changed` | `scriptSha256` does not match the script file | `expected`, `actual`, `script` |
 | `bad_request` with `details.field` | unchanged code; v3 adds `field` and `allowed[]` where the value set is closed (`lane`, `isolation`, `purpose`, `verify`), and `field:"expect"` for `requireExpect` (conditional C13, 3.1) | |
 | `bad_request` with `details.reason:"rk_expired"` | an `rk` whose multi-op entries were partly evicted from the journal (3.4); only a request that carries `rk` (v3) can get it | `rk`, `foundOf`, `expectedOf` |
+| `busy` with `details.reason:"file_held"` | a request of `open_project`, `project`, `list`, `open_program`/`switch`, `save`, `fork_project`, `import`, `refresh`/`reopen` or `prepare_upgrade` failed because another process holds a file or folder of a project with no sharing (Windows: a folder that cannot be listed, a file that cannot be opened). Never `bad_request`, `not_found` or a bare `failed` (A63, 8.15). A **v2** connection gets `busy` with the same details except `reason`, and no `retryAfterMs` (C12) | `path` (what is held), `suggest:"retry"`; `retryAfterMs` 1000 (no hold history); `imported` on an `import` whose program was saved |
 
-`busy` gains `details.reason` (`slot_wait`, `lock_wait`, `lock_queue_full`, `abandoned`) for v3
+`busy` gains `details.reason` (`slot_wait`, `lock_wait`, `lock_queue_full`, `abandoned`; `file_held` by A63) for v3
 (conditional C12). `lock_queue_full` answers any v3 request (revision 6, D39; rev5 limited it to
 requests that carry the v3-only `lane:"quick"`). `cancelled` gains `details.phase` (`queued` for a slot wait, `lock_wait`, `running`)
 and, for the commands listed below, `details.applied`, both for v3 (conditional C11).
@@ -1222,7 +1223,7 @@ has a script and an output file:
 | Stream | What it measured | Where |
 |---|---|---|
 | A (capacity) | 12 and 24 agents on their own writable forks, one daemon; fork, memory and throughput cost; heap probes; the long lane; the Hydralysis work-copy path | `D:/Projects/Hydra/_logs/measA/` (`scripts/`, `out/`; `out/ramp3-scale.json`, `out/ramp4-p1.json`, `out/lane-def.json`, `out/lane-ml24.json`, `out/forkcost-ntfs.json`, `out/hlm-c.json`, `out/hlm-d.json`) |
-| B (lock map) | every blocking point of the engine, static and on real daemons, 17-row `lock_matrix.json`, scripts `s1` to `s13`, `t3_scaling` | `D:/Projects/Hydra/_logs/lockmap/` |
+| B (lock map) | every blocking point of the engine, static and on real daemons, 19-row `lock_matrix.json`, scripts `s1` to `s13`, `t3_scaling` | `D:/Projects/Hydra/_logs/lockmap/` |
 | C (crash) | 952 forced kills (`TerminateProcess`) with a fresh daemon and an oracle after each | `D:/Projects/Hydra/_logs/crash-C/` (`final_numbers.json`, `run/<run>/results.jsonl`, `run/repair-check/repair_result.json`) |
 | D (claims) | about 45 claims of the site and READMEs against the measurements | `D:/Projects/Hydra/_logs/claims-audit/` |
 
@@ -1315,7 +1316,7 @@ that blocks another client).**
 
 ### 3.10 Non-blocking engine: every blocking point, its decision and its test
 
-The matrix `lockmap/lock_matrix.json` has 17 rows. **E3c's acceptance includes a test that enumerates its rows and
+The matrix `lockmap/lock_matrix.json` has 19 rows (L1, L2a to L2g, L3, L3x, L4 to L12; revisions up to E3c said 17, which was wrong; the copy the test reads is `examples/lock_matrix.json`). **E3c's acceptance includes a test that enumerates its rows and
 fails if a row has no decision here.** The lock order today is lane slot (`Session.java:248`), project lock
 (`Access.java:105-109`), program lock (`ProgramEntry.java:191-196`), overlay lock (`OverlayCommands.java:139-143`);
 all three read/write locks are **fair** (`ProgramEntry.java:115`, `ProjectEntry.java:43`, `Overlay.java:54`), so
@@ -1896,8 +1897,17 @@ Steps. Each step is preceded by a forced line in `commits/<cid>.intent.log`:
 3. `CANDIDATE_RESERVED {gen}` - the generation number is reserved in the log **before** the folder
    exists, so a crash cannot reuse a number for a different candidate.
 4. Fork: `fork_project(project=<current generation>, path=gen/000N, purpose:"generation")`; open the
-   candidate writable owned by the job only, `open_program writable:true upgrade:true backup:<manifest>`
-   (the gate passes because the backup is of this revision; D12/D13). The candidate is never shared, and it is
+   candidate writable owned by the job only, `open_program writable:true upgrade:true backup:<manifest>`.
+   **Which backup is passed (revision 8.6, corrected):** the step 2 backup is of the current generation, and on NTFS it is
+   **not** of the candidate's revision: a full-copy fork gives the copied files new modification times, so
+   `Revision.of(candidate)` differs from `backup.source.revision` and the gate (D12/D13) refuses that backup
+   (`backupCheck.reason:"revision"`). Hydralysis therefore (commit `037c697`, merged in `7358ed6`), on an engine with
+   `upgradeGate` and when `open_project.format.upgradeRequired` is true or not stated, lets go of the candidate, backs up the
+   candidate itself while it is still byte-identical to the generation it was forked from (a backup of Hydralysis purpose
+   `pre-upgrade`, made through the engine backup when the engine has it, re-hashed as every backup), and names **that** backup to
+   the gate; the `FORKED` intent line records its id and manifest hash. The step 2 backup of the current generation is kept. A
+   project already at the engine's format passes the step 2 backup as before (no upgrade, no gate refusal). NTFS is the only
+   file system this was tested on. The candidate is never shared, and it is
    **writable on purpose** (revision 7, B1): its sidecar says `state:"candidate"`, which D38 does not seal, so the replay of
    step 5 and the save are not refused; it becomes unwritable only at step 7b.
    On hydra.2/3, which has no `purpose`, the job rewrites the new fork's sidecar to
@@ -2216,6 +2226,7 @@ first and must pass unchanged on the hydra.4 candidate.
 | V9 | the work-conserving per-key running cap (3.5) applies to **v2** connections too, with the new lane defaults (D40) | a v2 connection that held up to 32 parallel requests and every running slot is held back only while another key waits under its own cap; the order in which one connection's own requests run is unchanged (D18's v2 key `connection id` is kept) | **Visible to v2**: under contention only, measured starvation (claims-audit U2: no per-client running cap; A: a 7th client waited 10.2-10.5 s) | `cc_e3a` `v2_running_cap`: one v2 connection with 32 parallel scripts cannot starve a second connection's script; on an idle daemon nothing changes; and `v2_lane_defaults`: `status.scheduler.long.slots` of a v2 connection equals `max(8, CPUs)`, the one number of the v2 `status` reply that E3a changes (the goldens mask it, D62) (E3a) |
 | V10 | the leave of a plain reader (a client that is neither owner, writer nor overlay holder) takes no exclusive program lock at any user count, and `Session.disconnect` no longer waits 600 s for it (E3c, D63b; the rev5 fast path of 3.5, built once; the owner and writer side is V3, E3b) | no reader of a program waits behind another client's leave or disconnect (today a leave queues the exclusive lock behind the running readers and every new reader waits behind it, measured, 3.5) | **Visible to v2**: it changes how long others wait, no reply shape | `cc_e3c` `reader_leave` (a 1.0.0 client closes its connection while another client's read runs: the next join and script are answered within their `wait`) and `reader_leave_all` (E3c) |
 | V11 | a concurrent `fork_project` to a path that another request is publishing (3.4, D41) answers `conflict` with `details.reason` `fork_in_progress` or `exists`; with the same `rk` the loser returns the winner's result | six simultaneous forks to one destination gave one success and five bare `failed` replies whose message names a `.rep` path (`review-rev6/exp1_fork_race.json`) | **Visible to v2**: only racing requests can see it and `failed` carried no information; the goldens run one request at a time and cannot see it | `cc_e2a` `fork_race_conflict`: six concurrent forks by the stock 1.0.0 client, exactly one success, five `conflict`, no leftover staging folder (E2a) |
+| V12 | a request that failed because another process held a file or folder of the project answers `busy` (A63, 8.15) | `busy` with `details.path` and `suggest:"retry"` where it got `bad_request` ("is not a program (Unknown-File)"), `not_found` or a bare `failed` with the localised system message; after the hold the same request succeeds without a reopen (it used to stay `Unknown-File` or `not_found` until the project was closed) | **Visible to v2**: the old codes told a v2 client that its request was wrong or that the project was damaged, and a v2 client already retries `busy`; `details.reason` and `retryAfterMs` are v3 only (C12) | `dt_held.py` (a v2 and a v3 connection; not a `cc_` test of the stock 1.0.0 client) (GATE10) |
 
 The release identity strings (`hydraVersion`, `buildDate`) change with every release; the goldens mask
 them (`"hydraVersion": "<masked>"`). `health` is a new command, so an old transcript contains none.
@@ -2223,8 +2234,8 @@ The counts D2 refers to: **thirteen reply-shape conditionals, C1 to C13, one per
 3.1**; G5 is the behaviour test of C4 and C5, which are events and `status` entries that the goldens
 cannot see, while the other eleven are reply shapes that the seven v2 scenarios at `--protocol 2`
 check directly (a v2 reply must stay byte-identical); six behaviour gates (G1 and G7 share the
-request-field helper; G2, G3, G4, G6 and G8 are one gate each); eleven declared visible changes (V1 to
-V11; revision 6 adds V8 to V10, revision 7 adds V11).
+request-field helper; G2, G3, G4, G6 and G8 are one gate each); twelve declared visible changes (V1 to
+V12; revision 6 adds V8 to V10, revision 7 adds V11, revision 8.11 adds V12).
 
 ### 5.2 Release notes (R1) must say
 
@@ -3102,7 +3113,10 @@ Conventions that make the waves disjoint (the matrix in 8.1 is the authority; th
 Every file a package edits, by wave. `S/` is `src/main/java/ghidra/app/util/headless/session/`; **bold**
 marks a file the package creates. A blank cell means no package edits the file in that wave. **Assertion:
 no cell names more than one package** (so each wave is disjoint by construction, and
-`check_ownership.py` verifies it); `certification.manifest` is the one stated exception (above). A file has two rows only as the declared sequence of section 8. Test, example and tool files follow
+`check_ownership.py` verifies it); `certification.manifest` is the one stated exception (above). `examples/test-map.json`
+is a generated file that every Hydra package regenerates (`run_parallel.py --make-test-map`): its row names every Hydra package of
+each wave as a `**then**` chain only because that is the one multi-package form the checker accepts; that chain states no order
+(revision 8.6, A41). A file has two rows only as the declared sequence of section 8. Test, example and tool files follow
 the four rules of section 8: a row here, the package id in the file's name, or frozen.
 
 **Hydra (engine repo)**
@@ -3113,8 +3127,8 @@ Paths are relative to `Ghidra/Features/HeadlessSession` unless they begin with `
 
 | File | W0 | W1 | W2 | W3 | W4 | W5 | W8 |
 |---|---|---|---|---|---|---|---|
-| `S/Session.java` | | E1 (hello, `info`, `admit` call with the request, the call sites of `ProjectEntry.info(client)` at `:265`, `:333`, `:427`, the admission and `Guarded` seam call sites, `isInline` stays) | E2 (A13: the `seal_project` and `prepare_upgrade` dispatch) | E3b (`disconnect`, `reap`) | E3c (the join of a program under analysis, the registry as a state machine, refcount disposal in `reap`; A32: `completeLeaves` closes the idle project through `registry.closeIdle`) | E5 (`isInline`, `case health`, watchdog start) | |
-| `S/Scheduler.java` | | E1 (`laneOf(cmd, req, v3)`, `admit(c, cmd, req, m, waitMs)`, `describe(boolean)`, all behaviour-free) | E3a (maint lane, fair key, cap, queue info, ETA, `Preflight` call, `Ticket.yieldSlot`) | | | E5 (`describe` `tryLock`, lane stats) | |
+| `S/Session.java` | | E1 (hello, `info`, `admit` call with the request, the call sites of `ProjectEntry.info(client)` at `:265`, `:333`, `:427`, the admission and `Guarded` seam call sites, `isInline` stays) | E2 (A13: the `seal_project` and `prepare_upgrade` dispatch) | E3b (`disconnect`, `reap`) | E3c (the join of a program under analysis, the registry as a state machine, refcount disposal in `reap`; A32: `completeLeaves` closes the idle project through `registry.closeIdle`) | E5 (`isInline`, `case health`, watchdog start) **then** E9 (A33: `Governor.admit` before the slot wait of a request and the close of its reservation; `reap(warmMs)`, the overload the governor calls with 0 before it refuses an open) **then** E7 (A39: one line, the `Health` contributor `scriptWorkers`, commit `5e5f95cb37`) | |
+| `S/Scheduler.java` | | E1 (`laneOf(cmd, req, v3)`, `admit(c, cmd, req, m, waitMs)`, `describe(boolean)`, all behaviour-free) | E3a (maint lane, fair key, cap, queue info, ETA, `Preflight` call, `Ticket.yieldSlot`) | | E3c (A44: `bind`/`bound`, the ticket of the executing request for the `yieldSlot` wiring; `free(s, t, completed)` and `recorded(lane)`: a yield records no hold time and no completion; commit `cb99c188ab`, merged `c5d5be2d79`) | E5 (`describe` `tryLock`, lane stats) | |
 | `S/ImportCommands.java` | | E1 (the `admit` call at `:112` only) | E3a (remaining wait; the `ImportGate.enter` call at `:100` passes the client) | | | | |
 | **`S/ImportGate.java`** | | | E3a (`enter` takes the `Client`, `Entry` keeps it, `queueInfo` adds `estimateScope` for v3) | | | | |
 | `S/Connection.java` | | E1 (`error()` gets the client and emits `next`, `retryAfterMs`) | E3a (`respond`: `queue` header) | E3b (`run`: grace, `shutdownNow`; `respond`: `cancelled` details; the bounded outbound queue; parallel dispatch for v3) | | | |
@@ -3129,20 +3143,25 @@ Paths are relative to `Ghidra/Features/HeadlessSession` unless they begin with `
 | `S/ProjectCommands.java` | | E1 (the call sites of `ProjectEntry.info(client)` at `:92`, `:395`) | E2 (`openProject` `format`, the `sealed` refusal) | E3b (`leaveProject`, the `makeWritable` wait taken out of the registry monitor) | E3c | | |
 | `S/ProgramCommands.java` | | | E2 (`openWritable` gate, `sealed`, `upgradeBackup`) | E3b (`releaseUse` for owners and writers, bounded; `closeEntry`) | E3c (the plain-reader leave: the fast path and the deferred disposal, D63b) | | |
 | **`S/ProjectRegistry.java`** | | | | | E3c | | |
+| **`S/WaitStats.java`** | | | | | E3c (A46: `waits.foreignBlocked`, `singleFlightOpen`, `contended`, `lockWaitP99Ms`, K13; commit `cb99c188ab`, merged `c5d5be2d79`) | | |
 | `S/UpgradeCache.java` | | E1 (`currentDbVersion` moved to `DbVersions`) | E2 (`readStored`, `prepare_upgrade` single flight) | | | | |
 | `S/EditCommands.java` | | E1 (`withLastEditor`, `rk`) | E2 (`save` stamp) | | | | |
-| `S/ForkCommands.java`, `S/ProjectFork.java` | | E2a (the `.gpr`-last order, the intent, `rk`, the sidecar `state`) | E2 (purpose, open, verify, cost, warnings, sidecar fields, `view`, `promote` marker; A26, after the land: the fix package F1 made the sidecar writes of `setPromote` and the rollback of `publish` retry) | | | | |
+| `S/ForkCommands.java`, `S/ProjectFork.java` | | E2a (the `.gpr`-last order, the intent, `rk`, the sidecar `state`) | E2 (purpose, open, verify, cost, warnings, sidecar fields, `view`, `promote` marker; A26, after the land: the fix package F1 made the sidecar writes of `setPromote` and the rollback of `publish` retry) | | | | E12 (A38, `ProjectFork.java` only, commit `45b8af2cdd`: `publish` forces every staged file and folder before the intent says moving, a read-only version file made writable for the flush and read-only again; the destination folder synced before and after the `.gpr` move, a no-op on Windows) |
 | **`S/ForkSweeper.java`**, **`S/ForkIntent.java`** | | E2a | E2 (A13: `ForkSweeper`, the process start-time check against pid reuse) | | | | |
 | **`S/ProjectFormat.java`**, **`S/ProjectBackup.java`**, **`S/Seals.java`** | | | E2 | | | | |
 | `S/ProjectEntry.java` | | E1 (`info(Client)`: the signature only, same value) | E2 (`format` for v3) | | E3c (state machine fields) | | |
 | **`S/DbVersions.java`** | | E1 (`program()`, `dataTypes()` returning `null`) | E2 (`dataTypes()`) | | | | |
-| `S/Operations.java`, `S/Journal.java`, `S/Client.java`, `S/SessionException.java`, **`S/Identity.java`**, **`S/Settings.java`**, **`S/Preflight.java`**, **`S/Hooks.java`**, **`S/Guarded.java`** | | E1 (`SessionException`: the new codes, the busy-details and the bad-request-details helpers; `Hooks.Admission` and `Guarded`, both inert) | | | | | |
-| **`S/Advertised.java`** | | E1 (capability, limit and policy names declared up front) **then** E2a (adds the capability name `forkAtomic`, A4) | E2 (A13: the capability name `seal`, inserted before `forkAtomic`, A9) | | | | |
-| `S/HeadlessSession.java` | | E1 (endpoint and `ready`, `-set`) | E2 **then** E3a (A13, E2: the self-check of `DbVersions.dataTypes()` at `:762`, 5 lines; E3a: the `maxLong` and `maintSlots` defaults at `:133-134` and the usage text at `:78-79`; the option parser stays as it is) | | | E5 **then** E9 (E5: the watchdog and `testHooks`; E9: the governor start and the process job) | |
+| `S/Operations.java`, `S/Journal.java`, `S/Client.java`, `S/SessionException.java`, **`S/Settings.java`**, **`S/Preflight.java`**, **`S/Hooks.java`** | | E1 (`SessionException`: the new codes, the busy-details and the bad-request-details helpers; `Hooks.Admission`, inert) | | | | | |
+| **`S/Identity.java`** | | E1 | | | | E5 (A51: the key `platform.testHooks`, 3.2; commit `3972cda7c9`, merged `3bf1900b01`) | |
+| **`S/Guarded.java`** | | | | | | E9 (A37: E9 creates it; E1 left no `Guarded` seam: the restart loop, the backoff, the per-thread `beat` and `states`, the emergency reserve, the test fault `inject`) | |
+| **`S/Advertised.java`** | | E1 (capability, limit and policy names declared up front) **then** E2a (adds the capability name `forkAtomic`, A4) | E2 (A13: the capability name `seal`, inserted before `forkAtomic`, A9) | | | E9 (A35: the capability name `admission` after `forkAtomic`; the limit names `minXmxMb` to `decompilerNegativeS` after `maxRunningPerKey`) | |
+| `S/HeadlessSession.java` | | E1 (endpoint and `ready`, `-set`) | E2 **then** E3a (A13, E2: the self-check of `DbVersions.dataTypes()` at `:762`, 5 lines; E3a: the `maxLong` and `maintSlots` defaults at `:133-134` and the usage text at `:78-79`; the option parser stays as it is) | | E3c (A45: self-test checks only: `waiterCaps`, `closeVsViewChange` and the `yieldSlot` record; commits `cb99c188ab`, `4e575f175d`, `908c6315f9`, merged `c5d5be2d79`) | E5 **then** E9 (E5: the watchdog and `testHooks`; E9: the governor start and the process job) | |
 | `S/HydraInfo.java` | | E1 (protocol constants) | | | | R1 (version) | |
 | `S/ScriptCommands.java` | | | | | E4 | E7 (the routing to a worker, D64) | |
 | **`S/PrivateInstance.java`** | | | | | E4 | | |
-| **`S/Health.java`**, **`S/Watchdog.java`** | | | | | | E5 | |
+| **`S/Health.java`** | | | | | | E5 **then** E9 (A34: `state` is `degraded` while `Governor.degraded()`; `debug_stall` `what:"thread"` plants one fault in a guarded thread, behind the test hooks) | |
+| **`S/Watchdog.java`** | | | | | | E5 | |
+| `S/QueryCommands.java` | | | | | | E9 (A36: the circuit breaker before the borrow in `decompile`, the error `decompiler_failed{function, entry, reason, retryable, negativeCache}` for protocol 3) | |
 | **`S/Governor.java`**, **`S/Budgets.java`**, **`S/DecompilerGate.java`**, **`S/ProcessJob.java`** | | | | | | E9 (`ProcessJob`: the daemon's own Job Object, D60) | |
 | **`S/ScriptWorker.java`** | | | | | | E7 | |
 | **`S/ReplicaPool.java`** | | | | | | | E11 |
@@ -3151,20 +3170,30 @@ Paths are relative to `Ghidra/Features/HeadlessSession` unless they begin with `
 | `/Ghidra/Framework/FileSystem/src/main/java/ghidra/framework/store/local/LocalDatabaseItem.java` | | E8 (the private-database open path, so that repair-on-open reaches forks, A3; revision 8.2, A14, the follow-up recorded after the W2 land: the versioned branch uses the read-only constructor and read-only items never repair, no header read at construction; and the reopen when another opener quarantined the newest version first, commit `862f134874`, found by the R-V1 verification) | | | | | |
 | `/NOTICE-HYDRA` | | E8 (the three patched core files and the one added class, A3) | | | | R1 | |
 | `support/ghidra_session.py` | | P1a (range, `engine` pass-through) | | | P1b **then** E3c (P1b: deadline, `LaunchError`, registry; the caller-job detection and the breakaway-then-WMI spawn of D65; the JVM flag `--enable-native-access` of D60; the `maxLong` comment `:425-426`; no Job Object; E3c, A25: the module-level PE32 class and the lock around the Toolhelp `argtypes`; note, A29: the fix package R-V3 sets the Toolhelp signatures once inside the locked `_pe32_class()`, after P1b and E3c) | | |
+| `PROTOCOL-3.md` (this file; no package owns it, the coordinator amends it, 8.14) | | | | | E3c (A42, out of scope, recorded: 3.9's table and 3.10 say 19 rows of `lock_matrix.json`, not 17; commit `ac3cc90774`, merged `c5d5be2d79`) | E9 (A43, out of scope, recorded: the 8.1 cells and section 8.9 of revision 8.5, written on the package branch; commit `af15ebfb20`, merged `91dfcb2cb3`) | |
 | `examples/daemon_tests.py` | E0 | | | E3b (A24: `t_shared_stress` connects at protocol 2 through `c.connect`, because the waiter cap of 3.5 refuses eight protocol 3 writers; note, A30: the fix package R-V3 adds the `Skipped` status, the SKIP tally and `Ctx.release()`) | | | |
 | `examples/characterization_tests.py`, **`examples/dt_baseline.py`**, `examples/characterization/v3/` (created by E0 as an empty directory with the loader) | E0 | | | | | | |
 | **`examples/characterization/v3/e3a-busy.json`** (E3a's golden; A31) | | | E3a (recorded) | | E4 (re-recorded in `48d3da27b9`: the reply keys `isolation`, `lane`, `attemptedChanges`, `attemptedChangesCount`) | | |
 | `examples/characterization/clients.json`, `examples/characterization/edits.json`, `examples/characterization/fork_refresh.json`, `examples/characterization/import_script.json`, `examples/characterization/overlays.json`, `examples/characterization/readonly.json`, `examples/characterization/session.json` | E0 (the seven v2 goldens; `fork_refresh.json` and `overlays.json` were re-recorded once, in `f47ff15934`, to mask the copied project's total size, E0; **amendment A1, revision 7, D62: six goldens are re-recorded once more to mask the scheduler `slots`**; no later package edits them, E3a included) | | | | | | |
 | **`examples/oracle.py`**, **`examples/chaos_lib.py`** | X0 | | | | | | |
+| **`examples/lock_matrix.json`** | | | | | E3c (A47: the copy of B's lock matrix that `dt_e3c` enumerates, 3.10; commit `ac3cc90774`, merged `c5d5be2d79`) | | |
+| `examples/run_parallel.py` (made by a non-package branch; E7, SPEED4 and FIX4 also edited it, 8.10, 8.11) | | | | | E3c (A49, out of scope, recorded: one line that clears read-only attributes before the scratch is deleted; commit `887222e374`, merged `c5d5be2d79`) | | |
+| `examples/conc/run_ef.py` | X0 | | | | | E6 (A52, out of scope, recorded: a `busy` retry in `e04f7def92`/`224b2dc0ff`, merged `355974a9ca`; taken back to X0's text in `c7d26ae101`, merged `855a788da3`; no E6 change remains) | |
 | **`examples/conc/`** | X0 | | E2 (A14: the red-table base script only, `mkbase.py`: the red-table base is built as a disposable fork because the E2 upgrade gate refuses a canonical copy; commit `683fd092ca`) | | | | |
 | **`examples/check_ownership.py`** | E0 (revision 8.2, A12, amendment A1 of revision 7, commit `6fccf3c65c`: `python -I` works and the Hydralysis root documents resolve) | E1 (its first commit: the package ids read from the wave plan, the `<id>-` golden prefix, the frozen files; section 8, rule 4) | | | | | |
-| `examples/contract_tests.py` | | E1 (the protocol and first-`hello` tests) | E2 (A13: `dbVersions.dataTypes` may be a positive integer, and `seal` in the capability order) | | | | |
+| `examples/contract_tests.py` | | E1 (the protocol and first-`hello` tests) | E2 (A13: `dbVersions.dataTypes` may be a positive integer, and `seal` in the capability order) | | | E5 (A51: the `platform` keys compared without `testHooks`; commit `3972cda7c9`, merged `3bf1900b01`) | |
 | **`examples/client_compat_tests.py`**, **`examples/stock/ghidra_session_1_0_0.py`** | | P1a | E3a (A12: no edit is planned; both files name a launch value (`maintSlots` as a passed `-set` flag, the comment `CPU/4` of the stock client's own default) and the proof demands a lane-package owner of every frozen file that names a lane default; the stock copy stays byte-identical unless D40 forces a comment) | | | | |
-| `examples/char_e1.py`, `examples/characterization/v3/e1-hello.json`, `examples/characterization/v3/e1-expect.json`, `examples/characterization/v3/e1-require-expect.json`, `examples/characterization/v3/e1-rk.json` | | E1 (revision 8.2, after the W2 land: A13, the `dbVersions` assertions of `char_e1.py` and the goldens it records follow `DbVersions.dataTypes()` once it is read; A12, amendment A1: `e1-hello.json` is re-recorded once with `"slots": "<masked>"`, which makes the 4-line scheduler mask that another branch adds to `head()` of `char_e1.py` redundant) | E3a (A23: the 9-line scheduler mask in `head()` of `char_e1.py`, added after the W1 cell) | | | | |
+| `examples/char_e1.py` | | E1 (revision 8.2, after the W2 land: A13, the `dbVersions` assertions of `char_e1.py` and the goldens it records follow `DbVersions.dataTypes()` once it is read; A12, amendment A1: `e1-hello.json` is re-recorded once with `"slots": "<masked>"`, which makes the 4-line scheduler mask that another branch adds to `head()` of `char_e1.py` redundant) | E2 **then** E3a (A50: E2, the `dbVersions` assertions of A13, which the W1 cell named only in parentheses; commit `1784823fd9`, merged `9c7cdef9e4`; A23: the 9-line scheduler mask in `head()` of `char_e1.py`, added after the W1 cell) | | | E5 (A51: the `platform` keys compared without `testHooks`; commit `3972cda7c9`, merged `3bf1900b01`) | |
+| `examples/characterization/v3/e1-hello.json` | | E1 (A12, amendment A1: re-recorded once with `"slots": "<masked>"`) | | | E3c (A48: `status` gains `waits` and `projectStates`, which `char_e1.py` compares exactly; commit `cb99c188ab`, merged `c5d5be2d79`) | | |
+| `examples/characterization/v3/e1-expect.json`, `examples/characterization/v3/e1-require-expect.json`, `examples/characterization/v3/e1-rk.json` | | E1 | E2 (A50: the goldens of A13 follow `DbVersions.dataTypes()`; commit `1784823fd9`, merged `9c7cdef9e4`) | | | | |
 | **`examples/soak_tests.py`**, **`examples/chaos_tests.py`** | | | | | | E6 | |
+| **`examples/dt_e4.py`**, **`examples/char_e4.py`**, **`examples/characterization/v3/e4-script.json`** (E4's tests and golden; A40) | | | | | E4 | E7 (A40, commit `5e5f95cb37`: the `isolation` value list gains `worker` in the `bad_request` assertions and the re-recorded golden) | |
+| `examples/test-map.json` (generated by `run_parallel.py --make-test-map`; A41) | E0 **then** X0 **then** R0 | P1a **then** E1 **then** E8 **then** E2a | E2 **then** E3a | E3b | E3c **then** E4 **then** P1b | E5 **then** E9 **then** E6 **then** E7 **then** R1 **then** Z15 | E10 **then** E11 **then** E12 |
 | **`format-matrix.json`**, **`examples/format_gate.py`**, **`examples/make_legacy_fixture.py`**, **`examples/vectors/canonical-manifest.json`**, **`examples/fixtures/legacy-12.1.4/`** | | | E2 | | | | |
 | `README.md`, `ARCHITECTURE.md` (the module's) | R0 | | | | | R1 | |
 | `/README.md`, `/CHANGELOG.md` | R0 | | | | | R1 | |
+| `/.github/workflows/release.yml` (the release workflow) | | | | | | R1 (A53: the release checks of the dry run; commit `8a5a334da5`, merged `7a8171ff28`) | |
+| **`/docs/release-notes-12.3-hydra.4.md`** | | | | | | R1 (A53: the release notes of 5.2; commits `7913a727ae`, `0b4320a80d`, merged `7a8171ff28`) | |
 | `/.github/CONTRIBUTING.md`, `/.github/SECURITY.md`, **`/.github/workflows/upstream-sync.yml`**, **`/.github/hydra-touched-files.txt`** | | | | | | Z15 | |
 | **`/.github/scripts/upstream-sync-report.sh`**, **`/.github/scripts/test-upstream-sync-report.sh`**, **`/.github/scripts/check-archive-notices.sh`**, **`/.github/scripts/test-check-archive-notices.sh`** | | | | | | Z15 (A11: the guard must be runnable and testable locally, and the Tests line 'release archives contain LICENSE, NOTICE and NOTICE-HYDRA' needs a test that builds the client zip) | |
 
@@ -3177,7 +3206,7 @@ Paths are relative to `Ghidra/Features/HeadlessSession` unless they begin with `
 | `tests/test_durable.py` | Y0a | Y0e (**the ratchet table**: the six rows of the three writers Y0e moves and the three count assertions, 8.2; the two-process and large-log tests had landed in the W0 follow-up `2bf90c7`) | Y2 (the ratchet allow-list row of `_start_saver` leaves with the function, D61) | Z3 (A15: two FOLLOW_UP rows of the frozen write-site gate for `environment.py`) | | | | |
 | `tests/test_durable.py` (**second step of W1, after Y0e**) | | Y1 (the two `save_overlay` rows and the counts, in the commit that deletes the function, 8.2) | | | | | | |
 | `tests/test_address_maps.py` | Y0a (one line: drop the stale seal of a hand-edited record; commit `c78be27`) | | | | | | | |
-| `tests/test_query.py` | Y0a (one line, the same) | Y1 (`status show=changes`) | Y2 (`stop`, `show=lineage`; the `_start_saver` patch of the fixture removed, D61) | Y3 (rebase, `stale_view`) | | | Y4a (lane hint, `wait` on every call of the attempt, the pool entry in `_ask`, `stop` over the entries; the release literals `:285-296` derived from the fake) | |
+| `tests/test_query.py` | Y0a (one line, the same) | Y1 (`status show=changes`) | Y2 (`stop`, `show=lineage`; the `_start_saver` patch of the fixture removed, D61) | Y3 (rebase, `stale_view`) | Y5 (A55: the `EngineCase` fixture asks the shared view, the stale-view test takes the conflict path, one auto-rebase test; commit `4c1f832`, merged `7a1614d`) | | Y4a (lane hint, `wait` on every call of the attempt, the pool entry in `_ask`, `stop` over the entries; the release literals `:285-296` derived from the fake) | |
 | `hydra.py` | Y0b | Y0e (`write_daemon_config` through `durable.atomic_write`) | Y2 (the launch configuration: `maxLong`, `maxQuick` from the expected number of agents; the `saver` comment of `Engine`, D61) | | | | Y4a (capabilities, the pin bump by `tools/bump_hydra.py`, `Supervisor`, the helper, the pool, the leave gate) | |
 | `tests/test_client.py` | Y0b | | | | | | | |
 | `tests/fakehydra.py` | Y0b | | Y2 (fork purposes) | | | | Y4a (the v3 fake, the E2 surface for Y4d's tests, the opt-in connection scope; the release constant is edited by the bump script, 5) | |
@@ -3185,7 +3214,8 @@ Paths are relative to `Ghidra/Features/HeadlessSession` unless they begin with `
 | `tests/test_mcp_transport.py` | Y0c | | | | | | | |
 | `api.py` | Y0d | | Y2 (the handler registry that replaces the Y0d stubs, 8, with the capability names `views`, `publish`, `environment`, `evidenceBundle`; the `OPTION_BAGS` lines for `options.as` and `options.op=remove`, help only, D59, OD8) | Z3 (A15: the `backend status` branch sends status through `dispatch("environment", ...)`, about 15 lines, so that status starts no JVM; 8.3 row 2) | Y5 (A18: `ghidra_run` `options.as`) | | | |
 | `workflow_help.py` | Y0d | | | | | | | |
-| `tests/test_contracts.py` | Y0d | | Y2 (the four stub tests of `NotAvailableCarriers`, `:111-157`, rewritten against the handler registry, 8; one assertion that `backend help` lists `options.as`, D59) | | | | | |
+| `tests/test_compat.py` | | | | Z3 (A56: the configuration lookup patched at `config.user_config_dir`; commit `91bd90b`, merged `ec238f6`) | | | | |
+| `tests/test_contracts.py` | Y0d | | Y2 (the four stub tests of `NotAvailableCarriers`, `:111-157`, rewritten against the handler registry, 8; one assertion that `backend help` lists `options.as`, D59) | Z3 (A56: the configuration lookup also patched at `config.user_config_dir`; commit `91bd90b`, merged `ec238f6`) | | | | |
 | **`cli.py`** | | Y0e (`backend --action doctor` and `--action backups`, `--options` and `--options-file`, passed through to the dispatcher) | | | | | | |
 | **`tests/test_cli.py`** | | Y0e | Y2 (its two stub tests rewritten against the handler registry, 8) | | | | | |
 | **`runtime_actions.py`**, **`runtime_agents.py`**, **`runtime_capture.py`**, **`runtime_events.py`**, **`runtime_exports.py`**, **`runtime_snapshot.py`** | | | | | | | Z10 (A21: the worker is split into agent templates, event log, action handlers and lifecycle, as the Z10 text requires) | |
@@ -3219,7 +3249,7 @@ Paths are relative to `Ghidra/Features/HeadlessSession` unless they begin with `
 | `userscripts.py`, **`tests/test_userscripts.py`** | | | | | Y5 (A18: `run(who=)`) | | Y4e | |
 | **`tests/test_deadline.py`**, **`tests/test_supervisor.py`** | | | | | | | Y4a | |
 | `tests/test_backends.py` | | | | | | | Y4a (the pinned release literals, `:21` and `:101`, derive from `hydra.RELEASE`, 5) | |
-| `README.md` | Z13a (the wording pass, the GUI removal) | | Y2 (the sentence on the background save and `overlay_save_debounce_s`, the per-target lock sentence and the "Changes in 0.5.0" note, D61) | | Y5 (the sentence "Clients share the default view", D43, D59) | Z13b (numbers regenerated from the ledger) | Y4a (the one sentence that names the pinned release, edited by `tools/bump_hydra.py`, 5) | |
+| `README.md` | Z13a (the wording pass, the GUI removal) | | Y2 (the sentence on the background save and `overlay_save_debounce_s`, the per-target lock sentence and the "Changes in 0.5.0" note, D61) | Z3 (A56: one sentence on the per-user configuration, `environment init` and the launch banner; commit `91bd90b`, merged `ec238f6`) | Y5 (the sentence "Clients share the default view", D43, D59) | Z13b (numbers regenerated from the ledger) | Y4a (the one sentence that names the pinned release, edited by `tools/bump_hydra.py`, 5) | |
 | `THIRD_PARTY.md` | Z13a (the wording pass, the GUI removal) | | | | | Z13b (numbers regenerated from the ledger) | Y4a (the one sentence that names the pinned release, edited by `tools/bump_hydra.py`, 5) | |
 | `docs/upstream-setup.md` | | | | | | | Y4a (the pin sentence, edited by `tools/bump_hydra.py`, 5) | |
 | `docs/golden-harness.md` | Z13a (one phrase: "parity with the Ghidra window" becomes `DecompileOptions.grabFromProgram`; the file stays a dated report) | | | | | | | |
@@ -3230,7 +3260,9 @@ Paths are relative to `Ghidra/Features/HeadlessSession` unless they begin with `
 | **`tests/test_concurrency.py`** | | Z1 | Y2 (flips the known-issue marker of the `_sync` test) | | | | | |
 | **`benchmarks/mcp_latency.py`**, **`benchmarks/concurrency_bench.py`**, **`benchmarks/named_view_cost.py`**, **`benchmarks/bench_cold_start.py`**, **`benchmarks/bench_install.py`**, **`benchmarks/budgets.json`**, **`tests/test_output_size.py`** | | | | Z2 | | | | |
 | **`environment.py`**, **`tests/test_environment.py`**, `config.py`, `paths.py` | | | | Z3 | | | | |
-| **`tests/test_engine_nostock.py`**, **`tools/audit_harness.py`**, `docs/ci.md`, `.github/workflows/tests.yml` | | | Z4 | | | | | |
+| **`tests/test_engine_nostock.py`**, **`tools/audit_harness.py`**, `docs/ci.md` | | | Z4 | | | | | |
+| `.github/workflows/tests.yml` | | | Z4 | | | | Z14 (A54: the `workflow_call` trigger, so that `release.yml` runs its unit and engine jobs; commit `f1e2575`, merged `66cd740`) | |
+| `pyproject.toml`, `__init__.py` | | | | | | | Z14 (A54: version `0.6.0.dev0`, the tree pins hydra.4; commit `f1e2575`, merged `66cd740`) | |
 | **`tests/test_engine_prepare.py`**, **`tests/test_engine_scripts.py`**, **`docs/verification-prepare.md`** | | | Z5 | | | | | |
 | **`tools/golden_classify.py`**, **`tests/test_golden_classify.py`**, **`docs/verification-golden.md`** | | | Z7 (A19: the test file of the classifier) | | | | | |
 | **`tests/test_engine_export.py`**, `tools/verify_corpus.py` | | | | Z6 | | | | |
@@ -3245,7 +3277,7 @@ Paths are relative to `Ghidra/Features/HeadlessSession` unless they begin with `
 | **`tools/scenarios/kotor_vfs_lookup.py`**, **`tests/test_runtime_scenario_fixture.py`** | | | | | | | | Z11 |
 | **`tools/watch_conformance.py`**, **`tests/test_runtime_watch.py`**, **`tests/test_runtime_write.py`**, **`runtime_memory.py`**, **`tests/fakememory.py`** | | | | | | | | Z12 (A20: `runtime_memory.py` is a new mixin of `runtime_worker.RuntimeAgent`, `tests/fakememory.py` a shared helper of the two watch tests) |
 | `docs/tool-mapping.md`, **`docs/data/tool-surfaces.json`**, `docs/verification.md`, **`tools/count_surfaces.py`**, **`tests/test_tool_mapping.py`** | | | | | | Z13b | | |
-| **`CHANGELOG.md`**, **`.github/workflows/release.yml`**, **`docs/versioning.md`** | | | | | | | Z14 | |
+| **`CHANGELOG.md`**, **`.github/workflows/release.yml`**, **`docs/versioning.md`**, **`tests/test_release.py`** | | | | | | | Z14 | |
 
 **Site (`F:/Projects/hydra-engine-site`, the website repository; it had no owner in revision 5)**
 
@@ -3789,6 +3821,434 @@ E5), gate 9.20 (quiet machine), the power-loss claim (E12, 8.7 (4) item 15), the
 load-sensitive Hydralysis tests named in the Y6 and Z4b rows, the A28 sentences, and the Hydralysis real-engine run of Y5/Y6
 (none ran in this stage).
 
+### 8.9 Revision 8.5: the E9 amendments (finishing round, `w2/E9b`)
+
+Revision 8.5 records the ownership amendments of E9, which `integration/w3` carries since the merges `f194c2ed9b` and
+`57fd751d5e` (E9 commits `e321eca763`, `256a9f784f`, `c1a0bff962`, `fc8fd7e3d0`, branched from `47a43f6b06`). It changes no
+design decision and weakens no gate. `examples/check_ownership.py --package E9 --base 47a43f6b06` on the E9 branch reported
+5 violations (14 changed files, 5 outside its rows) before the 8.1 edits below and 0 after them; the matrix check reports
+136 rows, 52 packages, 0 violations (three rows are new: `S/Guarded.java` and `S/Watchdog.java` are split from their former
+shared rows, and `S/QueryCommands.java` had no row).
+
+| Amendment | File | Package, wave | Reason | Where in this file |
+|---|---|---|---|---|
+| A33 | `S/Session.java`: `Governor.admit(c, cmd, req)` before the slot wait in the dispatch of a request, its reservation closed on every exit; `reap(long warmMs)`, the overload of `reap()` the governor calls with 0 before it refuses an open | E9, W5 (after E5) | 3.11 puts the admission seam before `open_project`, `open_program`, `fork_project` and `import`, and E1 built no `Hooks.Admission` call site that an E9 class could fill; reclaiming idle views before a refusal needs a retention of 0 | 8.1 (`Session.java` W5 cell: E5 **then** E9), E9 Files |
+| A34 | `S/Health.java`: `state` is `degraded` while the governor is above the hard watermark; `debug_stall` `what:"thread"` plants one fault in the next lap of a guarded thread (test hooks only) | E9, W5 (after E5) | 3.11 says the daemon is `degraded` above 85% and 3.13 reports it in `health.state`; the restart of a guarded thread cannot be tested in a running daemon without a planted fault | 8.1 (`Health.java` split from `Watchdog.java`, W5 cell: E5 **then** E9), E9 Files |
+| A35 | `S/Advertised.java`: the capability name `admission`; the limit names `minXmxMb`, `maxViews`, `maxViewsPerClient`, `heapSoftPct`, `heapHardPct`, `nativeBudgetMb`, `viewDiskBudget`, `diskReserve`, `decompilerIdleS`, `decompilerWaitS`, `decompilerFailLimit`, `decompilerNegativeS` | E9, W5 | `Advertised` declares every name up front and throws on an undeclared one (3.1); 3.11 requires every value in `hello.limits`. The values are set from `Governor` (E9's file); `examples/char_e9.py` and its golden `e9-limits.json` assert them (3.1: each package in its own `char_<package>.py`) | 8.1 (`Advertised.java` W5 cell), E9 Files |
+| A36 | `S/QueryCommands.java`: the circuit breaker before the decompiler borrow in `decompile` (the negative cache), the fault classification after it, and `decompiler_failed{function, entry, reason, retryable, negativeCache}` with `retryAfterMs` for a protocol 3 client (a protocol 2 client keeps `completed:false` and `error`) | E9, W5 | 3.11 "Decompiler faults" needs the outcome of one decompile, which only `decompile` sees; the borrow sites named in E9's Files (`ProgramEntry`, `Overlay`) hand out the decompiler and never see the result | 8.1 (new row), E9 Files |
+| A37 | `S/Guarded.java` (new): created by E9, not by E1; E1's W1 cell said "`Hooks.Admission` and `Guarded`, both inert", but no `Guarded` class existed before `e321eca763` | E9, W5 | 3.11 "Daemon threads" (restart with backoff, counted in `health`, the 8 MB emergency reserve) is E9's behaviour; the file is new and has no other editor | 8.1 (`Guarded.java` split from the E1 row; the E1 cell keeps `Hooks.Admission` only), E9 Files |
+
+Items that are **not** rows: (a) E7 (`5e5f95cb37`) added one line to `S/Session.java` (`Health.contribute("scriptWorkers", ...)`)
+although its package text says "E7 does not edit `Session.java`"; it is not an E9 edit, so this revision records it as a fact
+and leaves the cell to E7's amendment. (b) BP22 (3.10) names "`-Xmx` laps" as its red test, not a script of `examples/conc/`:
+`conc/red_table.py` has no BP22 row, and `--only BP22` runs nothing. Its laps are `dt_e9` `e9_gate` (a third decompile
+waits, then `busy{capacity, resource:"native"}`), `e9_admission_256` and `e9_admission_512`; they and the X9 plant of
+`dt_x0` (`oracle_selftest`: X9 flagged `K7:orphan_decompiler`) pass on the E9b build. Red on hydra.3 is shown for the
+containment test by its no-job control (`e9_job_containment`), not by a hydra.3 run of `e9_gate`.
+
+### 8.10 Revision 8.6: the wave W3 wrap-up (`w2/SPEC3`)
+
+Revision 8.6 brings this file in line with what is merged at the end of wave W3: Hydra `integration/w3` at `91dfcb2cb3`,
+Hydralysis `integration/w3` at `7358ed6`. It is a documentation change only; it changes no design decision, weakens no gate and
+flips none to passing. Sections 8.6 to 8.9 are not rewritten; where this section differs, it governs. The facts come from
+`git log` of both `integration/w3` branches, the code at those commits and the logs named below; a fact no log shows is not
+recorded. After the 8.1 edits below, `examples/check_ownership.py` reports 138 rows, 52 packages, 0 matrix violations. Run on a
+branch of `integration/w3` with `--package <id> --base 4fcdc062bd --committed-only`, it reports for E6, E7, E9 and E12 every file
+any package changed after `4fcdc062bd` (12 files; before the 8.1 edits 8 to 11 "outside its rows" each, after them E6 7, E7 10,
+E9 8, E12 8: the other packages' files, `run_parallel.py`, the SPEED4 test edits and this file), because that diff is the whole
+wave, not one package; checked on each package's own commits (`4fcdc062bd...w2/E6b`, `4fcdc062bd...w2/E12b`, `4fcdc062bd...w2/E9b`,
+`5e5f95cb37^...5e5f95cb37` for E7, and the earlier branches `w2/E6`, `w2/E9` from `47a43f6b06`, `w2/E12` from `0ce023b424`) the
+same checker code reports 0 outside the rows for E6, E7 and E12, and for E9 one: `PROTOCOL-3.md` itself (the E9b commit
+`af15ebfb20` that wrote 8.9; the spec has no owner, and nobody edits it but the coordinator).
+
+**(1) Ownership amendments.** Continues 8.9 after A37.
+
+| Amendment | File | Package, wave | Reason | Where in this file |
+|---|---|---|---|---|
+| A38 | `S/ProjectFork.java` (owned by E2a, E2; F1's note A26): `publish` forces every file of the staging folder (a read-only version file is made writable for `FlushFileBuffers` and read-only again) and then its folders **before** the intent says moving, and syncs the destination folder before and after the `.gpr` move (the commit point); `syncDirectory` does nothing on Windows (a folder cannot be opened as a channel), so there the order of the names rests on the directory-entry model J | E12 (E12b), W8, commit `45b8af2cdd`, merged `82f8b83ee9` | `e12_fork_publish` measured silent corruption of the published fork at cut points (model J: 151 `silent_corrupt` and 15 `unopenable` of 1,145 images; model U: 775 and 285 of 5,281); after the change J 0 of 629 and U 0 of 1,520 (commit message). The publish is E2's code, and the fix had to be there. `check_ownership.py --package E12` reported this file as outside E12's rows | 8.1 (`ForkCommands.java`, `ProjectFork.java` row, W8 cell: E12) and the E12 block |
+| A39 | `S/Session.java`: one line, `Health.contribute("scriptWorkers", ScriptWorker::describe)` after E5's contributors | E7, W5, commit `5e5f95cb37` | the worker count reaches `health` through E5's contributor list, but the list is filled where `Session` registers its contributors; recorded as a fact in 8.9 item (a) and left to this amendment | 8.1 (`Session.java` W5 cell: E5 **then** E9 **then** E7) and the E7 block |
+| A40 | `examples/dt_e4.py`, `examples/char_e4.py`, `examples/characterization/v3/e4-script.json` (E4's): the `isolation` value list of the `bad_request` assertions and of the golden gains `worker`; `dt_e4.py` now probes `Worker` and `workers` as invalid instead of `worker` | E7, W5, commit `5e5f95cb37` | E7 adds the value `worker` to the closed enum; E4's assertions of that enum cannot pass without the edit | 8.1 (new row: E4 in W4, E7 in W5) and the E7 block |
+| A41 | `examples/test-map.json`: a generated file (`run_parallel.py --make-test-map`) that every package regenerates when it adds tests (E7 in `5e5f95cb37`, SPEED4 in `b55c582221`, the coordinator in `21da50345a`) | every Hydra package | `check_ownership.py` exempts only `certification.manifest` and flagged this file for every package; this revision changes no code, so the exemption is a row whose cells name every Hydra package of each wave as a `**then**` chain, the one multi-package form the checker accepts; the chain states no order. An exemption in `check_ownership.py` itself (like `certification.manifest`) would be cleaner and is left to the checker's owner | 8.1 (new row, all seven Hydra waves) and the 8.1 introduction |
+
+Items that are **not** rows: (a) `examples/run_parallel.py` has no row; E7 (`5e5f95cb37`) and the speed package SPEED4
+(`b55c582221`) edited it. (b) SPEED4 also edited `examples/dt_e3c.py` and `examples/dt_e6.py`, and SPEED2/SPEED3 edited the red
+table; SPEED2 to SPEED4 are not among the 52 package ids. Both are recorded as facts. (c) The E9b commit edited this file (above).
+
+**(2) Per-package status.** "Merged" means in `integration/w3` of its repository. A test result is named with its log; nothing
+here is a gate result unless it says so.
+
+| Package | Merged | What the evidence shows | What remains open |
+|---|---|---|---|
+| E3c, E5, R1 (Hydra) | yes: E3c `c5d5be2d79`, E5 `3bf1900b01`, R1 `7a8171ff28` | supersedes "not landed" of 8.8 (3) for E3c and E5 | BP4, BP5, BP6 and BP9 are **not shown green**: no red-table run on the merged build is recorded in this wave (SPEED3 ran BP6 and BP13 once on the old build, RED as expected); 8.8 item 24 stands |
+| E6 (Hydra) | yes: `355974a9ca` (partial), `855a788da3` (fix round), `cc25da6626` (E6b, `9a4dde9752`) | `soak_runner_selftest` 71 of 71 checks and `chaos_runner_selftest` pass (`D:/Projects/Hydra/_logs/e6b-r3/report.json`); E6b: `Chaos.stop_daemons` also scans the rig layout `<work>/run/<scenario>/rig/state` (red with the old scan in the selftest) | review round 3 of E6 started and returned no verdict, so E6 is **not accepted**; no gate run: neither the 9.17 PR, nightly or release lane nor the counted batches of 9.15 ran; the soak runner's script-worker probe uses capability names no engine advertises (E6 block) |
+| E7 (Hydra) | yes: `5a6e0ad323` (accepted in review round 1) | `dt_e7`: 10 tests on the E7 build, all pass, `e7_cost` only alone (failed under load; `E:/Projects/Hydra/_logs/E7/full.out`, 165 of 166 under load); again `e7_cost` failed only under load in the E12b full run | **gate 9.14's E7 items are not passed as a gate**: no release run, the SP10 numbers are from a loaded machine (9.20); the documents keep "bounded and quarantined" (D64); the A28 debt (8.8 item 25) is unchanged |
+| E9 (Hydra) | yes: `f194c2ed9b` (partial), `57fd751d5e` (fix round 1), `91dfcb2cb3` (E9b: A33 to A37, `char_e9.py` `e9-limits`) | the hello limit names in `Advertised.java` and their setters in `Governor.java` equal A35 exactly; the laps of 8.9 item (b) pass on the E9b build; the fix-round suite passed 155 of 159 with 4 only under load (`E:/Projects/Hydra/_logs/E9fix/fullsuite.out`) | review round 2 of E9 was cut off (no verdict recorded); gate 9.14 is not run as a gate; BP22 has no red-table row (8.9 (b)) |
+| E12 (Hydra) | yes: `4fcdc062bd` ("not fully implemented"), `82f8b83ee9` (E12b, A38) | `e12_fork_publish` passes on the E12b build; the full daemon suite 189 of 191 passed, `refcount_leak` and `e7_cost` failed only under load and passed alone (`D:/Projects/Hydra/_logs/e12b/full.log`) | **the E12 acceptance is not met** (8.7 item 15 stands): the matrix is a crash simulator over hand-written directory-entry models (J, U), `syncDirectory` is a no-op on Windows, no virtual machine or real power cut was used; no document may say anything about power loss. `UpgradeCache.copyProject` (8.7 (3) E12 row) is not shown to force its copy |
+| Y4a (Hydralysis) | yes: `1a10681`, `ac879eb`, fix-forward `9b61f7b` | the unit suite (fake engine) passes: `python tools/run_tests.py`, 1,464 of 1,464, exit 0, on `7358ed6` (this revision's run) | the real-engine classes of `2088558` have no recorded run (Y4a block); whether Y4a is reviewed to accept is not stated by any log read here |
+| Y4b (Hydralysis) | yes: `32dee34` (`b58db2a`, `e38ed5c`) | `tests/test_doctor.py` (14 tests: zero attaches and no process with no daemon, one finding per section, unfinished candidates by the last intent step) pass in the same unit run | no real-engine run of the doctor is recorded |
+| Y4d (Hydralysis) | yes: `a6d4eb4`, `fc11c95`, `ec89502` (`e0c45b4`), `7358ed6` (`037c697`) | three interop defects that real-engine tests found are fixed with fake-engine regressions: the capability name `backup`, the sidecar outside the manifest file set, and the NTFS candidate revision (4.6 step 4); commits now release the programs they open (hydra.4's `maxViewsPerClient` 4 refused a second commit) | `RealEngineBackups` and `RealEngineFaultMatrix` have no recorded run; gate 9.9's real-engine half and 9.6 are open |
+| Y4e (Hydralysis) | yes: `bbda2b2` (`a87cea5`), `d240ff9` | `test_userscripts.RealWorker` 4 of 4 against a hydra.4 candidate (`D:/Projects/Hydra/_logs/y4e/real3.log`: a worker on an edited view, the mutation measured on the clone, a deaf script killed at its timeout, the master runs private); the planted variant without the save got the engine's `unsaved` refusal (`real-plant.log`) | that run is not a 9.14 gate run |
+| Z14 (Hydralysis) | yes: `b920c80` (unreviewed leftovers), `cde4d30` (`eb14908`), `66cd740` (`f1e2575`) | `tests/test_release.py` passes in the unit run; version `0.6.0.dev0` | the release dry run (`workflow_dispatch`) has not run (no CI in this stream); the four Z14 reviews under `E:/Projects/Hydra/_logs/review-Z14-*` are not summarised here; Z14 edits files outside its cells (Z14 block) |
+
+**(3) Statements of this file that the merged code contradicts.** Numbering continues from 8.8 (4) item 26.
+27. 4.6 step 4, "the gate passes because the backup is of this revision": false on NTFS; corrected in place (4.6 step 4, `037c697`).
+28. The E7 block and D64, "E7 does not edit `Session.java`": E7 adds one line (A39). D64 itself is not edited here.
+29. The E9 block, D46 and 3.11 ("Admission seam": "E1 builds `Hooks.Admission`"), the E1 W1 cell of 8.1 (`S/Hooks.java`) and the
+    E5 block ("read through E1's `Hooks`"): no `S/Hooks.java` exists in any branch; admission is `Governor.admit` called by
+    `Session` (A33), and `Guarded` is E9's (A37). The 8.1 row that names `S/Hooks.java` names a file that was never made.
+30. The E12 block's Files: E12 also edits `S/ProjectFork.java` (A38). 8.7 (3) E12 row, "`ProjectFork.publish` does not force its
+    copies": superseded by A38 for `publish`.
+31. The E6 block's dependency on E7: E6 was merged before E7, and its script-worker probe does not see E7's capability (E6 block).
+32. The Y4d block, "pass `backup:` to the candidate open": the candidate's own `pre-upgrade` backup when the format needs the upgrade
+    (Y4d block); the capability is `backup`, not `forkPurposes`.
+33. 8.8 (3) lists E3c and E5 as not landed: both are merged (part 2). BP9 stays open (8.8 item 24).
+
+**Gates still open** (the release blocker list at this revision; none is weakened, none is flipped). No passing gate run with a
+verified exit code and a log under `D:/Projects/Hydra/_logs/<stream>/` is recorded for any gate of section 9, so every gate is
+open; where a reason is known it is named: 9.1 (golden decompile diff, not rerun after E3a); 9.2; 9.3 (not checked in this
+revision); 9.4 (the full suites with `--legacy-project`; the
+ReFS fork tests cannot run, no ReFS volume); 9.6; 9.8; 9.9 (the real-engine half); 9.10; 9.11 (`check_ownership.py` passes for the
+W3 package branches, part 1, but the hosted runs and every branch of the wave are not checked); 9.12 and 9.13 (BP4, BP5, BP6, BP9
+not shown green; quiet-machine thresholds); 9.14 (E7 and E9 items not run as a gate); 9.15 (no counted batches; its ReFS half
+cannot run here); 9.16; 9.17 (no lane run; its ReFS run cannot run here); 9.18; 9.19; 9.20 (no quiet-machine spike run); the
+power-loss claim (E12 acceptance); the Hydralysis real-engine runs of Y4a, Y4b and Y4d; the Z14 dry run; the hosted-runner
+confirmations of R-V3 and Z4b; the A28 sentences.
+
+
+### 8.11 Revision 8.7: four fixes before the release-gate runs (`w2/FIX4`)
+
+Branch `w2/FIX4` from Hydra `integration/w3` at `b2a8422b09`. FIX4 is not one of the 52 package ids; like SPEED4 (8.10 (1),
+items that are not rows) its edits are recorded here as facts, not as matrix rows, and the matrix is unchanged
+(`check_ownership.py`: 138 rows, 52 packages, 0 violations). Where this section differs from an earlier one, it governs.
+
+| Item | Files (their owner) | What changed | Evidence |
+|---|---|---|---|
+| F1 | `S/ScriptWorker.java`, `S/ScriptCommands.java` (E7); `examples/dt_e7.py` (E7) | the worker sends its own JVM's process CPU time (`OperatingSystemMXBean.getProcessCpuTime`, else `ProcessHandle`) with its `start` event; the daemon reports it as `startCpuMs` in the reply's `worker` object and in `health.scriptWorkers.last` (the daemon reads `ProcessHandle.info().totalCpuDuration()` of the worker when the event lacks it). `e7_cost` judges the start-up by `startCpuMs` against `BUDGET_START_CPU_MS` 23,000 (twice the calm median 11,125 ms measured on this machine, `D:/Projects/Hydra/_logs/fix4/e7_cost_calm2.log`) and records wall time without judging it; the wall budget of 12,000 ms is gone, not raised | 9.14's E7 start-up item is a CPU-time budget from this revision |
+| F2 | `examples/daemon_tests.py` (E0; SPEED5's cache), `examples/run_parallel.py` (no row, 8.10 (1) (a)), `examples/dt_e3c.py` (E3c), `examples/dt_e2.py` (E2), `examples/dt_e2a.py` (E2a), `examples/test-map.json` (A41) | the setup projects of `Ctx.cached_project` are registered (`PREBUILT`: tag, users, maker) and `run_parallel.py` makes those the tasks to run need in its seed phase, one `--prebuild TAG` process each, before the queue starts; tests then always copy. No lock and no timer in a test. `run_parallel.py --selftest` checks that every function that makes a cached project is registered and every test calling a maker is a user | before: three `multi_writer` shards and `two_projects` each built a project on a fresh seed (4 builds, 77 s; `D:/Projects/Hydra/_logs/fix4/old1`); after: 2 builds (38 s) in the prebuild, every test copies (`.../pre1`; warm seed `.../pre2`: 0 builds) |
+| F3 | `examples/soak_tests.py` (E6) | the script-worker probe reads `scriptIsolation` >= 2 or `health.scriptWorkers` (the names E7 advertises) instead of `scriptWorker`, `scriptWorkers`, `killableScripts` as capabilities; three selftest checks. Closes 8.10 (3) item 31 for the probe | `soak_tests.py selftest` 74 of 74 |
+| F4 | `S/UpgradeCache.java` (E1, E2); `examples/dt_e12.py` (E12) | `build` forces the copy and what the upgrade wrote (`ProjectFork.forceTree`, E12's helper) before the rename of `gN.tmp` and syncs the cache folder after it; `writeEntry` forces `entry.json.tmp` (`ProjectFork.forceFile`) before the atomic move (the commit point) and syncs the folder. `copyProject` itself still forces nothing (a fork forces at publish). New `e12_upgrade_publish` and its control `e12_upgrade_publish_finding`; `e12_source_guards` pins the order | the build before F4 is red in the simulator (J: silent_corrupt 19, unopenable 1; U: silent_corrupt 39, unopenable 14), the current one green under J and U (`D:/Projects/Hydra/_logs/fix4/e12.log`) |
+
+Not changed: `run_parallel.py --make-test-map` follows a test's helpers one level, so `multi_writer` (whose setup import is now
+in `proj_mw`, two levels down) is no longer listed under the import classes; its setup is made by the prebuild.
+
+### 8.12 Revision 8.8: no ReFS volume on the release machine (owner decision 2026-10-30, `w2/GATE1`)
+
+A coordinator amendment, recorded on branch `w2/GATE1` (from Hydra `integration/w3` at `3b8a2f751a`) during the hydra.4
+release-gate runs. It is a documentation change only: it changes no design decision and no code, flips no gate to passing and
+weakens no gate on NTFS. Where this section differs from an earlier one, it governs.
+
+**Owner decision 2026-10-30.** There is no ReFS volume (the Dev Drive `F:` is gone, 8.8). The parts of the release gates that
+need one are **not testable on the release machine, owner decision 2026-10-30; NTFS is the release file system**:
+
+| Gate | Part that cannot run | What still binds |
+|---|---|---|
+| 9.4 | "plus the fork tests on a ReFS volume" | every listed suite, on NTFS, with `--legacy-project` |
+| 9.15 | the 200 ReFS save kills of "at least 400 save kills (200 NTFS, 200 ReFS)" | every other count of the gate, on NTFS, including the 200 NTFS save kills |
+| 9.16 | the ReFS half of "NTFS and ReFS" | the NTFS medians, with the foreign load recorded |
+| 9.17 | "plus one on ReFS (a fixture under 10 GB on F:, cleaned up)" of the release lane | the three consecutive green NTFS nightly runs and the 24 x 6 run |
+
+This amendment says nothing about ReFS: no result is taken, inferred or carried over from another machine, and no document may
+state a ReFS property as tested on this release (6.2 "Copy-on-write is ReFS only" and "ReFS gives a disk saving and no
+protection" stay as written, as limits). A gate report names these parts "not testable on the release machine, owner decision
+2026-10-30", never "passed" and never "skipped as green".
+
+### 8.13 Revision 8.9: the fork orphan class, K1-K17 after every kill, the NTFS-only wording, the publish kills (coordinator amendment, `w2/GATE2`)
+
+A coordinator amendment, recorded on branch `w2/GATE2` (from Hydra `integration/w3` at `3c3c100d8b`) during the hydra.4
+release-gate runs, after the first counted 9.15 run. GATE2 is not one of the 52 package ids; like FIX4 (8.11) its edits are
+recorded here as facts, numbered A57 to A62 (after 8.14's A42 to A56), and the matrix is unchanged. Where this section differs from an earlier one, it governs.
+
+**Evidence.** The 330 counted trigger-timed `fork_project` kills of the first gate run (NTFS, candidate `3b8a2f751a`,
+`D:/Projects/Hydra/_logs/gate-crash/gate-run/`, 6 shards of `chaos_tests.py --profile gate`): right after the kill, 12
+destinations held a `.rep` without its `.gpr` (the kill fell between the two renames of D41's publish: `.rep` moved, `.gpr`
+still in the staging folder) and 14 complete forks held a `<name>.fork.json.tmp` (the kill fell in the final sidecar rewrite).
+All 26 were swept by the next `fork_project` under the directory: the retry to the same path succeeded, 0 blocked retries, 0
+left after the sweep; no `.gpr` was ever seen without its `.rep`. The 224 counted NTFS save kills of the same run had 0 failures.
+
+**A57 (the fork orphan).** D41's `.gpr` last stays. Two renames cannot be made atomic on NTFS; a `.rep` without its
+`.gpr` is invisible to Ghidra and is garbage, while a `.gpr` without its `.rep` would be visible and broken, so that order is
+the right one. What must hold instead:
+
+* (a) the sweep that removes such an orphan also runs **at daemon start** and **at `open_project`** of the directory, not
+  only at the next `fork_project`. `S/ForkSweeper.java`: `registerParent` records every directory a `fork_project` stages in
+  (`<stateDir>/fork-parents/<hash>`, before anything is staged); `sweepAtStart` sweeps each recorded directory before the
+  daemon is ready (`S/HeadlessSession.java`) and drops a record whose directory holds no staging folder; `sweepForOpen`
+  sweeps the directory of the project an `open_project` names (`S/ProjectCommands.java`), and never fails the open. The
+  sweep keeps its rules (D41): only what an intent proves is a dead publisher's, never a live one's. A committed fork whose
+  dead publisher left its `<name>.fork.json.tmp` loses that file in the same sweep;
+* (b) a visible project (`.gpr`) is never without its `.rep`, at any instant;
+* (c) after the sweep, 0 orphans.
+
+**When the sweep runs (exhaustive; K6 oracles such as 9.17's read "after the sweep" as "after one of these ran on that
+directory since the kill").** (1) **Daemon start**: before the daemon answers its first request, every directory recorded in
+*that daemon's* state directory (`<stateDir>/fork-parents`) is swept whole; a directory that no `fork_project` of that state
+directory staged in is not recorded, and a daemon with another state directory does not sweep it. A record is dropped at a start
+that finds no staging folder in its directory, so a later leftover there that no staging folder accompanies (the promote
+marker's temporary file of A62) waits for (2) or (3). (2) **`open_project`**, read-only
+or writable: the directory that holds the named `.gpr` (or the named directory) is swept whole, before the open, and a
+failure of the sweep never fails the open. (3) **`fork_project`**: the destination name is swept before the staging, and the
+first `fork_project` of a daemon into a parent directory sweeps that directory whole (D41). Nothing else sweeps: not
+`list_projects`, `project_status`, `close_project`, a timer, or a client's exit. The removal of Ghidra's time probes (A61) is
+not a sweep: it runs only at a writable open, in that project's `.rep`.
+
+Test: `dt_e2a.py` `e2a_sweep_at_start`: (a) a planted dead publisher's `.rep` in a recorded directory is removed by the next
+daemon start with no fork and no open; (b) a dead publisher's sidecar `.tmp` is finished by `open_project`; (c) a daemon killed
+exactly between the two renames, held there by the test hook `ghidra.session.testForkPauseAfterRepMs` of `S/ProjectFork.java`
+(it does nothing without `ghidra.session.testHooks`), leaves a `.rep` alone that the next daemon start removes. It is red on the
+candidate without the change (`3b8a2f751a`, whose fork code `3c3c100d8b` does not change: part (a) fails, the
+daemon start leaves the `.rep`) and green with it (`D:/Projects/Hydra/_logs/gate-crash/e2a-old2.log`, `e2a-new2.log`). The E2a test text and the 9.15 fork row now read "0 `.gpr` without `.rep` at any
+instant; 0 `.rep` without `.gpr` after the sweep (next `fork_project` or daemon start)". The harness (`conc/run_c.py`
+scenario b) records the state right after the kill as pre-sweep classes (`REP_WITHOUT_GPR_BEFORE_SWEEP`,
+`SIDECAR_TMP_BEFORE_SWEEP`, `ORPHAN_TMP_LEFT`: reported, not counted), `GPR_WITHOUT_REP` at any instant (counted), and what is
+left after the daemon start and after the retry (`LEFT_AFTER_SWEEP`: counted).
+
+**A58 (K1-K17 after every kill).** The counted batches run the oracle after every kill, as 9.15 says: new
+`examples/conc/kcheck.py` runs over each iteration folder before it is deleted, after the fresh daemon of the harness's oracle
+(on the same state directory, so after its start-up sweep) and after the retry. Each row of `results.jsonl` carries `k`, one
+result per invariant: checked and holding, a violation (also added to the row's anomalies, so it fails the batch), or `na` with
+the reason when the iteration made no object the invariant is about (K11 and K15 are about Hydralysis views; K12, K16 and K17
+about a lineage: run when one is found, and by the publish batch). `chaos_tests.py` counts an iteration without all seventeen
+results as not checked (the batch cannot pass) and its `SOFT_GAPS` are empty. K17 judges sealed records only: the publish
+leader's marker `publish.leader.json` and files inside a project's `.rep` are plain JSON and are noted, not judged
+(`oracle.NOT_RECORDS`); a record that lost its seal is still a violation (`dt_x0.py`).
+
+**A59 (the wording on NTFS alone).** With no ReFS volume (8.12) the wording "below 0.75% at 95%" is reached on NTFS
+alone: 0 failures in n counted save kills bound the rate at 3.84/(n+3.84) (two-sided Wilson, z = 1.96), below 0.75% from
+n = 509. The gate profile's NTFS save count is 509; the ReFS batch is reported as "not testable on the release machine, owner
+decision 2026-10-30" (8.12), neither a gap nor a pass.
+
+**A60 (the publish kills).** "Publish" in 9.15 is the Hydralysis generation publish (3.12 "Kill during publish": nothing
+published, `CURRENT.log` unchanged, or fully published; D50 counts it apart from the 300 fork-publish kills; GR4). The new
+`publish` batch (`examples/conc/run_pub.py`) kills the publisher process of Hydralysis' own fault harness
+(`tests/test_views.py --worker`, `views.run_publish_job` against Hydralysis' fake daemon, whose effects are on disk), from a
+read-only Hydralysis checkout (`HYDRALYSIS_SRC`), trigger-timed on the lineage folder listing, and runs K1-K17 after each kill
+and after the next leader. At least 200 counted kills; the 200 `promote_overlay` kills are their own batch.
+
+**A61 (the time probe of a killed writable open).** The counted fork batch on the rebased candidate (`b15968514c` plus
+GATE2) found 2 of 330 counted kills (g3fork4/it017, g3fork0/it074) with a complete fork whose data equalled the canonical
+project but whose `.rep/user` (`.rep/versioned`) held an empty `tmp<digits>.tmp` that stayed after the next open. The kill came after the commit point, during the `open` of the
+new fork. Every writable open of a Ghidra project starts `LocalDatabaseItem.CleanupRunnable` for each file system root of the
+`.rep`: it creates an empty `File.createTempFile("tmp", ".tmp", root)` to read the file system's clock, then deletes it; a kill
+in between leaves the file for good. The daemon's writable open (`open_project` writable, and the reopen writable in place)
+now removes empty `tmp<digits>.tmp` files directly in `idata`, `user` and `versioned` before it reads the revision
+(`GhidraProbes`). A read-only open never does (it changes nothing), and removing a live process's probe is harmless to it (its
+`lastModified()` reads 0 and its cleanup removes nothing). Test `e2a_open_probe`: red without it, green with it. The harness
+reports the probe right after a kill as the pre-sweep class `GHIDRA_PROBE_BEFORE_OPEN` and counts one still there after the
+oracle's writable open as `LEFT_AFTER_SWEEP` (K6).
+
+**A62 (the sidecar's temporary file names its writer).** The counted `promote_overlay` batch on the same candidate found 8 of
+480 iterations (218 counted kills) with an `analysis.fork.json.tmp` that the next daemon's sweeps kept (K6 `sidecar_tmp_left`). `promote_overlay`
+rewrites the sidecar of a fork that is already complete (the promote marker, `ProjectFork.markPromote`), after its staging
+folder is gone; a kill between the write of the temporary file and its rename leaves a file no intent names, and the sweeper
+removes only what it can prove dead. `ProjectFork.writeSidecar` now writes `<file>.<pid>.tmp`, and every sweep (daemon start,
+`open_project`, `fork_project`) removes a `<name>.fork.json.<pid>.tmp` or `SEALED.json.<pid>.tmp` whose process is not running
+or started after the file was made (`ForkSweeper.pidOwnsFolder`, the rule of the staging folders). A live writer's file, and
+the `<name>.fork.json.tmp` of an older build that no intent names, are kept. Two processes no longer share one temporary file.
+Test `e2a_sidecar_tmp_writer`: red without it, green with it. The promote scenario of the harness (`run_c.py` d2) now uses the
+8.13 classes of the fork scenario: `.rep` without `.gpr` and the sidecar's temporary file right after a kill are reported
+(`REP_WITHOUT_GPR_BEFORE_SWEEP`, `SIDECAR_TMP_BEFORE_SWEEP`, 3 of the batch were counted as `PARTIAL_DEST_VISIBLE` before), a
+`.gpr` without `.rep` is counted at any instant, and what the oracle's sweeps leave is counted (`LEFT_AFTER_SWEEP`).
+
+| 9.15 part | Now reads |
+|---|---|
+| save | at least 509 NTFS save kills (8.12: the ReFS half not testable) with 0 unopenable and 0 unrepaired |
+| fork | at least 300 `fork_project` kills with 0 blocked retries, 0 `.gpr` without `.rep` at any instant, 0 `.rep` without `.gpr` after the sweep (next `fork_project` or daemon start), 0 leftovers after the sweep |
+| publish | at least 200 Hydralysis publish kills and at least 200 `promote_overlay` kills |
+| every kill | followed by K1-K17 (`kcheck.py`, `run_pub.py`) |
+
+### 8.14 Revision 8.10: release gate 9.11, hygiene (ownership amendments A42 to A56, the limits of 6.2 in the documents, `w2/GATE6`)
+
+A coordinator amendment, recorded on branch `w2/GATE6` (from Hydra `integration/w3` at `3c3c100d8b`) to close the two open items of
+gate 9.11 found by the gate run of 2026-10-29 (`D:/Projects/Hydra/_logs/gates/gates-1.md`). It changes no design decision and no
+engine or client behaviour, and weakens no gate; the one code change is a correction of `examples/check_ownership.py` that makes it
+stricter (part 1 (c)). Where this section differs from an earlier one, it governs. Sections 8.13 and later revisions of E2a and 9.15
+belong to another stream and are not touched here.
+
+**(1) Ownership: every package merge against 8.1.** Method (`D:/Projects/Hydra/_logs/gate1/run_ownership.py`, rerun as
+`D:/Projects/Hydra/_logs/gate6/run_ownership.py`): for every first-parent merge of a package branch into the integration branches since
+`v12.3-hydra.3` (Hydra) and 2026-10-26 (Hydralysis), the files `git diff --name-only --no-renames M^1 M` brought in, checked with
+`check_changes` of `examples/check_ownership.py` against this file. Before this revision: 47 package merges, 37 clean, 10 with 26
+violations (`D:/Projects/Hydra/_logs/gate1/ownership.log`). Each violation was decided from its commit:
+
+(a) *Missing table entries*: the package needed the edit for its own work, or an amendment meant to grant it did not reach the
+matrix. The entry is added to 8.1, citing the commit and the merge.
+
+| Amendment | File (its owner before) | Package, wave, commit, merge | Why the package needed it |
+|---|---|---|---|
+| A44 | `S/Scheduler.java` (E1, E3a, E5) | E3c, W4, `cb99c188ab`, merged `c5d5be2d79` | the `Ticket.yieldSlot` wiring is E3c's (its block: "the optional `Ticket.yieldSlot` wiring behind `yieldSlots`"): `bind`/`bound` give the executing request's ticket; a yield must not record a hold time or a completion (`free(s, t, completed)`, `recorded(lane)`, the E3a review nit) |
+| A45 | `S/HeadlessSession.java` (E1, E2, E3a, E5, E9) | E3c, W4, `cb99c188ab`, `4e575f175d`, `908c6315f9`, merged `c5d5be2d79` | self-test checks only (`waiterCaps`, `closeVsViewChange`, the `yieldSlot` record): the self-test lives in this file |
+| A46 | **`S/WaitStats.java`** (no row) | E3c, W4, `cb99c188ab`, merged `c5d5be2d79` | created by E3c: `waits.foreignBlocked` and its companions, the deterministic evidence of K13 (D49) |
+| A47 | **`examples/lock_matrix.json`** (no row) | E3c, W4, `ac3cc90774`, merged `c5d5be2d79` | the copy of B's lock matrix that `dt_e3c` enumerates (3.10: a row without a decision fails the test) |
+| A48 | `examples/characterization/v3/e1-hello.json` (E1, E3a) | E3c, W4, `cb99c188ab`, merged `c5d5be2d79` | `status` gains `waits` and `projectStates`; `char_e1.py` compares `status` exactly (3.1), so the golden had to be re-recorded (like A40) |
+| A50 | `examples/char_e1.py`, `e1-expect.json`, `e1-require-expect.json`, `e1-rk.json` (E1, E3a) | E2, W2, `1784823fd9`, merged `9c7cdef9e4` | already granted by A13 (revision 8.2), but A13 named E2 only inside the parentheses of E1's W1 cell, which the checker reads as explanation; the W2 cell is now `E2 **then** E3a` (E2 merged first) |
+| A51 | **`S/Identity.java`** (E1), `examples/contract_tests.py` (E1, E2), `examples/char_e1.py` (E1, E3a) | E5, W5, `3972cda7c9`, merged `3bf1900b01` | 3.1 and the E5 block put `platform.testHooks` in `hello` (E5); the key is built in `Identity`, and E1's exact key lists in `contract_tests.py` and `char_e1.py` fail on it, so both compare the keys without `testHooks` (asserted by `dt_e5`/`cc_e5`). `S/Identity.java` leaves E1's shared row for a row of its own |
+| A53 | `/.github/workflows/release.yml` (no Hydra row), **`/docs/release-notes-12.3-hydra.4.md`** (no row) | R1, W5, `8a5a334da5`, `7913a727ae`, `0b4320a80d`, merged `7a8171ff28` | the R1 block names "the release workflow (a dry run)" and "the release notes"; neither had a row |
+| A54 | `.github/workflows/tests.yml` (Z4), `pyproject.toml`, `__init__.py` (no row) (Hydralysis) | Z14, W6, `f1e2575`, merged `66cd740` | the release dry run must run the unit and engine jobs (Z14 Tests): `workflow_call` in `tests.yml`; the version `0.6.0.dev0` because the tree pins hydra.4 (already recorded as a fact in the Z14 block, revision 8.6). `tests.yml` leaves Z4's shared row |
+| A55 | `tests/test_query.py` (Y0a, Y1, Y2, Y3, Y4a) (Hydralysis) | Y5, W4, `4c1f832`, merged `7a1614d` | per-agent default views (Y5) change what a bare call reads: the `EngineCase` fixture asks the shared view, the stale-view test takes the conflict path, one auto-rebase test is added (A18 listed the other fixtures, not this file) |
+| A56 | `README.md` (Z13a, Y2, Y5, Z13b, Y4a), `tests/test_contracts.py` (Y0d, Y2), `tests/test_compat.py` (no row) (Hydralysis) | Z3, W3, `91bd90b`, merged `ec238f6` | Z3 moves the configuration lookup to the per-user folder (`config.user_config_dir`); two tests patched the old lookup, and the README sentence on where the configuration lives had to follow |
+
+(b) *Out-of-scope edits*, reported: the edit was not the package's to make. Each is recorded in 8.1 with "out of scope, recorded",
+so that the per-merge check names an owner for every file a merge brought in; such a cell grants nothing further (every one of
+these packages is merged and its wave closed), and it is listed here so that it is not hidden.
+
+| Amendment | File | Package, commit, merge | What happened |
+|---|---|---|---|
+| A42 | `PROTOCOL-3.md` (no row: no package edits the spec) | E3c, `ac3cc90774`, merged `c5d5be2d79` | the package corrected two sentences of the spec (3.9's table and 3.10: `lock_matrix.json` has 19 rows, not 17). The correction is right and stays; the edit belonged to the coordinator |
+| A43 | `PROTOCOL-3.md` | E9 (E9b), `af15ebfb20`, merged `91dfcb2cb3` | the package branch wrote the coordinator's amendments A33 to A37 (8.1 cells, section 8.9, revision 8.5) itself; 8.10 (1) (c) recorded it as a fact. The amendments stand; the place was wrong |
+| A49 | `examples/run_parallel.py` (no row; made by a non-package branch) | E3c, `887222e374`, merged `c5d5be2d79` | one line, unrelated to E3c's package: the runner clears read-only attributes before it deletes its scratch |
+| A52 | `examples/conc/run_ef.py` (X0's directory row) | E6, `e04f7def92`, `224b2dc0ff`, merged `355974a9ca`; reverted by `c7d26ae101`, merged `855a788da3` | a `busy` retry in X0's red-table runner, which the commit itself called "an E6 edit outside E6's rows"; E6's review round 2 took the file back to X0's text, so no E6 change remains (2 violations, one per merge). The file now has a row of its own (X0 W0, E6 W5) |
+
+Of the 26 violations, 21 are (a) and 5 are (b) (A42, A43, A49, and the two merges of A52).
+
+(c) *A checker defect, corrected.* `ownership()` merged the rows of the Hydra and the Hydralysis tables into one map keyed by path,
+so a repository-root path that both repositories have (`README.md`, `CHANGELOG.md`, `.github/workflows/release.yml`) was owned by
+the packages of both tables: R1's Hydra `release.yml` was reported as "owned by Z14" (Z14's Hydralysis row), and a Hydralysis
+package could have changed its own `README.md` on the strength of a Hydra row (R0, R1). `ownership(spec, kind)` now reads only the
+table of the repository being checked; a new self-test check (a row of one table never owns a file of the other) is red with the
+old code. This narrows what a row grants; the result below is the same with the unchanged gate1 checker
+(`D:/Projects/Hydra/_logs/gate6/ownership-oldchecker.log`).
+
+Result on `w2/GATE6`: `check_ownership.py` (the matrix) 151 rows, 52 packages, 0 violations; `--selftest` all checks pass;
+`run_ownership.py` 47 package merges, **0 violations** (`D:/Projects/Hydra/_logs/gate6/ownership.log`).
+
+**(2) The documents state every limit of 6.2.** The gate run found 6 of the 30 limits stated, 13 partly and 11 missing, and five
+kinds of sentences stronger than 6.2. The engine module README now has the complete list, "Limits of 12.3-hydra.4 and protocol 3"
+(L1 to L19 for the bullets of 6.2, R6.1 to R6.11 for the numbered "Revision 6 limits"); the engine README, the CHANGELOG and the
+hydra.4 release notes summarise it and point to it, and the Hydralysis README ("Limits of this client with hydra.4") and CHANGELOG
+state the limits the client owns or meets first. Corrected to what the tests show:
+
+- `cancel` and a `timeout` end the request-bound lock waits (program, project, an overlay's request lock site), not the overlay
+  lifecycle waits, which are untimed (engine README, CHANGELOG V5, module README "Leaving", release notes V5; Hydralysis README).
+- No ReFS result is stated for hydra.4 (8.12): the CHANGELOG's "0 in 200 on ReFS" and "300 on ReFS", the same result in the module
+  README's table of core changes, and the release notes' "skipped" (now "not testable on the release machine, owner decision
+  2026-10-30"); the README's ReFS fork timings are marked as measured before hydra.4 and not repeated.
+- "never corrupt a program (in the tests listed ...)" becomes "no corruption was seen in the tests listed" (engine README, module
+  README, CHANGELOG), the ledger's form, so no "never corrupt" remains outside D52's exact form.
+- The one-off Linux and macOS pass is gone from the engine README (two places), the module README and the CHANGELOG: no Linux or
+  macOS claim is made.
+- The bounded release of a dead client names its tests and says that gate 9.13 has not passed.
+- Three "about 7 ms" lines carry their size qualifier (the benchmark function), as the 9.19 grep requires.
+
+Check (`D:/Projects/Hydra/_logs/gate6/run_limits.py`, an extension of gate1's keyword pass to all 30 limits and the overclaims):
+30 of 30 present in the list, every client-owned limit in the Hydralysis README, 0 overclaims; on the documents of the gate run it
+finds 0 of 30 in a list and 16 overclaims (`limits-before.log`). `tests/test_claims.py` passes; the D52 grep finds no hit in the
+engine and Hydralysis documents (the site repository is not edited here; its three "never corrupt ... in the tests listed" lines
+without the parentheses are the site owner's, S2).
+
+The shipped `docs/release-notes-12.3-hydra.3.md` is not edited.
+
+### 8.15 Revision 8.11: a file held by another process is `busy`, never a client mistake (coordinator-style amendment A63, `w2/GATE10`)
+
+A coordinator-style amendment, recorded on branch `w2/GATE10` (from Hydra `integration/w3` at `bc4004d366`) for finding C of
+release gate 9.17 (soak `pr-vf2`, `D:/Projects/Hydra/_logs/gates/gates-3.md` "Round 2") and the unstructured `fork_project`
+failure of the same fault (decision 2 there). It is numbered A63, the next number after A62 of 8.13 (`w2/GATE2`, not merged
+into this base; this base's last number is A56 of 8.14). Where this section differs from an earlier one, it governs.
+
+**Evidence.** With the handle-holder fault holding agent 3's fork database folder (`~00000000.db`, `GENERIC_READ`, no sharing;
+the window opened 0.2 s before), `open_program` answered `bad_request "/flow_fixture.exe is not a program (Unknown-File)"`
+three times in 1.5 s, and the agent gave up (`agent_setup_failed`). The daemon log shows why: `LocalFolderItem.getFolderItem`
+could not construct the database item (`Database.checkDbDir`: "Database directory not found", the folder cannot be listed)
+and made a `LocalUnknownFolderItem` of it. The same hold on the unfixed candidate, by `examples/dt_held.py`
+(`D:/Projects/Hydra/_logs/gate10/`), also shows: the project keeps that unknown item after the hold, so the same
+`open_program` stays `bad_request` until the project is closed; a held `.prp` file drops the item (`not_found`, also after
+the hold) and, held across a save, makes every later save of the open program fail "File is read-only" (the refresh after
+the save could not read the property file and the project dropped the file, the same mechanism as GATE8's listing case); a
+held `idata/~index.dat` makes `open_project` answer `not_found`; a held version file makes `open_program` fail with the
+localised system message; a held database folder makes `save` fail "IOException: File error during save" and
+`fork_project` fail with the localised message. The messages are localised (Portuguese on the release machine), so nothing
+may be decided from their text.
+
+**A63 (the transient file hold).**
+
+* (a) **The answer.** A request of `open_project`, `project`, `list`, `open_program`/`switch`, `save`, `fork_project`,
+  `import`, `refresh`/`reopen` or `prepare_upgrade` that fails because another process holds a file or folder of a project
+  answers `busy` with `details.path` (what is held) and `suggest:"retry"`; a v3 connection also gets
+  `details.reason:"file_held"` and `error.retryAfterMs` (1000: no hold history is kept). A v2 connection gets `busy` without
+  those two keys (C12; V12 in 5.1). The message ends with the failure as it was. Never `bad_request`, `not_found` or a bare
+  `failed` for a hold. `script`, `analyze` and the edit commands are not mapped (a partly applied script must not be told to
+  retry; edits do not touch files).
+* (b) **What is a hold.** Decided by looking, never by the message: a folder that exists and cannot be listed, or a file that
+  exists and cannot be opened for reading (`S/HeldFiles.held`), checked for the files an exception names (a
+  `FileSystemException`'s files, an absolute path in a message, cut back to the longest existing prefix) and their folders up
+  to the `.rep`, and for the item's own storage (its `~xxxxxxxx.db` folder, `.prp` file and their folder, found through
+  `LocalFileSystem.findItemStorage`). A missing file is not a hold. An access-control denial looks the same and is answered
+  the same way (a limit, not told apart).
+* (c) **Where.** `S/Connection.java` maps a `failed`, `not_found` or `bad_request` that carries a cause, and any unexpected
+  exception, of the commands of (a) (`HeldFiles.translate`). `S/ProgramCommands.java`: a file that is not a program is
+  checked first (`HeldFiles.recheck`): its storage held, or another item file of the project held, is `busy`; an
+  `Unknown-File` item with nothing held has its folder listed again (Ghidra's `GhidraFolder.refreshFolderData`) and the
+  fresh file is used. `S/ProjectCommands.java` `findFile`: a name the file system's index still lists but the project does
+  not (dropped while held) is `busy` while held, else its folder is listed again (`HeldFiles.recheckMissing`; a name that is
+  really absent costs one in-memory index lookup). `S/EditCommands.java` `save`: "File error during save" names no file, so
+  the program's storage is checked too. `S/ImportCommands.java`: an import whose program was saved but cannot be opened yet
+  answers that `busy` with `details.imported`.
+* (d) **After the hold.** The same request succeeds without closing or reopening anything. A refused `fork_project` leaves
+  its source unchanged and nothing of the fork at its destination (no `.gpr`, `.rep`, sidecar or staging folder; its own
+  staging is removed as before). A save refused under a hold is retried by the open program (GATE8's new pre-save).
+* (e) **Ghidra core.** `Ghidra/Framework/FileSystem/.../local/LocalFolderItem.java` `refresh`: a property file that exists
+  and cannot be opened (held) keeps the item with the properties it read before, instead of throwing (which made
+  `GhidraFolderData.fileChanged` drop the file); a property file that opens and does not parse is still an error. It is a
+  new patched core file (NOTICE-HYDRA, `.github/hydra-touched-files.txt`).
+
+Tests: `examples/dt_held.py` `held_open_program` (finding C, v2 and v3, the default and the listing-only hold),
+`held_property_file`, `held_fork_source` (database folder, `.prp`, index), `held_save`, `held_open_project`,
+`held_version_file`, `held_import`. Holds are external (`chaos_lib.HandleHolder` in the test process, D22/D48), taken before
+the request and released after its answer; no sleep. All seven fail on the unfixed candidate (`bc4004d366`:
+`red-unfixed.log`, `red-unfixed-2.log`, `red-unfixed-3.log` in `D:/Projects/Hydra/_logs/gate10/`) with the answers listed
+above; `held_property_file` also fails with the engine change alone, without (e) ("File is read-only" after the release,
+`red-nolfi.log`); all pass with the change.
+
+### 8.16 Revision 8.12: the 9.17 soak for hydra.4 is the PR lane plus nightly-2 (owner decision 2026-10-30, amendment A64, `w2/GATE3`)
+
+A coordinator amendment, recorded on branch `w2/GATE3` (from Hydra `integration/w3` at `bdf973b071`) during the hydra.4
+release-gate runs. It is numbered A64, the next number after A63 of 8.15. It is a documentation change of the gate only: it
+changes no design decision and no engine code, and it flips no gate to passing. Where this section differs from an earlier one
+(9.17, D50, the 9.17 row of 8.12), it governs for hydra.4.
+
+**Owner decision 2026-10-30.** "The 9.17 soak for hydra.4 is the PR lane plus nightly-2 (16x4, 1 h 47 min 41 s) on NTFS; three
+consecutive nightlies and the 24x6 4 h run are not release requirements for hydra.4."
+
+**A64 (the hydra.4 soak).**
+
+* (a) **What binds.** 9.17 for hydra.4 is the PR lane (4 agents x 2 projects, 10 minutes, profile `pr`, with the Hydralysis
+  lane) and the one run `nightly-2`: profile `nightly`, 16 agents x 4 projects, NTFS, the fixture project, the Hydralysis lane
+  on (4 H-agents), candidate `integration/w3` `bdf973b071` (install `gate-soak2`), Hydralysis `2dcdb4b`. It was started as a
+  2 h nightly and stopped by the owner's decision after **6460.9 s (1 h 47 min 41 s)** of run time (06:08:06Z to 07:56:28Z
+  with set-up and drain); its evidence was drained and judged in full. The workload, the fault classes, the oracle and the
+  pass rule of 9.17 are unchanged. Gate reports name the run's own verdict and findings; this amendment states no result.
+* (b) **What nightly-2 reached** (hits; the nightly minimum in brackets): kill of a client 105 (100), of the daemon at random
+  15 (15) and trigger-timed 16 (15), of a native decompiler 32 (30), suspend of the daemon 15 (12) and of a client 12 (12),
+  stalled reader 8 (8), handle holder 8 (10), kill of a publish leader 11 (10), 100-view probe 4 (3), backup lane 3 (4),
+  K11p probe 3 (3); 168 kills (150). Two classes stayed below the 2 h minimum because the run was stopped early; they are
+  named as such, never counted as met.
+* (c) **What is no longer required for hydra.4.** Three consecutive green nightly runs (16 x 4, 2 h), the 4-hour 24 x 6 run
+  and (8.12) the ReFS run. They are not run as release requirements.
+* (d) **Claims.** Nothing beyond what ran: documents for hydra.4 may state at most "tested with 16 agents on 4 projects for
+  1 h 47 min" (8.3 U1), and only with the run's verdict; never "24 agents", "4 hours", "three nightlies" or "soaked for hours".
+
+### 8.17 Revision 8.13: hydra.4 performance is measured, not fixed (owner decision 2026-10-30, amendment A65)
+
+A coordinator amendment, recorded on `integration/w3` after the quiet-machine gate runs (gates-5). It is numbered A65, the
+next number after A64 of 8.16. It changes no design decision and no engine code, and it flips no gate to passing.
+
+**Owner decision 2026-10-30.** No more performance fixing for hydra.4: the measured numbers are kept as the starting point
+of the post-release performance and Java-to-Rust investigation.
+
+**A65 (performance items of hydra.4).**
+
+* (a) **9.13 `s11`** (reader throughput under four view writers, threshold 0.9x of the no-writer baseline) measured
+  0.760 and 0.756 in the gate runs and 0.76 to 0.84 in the diagnosis runs on a quiet machine. It is **not met** and is
+  **not a release requirement for hydra.4**; the threshold is unchanged and binds again for the next release. Every other
+  item of 9.13 passed.
+* (b) **9.10 concurrent fork cost**: median 1226 ms on hydra.4 against 313 ms on hydra.3 (time to first decompile +28%).
+  Recorded, not fixed; no per-step breakdown exists yet.
+* (c) **Claims.** Documents for hydra.4 make no claim that readers keep their throughput under concurrent view writers,
+  and none that forks are as fast as on hydra.3.
+* (d) **Where the evidence is.** `D:/Projects/Hydra/_logs/gates/gates-5.md`, `D:/Projects/Hydra/_logs/gate-quiet/`,
+  `D:/Projects/Hydra/_logs/perf-investigation/hydra4-baseline-findings.md` (s11: the readers' buffer cache, Java locks,
+  reader disk I/O and plain CPU count ruled out; the view writers write about 67 KB of old buffer versions per comment and
+  spend 48% of their CPU in change tracking of views that are never saved).
+
 ### W0
 
 **X0 (Hydra, L): the oracle, the regression suites and the red table.**
@@ -4028,7 +4488,7 @@ Surface: sidecar field `state` (every fork ends `complete` here; E2 makes a `gen
 `forkAtomic` (E1 registers the names of 3.13 up front; E2a adds the name to `Advertised` when E1's list does not hold it, A4; enabled here); V11 (5.1: a racing publisher answers `conflict`); no other reply
 change.
 Tests: at least 300 kills (random and trigger-timed) during `fork_project` on NTFS and ReFS: the path is absent or
-complete, never `.rep` alone, never without a sidecar, and a retry to the same path succeeds; no staging folder
+complete, 0 `.gpr` without `.rep` at any instant, 0 `.rep` without `.gpr` after the sweep (next `fork_project` or daemon start, 8.13), never without a sidecar, and a retry to the same path succeeds; no staging folder
 after the next fork; a client-side kill still leaves nothing (0 of 18 measured); the sweeper never touches a path
 whose intent names a live process; `promote_overlay` is untouched (E2); `fork_race_conflict` (V11, `cc_e2a`, the stock 1.0.0 client): six concurrent forks to one
 destination give exactly one success and five `conflict` (`fork_in_progress` or `exists`), no leftover staging folder, the
@@ -4467,7 +4927,7 @@ fields) and new `S/ProjectRegistry.java` (a `ConcurrentHashMap` from project key
 Depends on: E3b (and, through it, E3a and E2), P1a (`cc_e3c.py`), X0, and from revision 8.3 (A25) P1b, because it edits `support/ghidra_session.py` after P1b did (the declared sequence of 8.1). Parallel with: E4, Y5.
 Surface: `busy` `details.reason` `analyzing` and `lock_queue_full` for all v3 requests (3.13); V10 (5.1).
 Tests: B's `s1` (a, b, c), `s5`, `s7`, `s13` rerun with the red values recorded in 3.10 (BP3, BP7, BP8, BP9); a test
-that enumerates the 17 rows of `lock_matrix.json` and fails if a row has no decision in 3.10; a refcount leak test
+that enumerates the 19 rows of `lock_matrix.json` (3.10) and fails if a row has no decision in 3.10; a refcount leak test
 (users return to zero after 200 cancels raced against release, no stray interrupt, the daemon log has no
 `ClosedByInterruptException`); **`reader_leave_no_freeze`** (the three scenarios of 3.5: a clean close, a FIN and the end of an abandoned request each leave
 the next join and the next script of a joined entry answered within their `wait`; it must fail on hydra.3),
@@ -4569,7 +5029,12 @@ Files (8.1): new `S/Governor.java` (admission: heap after GC, the watermarks, `m
 disk estimate; the `degraded` state), new `S/Budgets.java` (the `Settings` keys and the learned `estHeap`), new
 `S/DecompilerGate.java` (the fair semaphore), new `S/ProcessJob.java` (the daemon's own Job Object, D60), `S/ProgramEntry.java` and `S/Overlay.java` (the gate at
 `borrowDecompiler`, the crash circuit breaker, the negative cache), `S/HeadlessSession.java` (starts the process job as the first statement of `launch`, then the governor
-**after** E5 starts the watchdog), `examples/dt_e9.py`, `examples/cc_e9.py`.
+**after** E5 starts the watchdog), `examples/dt_e9.py`, `examples/cc_e9.py`, `examples/char_e9.py` (the golden
+`characterization/v3/e9-limits.json`). Revision 8.5 (8.9): also `S/Session.java` (A33), `S/Health.java` (A34),
+`S/Advertised.java` (A35), `S/QueryCommands.java` (A36) and new `S/Guarded.java` (A37). Revision 8.6 (8.10): the
+"Depends on" line below names E1's seams `Hooks.Admission` and `Guarded`; neither came from E1. No `S/Hooks.java` exists in any
+branch of the repository (`git log --all` has no such path), `Guarded` is E9's (A37), and admission is `Governor.admit`,
+called by `Session` before the slot wait (A33). The dependency on E1 is on the files E1 did build (`Advertised`, `Settings`).
 Depends on: E5, E3c (it edits `ProgramEntry.java` after E3c), E1 (the seams `Hooks.Admission` and `Guarded`), P1b (the `--enable-native-access` flag in the JVM arguments, which E9 does not own) and X0.
 Parallel with: Z13b, Z15 (E6 and E7 run after it).
 Surface: `busy` `details.reason` `capacity`, `decompiler_failed`, `runaway_quarantined`; `limits`; `health.governor` (3.13).
@@ -4588,7 +5053,12 @@ Files (8.1): `S/ScriptCommands.java` (the routing of a script not pinned by `scr
 killed on cancel, timeout, heap breach or client disconnect and exits when its parent dies, and whose clone is deleted after every run), `examples/dt_e7.py`. **E7 does
 not edit `Session.java`, `Health.java`, `HeadlessSession.java` or a seam file**: the worker count reaches `health` through E5's
 contributor list, kill on disconnect rides E3a's `RequestMonitor.addCancelHook` and E3b's dead-client path, and the worker
-inherits the daemon's own Job Object (E9, D60).
+inherits the daemon's own Job Object (E9, D60). **Revision 8.6 (8.10):** the sentence "E7 does not edit `Session.java`" is
+wrong for the merged code: `5e5f95cb37` adds one line to `S/Session.java`, the registration of the `Health` contributor
+`scriptWorkers` (A39); E7 also edits E4's `dt_e4.py`, `char_e4.py` and golden `e4-script.json` (A40) and regenerates
+`examples/test-map.json` (A41). No new capability name: `scriptIsolation` goes from version 1 to 2. The worker settings
+`maxWorkers` (8), `workerHeapMb` (1024) and `workerGraceMs` (500) are `Settings` keys and are **not** in `hello.limits`; the
+refusals are `busy` `reason:"worker_capacity"` and the errors carry `reason` `worker_heap`, `worker_died` or `source_changed`.
 Depends on: E3a, E3b, E4 (it edits `ScriptCommands.java` after E4), E5 (the `Health` contributor list), E9 (the process job
 and the budgets) and SP10. Parallel with: Z13b, Z15 (E6 and R1 run after it).
 Surface: `isolation:"worker"`; the refusal `conflict` with `details.reason:"unsaved"`; the worker count in `health`.
@@ -4643,6 +5113,11 @@ about 2 minutes; nightly longer.
 4, 2 hours) and the release run (24 x 6, at least 4 hours), the fault classes with minimum hit counts, the oracle K1-K17 and
 `waits.foreignBlocked` (D49, D50). E0's recorded failing latency is not a bound. The counted kill batches of 9.15 run on X0's
 library; E6 only schedules them.
+**Revision 8.6 (8.10).** E6 also has `examples/dt_e6.py` (its own test file, the selftests of both runners). E6 was merged
+(`355974a9ca`, partial; `855a788da3`; `cc25da6626`, E6b) **before** E7 (`5a6e0ad323`), although it depends on E7. The soak
+runner looks for a script worker under the capability names `scriptWorker`, `scriptWorkers` or `killableScripts`, none of which
+any engine advertises (E7 advertises `scriptIsolation` 2 and `health.scriptWorkers`), so it reports the worker absent on an E7
+engine; the feature is report-only (`needed_for_gate: false`), so it changes no verdict, but the report is wrong until E6 fixes it.
 
 **R1 (both, M): hydra.4 release preparation.**
 Files: Hydra: `S/HydraInfo.java` (version), `/CHANGELOG.md`, `/NOTICE-HYDRA` (the verified list of patched core files), `/README.md` and `README.md` (a protocol 3 section pointing here;
@@ -4704,6 +5179,10 @@ artifacts with SHA256SUMS; a version policy (which version pins which engine, wh
 a pin); release notes carry the limits (Windows x64, ReFS-only copy-on-write, the one-way upgrade, a restart once).
 Acceptance: in a fresh environment the installed wheel reports the tag version and `backend inspect` reports ready.
 No tag by this stream.
+**Revision 8.6 (8.10).** As merged (`b920c80`, `cde4d30`, `66cd740`): the files also include `tests/test_release.py` (8.1,
+`b3e1fb6ed7`); `f1e2575` also edits `.github/workflows/tests.yml` (Z4's row: `workflow_call`, so that `release.yml` runs its unit
+and engine jobs), `pyproject.toml` and `src/hydralysis/__init__.py` (version `0.6.0.dev0`, because the tree pins hydra.4), which have
+no Z14 cell. The workflow dry run (`workflow_dispatch`) has **not** run: this stream runs no CI, so the acceptance is open.
 
 **Y4a (Hydralysis, L): engine adoption and supervisor.** Files: `hydra.py` (capabilities, pin, `Supervisor`,
 deadlines: P1b's on hydra.4, the abandon helper of 7.6 on hydra.2/3 with its pool of entries, the registry of
@@ -4729,6 +5208,9 @@ with non-recoverable unsaved edits is not restarted); degrade matrix 7.5 against
 **Revision 6.** The supervisor's auto-restart is gated on `journal.durable` and waits for process exit (D55); read tools send `parallel`
 by default; the structured `busy` reasons of 3.13 map to a ready `next`; the doctor (Y4b) reports `repairs[]`, unfinished candidates
 and the engine's integrity-cut status. Y4a depends on Y5 because it edits `query.py` after Y5.
+**Revision 8.6 (8.10).** The real-engine tests of the Tests line exist (`2088558`: `test_deadline` `RealHelper`, `RealNative`,
+`RealDegrade`, and `test_supervisor.RealPolicy`), env-gated on `HYDRALYSIS_INTEGRATION_ENGINE` and `..._CLIENT`; no run log of
+them is recorded under `_logs`, so the cases L, S and C, the 7.2 policy and the 7.5 matrix against a real engine are **not shown**.
 
 **Y4b (Hydralysis, M): doctor.** Files: new `doctor.py` (it registers `backend action=doctor` with the
 handler registry that Y2 built and does not touch the dispatcher file, 8.2), `tests/test_doctor.py`. Depends on: P1b, E5, Y2 (the registry) and **Y4a** (the abandoned-connection registry in `hydra.py`, 7.6,
@@ -4741,12 +5223,24 @@ analysisIdentity`; one finding per section of 7.1.
 `lineage.py`, and their tests `tests/test_commit.py`, `tests/test_lineage.py`, `tests/test_backups.py`. Depends on: E2, Y2 and **Y4a** (in-wave order: its tests run on the fake daemon that Y4a extends with the E2 surface, 8.2). Switch backups to `purpose:"backup"` (`writer:"engine"`), use
 `format` for the confirmation, pass `backup:` to the candidate open, and adopt legacy backups (4.5: verify, then `seal_project`). Tests: a Python-written backup is
 accepted by the engine gate and the reverse; fault matrix re-run; `legacy_backup_adoption`: a backup made on hydra.2/3 is listed `sealed:false`, adopted by `op=verify`, then refused a writable open; a flipped byte makes it `legacy_unverified` and unusable as a source.
+**Revision 8.6 (8.10).** As merged: the engine capability Hydralysis tests for the engine backup and the fork purposes is
+`backup` (3.1); the first Y4d code looked for `forkPurposes`, which no engine advertises, so every backup on a real hydra.4 was
+the Python one (fixed in `e0c45b4`). The fork sidecar is outside the manifest file set for both writers, as the engine writes it
+(`e0c45b4`). "Pass `backup:` to the candidate open" means the candidate's own `pre-upgrade` backup when the format needs the
+upgrade, not the step 2 backup (4.6 step 4, `037c697`). The real-engine classes `RealEngineBackups` and `RealEngineFaultMatrix`
+(`tests/test_backups.py`) are env-gated (`HYDRALYSIS_INTEGRATION_ENGINE`, `..._CLIENT`, `..._LEGACY_PROJECT`); no run log of them
+is recorded under `_logs`, so the fault-matrix re-run on the real engine is **not shown** here.
 
 **Y4e (Hydralysis, S): `ghidra_run` modes.** Files: `userscripts.py`, new `tests/test_userscripts.py`
 (the existing structure-guard test of the RusticQuery script is Y1's in W1, 8.1).
 Depends on: E4, E7 (the worker route), Y5 (revision 8.2, A18: `userscripts.py` `run(who=)`), Y2 (the handler registry: it registers the `ghidra_run` `options` handler from
 `userscripts.py` and does not touch the dispatcher file). Tests: `private` only on a clean working copy, `exclusive`
 otherwise, and on hydra.4 `worker` on a view after the owner's bounded save under the per-view lock (D64); the reply shows `attemptedChanges`, `isolation`, `basedOn`; a script on an edited view sees the edit, and the save happens once and only when `info.changed`.
+**Revision 8.6 (8.10).** As merged (`a87cea5`, `d240ff9`): on an engine with `scriptIsolation` 2 a script on a view always runs
+`worker` (saved first only when `info.changed`); on a master, or on an engine at version 1, `private` when clean and `exclusive`
+otherwise; a user script never runs `shared`. The caller may ask `isolation` `private` or `exclusive` (private on an edited
+program is refused), and `options.readonly:true` (not in the text above) fails the job when the script attempted changes. The
+env-gated class `test_userscripts.RealWorker` passed 4 of 4 against a hydra.4 candidate (`D:/Projects/Hydra/_logs/y4e/real3.log`).
 
 ### W7
 
@@ -4799,7 +5293,9 @@ of a replica while the stored file is saved by another instance (SP1). Acceptanc
 **E12 (Hydra, M): power-loss durability.**
 Goal: the only package that may allow a power-loss claim (6.1).
 Files (8.1): `/Ghidra/Framework/DB/src/main/java/db/buffers/LocalManagedBufferFile.java` (the version file, its header
-and the directory entry flushed), `examples/dt_e12.py`.
+and the directory entry flushed), `examples/dt_e12.py`. Revision 8.6 (8.10): also `S/ProjectFork.java` (A38, the fork
+publish forces the staged tree before the commit point). E12 is merged into `integration/w3` (`4fcdc062bd`, "not fully
+implemented", and `82f8b83ee9`, the E12b fix), although W8 is hydra.5 and conditional: the owner decided to merge it.
 Depends on: E8. Parallel with: E10, E11.
 Surface: none.
 Tests: a simulated power-loss matrix (a virtual machine or a crash simulator; a process kill keeps the OS page
@@ -4827,11 +5323,11 @@ Fresh state roots; the live daemons (18220, 17936) are never touched; no game-de
 | 9.10 | **Measurements recorded before any constant is fixed** | fsync latency per volume (F: Dev Drive on USB NVMe, C:, D:, E: HDD); store write cost at 1, 4, 16 writers, **including `write_json` of job and progress records, which now does a read, a `.bak` write and a main write (two fsyncs, two replaces: about 16 ms per 600-byte record on D: in Y0a's review, unmeasured on F:, C: and E:) and is rewritten often by export workers**; backup hash throughput; clone against copy on KotOR (122 MB) with the 1.5 GB program as a stress case only; private-instance open cost on KotOR; quick-lane p99 with the long lane saturated, before and after; the per-phase named-view cost. `quickScriptMaxS`, grace times, ETA budgets, `SYNC_LOCK_S`, copy limits and the private default derive from these |
 | 9.11 | **Hygiene** | every commit authored and committed as `KelpHect <kellhect@gmail.com>` (checked with `git log --format='%an <%ae> | %cn <%ce>'`); `certification.manifest` lists every new file and `buildHeadless` passes the IP check; docs state every limit of section 6; `examples/check_ownership.py` passes for every package branch (8.1) |
 | 9.12 | **Verification gate: red before green, and an oracle that can fail** (D48) | X0's self-test flags every planted violation X1-X5, X7-X11 and tolerates X6; the red table recorded on hydra-3-candidate and `hydra-session-after` reproduces each recorded defect within its range (BP3 refusals 2.5-12.0 s; BP7 all 9 probes; BP8 9,421 ms; BP9 6 of 6; BP10 10.2-10.5 s; BP11 write applied by a dead client; BP14 94 of 114 polls; the version-file poison 12 of 363 and 7 of 95; fork 12 of 162 (its 4 `.rep` without `.gpr` were not reproduced in review, D41); Hydralysis `no_project` with 4 threads); a package's test is accepted as evidence only if it was red on the old build and is green on the new one; a row that does not reproduce is reported, not tuned away. Exit 0 verified |
-| 9.13 | **Non-blocking gate (NB, G-NB)** on the hydra.4 build | B's `s1` (three variants), `s2`, `s4`, `s5`, `s7`, `s11`, `s13` and A's `lanetest` re-run: `waits.foreignBlocked` is 0 for reads of a sealed generation and for view operations (K13); zero refused probes in the variants that refused before; another project's `open_project` during a writable wait in 100 ms or less (9,421 ms before); a 7th client's script, save and fork in 1 s or less with six long scripts running (10.2-10.5 s before); reader throughput under four view writers at least 0.9x the no-writer baseline (shared-mode writers: 0.27x); a dead client's queued write never applied; cancel and disconnect release a lock wait within `cleanupGraceS + abandonWaitS + 1 s`; E3c's enumeration of the 17 `lock_matrix.json` rows has a decision for every row; `s1` (a, b, c) and `reader_leave_no_freeze` are E3c's gate (D63b) and `owner_leave_bounded` is E3b's (D63a); DB-bound reads at 8 clients scale at least 3x **only if E11 is built**. Latency thresholds come from a quiet-machine run (foreign load recorded below 25% CPU), are reproduced twice before they fail, and are report-only on a loaded machine |
+| 9.13 | **Non-blocking gate (NB, G-NB)** on the hydra.4 build | B's `s1` (three variants), `s2`, `s4`, `s5`, `s7`, `s11`, `s13` and A's `lanetest` re-run: `waits.foreignBlocked` is 0 for reads of a sealed generation and for view operations (K13); zero refused probes in the variants that refused before; another project's `open_project` during a writable wait in 100 ms or less (9,421 ms before); a 7th client's script, save and fork in 1 s or less with six long scripts running (10.2-10.5 s before); reader throughput under four view writers at least 0.9x the no-writer baseline (shared-mode writers: 0.27x); a dead client's queued write never applied; cancel and disconnect release a lock wait within `cleanupGraceS + abandonWaitS + 1 s`; E3c's enumeration of the 19 `lock_matrix.json` rows (3.10) has a decision for every row; `s1` (a, b, c) and `reader_leave_no_freeze` are E3c's gate (D63b) and `owner_leave_bounded` is E3b's (D63a); DB-bound reads at 8 clients scale at least 3x **only if E11 is built**. **For hydra.4 (A65, 8.17, owner decision 2026-10-30): the `s11` reader-throughput item is not a release requirement (measured 0.76x); every other item binds.** Latency thresholds come from a quiet-machine run (foreign load recorded below 25% CPU), are reproduced twice before they fail, and are report-only on a loaded machine |
 | 9.14 | **Resource gate (G-RES)** | 24 views at `-Xmx256m` end in structured `busy` with 0 `OutOfMemoryError` and a live reaper; 24 views at `-Xmx512m` run; a 100-view probe is refused at `maxViews`; decompiler kill -9, hang and timeout leave other requests unaffected and the next request working; a daemon kill leaves no orphan decompiler or worker, tested with **suspended** decompilers and a no-job control that must show survivors (K7, SP3(b), D60), and the launch outcome of both harness-job variants is as SP3(a) expects (D65); a runaway or deaf script is quarantined and counted, **and a deaf script that ignores cancel and interrupt is killed at its timeout by E7, **on a view with unsaved edits** (the owner saves once, the script sees the edit, a stale read fails the test), its slot and the owner's long cap released, with the worker's start-up and RAM cost recorded (SP10, D64); until these E7 items pass the documents say "bounded and quarantined", not "killed"**; throughput not below the A baselines (9.18) |
-| 9.15 | **Crash gate (G-CRASH)**, counted | with trigger-timed kills (the method of C, X0's library): at least 400 save kills (200 NTFS, 200 ReFS) with 0 unopenable and 0 unrepaired; at least 300 `fork_project` kills with 0 blocked retries, 0 `.rep` without `.gpr`, 0 leftovers after the sweep; at least 200 publish and `promote_overlay` kills; at least 50 daemon kills with 8 clients; every kill followed by K1-K17; Wilson bounds reported, wording "below 0.75% at 95%" after 0 of 400; the canonical hash unchanged. Single-run results of rev5 are replaced by counted ones |
+| 9.15 | **Crash gate (G-CRASH)**, counted | with trigger-timed kills (the method of C, X0's library): at least 400 save kills (200 NTFS, 200 ReFS; with no ReFS volume at least 509 on NTFS, 8.12, 8.13) with 0 unopenable and 0 unrepaired; at least 300 `fork_project` kills with 0 blocked retries, 0 `.gpr` without `.rep` at any instant, 0 `.rep` without `.gpr` after the sweep (next `fork_project` or daemon start), 0 leftovers after the sweep; at least 200 publish (Hydralysis generation publish) and 200 `promote_overlay` kills; at least 50 daemon kills with 8 clients; every kill followed by K1-K17; Wilson bounds reported, wording "below 0.75% at 95%" after 0 of 400 (0 of 509 on NTFS alone, 8.13); the canonical hash unchanged. Single-run results of rev5 are replaced by counted ones |
 | 9.16 | **View-cost gate (G-VIEW)** | Z2's `named_view_cost`: the median of at least 5 runs of the first-edit time at 1, 4 and 12 simultaneous new views, shared base against rebuilt base, NTFS and ReFS, foreign load recorded; the 0.3 to 0.55 s prediction is quoted nowhere until this gate reports; the result decides the spare-view pool (not in the first cut) and `publishBatchMax` (with SP7) |
-| 9.17 | **Chaos and soak gate (G-SOAK)** (replaces 9.5) | harness E6 on X0's library with a ground-truth ledger the harness itself flushes. Workload per agent: reads (decompile, `functions`, xrefs, Hydralysis queries), edits in its view, publish, rebase, analysis in a candidate, deaf and runaway scripts, bulk opens. Faults (each class must fire a minimum count or the run cannot pass): kill -9 of random clients, of the daemon (wait for exit) at random and trigger-timed, of a native decompiler, of a publish leader mid-build; suspend of the daemon and of a client; a client that stops reading its socket; a handle holder during saves; an out-of-memory probe that tries 100 views. **PR lane**: 4 agents x 2 projects, 10 min. **Nightly**: 16 agents x 4 projects, 2 h, at least 150 kills. **Release**: three consecutive green nightly runs on NTFS plus one on ReFS (a fixture under 10 GB on F:, cleaned up), plus **one** run of 24 agents x 6 projects (a KotOR copy, the fixture, imported executables) for at least 4 hours. Pass: zero oracle violations, `waits.foreignBlocked` 0, no unexplained `busy`, no leak. All daemons use fresh state roots under `D:/Projects/Hydra/_logs/<stream>/` and are stopped at the end |
+| 9.17 | **Chaos and soak gate (G-SOAK)** (replaces 9.5) | harness E6 on X0's library with a ground-truth ledger the harness itself flushes. Workload per agent: reads (decompile, `functions`, xrefs, Hydralysis queries), edits in its view, publish, rebase, analysis in a candidate, deaf and runaway scripts, bulk opens. Faults (each class must fire a minimum count or the run cannot pass): kill -9 of random clients, of the daemon (wait for exit) at random and trigger-timed, of a native decompiler, of a publish leader mid-build; suspend of the daemon and of a client; a client that stops reading its socket; a handle holder during saves; an out-of-memory probe that tries 100 views. **PR lane**: 4 agents x 2 projects, 10 min. **Nightly**: 16 agents x 4 projects, 2 h, at least 150 kills. **Release**: three consecutive green nightly runs on NTFS plus one on ReFS (a fixture under 10 GB on F:, cleaned up), plus **one** run of 24 agents x 6 projects (a KotOR copy, the fixture, imported executables) for at least 4 hours. **For hydra.4 (A64, 8.16, owner decision 2026-10-30): the PR lane plus nightly-2 (16 agents x 4 projects, NTFS, 1 h 47 min 41 s, stopped early by that decision); three consecutive nightlies, the 24 x 6 4 h run and the ReFS run (8.12) are not release requirements.** Pass: zero oracle violations, `waits.foreignBlocked` 0, no unexplained `busy`, no leak. All daemons use fresh state roots under `D:/Projects/Hydra/_logs/<stream>/` and are stopped at the end |
 | 9.18 | **Compatibility and performance (G-COMPAT, G-PERF)** | the seven v2 goldens identical; every row of 5.1 (V1-V11, G1-G8) has its `cc_` test; the 12.1.4-against-12.3 decompile difference (77.124% of 8,616 identical on KotOR; Z7 measured that `maxBadData` 4 does not explain it, 8.6) is **reported, never gated** (owner); an interleaved A/B (A's method) of hydra.3 against hydra.4 at 12 agents: median throughput not below 0.9x and CPU-seconds per function (0.031 to 0.041) within 10% |
 | 9.19 | **Claims gate (G-CLAIMS)** | `tests/test_claims.py` passes against `docs/data/claims.json`; no sentence of the 25 claims of 8.3 is stronger than the status of its flipping test; the site build fails when its copy of the ledger differs from its source; the banned phrases of D52 are absent from the engine README, the module README, the CHANGELOG, the Hydralysis README and skills and the site (a grep gate) |
 | 9.20 | **Spikes gate (G-SPIKE)** (revision 7: the number that "9.20" cited without defining) | every spike that gates a package of the release has its script and its output file under `D:/Projects/Hydra/_logs/<stream>/`, run on a quiet machine with the foreign load recorded, and a recorded go or no-go. **Which spikes gate which release:** hydra.4 needs SP3 (E9's process job and P1b's launch sequence), SP4 (E9 crash isolation), SP5 (E8), SP6 (E2a) and SP10 (E7), and SP7 before any publish latency figure is quoted; SP1, SP2 and SP8 (E10, E11) gate hydra.5 and SP9 gates `yieldSlots` only if it is to be switched on, so none of them waits for or blocks the hydra.4 tag. A package that depends on a spike does not start before its spike has run; a failed spike stops its package and falls back to the decision named in the table, never to a weaker claim |

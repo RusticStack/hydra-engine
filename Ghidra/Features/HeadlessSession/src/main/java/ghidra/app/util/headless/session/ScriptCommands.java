@@ -63,7 +63,8 @@ final class ScriptCommands {
 	ScriptCommands(Session s) {
 		this.s = s;
 		// the names are declared by Advertised; a client uses a field only if it is present
-		Advertised.capability("scriptIsolation", 1);
+		// version 2 (E7): isolation:"worker", the killable script worker
+		Advertised.capability("scriptIsolation", 2);
 		Advertised.capability("scriptSha256", 1);
 		Advertised.capability("attemptedChanges", 1);
 		synchronized (ScriptCommands.class) {
@@ -78,7 +79,7 @@ final class ScriptCommands {
 	private static final Object SCRIPT_COMPILE = new Object();
 
 	/** The values of the protocol 3 request field {@code isolation} (3.4, 3.6). */
-	static final List<String> ISOLATIONS = List.of("shared", "exclusive", "private");
+	static final List<String> ISOLATIONS = List.of("shared", "exclusive", "private", "worker");
 
 	// ---- the request fields -------------------------------------------------------------------
 
@@ -90,8 +91,16 @@ final class ScriptCommands {
 	 * {@code bad_request} with {@code details:{field, allowed[]}}.
 	 */
 	static void validate(String cmd, JsonObject req) {
-		isolationOf(req);
+		String iso = isolationOf(req);
 		shaOf(req);
+		if ("worker".equals(iso) && Json.bool(req, "save", false)) {
+			// nothing a worker does reaches the view, so a save has nothing to save: refused
+			// rather than dropped (the owner saves the view itself, before the worker starts)
+			throw SessionException.badRequest(true,
+				"save cannot be combined with isolation \"worker\": the worker runs on a " +
+					"disposable clone and nothing of the run reaches the program",
+				"save", null);
+		}
 	}
 
 	/** The requested {@code isolation}, or null when the request did not name one. */
@@ -208,6 +217,7 @@ final class ScriptCommands {
 		boolean v3 = c.v3();
 		String iso = null;
 		if (v3) {
+			validate("script", req);
 			iso = isolationOf(req);
 			checkSha(req, src);
 		}
@@ -222,6 +232,13 @@ final class ScriptCommands {
 
 	private JsonElement scriptIn(Client c, ResourceFile src, String name, JsonObject req,
 			RequestMonitor m, ProgramEntry e, String iso) {
+		if ("worker".equals(iso)) {
+			ProjectEntry wp = e != null ? e.project : null;
+			if (e == null && (Json.has(req, "project") || c.activeProject != null)) {
+				wp = s.access.projectFor(c, req);
+			}
+			return runWorker(c, src, name, req, wp, e, m);
+		}
 		if (e == null) {
 			ProjectEntry p = null;
 			if (Json.has(req, "project") || c.activeProject != null) {
@@ -309,6 +326,178 @@ final class ScriptCommands {
 		}
 	}
 
+	// ---- isolation "worker" (E7, D47, D64): a killable child JVM on a disposable clone ----------
+
+	/**
+	 * {@code isolation:"worker"}: the script runs in a child JVM ({@link ScriptWorker}) on a
+	 * private, writable, <b>disposable clone of the saved project</b>, so nothing it does reaches
+	 * the view, {@code attemptedChanges} is measured on the clone, and a script that ignores
+	 * cancel is killed with its process.
+	 * <p>
+	 * The clone is of the <i>saved</i> view and nothing here saves it: a program with unsaved edits
+	 * is refused ({@code conflict}, {@code details.reason:"unsaved"}, {@code next:{cmd:"save"}}),
+	 * and the view's owner saves once, under the per-view lock, before it asks (D64). The project
+	 * lock is held shared, and the program's lock shared (the stored file stays in place), only
+	 * while the copy is made; the worker runs holding no lock at all, so the view is usable (and
+	 * can be saved or closed) while it runs.
+	 */
+	private JsonObject runWorker(Client c, ResourceFile src, String name, JsonObject req,
+			ProjectEntry p, ProgramEntry e, RequestMonitor m) {
+		try (ScriptWorker.Admission adm = ScriptWorker.admit();
+				ScriptWorker.Lease lease = ScriptWorker.Lease.create()) {
+			String revision = null;
+			if (p != null) {
+				Lock pl = lockProject(p, false, waitMs(req), "script " + name + " (clone)");
+				Lock bl = null;
+				try {
+					if (e != null) {
+						bl = PrivateInstance.baseLock(e, waitMs(req), c, "script " + name + " (clone)");
+						if (e.program == null) {
+							throw new SessionException(SessionException.NO_PROGRAM,
+								e.key + " was closed");
+						}
+						refuseUnsaved(e);
+						revision = e.revision;
+					}
+					else {
+						for (ProgramEntry pe : p.programs.values()) {
+							if (pe.program != null) {
+								refuseUnsaved(pe);
+							}
+						}
+					}
+					lease.cloneProject(p.resolved, s.forkCopyLimitBytes, m);
+				}
+				finally {
+					if (bl != null) {
+						e.release(bl);
+					}
+					p.lastUsed = System.currentTimeMillis();
+					pl.unlock();
+				}
+			}
+			int cap = (int) Json.num(req, "maxChars", DEFAULT_TEXT_CAP, 1, MAX_TEXT_CAP);
+			JsonObject wreq = Json.of("op", "run", "script", src.getAbsolutePath(), "args",
+				Json.strings(req, "args"), "address", Json.str(req, "address", null));
+			wreq.add("scriptDirs", scriptDirs(src));
+			if (lease.cloned) {
+				wreq.add("project", Json.of("dir", lease.clone.toString(), "name", lease.projectName));
+				if (e != null) {
+					wreq.addProperty("program", e.path);
+				}
+			}
+			Runaway.Watch watch = Runaway.watch(c, m, src);
+			ScriptWorker.Outcome o;
+			try {
+				// the wall budget (scriptMaxS) cancels through the watch; a worker that is being
+				// killed is not a runaway script, so its watch ends in the cancel hook
+				o = ScriptWorker.run(lease, wreq, m, () -> Runaway.unwatch(watch));
+			}
+			finally {
+				Runaway.unwatch(watch);
+			}
+			return workerReply(c, src, req, m, e, revision, lease, o, watch, cap);
+		}
+	}
+
+	private static void refuseUnsaved(ProgramEntry e) {
+		int n = PrivateInstance.unsavedEdits(e);
+		if (n > 0) {
+			JsonObject d = Json.of("reason", "unsaved", "program", e.key, "unsavedEdits", n,
+				"suggest", "save");
+			throw new SessionException(SessionException.CONFLICT,
+				e.key + " has " + n + " unsaved edit(s); isolation \"worker\" works on a clone of " +
+					"the saved program, so save it first (the view's owner saves once before the " +
+					"worker starts)",
+				d).withNext(Json.of("cmd", "save", "program", e.key));
+		}
+	}
+
+	/** The script directories the worker compiles from: this daemon's, and the script's own folder. */
+	private static JsonArray scriptDirs(ResourceFile src) {
+		LinkedHashSet<String> dirs = new LinkedHashSet<>();
+		JsonElement sp = Identity.paths().get("scriptPath");
+		if (sp != null && sp.isJsonArray()) {
+			sp.getAsJsonArray().forEach(x -> dirs.add(x.getAsString()));
+		}
+		ResourceFile parent = src.getParentFile();
+		if (parent != null) {
+			dirs.add(parent.getAbsolutePath());
+		}
+		JsonArray a = new JsonArray();
+		dirs.forEach(a::add);
+		return a;
+	}
+
+	/** Turns what the worker did into the reply (or the error) of the request. */
+	private JsonObject workerReply(Client c, ResourceFile src, JsonObject req, RequestMonitor m,
+			ProgramEntry e, String revision, ScriptWorker.Lease lease, ScriptWorker.Outcome o,
+			Runaway.Watch watch, int cap) {
+		JsonObject res = o.result();
+		String out = o.output();
+		JsonObject w = Json.of("pid", o.pid(), "totalMs", o.totalMs(), "startMs", o.startMs(),
+			"startCpuMs", o.startCpuMs(),
+			"cloneMs", lease.cloneMs, "cloneBytes", lease.cloneBytes, "killed", o.killed(),
+			"clone", lease.clone.toString());
+		w.add("marks", o.marks());
+		if (res != null && res.has("mem")) {
+			w.add("mem", res.get("mem"));
+		}
+		long attempted = res == null ? 0 : Json.num(res, "attempted", 0, 0, Long.MAX_VALUE);
+		double seconds = res != null && res.has("seconds") ? res.get("seconds").getAsDouble()
+				: o.totalMs() / 1000.0;
+		JsonObject r = Json.of("script", src.getAbsolutePath(), "mode", "worker", "program",
+			e == null ? null : e.key, "seconds", seconds, "chars", out.length(), "truncated",
+			out.length() > cap || o.outputDropped(), "output",
+			out.length() > cap ? out.substring(0, cap) : out, "changed", false, "unsaved",
+			e != null && e.program != null && e.program.isChanged());
+		Json.put(r, "artifact", Json.str(req, "artifact", null));
+		addV3Reply(r, m, "worker", null, null, null, attempted, true, watch);
+		if (e != null) {
+			Json.put(r, "basedOn", Json.of("saved", true, "programRevision", revision));
+			Json.put(r, "unsavedIgnored", 0);
+		}
+		r.add("worker", w);
+		JsonObject failure = res == null ? null : Json.obj(res, "failure");
+		if (res != null && failure == null) {
+			return r;
+		}
+		if (res == null) {
+			String why = watch == null ? null : watch.reason;
+			if (o.killed() || m.isCancelled()) {
+				throw new SessionException(SessionException.CANCELLED,
+					"script " + (why != null ? "cancelled: " + why
+							: m.timedOut() ? "timed out" : "cancelled") +
+						"; its worker process was killed",
+					r);
+			}
+			boolean heap = o.exitCode() != null && o.exitCode() == ScriptWorker.OOM_EXIT;
+			JsonObject d = r;
+			Json.put(d, "reason", heap ? "worker_heap" : "worker_died");
+			Json.put(d, "exitCode", o.exitCode());
+			Json.put(d, "stderr", o.stderrTail());
+			throw new SessionException(SessionException.FAILED,
+				heap ? "the script worker ran out of heap (workerHeapMb " +
+					Math.max(128, Settings.integer("workerHeapMb", ScriptWorker.DEFAULT_HEAP_MB)) +
+					") and ended; the daemon and the view are unaffected"
+						: "the script worker ended before it reported (exit code " + o.exitCode() +
+							"); the daemon and the view are unaffected",
+				d);
+		}
+		boolean cancelled = Json.bool(failure, "cancelled", false);
+		if (cancelled || m.isCancelled()) {
+			String why = watch == null ? null : watch.reason;
+			throw new SessionException(SessionException.CANCELLED,
+				"script " + (why != null ? "cancelled: " + why
+						: m.timedOut() ? "timed out" : "cancelled"),
+				r);
+		}
+		throw new SessionException(SessionException.FAILED,
+			"script failed: " + Json.str(failure, "type", "") + ": " +
+				Json.str(failure, "message", ""),
+			r);
+	}
+
 	/**
 	 * {@code script} on one of the client's overlays: contained, on the overlay's own program. A
 	 * protocol 3 request has its {@code isolation} validated and its {@code scriptSha256} checked
@@ -317,7 +506,13 @@ final class ScriptCommands {
 	JsonObject runOverlayScript(Client c, ResourceFile src, JsonObject req, Project project,
 			Program overlayProgram, RequestMonitor m) {
 		if (c.v3()) {
-			isolationOf(req);
+			if ("worker".equals(isolationOf(req))) {
+				// an overlay is RAM-only: there is no saved file for a worker to clone
+				throw new SessionException(SessionException.CONFLICT,
+					"isolation \"worker\" runs on a clone of the saved program; an overlay exists " +
+						"only in memory and has no saved file",
+					Json.of("reason", "overlay", "field", "isolation"));
+			}
 			checkSha(req, src);
 		}
 		try (Runaway.Flight flight = c.v3() ? Runaway.enter(c) : null) {
@@ -472,7 +667,7 @@ final class ScriptCommands {
 	 * ({@code storeHeadlessValue} and friends). The setter is package-private in Ghidra, so it is
 	 * reached reflectively rather than by editing Ghidra's class.
 	 */
-	private static void bindHeadless(GhidraScript s) {
+	static void bindHeadless(GhidraScript s) {
 		if (!(s instanceof HeadlessScript hs)) {
 			return;
 		}

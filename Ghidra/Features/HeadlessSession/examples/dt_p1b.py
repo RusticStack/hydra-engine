@@ -926,11 +926,16 @@ def run_survival_case(c, key):
             with contextlib.suppress(Exception):
                 d.kill()
         if cs["spawn"] == "task":
+            # only the tasks of THIS case (their command names its state dir): the task of
+            # another run on the machine (another agent's suite) is not this test's leak
             left = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive",
                                    "-Command",
                                    "(Get-ScheduledTask -TaskName 'HydraDaemon-*' "
-                                   "-ErrorAction SilentlyContinue | Measure-Object).Count"],
-                                  capture_output=True, text=True, timeout=120)
+                                   "-ErrorAction SilentlyContinue | Where-Object { "
+                                   "($_.Actions | ForEach-Object { $_.Arguments }) -join ' ' "
+                                   "-like ('*' + $env:P1B_STATE + '*') } | Measure-Object).Count"],
+                                  capture_output=True, text=True, timeout=120,
+                                  env=dict(os.environ, P1B_STATE=str(st)))
             r["tasks_left"] = left.stdout.strip()
 
 
@@ -1147,6 +1152,72 @@ def t_children_of_threads(c):
     check(not errs, f"_children_of failed under threads: {errs[:2]}")
     return "4 threads x 200 calls of _children_of, no error"
 
+# ---- p1b_settings_dir -------------------------------------------------------------------------
+
+def t_settings_dir(c):
+    """Every daemon has its own Ghidra settings dir (``<state>/settings/<instance>``): the OSGi felixcache
+    and the compiled script bundles of two daemons of one user are not shared. The command line carries
+    ``-Dapplication.settingsdir`` (so also the routes without an environment); ``settingsDir: shared``, a
+    JVM option that already names one, and a JVM that is not a daemon keep Ghidra's own choice. Live: two
+    daemons run a script each and each has its own ``osgi/felixcache`` below its own dir."""
+    gs = c.gs
+    _GS["gs"] = gs
+    base = fresh_dir(c, "settings")
+    st = fresh_state(c, base)
+    inst = gs.Install.locate(c.a.ghidra)
+    opt = "-Dapplication.settingsdir="
+
+    def argv_of(instance, over=None, props_vm=None):
+        launch = gs.Launch(inst, gs.load_config(st, over or {}), st, instance)
+        if props_vm is not None:
+            launch.props["vmargs"] = list(props_vm)
+        return launch.command(["-daemon"])[0]
+
+    def dirs_of(argv):
+        return [a[len(opt):] for a in argv if a.startswith(opt)]
+
+    a, b = dirs_of(argv_of("one")), dirs_of(argv_of("two"))
+    check(len(a) == 1 and len(b) == 1 and a != b, f"two instances: {a} {b}")
+    check(pathlib.Path(a[0]) == st / "settings" / "one" and pathlib.Path(a[0]).is_dir(),
+          f"not <state>/settings/<instance>: {a}")
+    check(not dirs_of(argv_of(None)), "a JVM that is not a daemon got a settings dir")
+    check(not dirs_of(argv_of("one", {"settingsDir": "shared"})), "settingsDir shared still set one")
+    mine = str(base / "mine")
+    check(dirs_of(argv_of("one", {"settingsDir": mine})) == [mine], "an explicit settingsDir not used")
+    own = [opt + str(base / "own")]
+    check(dirs_of(argv_of("one", {"vmargs": own})) == [str(base / "own")],
+          "a vmargs settings dir was not the only one")
+    check(dirs_of(argv_of("one", props_vm=own)) == [str(base / "own")],
+          "a launch.properties settings dir was not the only one")
+    # live: two daemons of one state dir, a script each (it starts the OSGi framework)
+    scripts = c.scripts
+    da, db = (gs.Daemon(c.a.ghidra, str(st), n, scriptPath=[str(scripts)]) for n in ("seta", "setb"))
+    c.daemons += [da, db]
+    try:
+        errs = []
+
+        def run_script(d):
+            try:
+                with d.connect("t", "p1b") as s:
+                    s.call("script", script=str(scripts / "TestSleep.java"), program=None, args=["10"])
+            except Exception as ex:  # noqa: BLE001
+                errs.append(f"{d.instance}: {ex!r}")
+
+        ths = [threading.Thread(target=run_script, args=(d,)) for d in (da, db)]
+        for th in ths:
+            th.start()
+        for th in ths:
+            th.join()
+        check(not errs, f"a script failed: {errs}")
+        for name in ("seta", "setb"):
+            felix = [p for p in (st / "settings" / name).rglob("felixcache") if p.is_dir()]
+            check(felix, f"{name}: no osgi/felixcache below {st / 'settings' / name}")
+        check(not (st / "settings" / "default").exists(), "a daemon used the default instance's dir")
+    finally:
+        stop_quietly(da)
+        stop_quietly(db)
+    return "own settings dir per daemon instance; felixcache of two daemons apart; shared/explicit honoured"
+
 
 def isolated(fn):
     """Runs a test with its own user state root (GHIDRA_SESSION_HOME, inherited by every child
@@ -1158,7 +1229,73 @@ def isolated(fn):
     return run
 
 
+def t_task_route_waits_for_task(c):
+    """The scheduled-task route of ``spawn_daemon`` decides on the task, not on a clock. A JVM that
+    starts slowly (a loaded machine) is the task's while the task runs: the launcher keeps waiting
+    for its endpoint. Before the fix it gave up after a fixed 30 s, removed the task, left that
+    daemon running and fell to the "stayed" route, whose open of the log failed with
+    PermissionError while the task's cmd.exe still held it (``p1b_daemon_survives_launcher_exit``
+    under load). And a task whose command ended without an endpoint fails the route at once.
+
+    No task and no JVM: ``caller_job``, ``cmd_line``, ``_spawn_task``, ``_task_state`` and
+    ``_unregister_task`` are replaced; the endpoint shows up only after the launcher has asked
+    for the task's state, and a launcher that polls the endpoint 50 times without asking is the
+    clock-driven one."""
+    gs = c.gs
+    base = fresh_dir(c, "taskroute")
+    names = ("caller_job", "cmd_line", "_spawn_task", "_task_state", "_unregister_task")
+    saved = {n: getattr(gs, n) for n in names}
+    seen = {"state": 0, "removed": [], "blind": 0}
+
+    def endpoint(after_state):
+        def look():
+            if seen["state"] >= after_state:
+                return 4242
+            seen["blind"] += 1
+            if seen["blind"] >= 50:
+                raise Fail("the task route polled the endpoint 50 times without asking whether "
+                           "the task still runs (a clock decides, not the task)")
+            return None
+        return look
+
+    def run(state, after_state):
+        seen.update(state=0, removed=[], blind=0)
+
+        def task_state(name):
+            seen["state"] += 1
+            return state
+        gs._task_state = task_state
+        argv = [sys.executable, "-c", "pass"]     # the "stayed" fallback runs this, harmless
+        p, out = gs.spawn_daemon(argv, dict(os.environ), base / "d.log", str(base),
+                                 routes=("task",), wait_endpoint=endpoint(after_state))
+        if isinstance(p, subprocess.Popen):    # the harmless fallback process, not a pid
+            with contextlib.suppress(Exception):
+                p.wait(60)
+        return p, out
+    try:
+        gs.caller_job = lambda: {"in_job": True, "kill_on_close": True, "limit_flags": "0x2000"}
+        gs.cmd_line = lambda argv, env, log: "cmd.exe /c rem"
+        gs._spawn_task = lambda args, cwd, timeout=60.0: "HydraDaemon-unit"
+        gs._unregister_task = lambda name, stop=False: seen["removed"].append((name, stop))
+        # (1) the task runs, its JVM is slow: the route waits for it and succeeds
+        p, out = run("Running", 1)
+        check(out["spawn"] == "task" and getattr(p, "pid", None) == 4242,
+              f"a running task's late endpoint: spawn {out['spawn']}, attempts {out['attempts']}")
+        check(not seen["removed"], f"a running task was removed: {seen['removed']}")
+        # (2) the task's command ended with no endpoint: the route fails at once and moves on
+        p, out = run("Ready", 10 ** 9)
+        att = [a for a in out["attempts"] if a["route"] == "task" and not a["ok"]]
+        check(out["spawn"] == "stayed" and att and "ended (Ready)" in att[0]["error"],
+              f"an ended task: spawn {out['spawn']}, attempts {out['attempts']}")
+        check(seen["removed"] == [("HydraDaemon-unit", True)], f"removed {seen['removed']}")
+    finally:
+        for n, v in saved.items():
+            setattr(gs, n, v)
+    return "the task route waits while the task runs and fails as soon as it ends"
+
+
 TESTS = {
+    "p1b_task_route_waits_for_task": isolated(t_task_route_waits_for_task),
     "p1b_launch_errors": isolated(t_launch_errors),
     "p1b_duplicate_daemon": isolated(t_duplicate_daemon),
     "p1b_call_deadline": isolated(t_call_deadline),
@@ -1166,6 +1303,7 @@ TESTS = {
     "p1b_children_of_threads": isolated(t_children_of_threads),
     "p1b_breakaway_probe": isolated(t_breakaway_probe),
     "p1b_native_access_flag": isolated(t_native_access_flag),
+    "p1b_settings_dir": isolated(t_settings_dir),
     "p1b_wedged_connect": isolated(t_wedged_connect),
     "p1b_stop_shutdown_deadline": isolated(t_stop_shutdown_deadline),
     "p1b_daemon_survives_launcher_exit": isolated(t_daemon_survives_launcher_exit),

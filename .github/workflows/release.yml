@@ -61,6 +61,15 @@ jobs:
           if [ "$publish" = true ] && ! grep -q "^## $version\$" CHANGELOG.md; then
             echo "::error::CHANGELOG.md has no '## $version' section"; exit 1
           fi
+          # The stamp lives in the build, not in the tree: a committed stamp would make every later
+          # local build claim to be this release
+          if ! grep -qx 'hydra.version=' Ghidra/Features/HeadlessSession/src/main/resources/hydra.properties; then
+            echo "::error::hydra.properties in the tree must carry an empty hydra.version (the workflow stamps it)"; exit 1
+          fi
+          # A release has its notes document, and it states the claims it makes only with their tests
+          if [ "$publish" = true ] && [ ! -f "docs/release-notes-$version.md" ]; then
+            echo "::error::docs/release-notes-$version.md is missing"; exit 1
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
           echo "Version $version (Ghidra $ghidra), publish: $publish" >> "$GITHUB_STEP_SUMMARY"
@@ -128,6 +137,23 @@ jobs:
           mkdir -p out
           mv "${zips[0]}" "out/$ASSET"
           ls -l out
+
+      # The stamp must be inside the zip: an engine that says -hydra.dev is classified as stock Ghidra by Hydralysis
+      - name: Check the stamp in the zip
+        run: |
+          python - "out/$ASSET" "$VERSION" <<'PY'
+          import io, sys, zipfile
+          zip_path, version = sys.argv[1], sys.argv[2]
+          with zipfile.ZipFile(zip_path) as z:
+              jars = [n for n in z.namelist() if n.endswith("Features/HeadlessSession/lib/HeadlessSession.jar")]
+              if len(jars) != 1:
+                  sys.exit("expected one HeadlessSession.jar in the zip, found %d" % len(jars))
+              with zipfile.ZipFile(io.BytesIO(z.read(jars[0]))) as jar:
+                  text = jar.read("hydra.properties").decode("utf-8", "replace")
+          if "hydra.version=%s" % version not in text.split():
+              sys.exit("hydra.properties in the jar says %r, expected hydra.version=%s" % (text.strip(), version))
+          print("stamp ok: hydra.version=%s" % version)
+          PY
 
       # Test what ships: the zip, unzipped
       - name: Unzip
@@ -219,10 +245,17 @@ jobs:
         run: |
           # The CHANGELOG section of this version, or, for a dry run without one, the first section
           # that is not Unreleased
+          fallback=
           section=$(awk -v h="## $VERSION" '$0==h {on=1; next} on && /^## / {exit} on {print}' CHANGELOG.md)
           if [ -z "$section" ]; then
             [ "$PUBLISH" = true ] && { echo "::error::no CHANGELOG section for $VERSION"; exit 1; }
             section=$(awk '/^## / {if (on) exit; if ($0 != "## Unreleased") on=1; next} on {print}' CHANGELOG.md)
+            fallback=1
+          fi
+          # No claim without its gate (PROTOCOL-3.md D52): the section must not say that a failure "never" happens
+          # or that there is "no limit"; a statement is made with the test that was run for it
+          if [ -z "$fallback" ] && printf '%s\n' "$section" | grep -qiE 'never (corrupt|block|collide)|any number of (agents|clients)|cannot corrupt'; then
+            echo "::error::the CHANGELOG section makes an absolute claim (never corrupt/block/collide, any number of agents); the guarantees of hydra.4 are stated with their tests in the release notes"; exit 1
           fi
           # The upstream commit the section names must be in this release's history
           base=$(printf '%s\n' "$section" | grep -oE 'commit `[0-9a-f]{40}`' | head -n 1 | grep -oE '[0-9a-f]{40}' || true)

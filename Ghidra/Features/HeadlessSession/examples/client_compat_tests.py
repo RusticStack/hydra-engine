@@ -62,6 +62,7 @@ import json
 import os
 import pathlib
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -459,9 +460,85 @@ def t_loader(c: Ctx):
     return "empty, good, broken, taken, bad OFFLINE, bad TESTS"
 
 
+def t_concurrent_classpath_write(c: Ctx):
+    """Many clients building the fast-mode command against one state dir at once (threads in
+    this process plus child processes, each released by a barrier, no sleeps) all get the same
+    ``classpath-<key>.args``; none fails on another's temporary file (WinError 32 / missing tmp),
+    and no temporary file is left behind."""
+    n = c.new
+
+    class FakeInstall:
+        def __init__(self, root, tag):
+            self.dir = root / f"install-{tag}"
+            self.version = "12.3-test"
+            self.utility_jar = self.dir / "Utility.jar"
+            self.jars = [str(self.dir / f"lib{i}.jar") for i in range(200)]
+
+        def classpath(self, _vm):
+            return list(self.jars)
+
+    def launch(st, inst):
+        la = object.__new__(n.Launch)
+        la.install, la.state, la.instance = inst, st, None
+        la.cfg = {"mode": "fast", "aot": "off", "classCache": False, "gc": "default",
+                  "maxHeap": "1g", "upgradeCache": False, "settingsDir": "shared"}
+        la.props = {"vmargs": [], "envvars": {}}
+        la.jdk, la.jdk_version, la.java = pathlib.Path("jdk"), "25", pathlib.Path("java")
+        la.env = {}
+        return la
+
+    threads, rounds = 24, 30
+    with tempfile.TemporaryDirectory(dir=c.work) as tmp:
+        st = pathlib.Path(tmp)
+        errors, argfiles = [], set()
+        for r in range(rounds):  # each round a new key, so a new argfile every writer races for
+            inst = FakeInstall(st, r)
+            gate = threading.Barrier(threads)
+
+            def one():
+                try:
+                    la = launch(st, inst)
+                    gate.wait()
+                    argv, info = la.command([])
+                    argfiles.add(next(a for a in argv if a.startswith("@"))[1:])
+                except Exception as e:  # noqa: BLE001
+                    errors.append(f"{type(e).__name__}: {e}")
+
+            ts = [threading.Thread(target=one) for _ in range(threads)]
+            for t in ts:
+                t.start()
+            for t in ts:
+                t.join()
+        check(not errors, f"{len(errors)} of {threads * rounds} writers failed: {errors[:3]}")
+        check(len(argfiles) == rounds, f"{len(argfiles)} argfiles for {rounds} keys")
+        for f in argfiles:
+            text = pathlib.Path(f).read_text(encoding="utf-8")
+            check(text.startswith('-cp "') and text.count(os.pathsep) == 200, f"{f}: {text[:80]}")
+        # Processes: each child writes the same file many times after one shared release (it
+        # reads one byte from its stdin, which the parent closes for all children at once).
+        target = st / "launch" / "classpath-proc.args"
+        code = ("import sys, importlib.util as u\n"
+                "s = u.spec_from_file_location('gs', sys.argv[1]); m = u.module_from_spec(s)\n"
+                "s.loader.exec_module(m)\n"
+                "sys.stdin.read(1)\n"
+                "for _ in range(200): m.write_shared(m.Path(sys.argv[2]), 'same\\n', same_ok=True)\n")
+        procs = [subprocess.Popen([sys.executable, "-c", code, n.__file__, str(target)],
+                                  stdin=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                 for _ in range(8)]
+        for p in procs:
+            p.stdin.close()
+        bad = [(p.wait(timeout=120), p.stderr.read()[-300:]) for p in procs]
+        bad = [b for b in bad if b[0] != 0]
+        check(not bad, f"{len(bad)} of {len(procs)} processes failed: {bad[:2]}")
+        check(target.read_text(encoding="utf-8") == "same\n", "the shared file's content")
+        left = [p.name for p in (st / "launch").iterdir() if p.suffix == ".tmp"]
+        check(not left, f"temporary files left behind: {left[:5]}")
+    return f"{threads * rounds} thread writers over {rounds} keys, {len(procs)} processes x 200"
+
+
 OFFLINE = {"stock_vendored", "new_client_identity", "fake_v2_server", "fake_v3_server",
            "protocol_below_range", "check_compatible", "endpoint_overlap", "engine_config",
-           "loader"}
+           "loader", "concurrent_classpath_write"}
 
 
 # ---- tests against the real engine ----------------------------------------------------------
@@ -540,6 +617,7 @@ def t_engine_setting_command(c: Ctx):
 TESTS = {n: globals()["t_" + n] for n in (
     "stock_vendored", "new_client_identity", "fake_v2_server", "fake_v3_server",
     "protocol_below_range", "check_compatible", "endpoint_overlap", "engine_config", "loader",
+    "concurrent_classpath_write",
     "real_engine_new_starts", "real_engine_stock_starts", "engine_setting_command")}
 REGISTRY = dict(TESTS)   # test name -> fn(ctx): the tests above and those of the cc_*.py files
 ONLINE_OK = set(OFFLINE)  # names that may run with --offline

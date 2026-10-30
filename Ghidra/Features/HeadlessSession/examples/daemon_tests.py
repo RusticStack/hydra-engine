@@ -56,7 +56,9 @@ how it is used on an engine that is supposed to have fixed it.
 """
 import argparse
 import contextlib
+import hashlib
 import importlib.util
+import inspect
 import json
 import os
 import pathlib
@@ -263,6 +265,119 @@ def selftest(gs):
     return 1 if bad else 0
 
 
+def _link_or_copy(src: pathlib.Path, dst: pathlib.Path):
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(src, dst)        # the AOT cache is only read (memory-mapped) by the JVMs
+    except OSError:
+        shutil.copy2(src, dst)
+
+
+def seed_state(seed: pathlib.Path, state: pathlib.Path):
+    """Puts what ``--prepare`` made into a fresh state dir: the class search cache and the AOT
+    cache (if one was made; hard-linked) of this install's daemon JVM, so that a daemon of the test
+    starts the way a user's second start does (measured: connect 0.7-1.0 s instead of 1.6-2.5 s). Neither changes what the daemon does, only how fast it starts; a test
+    that runs a daemon with other JVM options (another heap, collector, install) gets another cache
+    key and starts cold, as before."""
+    for f in sorted((seed / "state" / "aot").glob("*.aot")):
+        _link_or_copy(f, state / "aot" / f.name)
+    for f in sorted((seed / "state" / "classcache").glob("*.json")):
+        (state / "classcache").mkdir(parents=True, exist_ok=True)
+        shutil.copy2(f, state / "classcache" / f.name)   # small, and a daemon may rewrite it
+
+
+def install_key(ghidra) -> str:
+    """The install, for the keys of the projects cached in a seed dir: every jar's path, size and
+    mtime, and the bytes of HeadlessSession's support files (the launcher)."""
+    root = pathlib.Path(ghidra)
+    h = hashlib.sha256(str(root.absolute()).encode())
+    for p in sorted((root / "Ghidra").rglob("*.jar")):
+        st = p.stat()
+        h.update(f"{p.relative_to(root)}|{st.st_size}|{st.st_mtime_ns}\n".encode())
+    sup = root / "Ghidra" / "Features" / "HeadlessSession" / "support"
+    for p in sorted(sup.rglob("*.py")) if sup.is_dir() else ():
+        h.update(p.name.encode() + p.read_bytes())
+    return h.hexdigest()
+
+
+def prepare_seed(a, gs, aot=False):
+    """``--prepare``: makes ``--work`` a seed directory for ``--seed-dir``: the analysed fixture
+    project (what ``Ctx.fixture`` makes, once instead of once per test process), the class search
+    cache its daemon wrote, a copy of the install (``install``: a test that clones the install with
+    hard links needs a source on the same volume as its --work) and, with ``aot``, the AOT cache of the daemon JVM trained on a copy of
+    it. Returns the exit code."""
+    c = Ctx(a, gs)
+    t = time.perf_counter()
+    try:
+        (c.work / "install.key").write_text(install_key(a.ghidra), encoding="utf-8")
+        base = c.fixture()
+        print(f"fixture {base} in {time.perf_counter() - t:.1f} s", flush=True)
+        t = time.perf_counter()
+        inst = c.work / "install"       # for the tests that clone the install with hard links (dt_e8.py)
+        if inst.exists():
+            shutil.rmtree(inst)
+        shutil.copytree(a.ghidra, inst)
+        print(f"install copy {inst} in {time.perf_counter() - t:.1f} s", flush=True)
+        if aot:
+            t = time.perf_counter()
+            train = c.work / "aot-train"
+            if train.exists():
+                shutil.rmtree(train)
+            shutil.copytree(base, train)
+            gs.build_aot(a.ghidra, str(c.state), str(train / "Fixture.gpr"), None)
+            shutil.rmtree(train, ignore_errors=True)
+            print(f"aot cache in {time.perf_counter() - t:.1f} s", flush=True)
+    finally:
+        c.cleanup()
+    return 0
+
+
+#: The setup projects of ``Ctx.cached_project`` that run_parallel.py makes in its seed phase, before its
+#: queue starts (``--prebuild TAG``), so that every test that needs one copies it and none makes it: tests
+#: that missed together each made their own. ``tag -> (users, make)``: ``make(c, name)`` is the function the
+#: tests call (so the cache key, made from the builder's source, is the same), ``users`` the test names (or
+#: ``dt_*.py`` file names: all its tests) that need it. run_parallel.py --selftest checks that every function
+#: that calls ``cached_project`` is registered here and that every test calling one directly is a user.
+PREBUILT = {}
+
+
+def prebuilt(tag, users):
+    """Registers ``make(c, name)`` as the maker of the cached project ``tag`` (see PREBUILT)."""
+    def deco(make):
+        PREBUILT[tag] = (tuple(users), make)
+        return make
+    return deco
+
+
+def prebuild(a, gs, tags):
+    """``--prebuild``: makes the cached projects ``tags`` in ``--seed-dir`` (those already there are only
+    copied once more, to check them). Returns the exit code."""
+    c = Ctx(a, gs)
+    bad = 0
+    try:
+        for tag in tags:
+            if tag not in PREBUILT:
+                print(f"FAIL {tag}: no such cached project; known: {', '.join(PREBUILT)}", flush=True)
+                bad += 1
+                continue
+            t = time.perf_counter()
+            name = "pre-" + tag
+            try:
+                gpr = PREBUILT[tag][1](c, name)
+                gpr = gpr[0] if isinstance(gpr, tuple) else gpr
+                ok = pathlib.Path(gpr).is_file()
+            except Exception as e:      # reported; the tests then make it themselves
+                ok, gpr = False, f"{type(e).__name__}: {e}"
+            how = "copied" if any(k.startswith(f"project {tag} copied") for k in c.timings) else "made"
+            print(f"{'ok  ' if ok else 'FAIL'} {tag}: {how} in {time.perf_counter() - t:.1f} s ({gpr})", flush=True)
+            bad += not ok
+            shutil.rmtree(c.work / name, ignore_errors=True)
+    finally:
+        c.cleanup()
+    print("timings:", json.dumps(c.timings, indent=1))
+    return 1 if bad else 0
+
+
 class Ctx:
     def __init__(self, a, gs):
         self.a = a
@@ -283,6 +398,9 @@ class Ctx:
         (self.state / "config.json").write_text(json.dumps(cfg))
         self.daemons = []
         self.timings = {}
+        self.seed = pathlib.Path(a.seed_dir).absolute() if getattr(a, "seed_dir", None) else None
+        if self.seed:
+            seed_state(self.seed, self.state)
 
     def daemon(self, instance, **cfg):
         d = self.gs.Daemon(self.a.ghidra, str(self.state), instance, **cfg)
@@ -308,6 +426,12 @@ class Ctx:
         """An analysed project with the EXE, made once and copied per test."""
         base = self.work / "fixture"
         gpr = base / "Fixture.gpr"
+        seeded = self.seed / "fixture" if self.seed else None
+        if not gpr.exists() and seeded and (seeded / "Fixture.gpr").is_file():
+            # the same project, made once by --prepare for the whole run (import+analyze of --exe)
+            t = time.perf_counter()
+            shutil.copytree(seeded, base)
+            self.timings["fixture copied from --seed-dir (s)"] = round(time.perf_counter() - t, 2)
         if not gpr.exists():
             d = self.daemon("fixture")
             with d.connect("fixture", "tests") as s:
@@ -319,6 +443,66 @@ class Ctx:
                 s.call("close_project")
             d.stop()
         return base
+
+    def cached_project(self, name, tag, build, inputs=()):
+        """A project that ``build(dst)`` makes in the fresh directory ``dst`` (``work/name``) and
+        whose .gpr it returns. With a ``--seed-dir`` (run_parallel.py) it is made once per run
+        and every test copies it (a full copy). run_parallel.py makes the registered ones
+        (PREBUILT) in its seed phase, so tests find them; otherwise the first test that needs it
+        makes it in its own ``dst``, copies that into the seed dir under a temporary name and renames it to
+        ``proj-<tag>-<key>`` (atomic; a test that lost the race drops its copy, the winner's is
+        the same project). The key is the install (``install.key`` of --prepare), ``tag``, the
+        source of ``build`` and of its whole file, and the bytes of every file in ``inputs``: another engine, another
+        builder or another input makes another project. Only for setup the test does not check:
+        a builder makes the project the way the test made it before, in a daemon of its own."""
+        dst = self.work / name
+        if dst.exists():
+            shutil.rmtree(dst)
+        cached = None
+        if self.seed:
+            h = hashlib.sha256(tag.encode())
+            ik = self.seed / "install.key"
+            h.update(ik.read_bytes() if ik.is_file() else install_key(self.a.ghidra).encode())
+            # the builder and the whole file it is in (the helpers it calls)
+            h.update(inspect.getsource(build).encode() + pathlib.Path(inspect.getsourcefile(build)).read_bytes())
+            for f in inputs:
+                f = pathlib.Path(f)
+                h.update(f.name.encode() + b"\0" + f.read_bytes())
+            cached = self.seed / f"proj-{tag}-{h.hexdigest()[:16]}"
+            rel = cached / "gpr.txt"
+            if rel.is_file():
+                t = time.perf_counter()
+                shutil.copytree(cached / "p", dst)
+                self.timings[f"project {tag} copied from the --seed-dir cache (s)"] = round(time.perf_counter() - t, 2)
+                return dst / rel.read_text(encoding="utf-8").strip()
+        t = time.perf_counter()
+        gpr = pathlib.Path(build(dst))
+        self.timings[f"project {tag} made (s)"] = round(time.perf_counter() - t, 2)
+        if cached is not None:
+            tmp = cached.parent / f"{cached.name}.{os.getpid()}.tmp"
+            with contextlib.suppress(OSError):
+                if tmp.exists():
+                    shutil.rmtree(tmp)
+                shutil.copytree(dst, tmp / "p")
+                (tmp / "gpr.txt").write_text(str(gpr.relative_to(dst)), encoding="utf-8")
+                os.rename(tmp, cached)      # fails if another test cached it first: theirs is the same
+            shutil.rmtree(tmp, ignore_errors=True)
+        return gpr
+
+    @prebuilt("empty-Src", users=("dt_e2.py", "dt_e2a.py"))
+    def _empty_src(self, name):
+        return self.empty_project(name, "Src")
+
+    def empty_project(self, name, project):
+        """An empty project ``project`` in ``work/name`` (made by TestMakeProject.java in a daemon
+        of its own, or copied from the seed dir)."""
+        def build(dst):
+            d = self.daemon(f"mk-{project.lower()}")
+            with d.connect("mk", "tests") as s:
+                gpr = self.make_project(s, dst, project)
+            d.stop()
+            return gpr
+        return self.cached_project(name, f"empty-{project}", build)
 
     def copy_fixture(self, name):
         dst = self.work / name
@@ -401,14 +585,29 @@ def t_two_harnesses(c: Ctx):
     return f"one daemon (pid {pids.pop()}) for both; connect ms {[round(o['ms']) for o in outs]}"
 
 
+@prebuilt("projB-dll-analysed", users=("two_projects",))
+def proj_b(c, name):
+    """Project B of two_projects: the dll imported and analysed (made once per run with a seed dir)."""
+    def build(dst):
+        d0 = c.daemon("multi-mk")
+        with d0.connect("y", "tests") as y:
+            gpr = c.make_project(y, dst, "ProjB")
+            y.call("open_project", path=str(gpr), writable=True)
+            y.call("import", file=c.a.dll, analyze=True, timeout=1800, wait=600000)
+            y.call("close_project")
+        d0.stop()
+        return gpr
+    return c.cached_project(name, "projB-dll-analysed", build, inputs=(c.a.dll,))
+
+
 def t_two_projects(c: Ctx):
     """Several projects open in one daemon at once, used by two clients concurrently."""
     a_gpr = c.copy_fixture("projA")
+    b_gpr = proj_b(c, "projB")
     d = c.daemon("multi")
     with d.connect("x", "tests") as x, d.connect("y", "tests") as y:
-        b_gpr = c.make_project(x, c.work / "projB", "ProjB")
         y.call("open_project", path=str(b_gpr), writable=True)
-        y.call("import", file=c.a.dll, analyze=True, timeout=1800, wait=600000)
+        y.call("open_program", path=pathlib.Path(c.a.dll).name, writable=True)    # as the import left it
         pa = x.call("open_project", path=str(a_gpr))
         x.call("open_program", path=pathlib.Path(c.a.exe).name)
         pb = y.call("projects")["activeProject"]
@@ -761,6 +960,14 @@ def t_import_isolation(c: Ctx):
     project), and concurrent loads each handed their own project land in it. Runs
     ImportIsolationProbe in a throwaway daemon and records what it saw (README, "Parallel
     imports")."""
+    return _import_isolation(c, ISO_ROUNDS)
+
+
+ISO_ROUNDS, ISO_SHARDS = 6, 3     # concurrent-load rounds of import_isolation; its shards split them
+
+
+def _import_isolation(c: Ctx, rounds: int):
+    """import_isolation with ``rounds`` concurrent-load rounds (each shard repeats the search-path check)."""
     a = c.a.exe
     b = c.a.dll
     d = c.daemon("iso")
@@ -772,7 +979,7 @@ def t_import_isolation(c: Ctx):
         if folder.exists():
             shutil.rmtree(folder)
         folder.mkdir(parents=True)
-        out = s.call("script", script=probe, program=None, args=[str(folder), a, b, "6"],
+        out = s.call("script", script=probe, program=None, args=[str(folder), a, b, str(rounds)],
                      timeout=900, wait=600000)["output"]
     d.stop()
     got = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
@@ -1997,7 +2204,29 @@ def code_functions(s, n, program=None):
             if not f["thunk"] and not f["external"]][:n]
 
 
+MW_ITERS, MW_SHARDS = 300, 3     # edit rounds of each writer in multi_writer; its shards split them
+
+
+@prebuilt("fixture-dll-analysed", users=("multi_writer",))
+def proj_mw(c, name):
+    """multi_writer's project: the fixture with the dll imported and analysed (made once per run with a seed dir)."""
+    def build(dst):
+        gpr = c.copy_fixture(dst.name)
+        d0 = c.daemon("mw-setup")
+        with d0.connect("setup", "tests") as s:
+            s.call("open_project", path=str(gpr), writable=True)
+            s.call("import", file=c.a.dll, analyze=True, timeout=1800, wait=600000)
+            s.call("close_project")
+        d0.stop()
+        return gpr
+    return c.cached_project(name, "fixture-dll-analysed", build, inputs=(c.a.exe, c.a.dll))
+
+
 def t_multi_writer(c: Ctx):
+    return _multi_writer(c, 0, MW_ITERS)
+
+
+def _multi_writer(c: Ctx, first: int, count: int):
     """Several writers in one project: a writable open while others hold the read-only view
     reopens it writable in place (the readers keep their keys and go on); a second writable
     open joins; two clients write two different programs of the project at the same time
@@ -2005,14 +2234,9 @@ def t_multi_writer(c: Ctx):
     not_owner with overlay/fork alternatives; the project reopens with both writers' work."""
     global s_scripts_dir
     s_scripts_dir = c.scripts
-    gpr = c.copy_fixture("projMW")
     exe, dll = pathlib.Path(c.a.exe).name, pathlib.Path(c.a.dll).name
-    d0 = c.daemon("mw-setup")
-    with d0.connect("setup", "tests") as s:
-        s.call("open_project", path=str(gpr), writable=True)
-        s.call("import", file=c.a.dll, analyze=True, timeout=1800, wait=600000)
-        s.call("close_project")
-    d0.stop()
+
+    gpr = proj_mw(c, "projMW")
     d = c.daemon("mw", keepWarm=0)
     notes = []
     with d.connect("reader", "tests") as r, d.connect("w1", "tests") as w1, \
@@ -2043,7 +2267,7 @@ def t_multi_writer(c: Ctx):
 
         def writer(s, key, fns, tag):
             try:
-                for i in range(300):
+                for i in range(first, first + count):
                     a = fns[i % len(fns)]
                     name = f"{tag}_{i}"
                     s.call("rename", program=key, address=a, name=name, wait=120000)
@@ -2066,9 +2290,9 @@ def t_multi_writer(c: Ctx):
         for th in ths:
             th.join()
         c.timings["two writers, two programs: 2x(300 renames + 300 comments + 7 saves)"] = round(
-            time.perf_counter() - t, 1)
+            time.perf_counter() - t, 1)      # the whole test; a shard has its share
         check(not errs, f"concurrent writers failed: {errs}")
-        notes.append(f"2 writers x 600 edits + saves on 2 programs in "
+        notes.append(f"2 writers x {2 * count} edits + saves on 2 programs in "
                      f"{c.timings['two writers, two programs: 2x(300 renames + 300 comments + 7 saves)']} s")
         for s in (r, w1, w2):
             s.call("close_project")
@@ -2746,6 +2970,13 @@ def rep_state(gpr: pathlib.Path):
 
 
 def t_import_write_kill(c: Ctx):
+    return _import_write_kill(c, WRITE_KILL_FRACS)
+
+
+WRITE_KILL_FRACS = (0.0, 0.3, 0.7)   # when the daemon is killed: at the first sight of the database, then part-way
+
+
+def _import_write_kill(c: Ctx, fracs, tag=""):
     """The daemon killed while an import writes its program into the project (Ghidra's final
     createFile, after the load): at the first sight of the new database folder, and part-way
     through the write. Each time the next daemon opens the project clean, and the program is
@@ -2754,10 +2985,10 @@ def t_import_write_kill(c: Ctx):
     mb = c.a.raw_mb * 4
     f1 = raw_file(c, "wkill.bin", mb)
     size = os.path.getsize(f1)
-    folder = c.work / "projWriteKill"
+    folder = c.work / ("projWriteKill" + tag)
     if folder.exists():
         shutil.rmtree(folder)
-    d = c.daemon("wkill", maxImports=1)
+    d = c.daemon("wkill" + tag, maxImports=1)
     with d.connect("calib", "tests") as s:
         gpr = c.make_project(s, folder, "WriteKill")
         s.call("open_project", path=str(gpr), writable=True)
@@ -2776,8 +3007,8 @@ def t_import_write_kill(c: Ctx):
     kept = {"/calib"}
     teardown, restart = [], []
     (c.scripts / "TestMemSize.java").write_text(MEM_SIZE)
-    for i, frac in enumerate((0.0, 0.3, 0.7)):
-        name = f"k{i}"
+    for frac in fracs:
+        name = f"k{WRITE_KILL_FRACS.index(frac)}"
         with d.connect("doomed", "tests") as s:
             s.call("open_project", path=str(gpr), writable=True)
             dbs0 = rep_state(gpr)[1]
@@ -2839,6 +3070,45 @@ TESTS = ["two_harnesses", "two_projects", "dll_import", "client_kill", "daemon_r
 REGISTRY = {}   # test name -> fn(ctx): the tests above and those of the dt_*.py files
 BASELINE = {}   # test name -> the premise it is a baseline of (expected to fail, see --baseline)
 LOADED = {}     # dt_*.py file name -> its test names, in order
+# test name -> {shard: fn(ctx)}: a test that is a loop of independent iterations (or of protocol
+# halves) may also be run as shards, ``name@shard``, each in its own process (run_parallel.py runs
+# them at once and reports them under ``name``). The shards together do everything the whole test
+# does (the same counts, the same checks per iteration); ``--only name`` still runs the whole test.
+SHARDS = {
+    # each kill point in its own process (each with its own calibration import and the re-import after it)
+    "import_write_kill": {f"k{i}": (lambda f: lambda c: _import_write_kill(c, (f,), f"-{WRITE_KILL_FRACS.index(f)}"))(f)
+                          for i, f in enumerate(WRITE_KILL_FRACS)},
+}
+
+
+def split_n(n, k):
+    """``n`` iterations over ``k`` shards as ``[(first, count)]``: the counts add up to ``n``."""
+    out, first = [], 0
+    for j in range(k):
+        cnt = n // k + (1 if j < n % k else 0)
+        out.append((first, cnt))
+        first += cnt
+    return out
+
+
+# multi_writer's edit rounds split over shards (each: its own setup, both writers concurrent on their own programs,
+# the saves and the reopen check; the one bounded analysis, at round 150, is in the shard that has that round)
+SHARDS["multi_writer"] = {f"i{j}": (lambda f, n: lambda c: _multi_writer(c, f, n))(f, n)
+                          for j, (f, n) in enumerate(split_n(MW_ITERS, MW_SHARDS))}
+
+
+# import_isolation's concurrent-load rounds split over shards (each its own daemon and projects, each repeating the
+# search-path check); the rounds add up to ISO_ROUNDS
+SHARDS["import_isolation"] = {f"r{j}": (lambda n: lambda c: _import_isolation(c, n))(n)
+                              for j, (_, n) in enumerate(split_n(ISO_ROUNDS, ISO_SHARDS))}
+
+
+def test_fn(name):
+    """The function of a test name or of a shard ``name@shard``."""
+    if "@" in name:
+        t, s = name.split("@", 1)
+        return SHARDS[t][s]
+    return REGISTRY[name]
 
 
 def load_dt(tests_dir):
@@ -2858,9 +3128,16 @@ def load_dt(tests_dir):
             base = getattr(mod, "BASELINE", {})
             if not isinstance(base, dict) or set(base) - set(tests):
                 raise TypeError("BASELINE must be a dict {name: premise} of names in TESTS")
+            shards = getattr(mod, "SHARDS", {})
+            if not isinstance(shards, dict) or set(shards) - set(tests) or not all(
+                    isinstance(v, dict) and v and all(callable(x) and "@" not in k
+                                                      for k, x in v.items())
+                    for v in shards.values()):
+                raise TypeError("SHARDS must be a dict {name in TESTS: {shard: fn}}")
             for n, fn in tests.items():
                 if n in REGISTRY and REGISTRY[n] is not fn:
                     raise ValueError(f"test name {n!r} is already taken")
+            SHARDS.update(shards)
             for n, fn in tests.items():
                 REGISTRY[n] = fn
                 if n in base:
@@ -2891,7 +3168,7 @@ def run_test(c, n, secs):
     wd = watchdog(c, n, secs) if secs else None
     ev = {}
     try:
-        status, note = "pass", REGISTRY[n](c)
+        status, note = "pass", test_fn(n)(c)
         if str(note).startswith("skipped"):
             status = "skipped"
     except Skipped as e:
@@ -2949,6 +3226,23 @@ def main():
                     help="seconds one test may take before the run is ended with its daemons and "
                     "children killed (default: 600 with --baseline, else none)")
     ap.add_argument("--report", help="also write the results here, as JSON")
+    ap.add_argument("--list-shards", dest="list_shards", action="store_true",
+                    help="list the shards (name@shard) of the tests that have them, and exit")
+    ap.add_argument("--prepare", action="store_true",
+                    help="make --work a seed directory (the analysed fixture project and the "
+                    "daemon's AOT cache) for --seed-dir, and exit")
+    ap.add_argument("--prepare-aot", dest="prepare_aot", action="store_true",
+                    help="with --prepare: also train the daemon's AOT cache (about 30 s; measured "
+                    "0.1-0.3 s faster per daemon start than the class cache alone)")
+    ap.add_argument("--list-prebuild", dest="list_prebuild", action="store_true",
+                    help="list the cached setup projects (PREBUILT) as 'tag user,user,...' and exit")
+    ap.add_argument("--prebuild", default=None,
+                    help="comma-separated PREBUILT tags: make them in --seed-dir and exit (run_parallel.py "
+                    "does it in its seed phase, before its queue starts)")
+    ap.add_argument("--seed-dir", dest="seed_dir",
+                    help="a directory made by --prepare: the fixture is copied from it instead "
+                    "of being imported and analysed in this process, and the daemons start "
+                    "with its AOT cache (only read)")
     a = ap.parse_args()
     if a.selftest:
         sys.path.insert(0, str(pathlib.Path(a.ghidra) / "Ghidra" / "Features" / "HeadlessSession" /
@@ -2965,8 +3259,19 @@ def main():
     default = list(TESTS) + [n for fl in LOADED.values() for n in fl if n not in BASELINE]
     only = [x for x in (a.only or "").split(",") if x]
     for n in only:
-        if n not in REGISTRY:
+        t, _, s = n.partition("@")
+        if t not in REGISTRY:
             ap.error(f"unknown test {n}; known: {', '.join(REGISTRY)}")
+        if s and s not in SHARDS.get(t, {}):
+            ap.error(f"unknown shard {n}; the shards of {t}: "
+                     f"{', '.join(SHARDS.get(t, {})) or 'none'}")
+    if a.list_shards:
+        for t in REGISTRY:
+            for s in SHARDS.get(t, {}):
+                print(f"{t}@{s}")
+        for f, why in load_errors:
+            print(f"FAIL load {f}: {why}")
+        sys.exit(1 if load_errors else 0)
     if a.baseline:
         for n in only:
             if n not in BASELINE:
@@ -2974,6 +3279,10 @@ def main():
         names = only or list(BASELINE)
     else:
         names = only or default
+    if a.list_prebuild:
+        for tag, (users, _) in PREBUILT.items():
+            print(tag, ",".join(users))
+        sys.exit(1 if load_errors else 0)
     if a.list:
         for n in REGISTRY:
             print(n + ("  [baseline: " + BASELINE[n] + "]" if n in BASELINE else ""))
@@ -2985,8 +3294,14 @@ def main():
     sys.path.insert(0, str(pathlib.Path(a.ghidra) / "Ghidra" / "Features" / "HeadlessSession" /
                            "support"))
     import ghidra_session as gs
+    if a.prepare:
+        sys.exit(prepare_seed(a, gs, aot=a.prepare_aot))
+    if a.prebuild is not None:
+        if not a.seed_dir:
+            ap.error("--prebuild needs --seed-dir")
+        sys.exit(prebuild(a, gs, [x for x in a.prebuild.split(",") if x]))
     c = Ctx(a, gs)
-    secs = a.test_timeout if a.test_timeout is not None else (600 if a.baseline else 0)
+    secs =a.test_timeout if a.test_timeout is not None else (600 if a.baseline else 0)
     results = []
     bad = len(load_errors)
     for f, why in load_errors:

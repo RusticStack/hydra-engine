@@ -105,6 +105,10 @@ public class HeadlessSession implements GhidraLaunchable {
 
 	@Override
 	public void launch(GhidraApplicationLayout layout, String[] args) throws Exception {
+		// E9, D60: the daemon makes its own kill-on-close Job Object before anything else, so
+		// every process it starts afterwards (native decompilers, script workers) dies with it.
+		// It never throws; health.processJob reports what happened.
+		ProcessJob.start(layout.getApplicationInstallationDir().getFile(false).toPath());
 		long t0 = System.nanoTime();
 		Options o;
 		boolean requireExpect = false;
@@ -112,6 +116,8 @@ public class HeadlessSession implements GhidraLaunchable {
 			o = Options.parse(args);
 			requireExpect = Settings.bool("requireExpect", false); // a bad value is a usage error
 			Scheduler.validateSettings(); // so is a bad lane setting
+			Health.validateSettings(); // and testHooks as a setting: it is a launch property only
+			Budgets.validate(); // E9: the budgets, and -Xmx against minXmxMb
 		}
 		catch (IllegalArgumentException e) {
 			System.err.println(e.getMessage());
@@ -173,6 +179,16 @@ public class HeadlessSession implements GhidraLaunchable {
 		if (o.forkCopyLimitMb >= 0) {
 			session.forkCopyLimitBytes = o.forkCopyLimitMb << 20;
 		}
+		// E5: the watchdog before anything can block (a project opened at start-up, a client);
+		// testHooks is read from the JVM property only.
+		Health.announce();
+		session.startWatchdog();
+		// E9: the governor after the watchdog (admission, the decompiler gate, the guarded sampler)
+		Health.contribute("processJob", ProcessJob::describe); // after E3c's waits (the order is pinned)
+		Governor.start(session);
+		// 8.13: what a killed publisher left in a directory this state directory forked into is
+		// swept before the daemon is ready (a .rep without its .gpr, a staging folder, a sidecar .tmp)
+		ForkSweeper.sweepAtStart();
 		Runtime.getRuntime().addShutdownHook(new Thread(this::removeEndpoint, "session-exit"));
 
 		Connection stdio = null;
@@ -293,25 +309,37 @@ public class HeadlessSession implements GhidraLaunchable {
 	}
 
 	private void startAcceptor(ServerSocket server, String token) {
-		Thread t = new Thread(() -> {
+		Guarded.start("session-accept", () -> {
 			while (!session.isShuttingDown()) {
+				Guarded.beat(0); // blocks in accept by design: liveness only
 				Socket s;
 				try {
 					s = server.accept();
 				}
 				catch (IOException e) {
-					if (!session.isShuttingDown()) {
-						Msg.error(this, "accept failed", e);
+					if (session.isShuttingDown() || server.isClosed()) {
+						return;
 					}
-					return;
+					// the accept thread is restarted (3.11): Guarded runs this body again
+					throw e;
+				}
+				try {
+					Guarded.beat(0); // where a planted test fault lands
+				}
+				catch (Throwable t) {
+					try {
+						s.close();
+					}
+					catch (IOException ignored) {
+						// the connection is dropped either way
+					}
+					throw t;
 				}
 				Thread ct = new Thread(() -> serveSocket(s, token), "session-socket");
 				ct.setDaemon(true);
 				ct.start();
 			}
-		}, "session-accept");
-		t.setDaemon(true);
-		t.start();
+		});
 	}
 
 	private void serveSocket(Socket s, String token) {
@@ -330,23 +358,21 @@ public class HeadlessSession implements GhidraLaunchable {
 		}
 	}
 
+	/**
+	 * The reaper runs under {@link Guarded} (E9, D46): measurement A saw it die of an
+	 * {@code OutOfMemoryError} at {@code -Xmx256m} while the daemon went on without it. A
+	 * {@code Throwable} in a lap is logged and counted ({@code health.governor.threads}) and the
+	 * next lap runs after a backoff.
+	 */
 	private void startReaper() {
-		Thread t = new Thread(() -> {
+		Guarded.start("session-reaper", () -> {
 			while (!session.isShuttingDown()) {
-				try {
-					Thread.sleep(Math.min(15_000, Math.max(1_000, session.keepWarmMs / 4)));
-					session.reap();
-				}
-				catch (InterruptedException e) {
-					return;
-				}
-				catch (RuntimeException e) {
-					Msg.error(this, "reaper", e);
-				}
+				long lapMs = Math.min(15_000, Math.max(1_000, session.keepWarmMs / 4));
+				Guarded.beat(lapMs); // proof of life in health.governor.threadState
+				Thread.sleep(lapMs);
+				session.reap();
 			}
-		}, "session-reaper");
-		t.setDaemon(true);
-		t.start();
+		});
 	}
 
 	private void idleLoop(long idleSeconds) throws InterruptedException {
@@ -594,10 +620,329 @@ public class HeadlessSession implements GhidraLaunchable {
 			errors();
 			preflight();
 			cancelHooks();
+			waiterCaps();
+			closeVsViewChange();
 			dbVersions();
+			health();
+			governor();
 			System.out.println(
 				bad == 0 ? "all self-test checks held" : bad + " self-test check(s) FAILED");
 			return bad == 0 ? 0 : 1;
+		}
+
+		/** E5: the state rules of 3.4, the contributor list, and testHooks as a setting. */
+		private static void health() {
+			check("health.state: a fresh tick, a free lock and nothing wrong is ok",
+				Health.state(400, 15_000, true, 0, 0, true, false).equals("ok"));
+			check("health.state: an old tick, a held scheduler lock or a deadlock is suspect",
+				Health.state(15_001, 15_000, true, 0, 0, true, false).equals("suspect") &&
+					Health.state(0, 15_000, false, 0, 0, true, false).equals("suspect") &&
+					Health.state(0, 15_000, true, 2, 0, true, false).equals("suspect"));
+			check("health.state: an abandoned holder, an unreadable db version or the hook is " +
+				"degraded",
+				Health.state(0, 15_000, true, 0, 1, true, false).equals("degraded") &&
+					Health.state(0, 15_000, true, 0, 0, false, false).equals("degraded") &&
+					Health.state(0, 15_000, true, 0, 0, true, true).equals("degraded"));
+			check("health.state: suspect wins over degraded",
+				Health.state(0, 15_000, false, 0, 1, false, true).equals("suspect"));
+			check("a contributor may not use a core key of the reply or an empty name",
+				throwsIllegal(() -> Health.contribute("state", () -> null)) &&
+					throwsIllegal(() -> Health.contribute("", () -> null)));
+			Health.contribute("selfTestFigure", () -> new com.google.gson.JsonPrimitive(7));
+			Health.contribute("selfTestBroken", () -> {
+				throw new IllegalStateException("boom");
+			});
+			Health.contribute("selfTestNothing", () -> null);
+			Health.clearSnapshot();
+			JsonObject h = Health.reply(System.currentTimeMillis() - 5, null);
+			check("a contributor's figure is in the reply, a failing one is an error entry, a " +
+				"null one is left out",
+				h.get("selfTestFigure").getAsInt() == 7 &&
+					h.getAsJsonObject("selfTestBroken").get("error").getAsString()
+							.contains("boom") &&
+					!h.has("selfTestNothing"));
+			check("health keeps its core keys first, in the order of 3.4",
+				h.keySet().stream().limit(11).toList().equals(List.of("state", "pid", "uptimeMs",
+					"protocol", "tick", "schedulerLockOk", "lanes", "deadlocked", "abandoned",
+					"memory", "testHooks")));
+			check("health with no snapshot yet reports tick 0 and does not claim a held lock",
+				h.getAsJsonObject("tick").get("n").getAsInt() == 0 &&
+					h.get("schedulerLockOk").getAsBoolean());
+			Settings.set("testHooks", "true");
+			check("testHooks as an engine setting is a usage error (it is a launch property)",
+				throwsIllegal(Health::validateSettings));
+			Settings.clear();
+			Settings.set("watchdogStallMs", "soon");
+			check("a watchdogStallMs that is not an integer is a usage error",
+				throwsIllegal(Health::validateSettings));
+			Settings.clear();
+			check("the test hooks are off in this JVM (no launch property)", !Health.testHooks());
+		}
+
+		/** E9: the budgets, the gate's fairness, the guarded thread and the sweep's path rule. */
+		private static void governor() {
+			Settings.clear();
+			check("viewDiskBudget and diskReserve take sizes; a plain number is megabytes",
+				sizeOf("20GB") == (20L << 30) && sizeOf("512MB") == (512L << 20) &&
+					sizeOf("7") == (7L << 20) && sizeOf("100 KB") == (100L << 10));
+			check("a size that is not one is a usage error naming the key",
+				throwsIllegal(() -> {
+					Settings.set("viewDiskBudget", "lots");
+					Budgets.size("viewDiskBudget", 0);
+				}));
+			Settings.clear();
+			check("the defaults of 3.11 validate on this heap (minXmxMb forced to 0)", ok(() -> {
+				Settings.set("minXmxMb", "0");
+				Budgets.validate();
+			}));
+			Settings.clear();
+			Settings.set("minXmxMb", "1000000");
+			check("a heap below minXmxMb is refused at start-up", throwsIllegal(Budgets::validate));
+			Settings.clear();
+			Settings.set("heapSoftPct", "90");
+			Settings.set("heapHardPct", "80");
+			check("a soft watermark above the hard one is a usage error",
+				throwsIllegal(Budgets::validate));
+			Settings.clear();
+			Settings.set("maxViews", "0");
+			check("maxViews below 1 is a usage error", throwsIllegal(Budgets::validate));
+			Settings.clear();
+			check("estHeap starts at max(8 MB, 6% of the database) and is replaced by a measurement",
+				Budgets.estHeap("k1", 1L << 20) == (8L << 20) &&
+					Budgets.estHeap("k1", 1000L << 20) == (60L << 20));
+			Budgets.learn("k1", 5L << 20);
+			check("a learned estimate replaces the default", Budgets.estHeap("k1", 1L << 30) == (5L << 20));
+			Budgets.clearLearned();
+			check("the gate has min(CPUs, nativeBudget / 200 MB) permits, at least one",
+				Budgets.gatePermits() >= 1 &&
+					Budgets.gatePermits() <= Runtime.getRuntime().availableProcessors());
+			gateFairness();
+			guardedRestarts();
+			reservations();
+			Governor.capacity("views", 1, 1, "x", 1);
+			SessionException busy = Governor.capacity("heap", 9, 5, "no room", 99_999);
+			check("a capacity refusal is busy with reason, resource, have, need and a clamped retry",
+				busy.code().equals("busy") &&
+					busy.details().get("reason").getAsString().equals("capacity") &&
+					busy.details().get("resource").getAsString().equals("heap") &&
+					busy.details().get("have").getAsLong() == 9 &&
+					busy.details().get("need").getAsLong() == 5 &&
+					busy.retryAfterMs() == SessionException.RETRY_MAX_MS);
+			java.nio.file.Path fake = java.nio.file.Path.of(System.getProperty("java.io.tmpdir"),
+				"hydra-selftest-no-install");
+			JsonObject sw = ProcessJob.sweep(fake, false);
+			check("the orphan sweep of an install with no decompiler finds none (path match)",
+				sw.get("checked").getAsInt() == 0 && sw.getAsJsonArray("orphans").size() == 0);
+			check("the process job is off unless the test hooks and the property are both on",
+				!ProcessJob.disabledForTest());
+		}
+
+		private static long sizeOf(String v) {
+			Settings.set("selfTestSize", v);
+			return Budgets.size("selfTestSize", -1);
+		}
+
+		private static boolean ok(Runnable r) {
+			try {
+				r.run();
+				return true;
+			}
+			catch (RuntimeException e) {
+				System.out.println("     " + e.getMessage());
+				return false;
+			}
+		}
+
+		/** One permit held by X; X queues three waiters and Y one; the freed permit goes to Y first. */
+		private static void gateFairness() {
+			DecompilerGate g = new DecompilerGate(1);
+			Object x = "X";
+			Object y = "Y";
+			DecompilerGate.Permit first = g.acquire(x, null, 5000);
+			java.util.List<String> order = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+			java.util.List<Thread> ts = new java.util.ArrayList<>();
+			java.util.concurrent.atomic.AtomicInteger queued = new java.util.concurrent.atomic.AtomicInteger();
+			for (Object who : new Object[] { x, x, x, y }) {
+				Thread t = new Thread(() -> {
+					queued.incrementAndGet();
+					DecompilerGate.Permit p = g.acquire(who, null, 10_000);
+					order.add(who.toString());
+					try {
+						Thread.sleep(20);
+					}
+					catch (InterruptedException e) {
+						// ends
+					}
+					p.release();
+				});
+				ts.add(t);
+				t.start();
+				try {
+					while (g.waitingClients().size() < (who == y ? 2 : 1) ||
+						queued.get() < ts.size()) {
+						Thread.sleep(5);
+					}
+					Thread.sleep(30);
+				}
+				catch (InterruptedException e) {
+					return;
+				}
+			}
+			first.release();
+			for (Thread t : ts) {
+				try {
+					t.join(10_000);
+				}
+				catch (InterruptedException e) {
+					return;
+				}
+			}
+			check("the gate serves clients in turn: Y before the second X, not X X X Y (got " + order + ")",
+				order.equals(java.util.List.of("Y", "X", "X", "X")));
+			DecompilerGate g2 = new DecompilerGate(1);
+			DecompilerGate.Permit held = g2.acquire(x, null, 1000);
+			boolean refused = false;
+			long t0 = System.nanoTime();
+			try {
+				g2.acquire(y, null, 300);
+			}
+			catch (SessionException e) {
+				refused = e.code().equals("busy") &&
+					e.details().get("resource").getAsString().equals("native");
+			}
+			held.release();
+			check("a wait for a permit that never comes ends in busy capacity native",
+				refused && (System.nanoTime() - t0) / 1_000_000L < 3000);
+			check("a released permit can be taken again, and release twice counts once",
+				ok(() -> {
+					DecompilerGate.Permit p = g2.acquire(x, null, 500);
+					p.release();
+					p.release();
+					DecompilerGate.Permit q = g2.acquire(x, null, 500);
+					q.release();
+				}));
+		}
+
+		/**
+		 * Requests that arrive together cannot all pass one count: 64 threads reserve at the same
+		 * moment (a barrier) against a view limit, a per-client limit and a heap limit, and exactly
+		 * the room there is is granted. The check and the reservation are one step (3.11).
+		 */
+		private static void reservations() {
+			int n = 64;
+			Settings.clear();
+			Settings.set("maxViews", "4");
+			Settings.set("maxViewsPerClient", "1000");
+			Governor g = Governor.forTest(() -> 0);
+			Client[] cs = new Client[n];
+			for (int i = 0; i < n; i++) {
+				cs[i] = new Client(i, "socket", false, e -> { });
+			}
+			int[] got = raceReserve(g, cs, 1);
+			check("64 concurrent reservations against maxViews 4 grant exactly 4 (granted " + got[0] +
+				", reserved " + g.reservedViewsNow() + ")", got[0] == 4 && g.reservedViewsNow() == 4);
+			for (int i = 0; i < n; i++) {
+				if (got[1 + i] == 1) {
+					g.unreserve(cs[i], true, 1);
+				}
+			}
+			check("the reservations are given back", g.reservedViewsNow() == 0);
+			got = raceReserve(g, cs, 1);
+			check("and the room is granted again, exactly 4 (granted " + got[0] + ")", got[0] == 4);
+			for (int i = 0; i < n; i++) {
+				if (got[1 + i] == 1) {
+					g.unreserve(cs[i], true, 1);
+				}
+			}
+			// one client, maxViewsPerClient 2, 64 requests at once
+			Settings.set("maxViews", "1000");
+			Settings.set("maxViewsPerClient", "2");
+			Client one = cs[0];
+			Client[] same = new Client[n];
+			java.util.Arrays.fill(same, one);
+			got = raceReserve(g, same, 1);
+			check("64 concurrent requests of one client against maxViewsPerClient 2 grant exactly 2 " +
+				"(granted " + got[0] + ")", got[0] == 2);
+			for (int i = 0; i < n; i++) {
+				if (got[1 + i] == 1) {
+					g.unreserve(one, true, 1);
+				}
+			}
+			// the heap: room for 5.5 estimates, so at most 5 are granted whoever asks
+			Settings.set("maxViewsPerClient", "1000");
+			long limit = Budgets.maxHeapBytes() / 100 * Budgets.heapSoftPct();
+			long room = limit - g.heapAfterGc();
+			if (room > (64L << 20)) {
+				long est = (long) (room / (Budgets.EST_FACTOR * 5.5));
+				got = raceReserve(g, cs, est);
+				check("64 concurrent reservations against room for 5.5 estimates of heap grant at " +
+					"most 5 (granted " + got[0] + ")", got[0] >= 1 && got[0] <= 6);
+			}
+			Settings.clear();
+		}
+
+		/** Every thread reserves one view at once; {@code [granted, per-thread 1/0...]}. */
+		private static int[] raceReserve(Governor g, Client[] cs, long est) {
+			int n = cs.length;
+			int[] out = new int[1 + n];
+			java.util.concurrent.CyclicBarrier bar = new java.util.concurrent.CyclicBarrier(n);
+			Thread[] ts = new Thread[n];
+			for (int i = 0; i < n; i++) {
+				int k = i;
+				ts[i] = new Thread(() -> {
+					try {
+						bar.await();
+						if (g.tryReserveView(cs[k], false, est, "k" + k, new boolean[1]) == null) {
+							out[1 + k] = 1;
+						}
+					}
+					catch (Exception e) {
+						out[1 + k] = -1;
+					}
+				});
+				ts[i].start();
+			}
+			for (Thread t : ts) {
+				try {
+					t.join(30_000);
+				}
+				catch (InterruptedException e) {
+					return out;
+				}
+			}
+			for (int i = 0; i < n; i++) {
+				out[0] += out[1 + i] == 1 ? 1 : 0;
+			}
+			return out;
+		}
+
+		/** A body that throws an Error is run again; the count is kept; the reserve is released. */
+		private static void guardedRestarts() {
+			Guarded.clear();
+			int[] n = { 0 };
+			Thread t = new Thread(() -> Guarded.loop("selfTestThread", () -> {
+				if (++n[0] < 3) {
+					throw new OutOfMemoryError("planted");
+				}
+			}));
+			t.start();
+			try {
+				t.join(15_000);
+			}
+			catch (InterruptedException e) {
+				return;
+			}
+			check("a guarded body that threw an OutOfMemoryError twice ran a third time and ended " +
+				"(restarts " + Guarded.restartsOf("selfTestThread") + ", runs " + n[0] + ")",
+				n[0] == 3 && Guarded.restartsOf("selfTestThread") == 2 && !t.isAlive());
+			JsonObject st = Guarded.states().getAsJsonObject("selfTestThread");
+			check("the liveness figure of a guarded thread: not alive, ended, 2 restarts, not stale",
+				st != null && !st.get("alive").getAsBoolean() && st.get("ended").getAsBoolean() &&
+					st.get("restarts").getAsInt() == 2 && !st.get("stale").getAsBoolean());
+			Guarded.beat(1); // not on a guarded thread: a no-op
+			check("a fault can only be planted on a guarded thread that exists",
+				!Guarded.inject("noSuchThread", "runtime"));
+			Guarded.clear();
 		}
 
 		private static void advertised() {
@@ -887,7 +1232,9 @@ public class HeadlessSession implements GhidraLaunchable {
 			Client c = new Client(40, "selftest", false, null);
 			Client other = new Client(41, "selftest", false, null);
 			Scheduler.Ticket t = s.admit(c, "decompile", new JsonObject(), null, 100);
+			int[] before = s.recorded(Scheduler.Lane.QUICK);
 			t.yieldSlot();
+			int[] yielded = s.recorded(Scheduler.Lane.QUICK);
 			Scheduler.Ticket o = s.admit(other, "decompile", new JsonObject(), null, 100);
 			boolean busy = false;
 			try {
@@ -900,10 +1247,16 @@ public class HeadlessSession implements GhidraLaunchable {
 			t.reacquire(null, 1000);
 			boolean held = s.describe(false).getAsJsonObject("quick").get("inUse").getAsInt() == 1;
 			t.close();
+			int[] closed = s.recorded(Scheduler.Lane.QUICK);
 			check("yieldSlot gives the slot to another key, reacquire waits for one again " +
 				"(busy while it is taken) and close releases it once",
 				busy && held &&
 					s.describe(false).getAsJsonObject("quick").get("inUse").getAsInt() == 0);
+			// E3c (the E3a review nit): a yield is not a completion and records no hold time; only the
+			// end of the request does (the other key's close above is the one completion before it)
+			check("yieldSlot records neither a hold time nor a completion; the final close records one",
+				yielded[0] == before[0] && yielded[1] == before[1] && closed[0] == yielded[0] + 2 &&
+					closed[1] == yielded[1] + 2);
 		}
 
 		private static void negotiation() {
@@ -1048,6 +1401,174 @@ public class HeadlessSession implements GhidraLaunchable {
 			}
 			check("under concurrent cancels and a hook added meanwhile, every hook ran exactly " +
 				"once (" + rounds + " rounds)", twice.get() == 0);
+		}
+
+		/**
+		 * The waiter cap (D39) on the plain locks of a project (slot transition, structure change):
+		 * with the lock held, a protocol 3 caller beyond {@code max(2, slots / 4)} waiters is
+		 * answered QUEUE_FULL at once, the waiters keep their place and get the lock, a protocol 2
+		 * caller is never capped, and the counter returns to 0.
+		 */
+		private static void waiterCaps() {
+			java.util.concurrent.locks.ReentrantLock lock = new java.util.concurrent.locks.ReentrantLock();
+			java.util.concurrent.atomic.AtomicInteger waiters = new java.util.concurrent.atomic.AtomicInteger();
+			Client v3 = new Client(60, "selftest", false, null);
+			v3.negotiate(obj("{\"protocol\":3}"));
+			Client v2 = new Client(61, "selftest", false, null);
+			java.util.concurrent.CountDownLatch held = new java.util.concurrent.CountDownLatch(1);
+			java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+			Thread holder = new Thread(() -> {
+				lock.lock();
+				held.countDown();
+				try {
+					release.await();
+				}
+				catch (InterruptedException e) {
+					Thread.currentThread().interrupt();
+				}
+				finally {
+					lock.unlock();
+				}
+			});
+			holder.start();
+			Waits.Outcome[] got = new Waits.Outcome[2];
+			Thread[] ws = new Thread[2];
+			try {
+				held.await();
+				for (int i = 0; i < ws.length; i++) {
+					final int k = i;
+					ws[i] = new Thread(() -> {
+						Caller.enter(v3, new Caller.Identity("w" + k, "h", true),
+							new RequestMonitor(null, null));
+						try {
+							got[k] = Waits.lock(lock, 20000, waiters);
+							if (got[k] == Waits.Outcome.GOT) {
+								lock.unlock();
+							}
+						}
+						finally {
+							Caller.leave();
+						}
+					});
+					ws[i].start();
+				}
+				long end = System.currentTimeMillis() + 10000;
+				while (lock.getQueueLength() < 2 && System.currentTimeMillis() < end) {
+					sleepMs(10);
+				}
+				check("two protocol 3 requests queue for a held lock (the cap is 2)",
+					lock.getQueueLength() == 2 && waiters.get() == 2);
+				Caller.enter(v3, new Caller.Identity("w2", "h", true), new RequestMonitor(null, null));
+				long t0 = System.nanoTime();
+				Waits.Outcome third;
+				try {
+					third = Waits.lock(lock, 20000, waiters);
+				}
+				finally {
+					Caller.leave();
+				}
+				long ms = (System.nanoTime() - t0) / 1_000_000L;
+				check("the third protocol 3 waiter is answered QUEUE_FULL at once (" + ms + " ms) " +
+					"and is not left counted", third == Waits.Outcome.QUEUE_FULL && ms < 1000 &&
+						waiters.get() == 2 && lock.getQueueLength() == 2);
+				Caller.enter(v2, new Caller.Identity("w3", "h", true), new RequestMonitor(null, null));
+				Waits.Outcome old;
+				try {
+					old = Waits.lock(lock, 150, waiters);
+				}
+				finally {
+					Caller.leave();
+				}
+				check("a protocol 2 waiter is never capped: it waits its time and times out",
+					old == Waits.Outcome.TIMED_OUT);
+				release.countDown();
+				for (Thread t : ws) {
+					t.join(20000);
+				}
+				holder.join(20000);
+				check("the two waiters that queued get the lock when it is released, and the " +
+					"counter returns to 0", got[0] == Waits.Outcome.GOT && got[1] == Waits.Outcome.GOT &&
+						waiters.get() == 0 && !lock.isLocked());
+			}
+			catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				check("the waiter cap check was interrupted", false);
+			}
+			finally {
+				release.countDown();
+			}
+		}
+
+		/**
+		 * The close of an idle project and a view change of it (a {@code refresh}, the reopening of a
+		 * read-only view as writable) exclude each other (E3c). A thread plays the view change the way
+		 * {@code ProjectCommands.makeWritable} and {@code refresh} run it: it holds the project's
+		 * {@code structure} lock, checks {@code closed}, and then (held by a latch, the slow
+		 * {@code SessionProject.open}) would install its new view. Meanwhile the reap's
+		 * {@code closeIdle} runs. Before the fix the close ran in that window and the new view was
+		 * installed on a closed project: nothing ever closed it and the daemon kept the project's OS
+		 * lock.
+		 */
+		private static void closeVsViewChange() {
+			ProjectRegistry reg = new ProjectRegistry();
+			ProjectRegistry.Slot sl = reg.slot("selftest:close-vs-view-change");
+			ProjectEntry p = new ProjectEntry("p1", null, sl.canonical, null, 0);
+			sl.entry = p;
+			sl.state = ProjectRegistry.State.OPEN;
+			java.util.concurrent.CountDownLatch checked = new java.util.concurrent.CountDownLatch(1);
+			java.util.concurrent.CountDownLatch go = new java.util.concurrent.CountDownLatch(1);
+			java.util.concurrent.atomic.AtomicBoolean onClosed =
+				new java.util.concurrent.atomic.AtomicBoolean();
+			java.util.concurrent.atomic.AtomicInteger closes =
+				new java.util.concurrent.atomic.AtomicInteger();
+			java.util.function.Consumer<ProjectEntry> closer = x -> {
+				closes.incrementAndGet();
+				x.closed = true;
+			};
+			Thread change = new Thread(() -> {
+				p.structure.lock();
+				try {
+					if (p.closed) {
+						return;
+					}
+					checked.countDown();
+					go.await(10, java.util.concurrent.TimeUnit.SECONDS);
+					onClosed.set(p.closed); // the repoint would install its view now
+				}
+				catch (InterruptedException e) {
+					Thread.currentThread().interrupt();
+				}
+				finally {
+					p.structure.unlock();
+				}
+			});
+			change.start();
+			try {
+				boolean ready = checked.await(10, java.util.concurrent.TimeUnit.SECONDS);
+				boolean during = reg.closeIdle(p, closer);
+				go.countDown();
+				change.join(10000);
+				p.structure.lock();
+				boolean ownThread;
+				try {
+					ownThread = reg.closeIdle(p, closer); // a view change of this very thread
+				}
+				finally {
+					p.structure.unlock();
+				}
+				boolean after = reg.closeIdle(p, closer);
+				check("a close of an idle project does not run while a view change of it (refresh, " +
+					"writable reopen) holds its structure lock, and runs once after it",
+					ready && !during && !onClosed.get() && !ownThread && after && closes.get() == 1 &&
+						reg.current(sl.canonical) == null);
+			}
+			catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				check("the close versus view change check was interrupted", false);
+			}
+			finally {
+				go.countDown();
+			}
 		}
 
 		private static void dbVersions() {

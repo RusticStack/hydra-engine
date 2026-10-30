@@ -125,7 +125,8 @@ final class Identity {
 				"javaVersion", System.getProperty("java.version"), "maxHeapMb", rt.maxMemory() >> 20,
 				"fileSystems", Json.of("stateDir", type(stateFs), "tmpDir", type(tmpFs),
 					"upgradeCacheDir", type(cacheFs)),
-				"cow", Json.of("stateDir", clones(stateFs), "tmpDir", clones(tmpFs)));
+				"cow", Json.of("stateDir", clones(stateFs), "tmpDir", clones(tmpFs)),
+				"testHooks", Health.testHooks()); // E5: true only with -Dghidra.session.testHooks=true
 			platform = p;
 		}
 		return p.deepCopy();

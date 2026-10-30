@@ -36,6 +36,8 @@ the same name in capitals as the default:
     --func-regex RX   function-name regex for the 2000-row reads (default ^FUN_00[4-5])
     --java-home DIR   JDK for the daemons (default: whatever the launcher finds; ``GHIDRA_SESSION_JAVA_HOME``)
     --tag TAG         suffix for state roots, projects and outputs (two runs of one scenario need two tags)
+    --parts LETTERS   only these parts of a script made of independent parts (s1, s4), e.g. ``a``; red_table.py runs
+                      the parts at once (each with its own tag) and merges their outputs (default: every part)
 
 Every output is a JSON file in ``--work``; nothing is written next to the scripts.
 """
@@ -59,7 +61,7 @@ SCRIPTS = HERE / "scripts"
 def _opts():
     ap = argparse.ArgumentParser(add_help=False)
     for name in ("ghidra", "work", "tmpdir", "project", "program", "fixtures", "import-exe", "addr-base",
-                 "func-regex", "java-home", "tag", "fixture-exe", "refs-root"):
+                 "func-regex", "java-home", "tag", "fixture-exe", "refs-root", "parts"):
         ap.add_argument("--" + name, default=os.environ.get("X0_" + name.upper().replace("-", "_")))
     ns, rest = ap.parse_known_args(sys.argv[1:])
     sys.argv[1:] = rest
@@ -80,6 +82,7 @@ ENGINE = _need("ghidra").replace("\\", "/")
 ROOT = pathlib.Path(_need("work")).absolute()
 ROOT.mkdir(parents=True, exist_ok=True)
 TAG = OPTS.tag or ""
+PARTS = OPTS.parts or ""
 TMPDIR = OPTS.tmpdir
 if OPTS.java_home:
     os.environ["GHIDRA_SESSION_JAVA_HOME"] = OPTS.java_home
@@ -97,6 +100,11 @@ IMPORT_DIR = str(pathlib.Path(IMPORT_EXE).parent).replace("\\", "/")
 KOTOR_SRC = pathlib.Path(OPTS.project).parent if OPTS.project else None   # name kept by the ported scripts: the base project folder
 BASE_GPR = pathlib.Path(OPTS.project) if OPTS.project else None
 FIX_SRC = pathlib.Path(OPTS.fixtures) if OPTS.fixtures else None
+
+
+def part(letter):
+    """True when the part ``letter`` of the script is to run (``--parts``; every part by default)."""
+    return not PARTS or letter in PARTS
 
 
 def ADDR(off=0):
@@ -141,6 +149,17 @@ def base_project() -> pathlib.Path:
     if not p.is_dir():
         sys.exit("the base project is missing: run mkbase.py first (same --work)")
     return p
+
+
+def wait_file(path, timeout=120.0):
+    """Waits until ``path`` exists (an event the scenario's script creates; polls every 20 ms) and returns
+    ``time.perf_counter()`` at that moment; raises ``TimeoutError`` when it does not appear."""
+    end = time.perf_counter() + timeout
+    while not os.path.exists(path):
+        if time.perf_counter() > end:
+            raise TimeoutError(f"{path} did not appear within {timeout:.0f} s")
+        time.sleep(0.02)
+    return time.perf_counter()
 
 
 def timed(fn, *a, **k):

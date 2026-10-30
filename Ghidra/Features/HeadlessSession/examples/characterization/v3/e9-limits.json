@@ -1,0 +1,50 @@
+{
+ "scenario": "e9-limits",
+ "protocol": 3,
+ "steps": [
+  {
+   "step": 1,
+   "who": "a",
+   "cmd": "status",
+   "request": {},
+   "response": {
+    "ok": true,
+    "result": {
+     "protocol": 3,
+     "capabilities": {
+      "admission": 1
+     },
+     "limits": {
+      "minXmxMb": "<masked>",
+      "maxViews": 24,
+      "maxViewsPerClient": 4,
+      "heapSoftPct": 70,
+      "heapHardPct": 85,
+      "nativeBudgetMb": "<masked>",
+      "viewDiskBudget": 20480,
+      "diskReserve": 5120,
+      "decompilerIdleS": 60,
+      "decompilerWaitS": 60,
+      "decompilerFailLimit": 3,
+      "decompilerNegativeS": 600
+     }
+    }
+   },
+   "note": "the E9 names of capabilities and limits (3.11: every value a Settings key)"
+  },
+  {
+   "step": 2,
+   "who": "a",
+   "cmd": "ping",
+   "request": {},
+   "response": {
+    "id": 3,
+    "ok": true,
+    "result": {
+     "pong": true
+    },
+    "ms": "<masked>"
+   }
+  }
+ ]
+}

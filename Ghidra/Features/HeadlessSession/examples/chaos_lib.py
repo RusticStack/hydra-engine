@@ -279,21 +279,30 @@ class HandleHolder:
     ``share=0`` nothing else can open it for write, rename or delete it: the effect of an indexer or a
     scanner that grabbed a file (Hydralysis retries ``PermissionError`` with a backoff, 4.1).
 
-    ``with HandleHolder(path): ...`` or ``h = HandleHolder(path).acquire() ... h.release()``."""
+    ``with HandleHolder(path): ...`` or ``h = HandleHolder(path).acquire() ... h.release()``.
+
+    ``access`` (default ``GENERIC_READ``) and ``share`` choose what the hold blocks. On a folder,
+    ``access=FILE_ADD_FILE, share=FILE_SHARE_WRITE`` blocks only the *listing* of the folder
+    (``FindFirstFile``: sharing violation) while renames, creates and deletes inside it still work:
+    the state of a default hold that arrives right after a save renamed its new version and before
+    the save listed the folder (GATE8, dt_hh.py), made deterministic."""
 
     GENERIC_READ = 0x80000000
+    FILE_ADD_FILE = 0x0002      # FILE_WRITE_DATA on a folder: counts as write access for sharing
+    FILE_SHARE_WRITE = 0x0002
     OPEN_EXISTING = 3
     FILE_FLAG_BACKUP_SEMANTICS = 0x02000000  # needed to open a folder
 
-    def __init__(self, path, share: int = 0):
+    def __init__(self, path, share: int = 0, access: int = GENERIC_READ):
         self.path = str(path)
         self.share = share
+        self.access = access
         self.handle = None
 
     def acquire(self) -> "HandleHolder":
         k = _kernel()
         flags = self.FILE_FLAG_BACKUP_SEMANTICS if os.path.isdir(self.path) else 0
-        h = k.CreateFileW(self.path, self.GENERIC_READ, self.share, None, self.OPEN_EXISTING, flags, None)
+        h = k.CreateFileW(self.path, self.access, self.share, None, self.OPEN_EXISTING, flags, None)
         if h in (None, ctypes.c_void_p(-1).value):
             raise OSError(ctypes.get_last_error() or ctypes.GetLastError(), f"cannot hold {self.path}")
         self.handle = h

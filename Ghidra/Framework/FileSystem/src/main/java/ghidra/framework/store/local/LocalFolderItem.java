@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+// Hydra Engine: modified from Ghidra's original (see NOTICE-HYDRA).
 package ghidra.framework.store.local;
 
 import java.io.*;
@@ -149,8 +150,35 @@ public abstract class LocalFolderItem implements FolderItem {
 		if ((useDataDir && !getDataDir().exists()) || !propertyFile.exists()) {
 			return null;
 		}
-		propertyFile.readState();
+		try {
+			propertyFile.readState();
+		}
+		catch (IOException e) {
+			// Hydra GATE10: the property file exists but another process holds it without read
+			// sharing (on Windows a scanner, an indexer, a backup tool; the read then fails as
+			// "XML parse error"). Thrown, it made the project drop the file (as GATE8's listing
+			// case in LocalDatabaseItem.refresh), so a save that succeeded under such a hold left
+			// a program that could no longer be saved ("File is read-only"). The item keeps what
+			// it read before; the next refresh reads again. A file that can be opened and does
+			// not parse is still an error.
+			File f = new File(propertyFile.getParentStorageDirectory(),
+				propertyFile.getStorageName() + LocalFileSystem.PROPERTY_EXT);
+			if (!f.isFile() || canOpen(f)) {
+				throw e;
+			}
+			log.warn(f + ": cannot be read (another process holds it?); the item keeps the " +
+				"properties it read before");
+		}
 		return this;
+	}
+
+	private static boolean canOpen(File f) {
+		try (InputStream in = new FileInputStream(f)) {
+			return true;
+		}
+		catch (IOException e) {
+			return false;
+		}
 	}
 
 	/**

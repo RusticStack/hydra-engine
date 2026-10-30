@@ -77,6 +77,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import getpass
 import hashlib
 import json
 import os
@@ -472,6 +473,44 @@ def find_jdk(install: Install, explicit: str | None, launch_props: dict) -> tupl
 
 # ---- state dir and configuration ------------------------------------------------------------
 
+#: How long ``write_shared`` keeps retrying a rename that another writer or a reader blocks.
+SHARED_WRITE_DEADLINE = 10.0
+
+
+def write_shared(path: Path, text: str, same_ok: bool = False,
+                 deadline: float = SHARED_WRITE_DEADLINE) -> None:
+    """Writes ``text`` to ``path`` atomically when other threads or processes may write the same
+    file at the same time. Each writer has its own temporary file (pid plus a random suffix) that
+    ``os.replace`` moves into place. On Windows the rename fails (WinError 5 or 32) while another
+    writer's rename or a reader holds ``path``: with ``same_ok`` a ``path`` that already holds
+    ``text`` is accepted; otherwise the rename is retried until ``deadline`` seconds have passed,
+    and then the error is raised. The temporary file never outlives the call."""
+    path = Path(path)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}-{uuid.uuid4().hex[:12]}.tmp")
+    end = time.monotonic() + deadline
+    delay = 0.002
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        while True:
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                if same_ok:
+                    try:
+                        if path.read_text(encoding="utf-8") == text:
+                            return
+                    except OSError:
+                        pass
+                if time.monotonic() >= end:
+                    raise
+                time.sleep(delay)  # backoff while the other side lets go; not synchronisation
+                delay = min(delay * 2, 0.05)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+
+
 def state_dir(explicit: str | None = None) -> Path:
     if explicit:
         return Path(explicit).resolve()
@@ -597,6 +636,9 @@ DEFAULTS = {
     "singleton": "warn",     # warn | per-install: a live daemon of this install under another state
                              # dir is reported (warn) or refused (DuplicateDaemonError)
     "heapCheck": True,       # refuse an explicit maxHeap that is larger than the free physical memory
+    "settingsDir": "auto",   # Ghidra's per-user settings dir (OSGi felixcache, compiled script bundles) of a
+                             # daemon: auto (its own, <state>/settings/<instance>) | shared (the user's, as
+                             # Ghidra's launcher chooses it) | a directory
 }
 
 ENV_MAP = {
@@ -613,6 +655,7 @@ ENV_MAP = {
     "GHIDRA_SESSION_UPGRADE_CACHE_DIR": ("upgradeCacheDir", str),
     "GHIDRA_SESSION_FORK_COPY_LIMIT_MB": ("forkCopyLimitMb", int),
     "GHIDRA_SESSION_SINGLETON": ("singleton", str),
+    "GHIDRA_SESSION_SETTINGS_DIR": ("settingsDir", str),
     "GHIDRA_SESSION_HEAP_CHECK": ("heapCheck", lambda v: v.strip().lower() not in
                                   ("0", "false", "off", "no")),
 }
@@ -693,16 +736,62 @@ def load_config(state: Path, overrides: dict | None = None) -> dict:
 class Launch:
     """Everything needed to start one session JVM."""
 
-    def __init__(self, install: Install, cfg: dict, state: Path):
+    def __init__(self, install: Install, cfg: dict, state: Path, instance: str | None = None):
         self.install = install
         self.cfg = cfg
         self.state = state
+        #: the daemon instance this JVM is (its settings dir is named by it); None: not a daemon
+        self.instance = instance
         self.props = install.launch_properties()
         self.jdk, self.jdk_version = find_jdk(install, cfg.get("java"), self.props)
         self.java = _java_exe(self.jdk)
         self.env = dict(os.environ)
         for k, v in self.props["envvars"].items():
             self.env.setdefault(k, v)
+
+    def settings_dir_arg(self) -> str | None:
+        """``-Dapplication.settingsdir=...`` for a daemon JVM, or None. Ghidra keeps the OSGi bundle cache
+        (``osgi/felixcache``) and the compiled script bundles in its per-user settings dir, which every JVM
+        of the user shares: concurrent daemons (and a running Ghidra) contend for them (a 40 ms script
+        request took 2-3 s with 14 daemons at once). Each daemon therefore gets its own,
+        ``<state>/settings/<instance>``, unless ``settingsDir`` is ``shared`` or a JVM option already names
+        one. The user's ``Extensions`` are linked into it, so the same modules are found. The option
+        travels on the command line, so it also reaches the routes that carry no environment."""
+        mode = str(self.cfg.get("settingsDir") or "auto")
+        if self.instance is None or mode == "shared":
+            return None
+        if any(a.startswith("-Dapplication.settingsdir=")
+               for a in [*self.props["vmargs"], *(self.cfg.get("vmargs") or [])]):
+            return None
+        root = (self.state / "settings" / self.instance) if mode == "auto" else Path(mode)
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            self._link_extensions(root)
+        except OSError:
+            return None                 # the daemon then uses the shared dir, as before
+        return f"-Dapplication.settingsdir={root}"
+
+    def _link_extensions(self, root: Path):
+        """``<root>/<app>/<versioned>/Extensions`` -> the user's own (junction on Windows, symlink else),
+        when the user has any. Ghidra names the parent ``<app>`` below the home dir and ``<user>-<app>``
+        elsewhere."""
+        real = self.install.settings_dir(self.props["vmargs"]) / "Extensions"
+        if not real.is_dir():
+            return
+        app = self.install.name.lower().replace(" ", "")
+        home = Path.home().resolve()
+        inside = home == root.resolve() or home in root.resolve().parents
+        parent = app if inside else f"{getpass.getuser()}-{app}"
+        mine = real.parent
+        link = root / parent / mine.name / "Extensions"
+        if link.exists() or link.is_symlink():
+            return
+        link.parent.mkdir(parents=True, exist_ok=True)
+        if IS_WINDOWS:
+            subprocess.run(["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(real)],
+                           capture_output=True, creationflags=_CREATE_NO_WINDOW)
+        else:
+            os.symlink(real, link, target_is_directory=True)
 
     def gc_args(self) -> list[str]:
         gc = self.cfg["gc"]
@@ -798,11 +887,10 @@ class Launch:
             argdir.mkdir(parents=True, exist_ok=True)
             argfile = argdir / f"classpath-{key}.args"
             if not argfile.is_file():
-                tmp = argfile.with_suffix(".tmp")
-                # @argfile syntax: quote, and escape backslashes inside quotes
+                # @argfile syntax: quote, and escape backslashes inside quotes. Clients launching
+                # against one state dir at once all write this file: same name, same content.
                 quoted = os.pathsep.join(cp).replace("\\", "\\\\")
-                tmp.write_text(f'-cp "{quoted}"\n', encoding="utf-8")
-                os.replace(tmp, argfile)
+                write_shared(argfile, f'-cp "{quoted}"\n', same_ok=True)
             info["key"] = key
             info["classpathEntries"] = len(cp)
             head = [f"@{argfile}"]
@@ -837,6 +925,10 @@ class Launch:
         if self.cfg.get("tmpdir"):
             Path(self.cfg["tmpdir"]).mkdir(parents=True, exist_ok=True)
             vm.append(f"-Djava.io.tmpdir={self.cfg['tmpdir']}")
+        sd = self.settings_dir_arg()
+        if sd:
+            vm.append(sd)
+            info["settingsDir"] = sd.split("=", 1)[1]
         vm += list(self.cfg.get("vmargs") or [])
         info["maxHeap"] = heap
         app_args = list(app_args)
@@ -1316,10 +1408,16 @@ class SpawnError(Exception):
 
 
 _K32 = None
+_K32_LOCK = threading.RLock()  # the signatures are set on a shared DLL object: once, never raced
 
 
 def _kernel32():
     """kernel32 with the signatures this file uses (Windows only), made once."""
+    with _K32_LOCK:
+        return _kernel32_locked()
+
+
+def _kernel32_locked():
     global _K32
     if _K32 is None:
         import ctypes
@@ -1547,6 +1645,24 @@ def _spawn_task(args_after_cmd: str, cwd: str, timeout: float = 60.0) -> str:
     return name
 
 
+#: the states of a scheduled task whose command may still write the daemon's endpoint
+_TASK_ALIVE = ("Running", "Queued", "unknown")
+
+
+def _task_state(name: str) -> str:
+    """The task's ``State`` (``Running``, ``Queued``, ``Ready`` once its command ended, ...), or
+    ``unknown`` when PowerShell does not answer (a loaded machine: asked again next time)."""
+    try:
+        r = _run_ps(f"Get-ScheduledTask -TaskName '{name}' -ErrorAction SilentlyContinue | "
+                    "ForEach-Object { [string]$_.State }; 'end'", dict(os.environ), 60, "task state")
+    except SpawnError:
+        return "unknown"
+    s = [x.strip() for x in r.stdout.strip().splitlines() if x.strip()]
+    if r.returncode != 0 or not s or s[-1] != "end":
+        return "unknown"
+    return s[-2] if len(s) >= 2 else "gone"   # no task by that name: removed, so it ended
+
+
 def _unregister_task(name: str, stop: bool = False):
     """Removes the task entry. ``stop`` also ends what it started (the failure path only: it
     would end a healthy daemon too)."""
@@ -1560,7 +1676,7 @@ def _unregister_task(name: str, stop: bool = False):
 
 
 def spawn_daemon(argv, env, log_path, cwd, *, argv_envfree=None, set_env=None, routes=None,
-                 wait_endpoint=None, task_wait: float = 30.0):
+                 wait_endpoint=None, task_wait: float = 600.0):
     """D65 launch sequence. Returns ``(proc, outcome)``.
 
     ``argv``/``env``: the JVM command line and environment for the direct routes. ``argv_envfree``
@@ -1643,17 +1759,30 @@ def spawn_daemon(argv, env, log_path, cwd, *, argv_envfree=None, set_env=None, r
             if tn:
                 jvm = None
                 if wait_endpoint is not None:
-                    end = time.monotonic() + task_wait
-                    while jvm is None and time.monotonic() < end:
+                    # The route has failed when the task's command has ended without an endpoint,
+                    # not after a fixed time: a JVM that starts slowly (a loaded machine) is still
+                    # the task's, and giving up on it left that daemon running while the "stayed"
+                    # route below opened the log the task's cmd.exe still held (PermissionError).
+                    # task_wait only ends a task that runs on and never shows an endpoint.
+                    t0 = time.monotonic()
+                    state = "Running"
+                    while True:
                         jvm = wait_endpoint()
-                        if jvm is None:
-                            time.sleep(0.1)
+                        if jvm is not None or state not in _TASK_ALIVE:
+                            break
+                        if time.monotonic() - t0 >= task_wait:
+                            state = "no endpoint"
+                            break
+                        time.sleep(0.1)
+                        state = _task_state(tn)
+                    if jvm is None:
+                        jvm = wait_endpoint()   # written just as the task ended
                     if jvm is None:
                         _unregister_task(tn, stop=True)
                         out["attempts"].append({"route": "task", "ok": False,
-                                                "ms": round(task_wait * 1000),
-                                                "error": f"no endpoint within {task_wait:.0f} s; "
-                                                         "task stopped and removed"})
+                                                "ms": round((time.monotonic() - t0) * 1000),
+                                                "error": f"the task ended ({state}) without an "
+                                                         "endpoint; task stopped and removed"})
                         tn = None
                 if tn:
                     out.update(spawn="task", survival="independent", task_name=tn)
@@ -1709,9 +1838,7 @@ def registry_write(install: "Install", state: Path, instance: str, pid,
         entry = {"pid": pid, "stateDir": str(state), "instance": instance,
                  "install": str(install.dir), "hydraVersion": version or install.version,
                  "startedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
-        tmp = f.with_name(f.name + f".{os.getpid()}.tmp")
-        tmp.write_text(json.dumps(entry, indent=1), encoding="utf-8")
-        os.replace(tmp, f)
+        write_shared(f, json.dumps(entry, indent=1))
         return f
     except OSError:
         return None
@@ -1945,9 +2072,7 @@ class Daemon:
         registry_write(install, self.state, self.instance, pid,
                        str(s.endpoint.get("hydraVersion") or s.endpoint.get("ghidra") or ""))
         try:
-            tmp = self.launch_file.with_name(self.launch_file.name + f".{os.getpid()}.tmp")
-            tmp.write_text(json.dumps({"pid": pid, "launch": public}, indent=1), encoding="utf-8")
-            os.replace(tmp, self.launch_file)
+            write_shared(self.launch_file, json.dumps({"pid": pid, "launch": public}, indent=1))
         except OSError:
             pass
 
@@ -2035,7 +2160,7 @@ class Daemon:
         """Starts the JVM (D65: outside the caller's job when there is one) and returns its
         process object. How it was started is ``self.last_launch``."""
         cfg = load_config(self.state, self.cfg_overrides)
-        launch = Launch(install, cfg, self.state)
+        launch = Launch(install, cfg, self.state, self.instance)
         launch.check_heap()
         args = ["-daemon", "-stateDir", str(self.state), "-instance", self.instance,
                 "-idleTimeout", str(cfg["idleTimeout"]), "-keepWarm", str(cfg["keepWarm"]),
@@ -2216,7 +2341,8 @@ def build_aot(ghidra: str | None, state: str | None, project: str | None,
     key = info["aotKey"]
     out = st / "aot" / f"{key}.aot"
     out.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out.with_suffix(".building")
+    # Two training runs at once must not write (or rename) one another's output file.
+    tmp = out.with_name(f"{out.stem}.{os.getpid()}-{uuid.uuid4().hex[:12]}.building")
     argv, info = launch.command([], aot_output=tmp)
     t0 = time.perf_counter()
     errlog = st / "aot" / f"{key}.log"

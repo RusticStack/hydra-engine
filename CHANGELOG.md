@@ -9,69 +9,141 @@ example `12.3-hydra.1`); its tag is `v` and the version. Releases are on
 
 ## Unreleased
 
-Not yet released; a release renames this heading to its version and names the upstream commit
-it is based on.
+## 12.3-hydra.4
 
-### Documentation
+Released 2026-10-30. Based on upstream Ghidra `master` (12.3 DEV) at
+commit `1b9e58a915cf867e106495eaa2a4b18eb4971c9d`, the same upstream commit as 12.3-hydra.3. This
+release adds protocol 3 beside protocol 2, the storage-integrity changes, the resource governor
+and the script worker. Every release gate with its run, the guarantees with the test that decides
+each, and what was not met are in
+[`docs/release-notes-12.3-hydra.4.md`](docs/release-notes-12.3-hydra.4.md). Every result is for a
+process crash on Windows x64 with JDK 25 on NTFS.
 
-Wording corrected to what is true today; no behaviour changed. The claim ids are those of the
-claims audit in `Ghidra/Features/HeadlessSession/PROTOCOL-3.md`, section 8.3.
+### Compatibility
 
-- Concurrency (C1, C3, C4, U1, U2, U3): writes are serialized and no corruption was seen in the
-  tests listed; collisions are only detected when you pass `expect`. Native commands stay in the
-  quick lane while imports and analyses run in the long lane; scripts share the long lane, and
-  the readers of a program being analysed wait for its lock. Each program and project has its
-  own lock, but they share the daemon's lane slots and import gate. Waiting requests are
-  admitted round-robin by connection, with no cap on how many slots one connection runs. The
-  documents say "several clients (tested with up to 4 clients)" where they gave no limit.
-- Scripts, cancel and dead clients (C2, C5, C7): a contained script's changes are rolled back and
-  never saved, but other clients can see them while it runs. `cancel` stops requests waiting for
-  a slot and cooperative scripts; a request waiting for a program lock stays until its `wait`
-  runs out. A disconnected client's requests are cancelled and its uncommitted changes rolled
-  back when its running request ends.
-- Imports (C6): an import waits in the import queue; at the front it still needs a long slot and
-  fails `busy` after `wait` (10 s default).
-- Facts (C8, C11, U10, U11): one daemon per state directory and instance; small fixes to
-  Ghidra classes (three at the time of 12.3-hydra.3; see Unreleased below for the storage change); a native decompile takes about 1 to 45 ms by function size (7 ms in
-  the benchmark function); the 7.0-7.8 s of `analyzeHeadless` was measured on stock Ghidra 12.1.4.
-- Headless only (U8, U14): there is no GUI, and projects Hydra Engine writes cannot be opened by
-  Ghidra 12.2 or 12.1.4. Scripts that use the headless API run unchanged; GUI-only extensions do
-  not apply. "Other processes can read it" replaces the sentences that named an interactive
-  Ghidra tool as a reader of a read-only project.
-- Read-only checks (U12): the tests compare file sizes and modification times (and contents up to
-  1 MiB in the upgrade cache test), not a byte-for-byte copy of every file.
-- `how-it-works.gif` is labelled as an illustration (U5).
+- One port serves protocol 2 and protocol 3. The endpoint file and the `ready` event carry
+  `protocolMin` (2) and `protocolMax` (3). `minClient` stays `1.0.0`, so no existing client is
+  rejected. `ghidra_session.py` 1.1.0 asks for protocol 3 and falls back to 2.
+- Hydralysis 0.4.x refuses this engine by its own pin; clients of hydra.2 and hydra.3 keep working
+  at protocol 2. Hydralysis 0.6.0 pins this release. Restart the MCP harness once after updating
+  Hydralysis (catalog epoch).
+- Headless only: there is no GUI, and projects this engine writes cannot be opened by Ghidra 12.2
+  or 12.1.4.
 
-### Storage integrity (not released)
+### Changes a protocol 2 client can see
 
-- Ghidra core: the header of a new version file is written and synced before the file is renamed
-  to its final name (`LocalManagedBufferFile`), and the newest version is checked when a database
-  is opened (`VersionedDatabase`, `LocalDatabaseItem`, the added class `VersionFileCheck`). A kill
-  during a save used to leave an unopenable newest version in about 3% of kills in the crash tests
-  (12 of 363); kill batches with the change found 0 unopenable versions in 200 kills on NTFS and 0 in
-  200 on ReFS. The repair of a bad newest version applies only to writable forks inside declared
-  disposable roots and is not wired into the daemon yet. A bounded result, not a guarantee.
-- Fork publish is atomic and retryable (capability `forkAtomic`): the fork is built in a staging
-  folder and published with `.gpr` last, a sidecar records its state, and a sweeper removes the
-  leftovers of a publisher that died. 330 kills on NTFS and 300 on ReFS left no state that a retry
-  could not finish (a killed publish can leave a `.rep` without its `.gpr`, which the next call
-  sweeps). A concurrent publisher of the same name now gets `conflict`.
-- Protocol 3 groundwork (client 1.1.0, version negotiation, the identity block; protocol 2 replies
-  are unchanged and checked against the vendored 1.0.0 client), the corruption oracle and the
-  regression suites (`examples/oracle.py`, `examples/conc/`), and the design in `PROTOCOL-3.md`
-  revision 8.1. None of it changes the replies of protocol 2.
+Everything else a protocol 2 client does is unchanged and checked against the vendored 1.0.0
+client (`examples/stock/`, `examples/client_compat_tests.py`, 52 of 52). The declared exceptions:
 
-### Internal
+- V1, the upgrade gate: `open_program` with `writable` and `upgrade` on a canonical project in an
+  older format is refused with `conflict` (`details.reason` `backup_required`) unless the request
+  carries a valid `backup`; a fork is allowed.
+- V2, the import wait: an import without `wait` no longer fails `busy` ten seconds after it reaches
+  the front; an import with a numeric `wait` spends one budget across the gate, the slot and the
+  project lock.
+- V3, bounded release of a dead client: its slots and locks are released after `cleanupGraceS` and
+  `abandonWaitS` (15 s and 5 s by default); the 600 s waits of `disconnect` and `leaveProject` for
+  owners and writers use the same bounds.
+- V4: a request for a program held by an abandoned request answers `busy` at once.
+- V5: `cancel`, and a `timeout` deadline, end a request-bound lock wait (a program, a project, or an
+  overlay's request lock site). The overlay lifecycle waits (open, rebuild, drop and promote of an
+  overlay) are untimed and are not ended by `cancel`, a `timeout` or the release of a dead client.
+- V6: `protocolMin` and `protocolMax` in the endpoint file and the `ready` event.
+- V7: the sidecar of every `fork_project` gains `purpose` and `disposable`.
+- V8: a project this engine sealed refuses every writable path with `conflict` (`details.reason`
+  `sealed`). A project it did not seal behaves as before.
+- V9: a per-connection cap on running requests applies while another connection waits; the long
+  lane defaults to `max(8, CPUs)` slots.
+- V10: a client that is neither owner, writer nor overlay holder leaves a program without taking its
+  exclusive lock.
+- V11: concurrent `fork_project` calls to one destination give one success and `conflict`
+  (`fork_in_progress` or `exists`) to the others.
+- V12: a request that fails because another process holds a file or folder of the project answers
+  `busy` with `details.path` and `suggest:"retry"` (protocol 3 also gets `details.reason`
+  `file_held` and `retryAfterMs`), where it used to answer `bad_request` ("Unknown-File"),
+  `not_found` or a bare `failed`. Once the hold ends, the same request succeeds without a reopen.
 
-- `Session.java` (3,625 lines) is split into the state and dispatch (`Session`, 473 lines) and
-  command classes by area: `ProjectCommands`, `ForkCommands`, `ProgramCommands`, `QueryCommands`,
-  `EditCommands`, `Operations`, `OverlayCommands`, `ImportCommands`, `ScriptCommands`, with
-  `Access`, `Requests` and `Addresses` as shared helpers. No behaviour or protocol change: every
-  reply is identical, field order included. The layout and how to add a command are in
-  `Ghidra/Features/HeadlessSession/ARCHITECTURE.md`.
-- New `examples/characterization_tests.py` and `examples/characterization/`: the exact replies
-  of every session command, recorded before the split and compared after it. It needs no binary
-  and no game data; it is the safety net for the protocol changes planned next.
+### Protocol 3
+
+Only for a client that asks for protocol 3: the `expect` check on `signature` and `data_type`, the
+`rk` idempotency key, `error.next`, the identity block of `hello` (`paths`, `platform`,
+`analysisIdentity`), the capability, limit and policy blocks, the maintenance lane for `save`,
+`fork_project`, `refresh`, `reopen` and `promote_overlay`, the `queue` key of slot waits,
+validation before a wait, `seal_project`, backups with a manifest, the `isolation` and `lane`
+fields of `script`, the `health` command, and the daemon settings passed as `-set key=value` (the
+`engine` object of `config.json`).
+
+### Resources and scripts
+
+- Resource governor: a view, fork or import that does not fit the heap, `maxViews` (32) or the
+  per-client cap `maxViewsPerClient` (4) answers `busy` with `reason` `capacity`. Tested with
+  `-Xmx256m` (24 views asked, 6 opened, 18 `busy`, no out-of-memory) and `-Xmx512m` (24 of 24).
+- A native decompiler crash, hang or timeout fails that one request (`decompiler_failed`,
+  retryable). The daemon puts its decompilers in its own Job Object, so a killed daemon leaves no
+  decompiler behind (tested with suspended decompilers and a no-job control). Both in gate 9.14.
+- Script worker (`isolation:"worker"`): a script that ignores cancel is ended at its timeout and its
+  slot released (gate 9.14). A script that runs inside the daemon is still bounded and quarantined,
+  not stopped.
+
+### Storage integrity
+
+- A new version file's header is written and synced before the rename to its final name, and the
+  newest version is checked when a database is opened. Gate 9.15: 563 counted kills during a save
+  on NTFS, 0 unopenable and 0 unrepaired (below 0.75% at 95%, on NTFS alone).
+- Fork publish is staged and published `.gpr` last; a sidecar records its state. A killed publish
+  can leave a `.rep` without its `.gpr`, which the sweep removes at the next daemon start,
+  `open_project` or `fork_project` of that directory. Gate 9.15: 330 counted `fork_project` kills
+  and 211 `promote_overlay` kills, 0 failures.
+
+### Fixed during the release gates
+
+- A file or folder held by another process (an antivirus, an indexer) answers `busy` (V12) instead
+  of `bad_request`, `not_found` or a bare `failed`, and the project no longer keeps a broken entry
+  after the hold.
+- A save whose folder listing was held for a moment no longer leaves the program unsaveable until a
+  daemon restart; the next save works without a reopen.
+- Script loads during an analysis's own script load wait for the shared lock instead of failing with
+  `OverlappingFileLockException`.
+- Leftovers of a killed fork or promote (a `.rep` without its `.gpr`, a sidecar's temporary file,
+  Ghidra's empty time probe) are swept at daemon start and at `open_project`, not only at the next
+  `fork_project`.
+- The client launcher writes its shared launch files under per-writer temporary names: two clients
+  starting against one state directory no longer fail the rename (WinError 32).
+- `lockWaiters` appears in a program status on protocol 3 only; protocol 2 status replies are
+  byte-identical to 12.3-hydra.3 again.
+
+### Not met
+
+- Reader throughput under four concurrent view writers is about 0.76 of the no-writer baseline,
+  below the 0.9 of gate 9.13 (`s11`). Not a requirement for this release (owner decision
+  2026-10-30); nothing is claimed about it.
+- A concurrent `fork_project` takes a median 1226 ms against 313 ms on 12.3-hydra.3 (time to the
+  first decompile +28%). Recorded, not fixed.
+- The soak for this release is the PR lane (passed) and one nightly run of 16 agents on 4 projects
+  for 1 h 47 min, stopped early by the owner. That run failed: four Hydralysis view findings (fixed
+  in Hydralysis 0.6.0, not re-run), and two fault classes below their minimum (handle holder 8 of
+  10, backup lane 3 of 4). Scale is stated as tested with up to 4 clients.
+
+### Limits
+
+Every limit of `PROTOCOL-3.md` 6.2 is listed in the module README, "Limits of 12.3-hydra.4 and
+protocol 3". In short: a script that ignores cancel is ended only in the script worker; the overlay
+lifecycle waits are not cancel-aware; the leave of an owner or writer of an open program still
+queues the exclusive lock (bounded); `lane:"quick"` is a trusted hint; Windows x64 and JDK 25 only,
+no Linux or macOS claim; no power-cut test; nothing about ReFS is tested for this release (no ReFS
+volume on the release machine, owner decision 2026-10-30; NTFS is the release file system); the
+upgrade gate and the backup check guard against accidents and are not a security boundary.
+
+### Documentation and internals
+
+- Wording corrected to what the tests show (claims audit, `PROTOCOL-3.md` 8.3): writes are
+  serialized and no corruption was seen in the tests listed; collisions are detected only when you
+  pass `expect`; native commands stay in the quick lane; several clients (tested with up to 4
+  clients); a native decompile takes about 1 to 45 ms by function size.
+- `NOTICE-HYDRA` lists every modified Ghidra file, including those of this release.
+- `Session.java` is split into command classes by area (no reply changed, field order included;
+  `ARCHITECTURE.md`), and `examples/characterization_tests.py` records the exact replies of every
+  command.
 
 ## 12.3-hydra.3
 
@@ -140,12 +212,12 @@ stock `analyzeHeadless` import with `-loader-*` arguments applied them; upstream
 
 - **README**: Hydra Engine is described as a fork of Ghidra 12.3 DEV that depends on it (the
   project format, decompiler, analyzers and scripts are Ghidra's), not as an independent project.
-- **Speed**: the warm decompile time is qualified as size-dependent. The 6.7-7.1 ms of the
-  benchmark is one function whose size was not recorded; measured by the owner on a KotOR
+- **Speed**: the warm decompile time is qualified as size-dependent. The 6.7-7.1 ms of the benchmark function
+  is one function whose size was not recorded; measured by the owner on a KotOR
   executable on 2026-10-27, a warm decompile took 0.7-2.1 ms for a one-byte function and 35-45 ms
   for a 6.7 KB function of 29 basic blocks.
-- **Writes**: they are serialized and never corrupt a program, but are not collision-checked by
-  default: shared writes are last-writer-wins per value, and `expect` is opt-in per call. The
+- **Writes**: they are serialized, and no corruption was seen in the tests listed in the module
+  README; they are not collision-checked by default: shared writes are last-writer-wins per value, and `expect` is opt-in per call. The
   wording "write without stepping on each other" is replaced accordingly (README and module
   README).
 - **Platform and limits** section: releases are Windows x64 only, JDK 25 is required, one daemon
@@ -421,9 +493,7 @@ You need a JDK 25 and Python 3.10 or later; the install has no JDK.
 - **Based on a development snapshot.** Upstream `master` is Ghidra's next version under work
   (12.3 DEV), not a Ghidra release.
 - **Windows only.** CI and releases build and test on Windows. The module and launcher have no
-  Windows-only path, and a one-off dry run of the release workflow on 2026-10-26 built Linux x64
-  and macOS arm64 installs that passed both test suites, but neither is released or tested
-  routinely; build from source there (`gradle buildHeadless`).
+  Windows-only path, but no Linux or macOS claim is made: neither is released or tested.
 - **There is no GUI.** Headless only: no help, javadoc or Python type stubs; `gradle buildGhidra`
   still builds the whole source tree, from source.
 

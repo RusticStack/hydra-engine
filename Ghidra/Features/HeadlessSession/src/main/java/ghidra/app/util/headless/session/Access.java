@@ -103,7 +103,13 @@ final class Access {
 
 	static Lock lockProject(ProjectEntry p, boolean exclusive, long wait, String cmd) {
 		Lock l = exclusive ? p.lock.writeLock() : p.lock.readLock();
-		Waits.Outcome got = Waits.lock(p.lock, exclusive, wait, Waits.counter(p));
+		Waits.Outcome got = Waits.lock(p.lock, exclusive, wait, Waits.counter(p), waiter -> {
+			// an exclusive holder is the request that closes or forks the project; shared holders
+			// (pins) are not tracked, and the daemon's own holds (client null) are not a client's
+			Client hc = p.exclusiveClient;
+			return p.exclusiveCmd != null && hc != null && hc != waiter ? Waits.HELD_BY_OTHER
+					: Waits.HELD_BY_NONE;
+		});
 		if (got != Waits.Outcome.GOT) {
 			boolean full = got == Waits.Outcome.QUEUE_FULL;
 			boolean v3 = Waits.v3();
@@ -149,8 +155,10 @@ final class Access {
 			p.exclusiveCmd = cmd;
 			p.exclusiveClient = null;
 			p.exclusiveSince = System.currentTimeMillis();
+			return l;
 		}
-		return l;
+		// a command pins the project: the shared lock plus a reference on the view it starts on
+		return new ProjectEntry.Pin(p, l);
 	}
 
 	/** Releases a project lock taken with {@link #lockProject}. */
@@ -245,6 +253,17 @@ final class Access {
 		ProgramEntry e = selected(c, req);
 		ProjectEntry p = e.project;
 		Lock pl = lockProject(p, false, waitMs(req), cmd);
+		// while an analysis runs, and already while it queues for the program (the fair lock makes a
+		// reader that arrives behind it wait for all of it), a protocol 3 reader is told "analyzing" at
+		// once (BP5, 3.13). Marked only for a caller that may analyse (an unlocked look; the check
+		// under the lock below decides).
+		ProgramEntry.Analysis mark = exclusive && cmd.equals("analyze") && mayWrite(c, e, needOwner)
+				? new ProgramEntry.Analysis(c, Caller.monitor(), cmd, System.currentTimeMillis(),
+					Caller.current(c))
+				: null;
+		if (mark != null) {
+			e.analysisStarts(mark);
+		}
 		try {
 			Lock l = e.acquire(exclusive, waitMs(req), c, cmd);
 			try {
@@ -267,13 +286,24 @@ final class Access {
 					ex.getClass().getSimpleName() + ": " + ex.getMessage(), null, ex);
 			}
 			finally {
+				if (mark != null) {
+					e.analysisEnds(mark); // before the lock is free: no reader is told after it ended
+				}
 				e.release(l);
 			}
 		}
 		finally {
+			if (mark != null) {
+				e.analysisEnds(mark); // the lock was never had (busy, cancelled)
+			}
 			p.lastUsed = System.currentTimeMillis();
 			pl.unlock();
 		}
+	}
+
+	/** An unlocked look: may {@code c} run an owner's command on {@code e} now. */
+	private static boolean mayWrite(Client c, ProgramEntry e, boolean needOwner) {
+		return !needOwner || e.isWriter(c);
 	}
 
 	private static void requireOwner(Client c, ProgramEntry e, String cmd) {

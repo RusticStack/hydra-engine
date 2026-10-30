@@ -295,6 +295,24 @@ final class Scheduler {
 		}
 	}
 
+	/** The ticket of the request this thread executes (set by {@link Session#execute}), or null. */
+	private static final ThreadLocal<Ticket> BOUND = new ThreadLocal<>();
+
+	/** Binds (or, with null, unbinds) the ticket of the request this thread executes. */
+	static void bind(Ticket t) {
+		if (t == null) {
+			BOUND.remove();
+		}
+		else {
+			BOUND.set(t);
+		}
+	}
+
+	/** The ticket of the request this thread executes, or null. */
+	static Ticket bound() {
+		return BOUND.get();
+	}
+
 	/** The fair key of a request of {@code c}: its connection id, plus the label for protocol 3. */
 	private static String keyOf(Client c) {
 		if (!c.v3()) {
@@ -541,7 +559,7 @@ final class Scheduler {
 				return; // yielded and never reacquired: it holds no slot
 			}
 			State s = lanes.get(t.lane);
-			free(s, t);
+			free(s, t, true);
 			handOver(s);
 			changed.signalAll();
 		}
@@ -550,12 +568,20 @@ final class Scheduler {
 		}
 	}
 
-	/** Called with the lock held: {@code t} stops holding its slot. */
-	private void free(State s, Ticket t) {
+	/**
+	* Called with the lock held: {@code t} stops holding its slot. {@code completed} is false for a
+	* yield (PROTOCOL-3.md D39): the request is not finished, so neither its hold time nor a
+	* completion is recorded (they feed the median behind the queue estimates); the final release
+	* records the last stretch.
+	*/
+	private void free(State s, Ticket t, boolean completed) {
 		t.granted = false;
 		s.inUse--;
 		s.running.remove(t);
 		s.runningByKey.computeIfPresent(t.key, (k, n) -> n <= 1 ? null : n - 1);
+		if (!completed) {
+			return;
+		}
 		long held = Math.max(0, System.currentTimeMillis() - t.startedAt);
 		s.holds.addLast(held);
 		while (s.holds.size() > HISTORY) {
@@ -601,7 +627,7 @@ final class Scheduler {
 				return;
 			}
 			State s = lanes.get(t.lane);
-			free(s, t);
+			free(s, t, false); // a yield records no hold time and no completion (E3a review)
 			handOver(s);
 			changed.signalAll();
 		}
@@ -701,6 +727,21 @@ final class Scheduler {
 		return o;
 	}
 
+	/**
+	* How many requests of {@code lane} have completed and how many hold times it has recorded (the
+	* two are equal): a yielded ticket adds neither (self-test and tests).
+	*/
+	int[] recorded(Lane lane) {
+		lock.lock();
+		try {
+			State s = lanes.get(lane);
+			return new int[] { (int) s.completions, s.holds.size() };
+		}
+		finally {
+			lock.unlock();
+		}
+	}
+
 	/** {@code error.retryAfterMs} of a slot-wait {@code busy}: the lane's median hold time. */
 	private static long retryAfterMs(State s) {
 		return s.holds.isEmpty() ? 1000 : median(s.holds);
@@ -790,6 +831,87 @@ final class Scheduler {
 		}
 		finally {
 			lock.unlock();
+		}
+	}
+
+	/**
+	 * The lane figures of {@code health.lanes} (PROTOCOL-3.md 3.4): per lane {@code inUse},
+	 * {@code queued}, {@code oldestWaitMs}, {@code longestRunningMs} and {@code starving}
+	 * ({@code queued > 0} and the oldest wait above {@code starveMs}, default 30 s). Takes the
+	 * scheduler lock with {@code tryLock(waitMs)} and returns null when it could not: the caller
+	 * (the watchdog) then reports {@code schedulerLockOk:false} instead of waiting. Lane figures
+	 * are informational, never a verdict on a long request.
+	 */
+	JsonObject healthLanes(long waitMs) {
+		try {
+			if (!lock.tryLock(waitMs, TimeUnit.MILLISECONDS)) {
+				return null;
+			}
+		}
+		catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			return null;
+		}
+		try {
+			long now = System.currentTimeMillis();
+			long starveMs = Settings.integer("starveMs", 30_000);
+			JsonObject o = new JsonObject();
+			for (Map.Entry<Lane, State> e : lanes.entrySet()) {
+				State s = e.getValue();
+				long longest = 0;
+				for (Ticket t : s.running) {
+					longest = Math.max(longest, now - t.startedAt);
+				}
+				long oldest = 0;
+				for (ArrayDeque<Ticket> q : s.queue.values()) {
+					for (Ticket t : q) {
+						oldest = Math.max(oldest, now - t.queuedAt);
+					}
+				}
+				int queued = s.queued();
+				o.add(e.getKey().json(), Json.of("inUse", s.inUse, "queued", queued,
+					"oldestWaitMs", oldest, "longestRunningMs", longest, "starving",
+					queued > 0 && oldest > starveMs));
+			}
+			return o;
+		}
+		finally {
+			lock.unlock();
+		}
+	}
+
+	/**
+	 * The test hook behind {@code debug_stall what:"scheduler"} (D22): a daemon thread takes the
+	 * scheduler lock and holds it for {@code ms}, so that {@code health} reports
+	 * {@code schedulerLockOk:false} and a protocol 2 {@code status} blocks while a protocol 3 one
+	 * answers {@code unavailable}. Returns once the lock is held. Callable only with
+	 * {@code -Dghidra.session.testHooks=true}.
+	 */
+	void stallForTest(long ms) {
+		if (!Health.testHooks()) {
+			throw new IllegalStateException("test hooks are off");
+		}
+		java.util.concurrent.CountDownLatch held = new java.util.concurrent.CountDownLatch(1);
+		Thread t = new Thread(() -> {
+			lock.lock();
+			try {
+				held.countDown();
+				Thread.sleep(ms);
+			}
+			catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+			}
+			finally {
+				lock.unlock();
+			}
+		}, "session-debug-stall");
+		t.setDaemon(true);
+		t.start();
+		try {
+			held.await();
+		}
+		catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
 		}
 	}
 

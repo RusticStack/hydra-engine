@@ -37,9 +37,11 @@ import ghidra.util.Msg;
  * of programs, shared by any number of clients. Thread-safe: each client's requests run on that
  * client's own threads, so clients run concurrently, admitted by the {@link Scheduler}.
  * <p>
- * Lock order, always: a scheduler slot, then {@link #registry} (only to open, upgrade or close a
- * project), then one {@link ProjectEntry#lock}, then one {@link ProgramEntry#lock}. The maps are
- * concurrent and never held across a wait.
+ * Lock order, always: a scheduler slot, then one {@link ProjectRegistry.Slot#transition} (only to
+ * open, join or close that one project; it is never held across a command), then one
+ * {@link ProjectEntry#lock} (shared as a pin by every command), then one {@link ProgramEntry#lock}.
+ * No wait for a lock happens inside a monitor. The maps are concurrent and never held across a
+ * wait.
  * <p>
  * Session keeps the state, the client life cycle and the dispatch of a request to the
  * command classes; the commands live in {@link ProjectCommands},
@@ -70,8 +72,16 @@ final class Session {
 	}
 
 	private final long startedAt = System.currentTimeMillis();
-	/** Guards opening, upgrading and closing projects, and the two project maps. */
-	final Object registry = new Object();
+	/** The watchdog thread that publishes the snapshot {@code health} reads (E5), or null. */
+	private volatile Watchdog watchdog;
+	/**
+	 * The life cycle of the projects: a state machine per project path (E3c, BP8). The two maps
+	 * below stay as the read indexes of the open projects.
+	 */
+	final ProjectRegistry registry = new ProjectRegistry();
+	/** Serialises {@link #close} only. */
+	private final java.util.concurrent.locks.ReentrantLock closeLock =
+		new java.util.concurrent.locks.ReentrantLock();
 	final Map<String, ProjectEntry> projects = new ConcurrentHashMap<>();
 	final Map<String, ProjectEntry> projectsById = new ConcurrentHashMap<>();
 	final AtomicInteger nextProject = new AtomicInteger(1);
@@ -114,6 +124,15 @@ final class Session {
 		// its own from a class it owns)
 		Advertised.capability("errorNext", 1);
 		Advertised.capability("identity", 1);
+		// E5: health answers on the reader thread from the watchdog's snapshot (3.4); the figures
+		// of other packages join through Health.contribute (the governor, workers: E7, E9)
+		Advertised.capability("health", 1);
+		Health.contribute("waits", WaitStats::describe);
+		Health.contribute("leakedWorkers",
+			() -> new com.google.gson.JsonPrimitive(ScriptCommands.leakedWorkers()));
+		Health.contribute("leaked", ScriptCommands::leakedList);
+		Health.contribute("repairs", Health::repairs);
+		Health.contribute("scriptWorkers", ScriptWorker::describe); // E7, after the four E5 pins
 		// E3b: a cancel reaches a request in a lock wait (3.5); the dead-client release is bounded
 		Advertised.capability("cancelWait", 1);
 		// a value that is not an integer is a usage error at start-up, not a failure of the first
@@ -130,6 +149,10 @@ final class Session {
 		// lets that leave finish at once, off the releasing request's thread
 		ProgramEntry.afterRelease = e -> completer.execute(() -> completeLeaves(e));
 	}
+
+	/** A reopen that readers kept pending this long gets one short queued attempt from the reap. */
+	static final long REOPEN_ESCALATE_MS = 3_000;
+	static final long REOPEN_ESCALATE_WAIT_MS = 250;
 
 	/** Finishes pending leaves without ever waiting (one thread, so a burst never piles up). */
 	private final java.util.concurrent.ExecutorService completer =
@@ -187,7 +210,8 @@ final class Session {
 
 	/** Closes everything. Unsaved changes are discarded and logged. Idempotent. */
 	void close() {
-		synchronized (registry) {
+		closeLock.lock();
+		try {
 			if (shuttingDown && projectsById.isEmpty()) {
 				return;
 			}
@@ -196,6 +220,15 @@ final class Session {
 			// a background build is cancelled and deletes its temporary folder, or is left to
 			// the exit (the next start removes its folder)
 			upgradeCache.shutdown(3_000);
+			registry.closeAll(30_000, p -> {
+				try {
+					projectCmds.closeProjectEntry(p, 30_000, true);
+				}
+				catch (RuntimeException e) {
+					Msg.error(this, "shutdown: could not close project " + p.id, e);
+				}
+			});
+			// a project that never had a slot (nothing opens one outside the registry) is closed too
 			for (ProjectEntry p : new ArrayList<>(projectsById.values())) {
 				try {
 					projectCmds.closeProjectEntry(p, 30_000, true);
@@ -204,6 +237,9 @@ final class Session {
 					Msg.error(this, "shutdown: could not close project " + p.id, e);
 				}
 			}
+		}
+		finally {
+			closeLock.unlock();
 		}
 	}
 
@@ -214,33 +250,62 @@ final class Session {
 	 * waits: anything in use is left for the next round.
 	 */
 	void reap() {
+		reap(keepWarmMs);
+	}
+
+	/**
+	 * {@link #reap()} with another retention: {@code 0} closes every program and project nobody
+	 * uses, which the governor (E9) does before it refuses an open for lack of room.
+	 */
+	void reap(long warmMs) {
 		long now = System.currentTimeMillis();
 		long orphanKeepMs = Math.max(0, Settings.integer("orphanKeepS", 0)) * 1000L;
 		for (ProjectEntry p : projectsById.values()) {
 			for (ProgramEntry e : p.programs.values()) {
-				if (!e.pendingLeaves.isEmpty()) {
+				if (e.hasDeferredWork()) {
 					completeLeaves(e); // never waits
+				}
+				if (e.reopenPendingSince > 0 && now - e.reopenPendingSince >= REOPEN_ESCALATE_MS) {
+					// steady readers never left the lock free: one short, bounded queued attempt
+					projectCmds.completeReopen(e, REOPEN_ESCALATE_WAIT_MS);
 				}
 				if (orphanKeepMs > 0 && e.orphanedSince > 0 && now - e.orphanedSince >= orphanKeepMs &&
 					e.holdsOrphanedWork()) {
 					expireOrphan(p, e);
 				}
 				if (e.userCount() == 0 && !e.holdsOrphanedWork() &&
-					(now - e.lastUsed >= keepWarmMs || programCmds.swappable(e))) {
+					(now - e.lastUsed >= warmMs || programCmds.swappable(e))) {
 					closeIdleProgram(p, e);
 				}
 			}
-			if (p.userCount() == 0 && p.programs.isEmpty() && now - p.lastUsed >= keepWarmMs) {
-				synchronized (registry) {
-					if (p.userCount() == 0 && p.programs.isEmpty() && !p.closed) {
-						try {
-							projectCmds.closeProjectEntry(p, 0, true);
-							Msg.info(this, "closed idle project " + p.id + " " + p.canonical);
+			if (p.closePending) {
+				// the last leave could not close it while a request of a gone client still ran
+				if (p.closed || p.userCount() > 0) {
+					p.closePending = false;
+				}
+				else if (p.programs.values().stream().noneMatch(ProgramEntry::holdsOrphanedWork) &&
+					p.programs.values().stream().allMatch(x -> x.pendingLeaves.isEmpty())) {
+					try {
+						if (registry.closeIdle(p, x -> projectCmds.closeProjectEntry(x, 0, true))) {
+							Msg.info(this, "closed project " + p.id + " " + p.canonical +
+								" that its last user left while a request ran");
 						}
-						catch (SessionException e) {
-							// in use after all; next round
-						}
+						p.closePending = false;
 					}
+					catch (SessionException e) {
+						// the request still runs; next round
+					}
+					continue;
+				}
+			}
+			if (p.userCount() == 0 && p.programs.isEmpty() && now - p.lastUsed >= warmMs) {
+				try {
+					if (registry.closeIdle(p, x -> projectCmds.closeProjectEntry(x, 0, true))) {
+						Msg.info(this, "closed idle project " + p.id + " " + p.canonical);
+					}
+				}
+				catch (SessionException e) {
+					// in use after all; next round
 				}
 			}
 		}
@@ -259,16 +324,15 @@ final class Session {
 		ProjectEntry p = e.project;
 		if (e.pendingLeaves.isEmpty() && !p.closed && p.userCount() == 0 &&
 			(p.writable() || keepWarmMs == 0)) {
-			synchronized (registry) {
-				if (!p.closed && p.userCount() == 0 &&
-					p.programs.values().stream().noneMatch(ProgramEntry::holdsOrphanedWork) &&
-					p.programs.values().stream().allMatch(x -> x.pendingLeaves.isEmpty())) {
-					try {
-						projectCmds.closeProjectEntry(p, 0, true);
-					}
-					catch (SessionException ex) {
-						// in use after all; the next reap tries again
-					}
+			if (p.programs.values().stream().noneMatch(ProgramEntry::holdsOrphanedWork) &&
+				p.programs.values().stream().allMatch(x -> x.pendingLeaves.isEmpty())) {
+				try {
+					// the slot's state machine decides (a join in flight keeps the project open); no
+					// monitor is held across the close (BP8)
+					registry.closeIdle(p, x -> projectCmds.closeProjectEntry(x, 0, true));
+				}
+				catch (SessionException ex) {
+					// in use after all; the next reap tries again
 				}
 			}
 		}
@@ -276,6 +340,12 @@ final class Session {
 
 	private void tryCompleteLeaves(ProgramEntry e) {
 		ProjectEntry p = e.project;
+		if (e.disposePending) {
+			programCmds.tryDisposeNow(e); // the last plain reader left while a request held the lock
+		}
+		if (e.reopenPendingSince > 0) {
+			projectCmds.completeReopen(e, 0); // a refresh could not reopen it while readers ran
+		}
 		for (Client c : new ArrayList<>(e.pendingLeaves)) {
 			Lock pl = p.lock.readLock();
 			if (p.closed || !pl.tryLock()) {
@@ -395,9 +465,33 @@ final class Session {
 
 	// ---- dispatch --------------------------------------------------------------------------
 
+	/** Epoch ms at which this session started (the base of {@code health.uptimeMs}). */
+	long startedAtMs() {
+		return startedAt;
+	}
+
+	/** Starts the watchdog (once): the first tick is published before this returns (3.4). */
+	synchronized void startWatchdog() {
+		if (watchdog == null) {
+			Watchdog w = new Watchdog(this);
+			watchdog = w;
+			w.start();
+		}
+	}
+
+	/** The test hook behind {@code debug_stall what:"watchdog"}. */
+	void watchdogStall(long ms) {
+		Watchdog w = watchdog;
+		if (w == null) {
+			throw new SessionException(SessionException.FAILED, "the watchdog is not running");
+		}
+		w.stall(ms);
+	}
+
 	/** Commands answered on the connection's reader thread, even while another runs. */
 	static boolean isInline(String cmd) {
-		return cmd.equals("ping") || cmd.equals("cancel") || cmd.equals("status");
+		return cmd.equals("ping") || cmd.equals("cancel") || cmd.equals("status") ||
+			cmd.equals("health");
 	}
 
 	JsonElement execute(Client c, String cmd, JsonObject req, RequestMonitor m) {
@@ -411,6 +505,13 @@ final class Session {
 				return hello(c, req);
 			case "status":
 				return status(c);
+			case "health": // inline: from the watchdog's snapshot, takes no lock (3.4)
+				return Health.reply(startedAt, c);
+			case "debug_stall": // registered only with -Dghidra.session.testHooks=true (D22)
+				if (Health.testHooks()) {
+					return Health.debugStall(this, req);
+				}
+				break; // otherwise it is an unknown command, below
 			case "cancel":
 				return cancel(c, req);
 			case "shutdown":
@@ -425,16 +526,25 @@ final class Session {
 		// An import queues for the import gate (maxImports) first and takes its long slot only
 		// when it is its turn (importProgram), so that queued imports do not occupy the slots
 		// that analysis and scripts need.
+		// E9: the resource governor decides before the request queues for a slot (3.11); a refusal
+		// is an immediate structured busy{reason:"capacity"}. The reservation ends with the request.
+		Governor.Admission admission = Governor.admit(c, cmd, req);
 		Scheduler.Ticket slot;
 		try {
 			slot = cmd.equals("import") ? null : scheduler.admit(c, cmd, req, m, waitMs(req));
 		}
 		catch (SessionException ex) {
+			admission.close();
 			if (SessionException.CANCELLED.equals(ex.code())) {
 				m.cancelPhase("queued"); // cancelled.details.phase of a slot wait (3.3)
 			}
 			throw ex;
 		}
+		catch (RuntimeException | Error ex) {
+			admission.close();
+			throw ex;
+		}
+		Scheduler.bind(slot); // the optional slot yield of a lock wait finds its ticket here (D39)
 		try {
 			if (cmd.equals("script") || cmd.equals("import") || cmd.equals("analyze")) {
 				DeferredInit.await(); // the TLS context and the script framework
@@ -490,6 +600,8 @@ final class Session {
 			};
 		}
 		finally {
+			Scheduler.bind(null);
+			admission.close();
 			if (slot != null) {
 				slot.close();
 			}
@@ -567,6 +679,12 @@ final class Session {
 		o.add("overlays", ovs);
 		o.add("scheduler", scheduler.describe(c.v3()));
 		o.add("imports", ImportGate.GLOBAL.describe());
+		if (c.v3()) {
+			// D49: the deterministic evidence that no client blocks another (K13), until E5's health
+			// command reports the same block
+			o.add("waits", WaitStats.describe());
+			o.add("projectStates", registry.describe());
+		}
 		Caller.Identity me = Caller.current(c);
 		if (me != null) {
 			Json.put(o, "youAre", Json.of("client", me.name(), "harness", me.harness(),

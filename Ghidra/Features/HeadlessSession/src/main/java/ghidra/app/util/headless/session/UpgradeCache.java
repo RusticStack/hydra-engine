@@ -114,6 +114,14 @@ final class UpgradeCache {
 	 * ({@code <key>.use}, {@code <key>/<generation>.use}), each counted.
 	 */
 	private final Map<String, Use> inUse = new HashMap<>();
+	/**
+	 * GATE9: {@code .use} files a removal of this process probes with an exclusive lock now.
+	 * Guarded by {@link #inUse}. A FileChannel lock belongs to the whole JVM, so a reader of this
+	 * process that asked for its shared lock meanwhile would get an
+	 * {@link OverlappingFileLockException} (a failed open) instead of what a reader of another
+	 * process gets: a wait, or "being removed". {@link #acquireUse} gives it the latter.
+	 */
+	private final Set<String> removing = new HashSet<>();
 
 	/** Builds by {@link Plan#id()}, oldest first. Guarded by this. */
 	private final LinkedHashMap<String, Build> builds = new LinkedHashMap<>();
@@ -329,6 +337,19 @@ final class UpgradeCache {
 	private boolean acquireUse(String name, boolean wait) throws IOException {
 		synchronized (inUse) {
 			Use u = inUse.get(name);
+			while (u == null && removing.contains(name)) {
+				if (!wait) {
+					return false; // as when another process removes it
+				}
+				try {
+					inUse.wait(); // endRemoving notifies; the probe never waits itself
+				}
+				catch (InterruptedException e) {
+					Thread.currentThread().interrupt();
+					throw new java.io.InterruptedIOException("interrupted waiting for " + name);
+				}
+				u = inUse.get(name);
+			}
 			if (u == null) {
 				Path file = root.toPath().resolve(name);
 				Files.createDirectories(file.getParent());
@@ -379,6 +400,27 @@ final class UpgradeCache {
 	private boolean usedHere(String name) {
 		synchronized (inUse) {
 			return inUse.containsKey(name);
+		}
+	}
+
+	/**
+	 * Before a removal probes {@code name} with an exclusive lock: false when this process reads
+	 * from it (or already probes it). Every true is followed by {@link #endRemoving}.
+	 */
+	private boolean startRemoving(String name) {
+		synchronized (inUse) {
+			if (inUse.containsKey(name) || removing.contains(name)) {
+				return false;
+			}
+			removing.add(name);
+			return true;
+		}
+	}
+
+	private void endRemoving(String name) {
+		synchronized (inUse) {
+			removing.remove(name);
+			inUse.notifyAll();
 		}
 	}
 
@@ -768,8 +810,13 @@ final class UpgradeCache {
 			// publish: rename the complete copy, then name it in entry.json
 			b.phase = "publish";
 			m.checkCancelled();
+			// E12: Files.copy (copyProject) does not flush; every byte of the copy and of what the
+			// upgrade wrote is on the disk before the rename and entry.json (the commit point) can
+			// make the generation visible as complete
+			ProjectFork.forceTree(tmp[0].toPath());
 			moveDir(tmp[0].toPath(), published.toPath(), m);
 			tmp[0] = null;
+			ProjectFork.syncDirectory(dir.toPath()); // the rename before entry.json names it
 			boolean first = entry == null;
 			if (first) {
 				entry = Json.of("format", ENTRY_FORMAT, "source", plan.canonical(), "ghidra",
@@ -987,8 +1034,8 @@ final class UpgradeCache {
 	/** Removes an older generation of a key when no daemon reads from it. */
 	private void removeGeneration(String key, File dir, String gen) {
 		String name = key + "/" + gen + ".use";
-		if (usedHere(name)) {
-			return; // removed by a later build or sweep
+		if (!startRemoving(name)) {
+			return; // read here: removed by a later build or sweep
 		}
 		Path useFile = root.toPath().resolve(name);
 		boolean removed = false;
@@ -1002,6 +1049,9 @@ final class UpgradeCache {
 		}
 		catch (IOException | OverlappingFileLockException e) {
 			return;
+		}
+		finally {
+			endRemoving(name);
 		}
 		if (removed) {
 			try {
@@ -1279,8 +1329,10 @@ final class UpgradeCache {
 	private static void writeEntry(File dir, JsonObject entry) throws IOException {
 		Path tmp = new File(dir, ENTRY_FILE + ".tmp").toPath();
 		Files.writeString(tmp, GSON.toJson(entry), StandardCharsets.UTF_8);
+		ProjectFork.forceFile(tmp); // E12: the content is durable before the name is
 		Files.move(tmp, new File(dir, ENTRY_FILE).toPath(), StandardCopyOption.REPLACE_EXISTING,
 			StandardCopyOption.ATOMIC_MOVE);
+		ProjectFork.syncDirectory(dir.toPath());
 	}
 
 	/** Removes the entries of older keys of the same source that nobody uses. */
@@ -1295,6 +1347,9 @@ final class UpgradeCache {
 				continue;
 			}
 			if (!canonical.equals(rawSource(d))) {
+				continue;
+			}
+			if (!startRemoving(k + ".use")) {
 				continue;
 			}
 			// exclusive on both: nobody builds it (.lock) and no daemon serves from it (.use)
@@ -1315,6 +1370,9 @@ final class UpgradeCache {
 			}
 			catch (IOException | OverlappingFileLockException ex) {
 				// in use; next time
+			}
+			finally {
+				endRemoving(k + ".use");
 			}
 		}
 	}

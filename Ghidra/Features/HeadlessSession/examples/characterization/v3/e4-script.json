@@ -614,13 +614,14 @@
     "ok": false,
     "error": {
      "code": "bad_request",
-     "message": "isolation must be one of [shared, exclusive, private]",
+     "message": "isolation must be one of [shared, exclusive, private, worker]",
      "details": {
       "field": "isolation",
       "allowed": [
        "shared",
        "exclusive",
-       "private"
+       "private",
+       "worker"
       ]
      }
     },

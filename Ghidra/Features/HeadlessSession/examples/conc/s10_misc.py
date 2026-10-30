@@ -26,9 +26,16 @@ try:
     K = prog_key(pid)
     for c in cl: c.call("open_program", path=PROG, project=pid)
     # (a)
-    t0 = time.perf_counter()
-    rid = cl[1].send("script", script="LockHold.java", args=["deaf", "12"], program=K, timeout=3, wait=60000)
-    time.sleep(1.0)
+    # times are counted from the script's start (it creates the file when it runs): a slow compile before it
+    # (a cold settings dir, a loaded machine) would otherwise put the cancel before the script ran at all
+    # the script is compiled first: the timeout counts from the request, and a first compile of 3 s or more
+    # would spend it before the script ran
+    cl[1].call("script", script="LockHold.java", args=["coop", "0.05"], program=K, wait=60000)
+    started = ROOT / "state" / ("s10" + TAG) / "script-running"
+    started.unlink(missing_ok=True)
+    rid = cl[1].send("script", script="LockHold.java", args=["deaf", "12", str(started)], program=K, timeout=3, wait=60000)
+    t0 = wait_file(started)
+    time.sleep(0.5)
     st1 = cl[2].call("status")["scheduler"]["long"]
     cl[1].call("cancel", target=rid); time.sleep(0.5)
     st2 = cl[2].call("status")["scheduler"]["long"]

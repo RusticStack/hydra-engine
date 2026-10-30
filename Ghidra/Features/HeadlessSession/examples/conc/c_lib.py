@@ -240,8 +240,14 @@ class Rig:
         pid = self.pid()
         if not pid:
             return {"terminated": False, "error": "no pid"}
+        try:  # K7 after every kill (kcheck.py): what was below the daemon at the kill must be gone after it
+            import kcheck
+            below = sorted(kcheck.O.descendants([pid]))
+        except Exception:  # noqa: BLE001
+            below = None
         r = terminate(pid)
         r["pid"] = pid
+        r["descendants"] = below
         r["jvm_alive_after"] = self.daemon.jvm_alive()
         return r
 

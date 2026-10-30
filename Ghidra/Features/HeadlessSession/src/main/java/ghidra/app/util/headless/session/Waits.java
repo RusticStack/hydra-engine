@@ -21,6 +21,7 @@ import java.util.WeakHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.ToIntFunction;
 
@@ -105,7 +106,26 @@ final class Waits {
 	 */
 	static Outcome lock(ReentrantReadWriteLock rw, boolean exclusive, long waitMs,
 			AtomicInteger waiters) {
-		return lock(exclusive ? rw.writeLock() : rw.readLock(), rw, exclusive, waitMs, waiters);
+		return lock(exclusive ? rw.writeLock() : rw.readLock(), rw, null, exclusive, waitMs,
+			waiters, null);
+	}
+
+	/** What {@link WaitStats} is told about a wait: nobody else holds the lock. */
+	static final int HELD_BY_NONE = 0;
+	/** The lock is held by a request of another client (a foreign wait, D49). */
+	static final int HELD_BY_OTHER = 1;
+	/** The holder is the request opening the very program the waiter wants (single flight). */
+	static final int HELD_BY_OPENER = 2;
+
+	/**
+	 * Like {@link #lock(ReentrantReadWriteLock, boolean, long, AtomicInteger)}, and attributes the
+	 * wait: {@code holder} says, for a wait that has to queue, whose request holds the lock (the
+	 * asking client is passed in), so that {@link WaitStats#foreignBlocked} counts it (E3c, D49).
+	 */
+	static Outcome lock(ReentrantReadWriteLock rw, boolean exclusive, long waitMs,
+			AtomicInteger waiters, ToIntFunction<Client> holder) {
+		return lock(exclusive ? rw.writeLock() : rw.readLock(), rw, null, exclusive, waitMs, waiters,
+			holder);
 	}
 
 	/**
@@ -113,11 +133,24 @@ final class Waits {
 	 * plain lock is never "contended" for the cap).
 	 */
 	static Outcome lock(Lock l, long waitMs) {
-		return lock(l, null, true, waitMs, null);
+		return lock(l, null, null, true, waitMs, null, null);
 	}
 
-	private static Outcome lock(Lock l, ReentrantReadWriteLock rw, boolean exclusive, long waitMs,
-			AtomicInteger waiters) {
+	/**
+	 * The same wait on a plain {@link ReentrantLock} with the waiter cap of protocol 3 (D39): the
+	 * project's slot transition and structure locks. At most {@link #cap} requests of a v3 client
+	 * queue for the lock; the next one is answered {@link Outcome#QUEUE_FULL} at once instead of
+	 * holding a lane slot until {@code waitMs} runs out.
+	 *
+	 * @param waiters the requests waiting on this lock now; null: no cap
+	 */
+	static Outcome lock(ReentrantLock l, long waitMs, AtomicInteger waiters) {
+		return lock(l, null, l, true, waitMs, waiters, null);
+	}
+
+	private static Outcome lock(Lock l, ReentrantReadWriteLock rw, ReentrantLock plain,
+			boolean exclusive, long waitMs, AtomicInteger waiters,
+			ToIntFunction<Client> holder) {
 		RequestMonitor m = Caller.monitor();
 		Client c = Caller.client();
 		if (m == null) {
@@ -131,17 +164,36 @@ final class Waits {
 		boolean got = false;
 		boolean interrupted = false;
 		boolean mine;
+		// attribution first: whose request holds the lock the moment this one has to queue
+		boolean queued = holder != null && rw != null && contended(rw, exclusive);
+		long t0 = System.nanoTime();
+		Scheduler.Ticket ticket = queued && Settings.bool("yieldSlots", false) ? Scheduler.bound() : null;
+		if (queued) {
+			int who = holder.applyAsInt(c);
+			if (who == HELD_BY_OTHER) {
+				WaitStats.foreign(!exclusive);
+			}
+			else if (who == HELD_BY_OPENER) {
+				WaitStats.singleFlightOpen();
+			}
+		}
 		try {
 			if (waiters != null) {
 				// reserve first, then judge: requests that arrive together cannot all pass a check
 				// made before any of them was counted
 				int n = waiters.incrementAndGet();
 				counted = true;
-				if (rw != null && c != null && c.v3() && n > cap(m) && contended(rw, exclusive)) {
+				if ((rw != null || plain != null) && c != null && c.v3() && n > cap(m) &&
+					(rw != null ? contended(rw, exclusive) : contended(plain))) {
 					return Outcome.QUEUE_FULL;
 				}
 			}
-			// 2. wait: one timed tryLock, in the lock's own queue; nothing polls
+			// 2. wait: one timed tryLock, in the lock's own queue; nothing polls. With the setting
+			// yieldSlots (default off, D39; SP9 must show no deadlock before it is switched on) the lane
+			// slot is given back for the wait, so that a lock queue cannot hold the lane.
+			if (ticket != null) {
+				ticket.yieldSlot();
+			}
 			try {
 				got = l.tryLock(waitMs, TimeUnit.MILLISECONDS);
 			}
@@ -158,6 +210,21 @@ final class Waits {
 		}
 		if (interrupted && !mine) {
 			Thread.currentThread().interrupt(); // not ours (shutdownNow): as before
+		}
+		if (queued) {
+			WaitStats.waited((System.nanoTime() - t0) / 1_000_000L); // feeds lockWaitP99Ms (D49)
+		}
+		if (ticket != null) {
+			// a slot again before anything else runs; the wait is over, so it is not a registered wait
+			try {
+				ticket.reacquire(m, Math.max(1000, waitMs));
+			}
+			catch (RuntimeException ex) {
+				if (got) {
+					l.unlock(); // no slot to go on with: the lock is given back, the request ends with that error
+				}
+				throw ex;
+			}
 		}
 		// 5. outcome
 		if (mine || m.isCancelled() || (c != null && c.leaving)) {
@@ -176,6 +243,11 @@ final class Waits {
 		}
 		return rw.isWriteLocked() || rw.hasQueuedThreads() ||
 			(exclusive && rw.getReadLockCount() > 0);
+	}
+
+	/** True when this plain lock would make the caller queue. */
+	private static boolean contended(ReentrantLock l) {
+		return !l.isHeldByCurrentThread() && (l.isLocked() || l.hasQueuedThreads());
 	}
 
 	/** The {@code cancelled} of a request that was cancelled during (or before) a lock wait. */

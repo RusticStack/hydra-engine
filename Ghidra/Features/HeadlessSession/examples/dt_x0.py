@@ -411,6 +411,16 @@ def t_oracle_invariants_fail(c):
         (env.root / "forks" / ".f1.fork-abc.tmp").mkdir()
     case("k6_staging", staging, "K6:staging_left")
 
+    def sidecar_tmp(env):    # 8.13: a killed publisher's sidecar .tmp left after the sweep
+        side = env.fork_gpr.with_name(env.fork_gpr.stem + ".fork.json")
+        side.with_name(side.name + ".tmp").write_text(side.read_text())
+    case("k6_sidecar_tmp", sidecar_tmp, "K6:sidecar_tmp_left")
+
+    def sidecar_tmp_pid(env):    # A62: the same under the writer's pid
+        side = env.fork_gpr.with_name(env.fork_gpr.stem + ".fork.json")
+        side.with_name(side.name + ".4242.tmp").write_text(side.read_text())
+    case("k6_sidecar_tmp_pid", sidecar_tmp_pid, "K6:sidecar_tmp_left")
+
     # K7: temp growth
     def grow(env):
         for i in range(40):
@@ -491,6 +501,21 @@ def t_oracle_invariants_fail(c):
     p.write_text("")
     rp = oracle.check_k17(env.lineage / "done")
     dt.check(rp.ok and any(n["code"] == "record_fell_back" for n in rp.notes), "K17: the .bak fallback was not accepted")
+    # 8.13: the publish leader's marker and a .rep's program data are plain JSON, not records; a record that lost its
+    # seal is still a violation
+    env = Env(work / "k17_plain", src)
+    (env.lineage / "publish.leader.json").write_text(json.dumps({"pid": 1, "at": "x"}))
+    (env.lineage / "gen" / "Owned.rep").mkdir(parents=True, exist_ok=True)
+    (env.lineage / "gen" / "Owned.rep" / "programs.json").write_text("{}")
+    rp = oracle.check_k17(env.lineage)
+    dt.check(rp.ok and sum(n["code"] == "not_a_sealed_record" for n in rp.notes) == 2,
+             f"K17: a leader marker or program data judged as a record: {rp.codes()}")
+    p = env.lineage / "done" / "cs1.json"
+    d = json.loads(p.read_text())
+    d.pop("seal", None)
+    p.write_text(json.dumps(d))
+    rp = oracle.check_k17(env.lineage)
+    dt.check("K17:record_corrupt" in rp.codes(), "K17: a record that lost its seal was not flagged")
 
     # K13, K14, K10 (no engine needed for the verdicts of the first two)
     dt.check("K13:foreign_blocked" in oracle.check_k13({"waits": {"foreignBlocked": 3}}).codes(), "K13 passed foreignBlocked 3")
@@ -747,7 +772,9 @@ def t_oracle_live_engine(c):
 def t_chaos_engine_injectors(c):
     """On a live daemon: the native decompiler below it can be found, suspended and killed (the request
     that used it fails alone and the pool respawns), a dropped connection (a reset, no goodbye) is a dead
-    client the daemon forgets, and a suspended decompiler is seen as an orphan by K7 once the daemon is dead."""
+    client the daemon forgets, and a suspended decompiler is seen as an orphan by K7 once the daemon is dead.
+    The daemon runs without its Job Object (test hooks plus noProcessJob, as E9's no-job control): with the job
+    (hydra.4, E9) the kill of the daemon also kills the suspended decompiler, so there would be no orphan for K7."""
     src = src_project(c)
     if not src or not src.is_file():
         return "NOT RUN: no --project (an analysed project .gpr)"
@@ -755,7 +782,7 @@ def t_chaos_engine_injectors(c):
     if work.exists():
         shutil.rmtree(work)
     gpr = make_project_copy(src, work / "proj")
-    d = c.daemon("x0chaos")
+    d = c.daemon("x0chaos", vmargs=["-Dghidra.session.testHooks=true", "-Dghidra.session.noProcessJob=true"])
     out = {}
     with d.connect("x0", "dt_x0") as s:
         pid = s.hello["pid"]
