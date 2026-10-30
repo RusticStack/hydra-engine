@@ -137,6 +137,10 @@ final class Connection {
 			}
 			session.disconnect(client);
 			outbound.finish();
+			if (HydraCpu.profile().placeThreads()) {
+				// the placements so far (cumulative), for cpu_bench.py and dt_cpu.py
+				Msg.info(this, "cpu: " + HydraCpu.report());
+			}
 		}
 	}
 

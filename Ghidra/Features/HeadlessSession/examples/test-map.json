@@ -2966,6 +2966,7 @@
    "script_shared_visibility"
   ],
   "Ghidra/Features/HeadlessSession/examples/dt_cpu.py": [
+   "cpu_granted_limits",
    "cpu_profile_identical",
    "cpu_profile_override",
    "cpu_selftest"

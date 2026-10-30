@@ -33,27 +33,31 @@ import java.util.function.Predicate;
  * <p>
  * <b>Profiles</b> ({@link #profile()}): {@code HYDRA_CPU_PROFILE} (or the system property
  * {@code hydra.cpu.profile}) is {@code generic}, {@code auto} (the default) or a profile name.
- * {@code auto} picks the first entry of {@link #PROFILES} whose matcher accepts the detected CPU,
- * else {@code generic}. A profile changes performance knobs only (pool size per core class and
+ * {@code auto} picks the first entry of {@link #AUTO_PROFILES} whose matcher accepts the detected
+ * CPU, else {@code generic}. A profile joins {@link #AUTO_PROFILES} only with measured before/after
+ * numbers; until then it is selectable by name only ({@link #PROFILES}). A profile changes performance knobs only (pool size per core class and
  * thread placement), never results. The generic profile places no thread.
  * <p>
  * <b>Placement</b> ({@link #place(Role)}): on a hybrid CPU (more than one efficiency class) under
  * a profile that asks for it, a {@link Role#LATENCY} thread (daemon request handling) selects
- * the performance-class CPU sets and a {@link Role#BACKGROUND} thread (analysis pools, sweeps,
- * housekeeping) the efficiency-class ones, through {@code SetThreadSelectedCpuSets} (Windows).
+ * the performance-class CPU sets and a {@link Role#BACKGROUND} thread (analysis pools) the
+ * efficiency-class ones, through {@code SetThreadSelectedCpuSets} (Windows). Background threads
+ * are placed only once the live background threads outnumber the performance-class CPUs (the
+ * first ones run unplaced, so a small pool is never confined to E-cores while P-cores idle).
  * Each class takes at most as many placed threads as it has granted logical CPUs; a thread past
  * that budget is left unplaced (it may run on any CPU), so placement never makes work wait for a
- * core class. Elsewhere (other OS, non-hybrid CPU, no native access, virtual thread) it is a
+ * core class. Machines with more than one processor group are never treated as hybrid. Elsewhere (other OS, non-hybrid CPU, no native access, virtual thread) it is a
  * no-op.
  * <p>
  * The native layer is {@code java.lang.foreign} against kernel32 and is used only when this
- * module has native access ({@code --enable-native-access}, which the Hydra daemon sets);
- * without it every answer comes from the JVM ({@code availableProcessors}, no placement). When
+ * module has native access ({@code --enable-native-access}; every Ghidra launch sets it through
+ * {@code support/launch.properties}, so the GUI and analyzeHeadless detect granted CPUs too;
+ * {@code -Dhydra.cpu.noNative=true} turns it off); without it every answer comes from the JVM ({@code availableProcessors}, no placement). When
  * the Rust {@code hydra-native} library (rust/p1-native-core) ships a loadable FFM entry point
  * it can replace {@link Native} behind the same methods.
  * <p>
  * Adding a profile: see {@code docs/cpu-profiles.md} (a {@link Profile} entry, a matcher, and
- * before/after numbers from {@code hydraCpuBench}).
+ * before/after numbers from {@code Ghidra/Features/HeadlessSession/examples/cpu_bench.py}).
  */
 public final class HydraCpu {
 
@@ -152,10 +156,18 @@ public final class HydraCpu {
 		"Intel Raptor Lake hybrid: request threads on P-cores, background work on E-cores");
 
 	/**
-	 * The profiles {@code auto} tries in order (the generic profile is the fallback, not listed).
-	 * Contributors add an entry here through a PR (docs/cpu-profiles.md).
+	 * The profiles selectable by name (the generic profile is always selectable). Contributors add
+	 * an entry here through a PR (docs/cpu-profiles.md).
 	 */
 	public static final List<Profile> PROFILES = List.of(RAPTORLAKE_HYBRID);
+
+	/**
+	 * The profiles {@code auto} tries in order (the generic profile is the fallback, not listed).
+	 * A profile is added here only with before/after numbers from {@code cpu_bench.py} on a process
+	 * granted every core class of the CPU (docs/cpu-profiles.md). {@code raptorlake-hybrid} has none
+	 * yet, so it is selectable by name only and {@code auto} is generic everywhere.
+	 */
+	public static final List<Profile> AUTO_PROFILES = List.of();
 
 	/**
 	 * The selected profile and why.
@@ -172,6 +184,9 @@ public final class HydraCpu {
 	private static final AtomicInteger PLACED_LATENCY = new AtomicInteger();
 	private static final AtomicInteger PLACED_BACKGROUND = new AtomicInteger();
 	private static final AtomicInteger PLACE_FAILURES = new AtomicInteger();
+	private static final AtomicInteger TOTAL_LATENCY = new AtomicInteger();
+	private static final AtomicInteger TOTAL_BACKGROUND = new AtomicInteger();
+	private static final AtomicInteger ACTIVE_BACKGROUND = new AtomicInteger();
 
 	private HydraCpu() {
 	}
@@ -206,7 +221,8 @@ public final class HydraCpu {
 		if (s == null) {
 			synchronized (HydraCpu.class) {
 				if (selection == null) {
-					selection = select(requested(), cpu());
+					String[] r = requested();
+					selection = select(r[0], r[1], cpu());
 				}
 				s = selection;
 			}
@@ -219,36 +235,51 @@ public final class HydraCpu {
 		return profile().poolSize(cpu());
 	}
 
-	/** @return the override: the property, else the environment, else "auto" */
-	static String requested() {
+	/** @return {override, source}: the property, else the environment, else {"auto", "default"} */
+	static String[] requested() {
 		String v = System.getProperty(PROPERTY);
+		String src = "-D" + PROPERTY;
 		if (v == null || v.isBlank()) {
 			v = System.getenv(ENV);
+			src = ENV;
 		}
-		return v == null || v.isBlank() ? "auto" : v.trim().toLowerCase(Locale.ROOT);
+		return v == null || v.isBlank() ? new String[] { "auto", "default" }
+				: new String[] { v.trim().toLowerCase(Locale.ROOT), src };
 	}
 
 	/**
-	 * Picks the profile for an override value and a CPU.
+	 * Picks the profile for an override value given through {@link #ENV}.
 	 *
 	 * @param requested "generic", "auto" or a profile name
 	 * @param c the CPU
 	 * @return the selection
 	 */
 	public static Selection select(String requested, Cpu c) {
+		return select(requested, ENV, c);
+	}
+
+	/**
+	 * Picks the profile for an override value and a CPU.
+	 *
+	 * @param requested "generic", "auto" or a profile name
+	 * @param source where the value came from ({@link #ENV}, {@code -Dhydra.cpu.profile})
+	 * @param c the CPU
+	 * @return the selection
+	 */
+	public static Selection select(String requested, String source, Cpu c) {
 		if ("generic".equals(requested)) {
-			return new Selection(GENERIC, requested, ENV + "=generic");
+			return new Selection(GENERIC, requested, source + "=generic");
 		}
 		if (!"auto".equals(requested)) {
 			for (Profile p : PROFILES) {
 				if (p.name().equals(requested)) {
-					return new Selection(p, requested, ENV + "=" + requested + " (forced)");
+					return new Selection(p, requested, source + "=" + requested + " (forced)");
 				}
 			}
 			return new Selection(GENERIC, requested,
-				"unknown profile '" + requested + "', using generic");
+				source + ": unknown profile '" + requested + "', using generic");
 		}
-		for (Profile p : PROFILES) {
+		for (Profile p : AUTO_PROFILES) {
 			if (p.matches().test(c)) {
 				return new Selection(p, requested, "auto: the CPU matches " + p.name());
 			}
@@ -282,6 +313,7 @@ public final class HydraCpu {
 			PLACE_FAILURES.incrementAndGet();
 			return false;
 		}
+		(role == Role.LATENCY ? TOTAL_LATENCY : TOTAL_BACKGROUND).incrementAndGet();
 		return true;
 	}
 
@@ -300,13 +332,34 @@ public final class HydraCpu {
 	}
 
 	/**
-	 * Wraps a thread body so that it runs placed for its role (for thread factories).
+	 * Wraps a thread body so that it runs placed for its role (for thread factories). A
+	 * {@link Role#BACKGROUND} thread is placed only when it starts while more live background
+	 * threads exist than performance-class CPUs (P-cores are oversubscribed); the first ones run
+	 * unplaced.
 	 *
 	 * @param role the role
 	 * @param body the body
 	 * @return the wrapped body
 	 */
 	public static Runnable placed(Role role, Runnable body) {
+		return () -> {
+			boolean bg = role == Role.BACKGROUND;
+			int active = bg ? ACTIVE_BACKGROUND.incrementAndGet() : 0;
+			boolean placed = false;
+			try {
+				placed = !bg || placeBackgroundAt(active, cpu()) ? place(role) : false;
+				body.run();
+			}
+			finally {
+				release(role, placed);
+				if (bg) {
+					ACTIVE_BACKGROUND.decrementAndGet();
+				}
+			}
+		};
+	}
+
+	private static Runnable placedNow(Role role, Runnable body) {
 		return () -> {
 			boolean placed = place(role);
 			try {
@@ -316,6 +369,15 @@ public final class HydraCpu {
 				release(role, placed);
 			}
 		};
+	}
+
+	/**
+	 * @param active the live background threads, this one included
+	 * @param c the CPU
+	 * @return whether a background thread starting now is placed on efficiency cores
+	 */
+	static boolean placeBackgroundAt(int active, Cpu c) {
+		return c.hybrid() && active > c.performanceIds().length;
 	}
 
 	/** @return a one-line report: CPU, granted CPUs, classes, profile, placements */
@@ -340,6 +402,8 @@ public final class HydraCpu {
 		m.put("backgroundBudget", s.profile().backgroundBudget(c));
 		m.put("placedLatency", PLACED_LATENCY.get());
 		m.put("placedBackground", PLACED_BACKGROUND.get());
+		m.put("placedLatencyTotal", TOTAL_LATENCY.get());
+		m.put("placedBackgroundTotal", TOTAL_BACKGROUND.get());
 		m.put("placeFailures", PLACE_FAILURES.get());
 		m.put("nativeAccess", Native.available());
 		return m;
@@ -360,7 +424,7 @@ public final class HydraCpu {
 			System.exit(failed.isEmpty() ? 0 : 1);
 		}
 		for (Role r : Role.values()) {
-			Thread t = new Thread(placed(r, () -> System.out.println(
+			Thread t = new Thread(placedNow(r, () -> System.out.println(
 				"probe." + r.name().toLowerCase(Locale.ROOT) + "=" +
 					(r == Role.LATENCY ? PLACED_LATENCY : PLACED_BACKGROUND).get())));
 			t.start();
@@ -384,8 +448,14 @@ public final class HydraCpu {
 		Cpu rplP = new Cpu("GenuineIntel", 6, 0xB7, 24, 16, p16, new int[0], "test");
 		Cpu amd = new Cpu("AuthenticAMD", 0x19, 0x61, 32, 32, new int[0], new int[0], "test");
 		Cpu quota = new Cpu("AuthenticAMD", 0x19, 0x61, 32, 4, new int[0], new int[0], "test");
-		chk(f, "auto picks raptorlake-hybrid on a hybrid Raptor Lake",
-			select("auto", rpl).profile() == RAPTORLAKE_HYBRID);
+		chk(f, "the raptorlake-hybrid matcher accepts a hybrid Raptor Lake",
+			RAPTORLAKE_HYBRID.matches().test(rpl));
+		chk(f, "auto stays generic on a hybrid Raptor Lake until the profile is measured",
+			select("auto", rpl).profile() == GENERIC && !AUTO_PROFILES.contains(RAPTORLAKE_HYBRID));
+		chk(f, "the reason names the property when it chose",
+			select("generic", "-D" + PROPERTY, rpl).reason().startsWith("-D" + PROPERTY));
+		chk(f, "background threads up to the P-core count run unplaced",
+			!placeBackgroundAt(16, rpl) && placeBackgroundAt(17, rpl) && !placeBackgroundAt(99, amd));
 		chk(f, "auto falls back to generic when only P-cores are granted",
 			select("auto", rplP).profile() == GENERIC);
 		chk(f, "auto falls back to generic on an unknown CPU", select("auto", amd).profile() == GENERIC);
@@ -586,7 +656,7 @@ public final class HydraCpu {
 				if ((int) h.getCpuSets.invokeExact(buf, len, needed, self, 0) == 0) {
 					return null;
 				}
-				// the process affinity mask (processor group 0; processes start in one group)
+				// the process affinity mask (group 0; used only on single-group machines below)
 				MemorySegment pm = a.allocate(8), sm = a.allocate(8);
 				long procMask = -1L;
 				if ((int) h.affinity.invokeExact(self, pm, sm) != 0) {
@@ -595,6 +665,8 @@ public final class HydraCpu {
 				// SYSTEM_CPU_SET_INFORMATION: Size@0 Type@4 Id@8 Group@12(u16) LogicalProcessorIndex@14
 				// CoreIndex@15 LastLevelCacheIndex@16 NumaNodeIndex@17 EfficiencyClass@18
 				List<int[]> sets = new ArrayList<>(); // {id, efficiencyClass}
+				List<Integer> allIds = new ArrayList<>();
+				Set<Integer> groups = new HashSet<>();
 				int system = 0, maxClass = 0, minClass = Integer.MAX_VALUE;
 				long off = 0;
 				while (off + 20 <= len) {
@@ -608,8 +680,9 @@ public final class HydraCpu {
 						int group = Short.toUnsignedInt(buf.get(ValueLayout.JAVA_SHORT, off + 12));
 						int lp = Byte.toUnsignedInt(buf.get(ValueLayout.JAVA_BYTE, off + 14));
 						int eff = Byte.toUnsignedInt(buf.get(ValueLayout.JAVA_BYTE, off + 18));
-						boolean allowed = group == 0 ? lp < 64 && (procMask >>> lp & 1) != 0
-								: procMask == -1L;
+						groups.add(group);
+						allIds.add(id);
+						boolean allowed = group == 0 && lp < 64 && (procMask >>> lp & 1) != 0;
 						if (allowed) {
 							sets.add(new int[] { id, eff });
 							maxClass = Math.max(maxClass, eff);
@@ -617,6 +690,15 @@ public final class HydraCpu {
 						}
 					}
 					off += size;
+				}
+				if (groups.size() > 1) {
+					// several processor groups: GetProcessAffinityMask describes one group only
+					// (zero when the process spans groups), so no class split and no placement;
+					// the JVM's count, lowered to a job cap
+					int granted = Math.max(1, Math.min(jvm, jobCap(h, a, system)));
+					return new Cpu(vendor, family, model, system, granted,
+						allIds.stream().mapToInt(Integer::intValue).toArray(), new int[0],
+						"windows-cpusets-multigroup");
 				}
 				if (sets.isEmpty()) {
 					return null;

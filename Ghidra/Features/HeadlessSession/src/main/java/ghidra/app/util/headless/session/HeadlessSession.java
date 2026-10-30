@@ -109,6 +109,10 @@ public class HeadlessSession implements GhidraLaunchable {
 		// E9, D60: the daemon makes its own kill-on-close Job Object before anything else, so
 		// every process it starts afterwards (native decompilers, script workers) dies with it.
 		// It never throws; health.processJob reports what happened.
+		// Goal 4: the granted CPUs are detected before the daemon enters its own job: a job CPU
+		// rate cap is read from the process's immediate job (QueryInformationJobObject(NULL)),
+		// which after ProcessJob.start would be the daemon's own uncapped job, not the caller's
+		HydraCpu.cpu();
 		ProcessJob.start(layout.getApplicationInstallationDir().getFile(false).toPath());
 		long t0 = System.nanoTime();
 		Options o;

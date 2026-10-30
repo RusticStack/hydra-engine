@@ -22,7 +22,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import com.google.gson.JsonObject;
 
 import ghidra.util.Msg;
-import ghidra.util.cpu.HydraCpu;
 
 /**
  * Daemon threads that survive a {@link Throwable} (PROTOCOL-3.md 3.11, "Daemon threads", D46).
@@ -188,11 +187,10 @@ final class Guarded {
 	 * thread then ends too. An interrupt ends it as well.
 	 */
 	static Thread start(String name, Body body) {
-		// the accept loop is latency-critical; the others (governor sampling, reaper) are
-		// housekeeping that a hybrid CPU's profile may run on E-cores
-		HydraCpu.Role role = name.equals("session-accept") ? HydraCpu.Role.LATENCY
-				: HydraCpu.Role.BACKGROUND;
-		Thread t = new Thread(HydraCpu.placed(role, () -> loop(name, body)), name);
+		// not placed on a hybrid CPU: these loops mostly sleep or block (accept), so placement
+		// gains nothing, and the governor is the memory-safety sampler that must not share a
+		// small E-core set with saturating analysis threads
+		Thread t = new Thread(() -> loop(name, body), name);
 		t.setDaemon(true);
 		STATES.computeIfAbsent(name, k -> new State()).thread = t;
 		t.start();

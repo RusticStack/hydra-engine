@@ -22,7 +22,11 @@ The decompiled C of every function is hashed: the two profiles must produce iden
 changes performance knobs only), and the run fails (exit 1) when they do not.
 
     python cpu_bench.py --ghidra <install> --work <empty dir> [--exe C:/Windows/System32/choice.exe]
-                        [--profile auto|<name>] [--rounds 3] [--limit 0]
+                        [--profile raptorlake-hybrid|auto|<name>] [--rounds 3] [--limit 0] [--keep-affinity]
+
+On Windows every daemon is started with the machine's full affinity mask (all logical CPUs, so a hybrid CPU's
+every core class is granted) unless ``--keep-affinity``: a shell that only has the P-cores would otherwise
+measure generic against generic. Run it on a quiet machine; numbers taken next to other load are noise.
 
 Standard library only. Nothing is written outside ``--work``. The daemon log line ``cpu: {...}`` (written at
 start-up by HeadlessSession) supplies the detected CPU, the granted CPUs and the active profile.
@@ -34,11 +38,13 @@ Output (one block; the numbers are medians over the rounds):
     workload  choice.exe: import+analyze, decompile 57 functions | 3 rounds
     profile                  analyze_s  decompile_s    total_s  digest
     generic                     12.345        3.210     15.555  0123abcd4567
-    auto(raptorlake-hybrid)     11.900        3.050     14.950  0123abcd4567
+    raptorlake-hybrid           11.900        3.050     14.950  0123abcd4567
     change                       -3.6%        -5.0%      -3.9%
     outputs   identical
 """
 import argparse
+import contextlib
+import ctypes
 import hashlib
 import json
 import os
@@ -46,6 +52,7 @@ import pathlib
 import re
 import shutil
 import statistics
+import subprocess
 import sys
 import time
 
@@ -60,6 +67,86 @@ public class BenchMakeProject extends GhidraScript {
 """
 
 CPU_LINE = re.compile(r"cpu: \{(.*)\}")
+
+# ---- Windows process controls (ctypes): affinity and job object CPU rate caps ----------------------------
+
+_CREATE_SUSPENDED = 0x4
+_JOB_CPU_RATE = 15  # JobObjectCpuRateControlInformation
+_RATE_ENABLE, _RATE_HARD_CAP = 0x1, 0x4
+
+
+def _k32():
+    from ctypes import wintypes as w
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.GetCurrentProcess.restype = w.HANDLE
+    k.GetProcessAffinityMask.argtypes = [w.HANDLE, ctypes.POINTER(ctypes.c_size_t), ctypes.POINTER(ctypes.c_size_t)]
+    k.SetProcessAffinityMask.argtypes = [w.HANDLE, ctypes.c_size_t]
+    k.CreateJobObjectW.restype = w.HANDLE
+    k.CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
+    k.SetInformationJobObject.argtypes = [w.HANDLE, ctypes.c_int, ctypes.c_void_p, w.DWORD]
+    k.AssignProcessToJobObject.argtypes = [w.HANDLE, w.HANDLE]
+    k.CloseHandle.argtypes = [w.HANDLE]
+    return k
+
+
+def affinity_masks(handle=None):
+    """(process mask, system mask) of ``handle`` (default: this process)."""
+    k = _k32()
+    pm, sm = ctypes.c_size_t(), ctypes.c_size_t()
+    if not k.GetProcessAffinityMask(handle or k.GetCurrentProcess(), ctypes.byref(pm), ctypes.byref(sm)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return pm.value, sm.value
+
+
+@contextlib.contextmanager
+def full_affinity(enabled=True):
+    """Runs the block with this process's affinity widened to every CPU of the machine (Windows), so
+    processes started inside it (a daemon) inherit all core classes; restores the old mask after.
+    Yields the mask in force (None when nothing was changed)."""
+    if not enabled or os.name != "nt":
+        yield None
+        return
+    k = _k32()
+    old, system = affinity_masks()
+    if old == system or not k.SetProcessAffinityMask(k.GetCurrentProcess(), system):
+        yield old if old == system else None
+        return
+    try:
+        yield system
+    finally:
+        k.SetProcessAffinityMask(k.GetCurrentProcess(), old)
+
+
+def run_controlled(argv, affinity=None, cpu_rate=None, env=None, timeout=120):
+    """Runs ``argv`` to completion (Windows), started suspended and then given ``affinity`` (a mask) and/or
+    put in a fresh job object with a hard CPU rate cap of ``cpu_rate`` (hundredths of a percent of the
+    machine, e.g. 2500 = 25 %) before it runs any code. Returns (returncode, stdout+stderr)."""
+    k = _k32()
+    ntdll = ctypes.WinDLL("ntdll")
+    ntdll.NtResumeProcess.argtypes = [ctypes.c_void_p]
+    p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                         text=True, env=env, creationflags=_CREATE_SUSPENDED)
+    job = None
+    try:
+        h = int(p._handle)  # the process handle Popen holds (Windows)
+        if affinity is not None and not k.SetProcessAffinityMask(h, affinity):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if cpu_rate is not None:
+            job = k.CreateJobObjectW(None, None)
+            info = (ctypes.c_uint32 * 2)(_RATE_ENABLE | _RATE_HARD_CAP, cpu_rate)
+            if not job or not k.SetInformationJobObject(job, _JOB_CPU_RATE, info, 8) \
+                    or not k.AssignProcessToJobObject(job, h):
+                raise ctypes.WinError(ctypes.get_last_error())
+        ntdll.NtResumeProcess(h)
+        out, _ = p.communicate(timeout=timeout)
+        return p.returncode, out
+    except BaseException:
+        p.kill()
+        p.communicate()
+        raise
+    finally:
+        if job:
+            k.CloseHandle(job)
 
 
 def load_launcher(ghidra):
@@ -84,8 +171,10 @@ def parse_cpu(log_text):
     return out
 
 
-def run_once(gs, ghidra, exe, work, profile, tag, limit):
-    """One fresh daemon under ``HYDRA_CPU_PROFILE=profile``: import+analyze, decompile all. Returns a dict."""
+def run_once(gs, ghidra, exe, work, profile, tag, limit, widen=False):
+    """One fresh daemon under ``HYDRA_CPU_PROFILE=profile``: import+analyze, decompile all. Returns a dict;
+    ``cpu`` is the daemon's start-up ``cpu:`` line, ``cpu_end`` its last one (with the cumulative placements;
+    logged per disconnect under a placing profile). ``widen``: start the daemon with every CPU of the machine."""
     root = work / tag
     if root.exists():
         shutil.rmtree(root, ignore_errors=True)
@@ -97,8 +186,11 @@ def run_once(gs, ghidra, exe, work, profile, tag, limit):
     old = os.environ.get("HYDRA_CPU_PROFILE")
     os.environ["HYDRA_CPU_PROFILE"] = profile  # the daemon's JVM inherits it at launch
     d = gs.Daemon(ghidra, str(state), "cpubench")
+    stack = contextlib.ExitStack()
     try:
+        stack.enter_context(full_affinity(widen))
         with d.connect("cpubench", "cpubench") as s:
+            stack.close()  # the daemon has started (and inherited the mask): restore ours
             s.call("script", script=str(scripts / "BenchMakeProject.java"), program=None,
                    args=[str(root), "Bench"])
             s.call("open_project", path=str(root / "Bench.gpr"), writable=True)
@@ -116,26 +208,31 @@ def run_once(gs, ghidra, exe, work, profile, tag, limit):
                 h.update(a.encode() + b"\0" + (r.get("c") or "").encode() + b"\0")
             t_dc = time.perf_counter() - t1
             s.call("close_project")
-        log = pathlib.Path(d.log_file).read_text(encoding="utf-8", errors="replace") \
-            if pathlib.Path(d.log_file).is_file() else ""
     finally:
+        stack.close()
         if old is None:
             os.environ.pop("HYDRA_CPU_PROFILE", None)
         else:
             os.environ["HYDRA_CPU_PROFILE"] = old
         d.stop()
+    log = pathlib.Path(d.log_file).read_text(encoding="utf-8", errors="replace") \
+        if pathlib.Path(d.log_file).is_file() else ""
+    lines = [ln for ln in log.splitlines() if CPU_LINE.search(ln)]
     return {"analyze_s": t_an, "decompile_s": t_dc, "total_s": t_an + t_dc, "functions": len(fns),
-            "digest": h.hexdigest(), "cpu": parse_cpu(log)}
+            "digest": h.hexdigest(), "cpu": parse_cpu(lines[0]) if lines else None,
+            "cpu_end": parse_cpu(lines[-1]) if lines else None}
 
 
-def bench(ghidra, exe, work, profile="auto", rounds=3, limit=0, out=print):
+def bench(ghidra, exe, work, profile="raptorlake-hybrid", rounds=3, limit=0, out=print, widen=True):
+    if profile == "generic":
+        raise ValueError("--profile generic compares generic with itself; name the profile under test")
     gs = load_launcher(ghidra)
     work = pathlib.Path(work).absolute()
     work.mkdir(parents=True, exist_ok=True)
     runs = {"generic": [], profile: []}
     for r in range(rounds):  # interleaved, so drift of the machine hits both sides alike
         for p in ("generic", profile):
-            runs[p].append(run_once(gs, ghidra, pathlib.Path(exe), work, p, f"{p}-{r}", limit))
+            runs[p].append(run_once(gs, ghidra, pathlib.Path(exe), work, p, f"{p}-{r}", limit, widen))
     med = {p: {k: statistics.median(x[k] for x in v) for k in ("analyze_s", "decompile_s", "total_s")}
            for p, v in runs.items()}
     digests = {x["digest"] for v in runs.values() for x in v}
@@ -155,6 +252,9 @@ def bench(ghidra, exe, work, profile="auto", rounds=3, limit=0, out=print):
     ch = [(med[profile][k] - med["generic"][k]) / med["generic"][k] * 100 if med["generic"][k] else 0.0
           for k in ("analyze_s", "decompile_s", "total_s")]
     out(f"{'change':<24}{ch[0]:>+9.1f}%{ch[1]:>+12.1f}%{ch[2]:>+10.1f}%")
+    end = runs[profile][-1].get("cpu_end") or {}
+    out(f"placed    latency {end.get('placedLatencyTotal', 0)}, background {end.get('placedBackgroundTotal', 0)} "
+        f"thread(s) in the last {label} run")
     out("outputs   " + ("identical" if len(digests) == 1 else f"DIFFERENT ({len(digests)} digests)"))
     return {"runs": runs, "median": med, "identical": len(digests) == 1, "cpu": cpu,
             "generic_cpu": runs["generic"][-1]["cpu"]}
@@ -165,12 +265,16 @@ def main():
     ap.add_argument("--ghidra", required=True)
     ap.add_argument("--work", required=True)
     ap.add_argument("--exe", default=r"C:\Windows\System32\choice.exe")
-    ap.add_argument("--profile", default="auto")
+    ap.add_argument("--profile", default="raptorlake-hybrid", help="the profile under test (not generic)")
+    ap.add_argument("--keep-affinity", action="store_true",
+                    help="start the daemons with this shell's affinity instead of every CPU of the machine")
     ap.add_argument("--rounds", type=int, default=3)
     ap.add_argument("--limit", type=int, default=0, help="decompile only the first N functions (0: all)")
     ap.add_argument("--json", help="also write the raw results here")
     a = ap.parse_args()
-    res = bench(a.ghidra, a.exe, a.work, a.profile, a.rounds, a.limit)
+    if a.profile.strip().lower() == "generic":
+        ap.error("--profile generic compares generic with itself; name the profile under test")
+    res = bench(a.ghidra, a.exe, a.work, a.profile, a.rounds, a.limit, widen=not a.keep_affinity)
     if a.json:
         pathlib.Path(a.json).write_text(json.dumps(res, indent=1, default=str))
     return 0 if res["identical"] else 1
