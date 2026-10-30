@@ -1151,7 +1151,11 @@ def judge_hy_store(root, base_names: dict, acked_csids, views: dict, head_names:
             gen_v = None if v.get("pending") == 0 and not recs else (v.get("base") or {}).get("generation", 0)
             at = hy_state_at(chain, changesets, base_v, gen_v)
             view_state = {(s, "name"): hy_default_name(s, v.get("names") or {}) for s in keys}
+            n0 = len(rep.findings)
             oracle.check_k8(at, recs, view_state, kid="K8", rep=rep)
+            for f in rep.findings[n0:]:   # name the view and what it was judged against
+                f.update(view=who, view_key=vk, base_generation=gen_v, pending=len(recs),
+                         detail=f"{who} (base {gen_v}, {len(recs)} pending): {f['detail']}")
     # K1 (engine side): no writable open of a sealed generation in the Hydralysis engine's logs
     if sealed_gprs:
         for log in engine_logs:
@@ -1208,6 +1212,24 @@ def hy_stale_explained(r, redos) -> bool:
         return False
     return any(d.get("agent") == r.get("agent") and d.get("n") == r.get("n") and d.get("attempt") == r.get("attempt")
                and d.get("t", 0) >= r.get("t", 0) for d in redos)
+
+
+def hy_view_state_copy(hy_root, kd) -> int:
+    """Copies ``overlays/*.json[.bak]`` and ``working/<dir>/state.json`` of a Hydralysis root into ``kd/views``
+    (small files; the working copies' projects are not kept). Returns the number of files copied."""
+    n = 0
+    root = pathlib.Path(hy_root)
+    for f in sorted((root / "overlays").glob("*.json*")) if (root / "overlays").is_dir() else []:
+        if f.is_file():
+            (pathlib.Path(kd) / "views" / "overlays").mkdir(parents=True, exist_ok=True)
+            shutil.copy2(f, pathlib.Path(kd) / "views" / "overlays" / f.name)
+            n += 1
+    for f in sorted((root / "working").glob("*/state.json")) if (root / "working").is_dir() else []:
+        d = pathlib.Path(kd) / "views" / "working" / f.parent.name
+        d.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(f, d / "state.json")
+        n += 1
+    return n
 
 
 def judge_k11p(facts: dict, rep: oracle.Report | None = None) -> oracle.Report:
@@ -2896,6 +2918,8 @@ class Soak:
             for g in sorted((lin / "gen").glob("*/MANIFEST.json")) if (lin / "gen").is_dir() else []:
                 (dst / "manifests").mkdir(exist_ok=True)
                 shutil.copy2(g, dst / "manifests" / f"{g.parent.name}.json")
+        # the views' own state, for a K8/K15 finding: each overlay store (and .bak) and each working copy's state file
+        hy_view_state_copy(self.hy_root, kd)
 
     def candidate_round(self):
         """K1 of the engine-level candidates: every sealed candidate's files equal the snapshot taken at its seal, the
@@ -3716,6 +3740,13 @@ def selftest(work: pathlib.Path | None = None, verbose: bool = True) -> int:
     (sk / "working" / "abc123r" / "w-1").mkdir(parents=True)      # the rebased copy's folder: no store of that name
     (sk / "overlays" / "abc123.json").write_text(json.dumps(oracle.seal_record({"edits": [{"id": "o-7"}], "revision": 1})))
     (sk / "overlays" / "zzz.json").write_text(json.dumps(oracle.seal_record({"edits": [{"id": "o-1"}], "revision": 1})))
+    (sk / "working" / "abc123").mkdir(parents=True)
+    (sk / "working" / "abc123" / "state.json").write_text("{}")
+    kd_ = base / "hy-keep"
+    rmtree(kd_)
+    check("evidence: the views' overlay stores and working state files are kept",
+          hy_view_state_copy(sk, kd_) == 3 and (kd_ / "views" / "overlays" / "abc123.json").is_file()
+          and (kd_ / "views" / "working" / "abc123" / "state.json").is_file())
     check("H-agent view key: the store that holds the acknowledged record, not the rebased copy's <key>r folder",
           soak_hy.store_key_of(sk, "o-7") == "abc123" and soak_hy.store_key_of(sk, "o-9") is None)
     E = soak_hy.HyError
