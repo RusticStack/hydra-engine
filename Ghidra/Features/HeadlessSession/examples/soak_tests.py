@@ -42,10 +42,19 @@ INCOMPLETE, 2 usage error. Every gap is listed by name in the evidence (``gaps``
 packages that landed later (health, script worker, views, publish) says so instead of passing quietly.
 
 Workload per agent (engine level): reads (decompile, functions), edits with a unique tag per generation
-and saves, quick scripts, long cooperative scripts, cancels, forks, bulk opens and, rarely, deaf and
-runaway scripts. The Hydralysis-side workload (publish, rebase, analysis in a candidate, Hydralysis
-queries) and the faults that need it (kill of a publish leader, the 100-view probe) are run by the VF
-integration check; here they are listed as ``unavailable``.
+and saves, quick scripts, long cooperative scripts, cancels, forks, bulk opens, analysis in a generation
+candidate that is then sealed (``fork_project purpose:"generation"``, ``analyze``, ``save``, ``seal_project``;
+K1 judges every seal at the end) and, rarely, deaf and runaway scripts. The 100-view out-of-memory probe
+runs against the same daemon (GR8: a structured ``busy`` at ``maxViews``, never an out-of-memory error).
+
+The Hydralysis lane (the VF integration items; on when ``--hy-binary``, ``--hy-src`` and ``--hy-python``
+are given, ``soak_hy.py``): H-agents in their own processes run Hydralysis queries (decompile, xrefs,
+functions), renames in their own views (``options.as``), publish, rebase and K15 rebuild probes against the
+candidate engine, while the supervisor kills publish leaders mid-build and runs K11p (two sub-agents in one
+real MCP server process). After the run the publish queue is drained and K1 (every sealed generation equals
+its manifest), K8 (each view = its store replayed onto its base generation), K12 (``CURRENT.log``
+linearisation), K15, K16 (the sequential model equals the head) and K17 (sealed records, torn log lines)
+judge the Hydralysis root. Without the lane its items stay named gaps and a gate profile cannot PASS.
 
 Faults, each with a minimum count per profile (``MIN_FAULTS``; the spec fixes only "at least 150 kills"
 for the nightly lane, the per-class split is this runner's choice and is recorded in the evidence):
@@ -95,34 +104,48 @@ KILL_CLASSES = ["kill_client", "kill_daemon_random", "kill_daemon_trigger", "kil
 #: minimum number of hits per class and profile: a class below its minimum makes the run INCOMPLETE
 MIN_FAULTS = {
     "smoke": dict(kill_client=2, kill_daemon_random=1, kill_daemon_trigger=1, kill_decompiler=1,
-                  suspend_daemon=1, suspend_client=1, stalled_reader=1, handle_holder=1, backup_lane=1),
+                  suspend_daemon=1, suspend_client=1, stalled_reader=1, handle_holder=1, backup_lane=1,
+                  oom_probe_100_views=1),
     "pr": dict(kill_client=8, kill_daemon_random=2, kill_daemon_trigger=2, kill_decompiler=4,
-               suspend_daemon=2, suspend_client=2, stalled_reader=2, handle_holder=2, backup_lane=1),
+               suspend_daemon=2, suspend_client=2, stalled_reader=2, handle_holder=2, backup_lane=1,
+               oom_probe_100_views=1),
     "nightly": dict(kill_client=100, kill_daemon_random=15, kill_daemon_trigger=15, kill_decompiler=30,
-                    suspend_daemon=12, suspend_client=12, stalled_reader=8, handle_holder=10, backup_lane=4),
+                    suspend_daemon=12, suspend_client=12, stalled_reader=8, handle_holder=10, backup_lane=4,
+                    oom_probe_100_views=3),
     "release": dict(kill_client=250, kill_daemon_random=40, kill_daemon_trigger=40, kill_decompiler=80,
-                    suspend_daemon=30, suspend_client=30, stalled_reader=20, handle_holder=24, backup_lane=8),
+                    suspend_daemon=30, suspend_client=30, stalled_reader=20, handle_holder=24, backup_lane=8,
+                    oom_probe_100_views=6),
 }
+#: the minimums the Hydralysis lane adds (``--hy-binary``): publish leaders killed mid-build and K11p probes (two
+#: sub-agents in one MCP server process)
+VF_MIN_FAULTS = {
+    "smoke": dict(kill_publish_leader=1, k11p_probe=1),
+    "pr": dict(kill_publish_leader=2, k11p_probe=1),
+    "nightly": dict(kill_publish_leader=10, k11p_probe=3),
+    "release": dict(kill_publish_leader=20, k11p_probe=4),
+}
+#: H-agents (Hydralysis processes) per profile
+HY_AGENTS = {"smoke": 2, "pr": 2, "nightly": 4, "release": 6}
 #: what the engine-level runner cannot do and the packages that provide it (listed, never faked)
+#: (each is run by the Hydralysis lane when it is on; without it they are named gaps)
 UNAVAILABLE_FAULTS = {
-    "kill_publish_leader": "a publish leader is a Hydralysis process (Y3 publish queue); run by the VF integration check",
-    "oom_probe_100_views": "needs views and maxViews (E4/E9 governor with Hydralysis views); run by the VF integration check",
+    "kill_publish_leader": "a publish leader is a Hydralysis process (Y3 publish queue); needs the Hydralysis lane (--hy-binary)",
 }
 UNAVAILABLE_WORKLOAD = {
-    "publish": "Hydralysis publish (Y3); VF integration check",
-    "rebase": "Hydralysis rebase (Y3); VF integration check",
-    "candidate_analysis": "analysis in a candidate (Hydralysis); VF integration check",
-    "hydralysis_queries": "Hydralysis queries; VF integration check",
+    "publish": "Hydralysis publish (Y3); needs the Hydralysis lane (--hy-binary)",
+    "rebase": "Hydralysis rebase (Y3); needs the Hydralysis lane (--hy-binary)",
+    "hydralysis_queries": "Hydralysis queries; needs the Hydralysis lane (--hy-binary)",
 }
-#: oracle checks that need views, lineage stores or sealed generations (Hydralysis publish) and so cannot run here
+#: oracle checks that need views, lineage stores or sealed generations; a check counts as exercised when it ran
+#: (``Report.checked``): K1 also runs on the engine-level sealed candidates
 UNEXERCISED_CHECKS = {
-    "K1": "no sealed generation exists at engine level",
-    "K8": "needs the op-log store of views",
-    "K11p": "needs two sub-agents in one MCP server process (Hydralysis)",
-    "K12": "needs CURRENT.log lineage (publish)",
-    "K15": "needs a view rebuilt from base + store",
-    "K16": "needs the changeset fold of published views",
-    "K17": "needs the sealed record store of views",
+    "K1": "no sealed generation was judged",
+    "K8": "needs the op-log store of views (Hydralysis lane)",
+    "K11p": "needs two sub-agents in one MCP server process (Hydralysis lane)",
+    "K12": "needs CURRENT.log lineage (publish, Hydralysis lane)",
+    "K15": "needs a view rebuilt from base + store (Hydralysis lane)",
+    "K16": "needs the changeset fold of published views (Hydralysis lane)",
+    "K17": "needs the sealed record store of views (Hydralysis lane)",
 }
 
 # ------------------------------------------------------------------------------ small helpers
@@ -236,10 +259,12 @@ public class SoakBurn extends GhidraScript {
 #: which workload operations an agent can run at engine level, with their lane (for the latency table)
 OPS = {
     "read": "quick", "edit_save": "edit", "quick_script": "quick", "long_script": "long", "cancel": "long",
-    "fork": "maint", "bulk_open": "quick", "deaf": "long", "burn": "long",
+    "fork": "maint", "bulk_open": "quick", "deaf": "long", "burn": "long", "candidate": "maint",
 }
 OP_WEIGHTS = {"read": 30, "edit_save": 24, "quick_script": 9, "long_script": 9, "cancel": 6, "fork": 6,
-              "bulk_open": 5, "deaf": 1, "burn": 1}
+              "bulk_open": 5, "deaf": 1, "burn": 1, "candidate": 2}
+#: sealed candidates per agent incarnation (each is a full fork that stays until the end for K1)
+CANDIDATES_MAX = 4
 BUSY_EXPLAINERS = ("reason", "holder", "lane", "queue", "queued", "wanted", "resource", "slots", "running",
                    "readers", "heldMs", "waitedMs")
 TAG_RX = re.compile(r"^sk(\d\d)x(\d+)_(\d+)$")
@@ -448,7 +473,7 @@ def agent_main(spec_path: str) -> int:
                 if e.code == "closed":
                     raise ConnLost() from e
                 row("cancel", "long", t0, e.code == "cancelled", None if e.code == "cancelled" else e.code,
-                    expected=e.code == "cancelled")
+                    expected=e.code == "cancelled", message=(e.message or "")[:200])
                 if e.code not in ("cancelled",):
                     raise
 
@@ -517,9 +542,72 @@ def agent_main(spec_path: str) -> int:
             finally:
                 row("burn_wall", "long", t0, True, natural_ms=ms_)
 
+        cand_dir = adir / "cand"
+        cand_n = max([r.get("n", 0) for r in recs if r.get("kind") == "cand"] or [0])
+        cand_here = [0]
+        # a candidate an earlier incarnation left unsealed (its client or daemon was killed mid-way) is opened writable
+        # once, so that the engine takes over the lock the killed holder left (as a respawned agent does for its fork),
+        # and then deleted (atomic rename first); a sealed one keeps its snapshot for K1
+        for c in sorted(cand_dir.glob("c*")) if cand_dir.is_dir() else []:
+            if not c.is_dir() or (cand_dir / f"{c.name}.seal.json").exists():
+                continue
+            gp = next(c.glob("*.gpr"), None)
+            if gp is not None:
+                t0 = time.perf_counter()
+                try:
+                    o = s.call("open_project", path=str(gp), writable=True)
+                    s.call("close_project", project=o["id"])
+                    row("cand_abandoned", "quick", t0, True, path=str(c))
+                except gs.SessionError as e:
+                    row("cand_abandoned", "quick", t0, True, path=str(c), note=e.code)
+            gone = cand_dir / ("del-" + c.name)
+            with contextlib.suppress(OSError):
+                c.rename(gone)
+                rmtree(gone)
+
+        def op_candidate():
+            """Analysis in a generation candidate (D38): fork the master with purpose generation, open its program
+            writable, analyze, rename one function with a tag, save, close, seal. The seal is then checked from
+            outside: a writable open is refused ``sealed``; the snapshot of every file taken now is what K1
+            compares at the end."""
+            nonlocal cand_n
+            if cand_here[0] >= CANDIDATES_MAX:
+                return op_read()
+            cand_here[0] += 1
+            cand_n += 1
+            n = cand_n
+            dest = cand_dir / f"c{n}"
+            opid = f"{idx}:cand:{n}"
+            lineage = f"L-soak{idx:02d}"
+            led.sent(opid, kind="cand", n=n, path=str(dest))
+            t0 = time.perf_counter()
+            g = call("cand_fork", "maint", "fork_project", project=master["id"], path=str(dest), name="Cand",
+                     mode="auto", purpose="generation", lineage=lineage, generation=n, wait=600000)
+            cp = g.get("project")
+            k2 = call("cand_open", "quick", "open_program", path=prog, project=cp, writable=True)["key"]
+            call("cand_analyze", "long", "analyze", program=k2, timeout=600, wait=600000)
+            call("cand_edit", "edit", "edit", program=k2,
+                 ops=[{"op": "rename", "address": meta["addrs"][0], "name": f"{pfx}c{n}"}])
+            call("cand_save", "maint", "save", program=k2)
+            call("cand_close", "quick", "close_program", program=k2)
+            call("cand_close_project", "quick", "close_project", project=cp)
+            sealed = call("cand_seal", "maint", "seal_project", project=g["gpr"], lineage=lineage)
+            refused = None
+            try:
+                s.call("open_project", path=g["gpr"], writable=True)
+                refused = "opened"
+            except gs.SessionError as e:
+                refused = e.code
+            snap = oracle.seal_snapshot(dest)
+            (cand_dir / f"c{n}.seal.json").write_text(json.dumps({"gpr": g["gpr"], "dir": str(dest), "snapshot": snap,
+                                                                 "revision": sealed.get("revision")}), encoding="utf-8")
+            led.ack(opid, kind="cand", n=n, path=str(dest))
+            row("candidate", "maint", t0, refused == "sealed", None if refused == "sealed" else "writable_open_not_refused",
+                refused=refused)
+
         table = {"read": op_read, "edit_save": op_edit_save, "quick_script": op_quick_script,
                  "long_script": op_long_script, "cancel": op_cancel, "fork": op_fork, "bulk_open": op_bulk_open,
-                 "deaf": op_deaf, "burn": op_burn}
+                 "deaf": op_deaf, "burn": op_burn, "candidate": op_candidate}
         names = [k for k in table if k in spec["ops"]]
         weights = [OP_WEIGHTS[k] for k in names]
         led.sent(f"{idx}:ready", kind="meta")
@@ -808,9 +896,14 @@ def profile_overrides(profile: str, agents: int, projects: int, duration_s: floa
     return out
 
 
+def profile_minimums(profile: str, hy_enabled: bool) -> dict:
+    """The fault minimums of a profile, with the Hydralysis lane's when it runs."""
+    return {**MIN_FAULTS[profile], **(VF_MIN_FAULTS[profile] if hy_enabled else {})}
+
+
 def verdict_of(profile: str, rep: oracle.Report, hits: dict, workload: dict, features: dict, extra_viol: list,
                cut_short: str | None, setup_error: str | None, ran_checks: set, plants_expected=(),
-               overrides=()) -> dict:
+               overrides=(), hy_enabled: bool = False) -> dict:
     """The verdict from the facts of a run. ``extra_viol`` are (code, detail) pairs of the runner's own
     criteria (unexpected errors, a lost agent, ...), ``hits`` the fault classes fired.
 
@@ -818,7 +911,7 @@ def verdict_of(profile: str, rep: oracle.Report, hits: dict, workload: dict, fea
     ran) make any profile INCOMPLETE. ``soft`` gaps (a feature or a check that belongs to a package that has
     not landed, or to the Hydralysis side) make a gate profile INCOMPLETE and are only listed for ``smoke``."""
     gate = PROFILES[profile]["gate"]
-    mins = MIN_FAULTS[profile]
+    mins = profile_minimums(profile, hy_enabled)
     hard, soft = [], []
     if setup_error:
         hard.append(f"setup: {setup_error}")
@@ -831,12 +924,24 @@ def verdict_of(profile: str, rep: oracle.Report, hits: dict, workload: dict, fea
     kills = sum(hits.get(c, 0) for c in KILL_CLASSES)
     if profile == "nightly" and kills < 150:
         hard.append(f"nightly kills: {kills} of the minimum 150")
+    # the VF items: with the Hydralysis lane on, each must have run (a hard gap otherwise); without it, each is a
+    # named soft gap that keeps a gate profile from PASS
     for cls, why in UNAVAILABLE_FAULTS.items():
-        soft.append(f"fault class {cls}: not run here ({why})")
+        if not hy_enabled:
+            soft.append(f"fault class {cls}: not run here ({why})")
     for op, why in UNAVAILABLE_WORKLOAD.items():
-        soft.append(f"workload {op}: not run here ({why})")
+        if hy_enabled:
+            if not workload.get(op):
+                hard.append(f"workload {op}: never ran")
+        else:
+            soft.append(f"workload {op}: not run here ({why})")
     for k, why in UNEXERCISED_CHECKS.items():
-        soft.append(f"oracle {k}: not exercised ({why})")
+        if k in ran_checks:
+            continue
+        if hy_enabled:
+            hard.append(f"oracle {k}: never ran")
+        else:
+            soft.append(f"oracle {k}: not exercised ({why})")
     for feat, present in sorted(features.items()):
         if not present.get("present") and present.get("needed_for_gate"):
             soft.append(f"feature {feat} absent: {present.get('why')}")
@@ -863,6 +968,276 @@ def verdict_of(profile: str, rep: oracle.Report, hits: dict, workload: dict, fea
             "gaps": gaps, "overrides": list(overrides),
             "hard_gaps": hard, "soft_gaps": soft, "plants_missing": missing or [],
             "plants_all_caught": None if missing is None else not missing}
+
+
+# ================================================================================ the Hydralysis lane (VF items): judgement
+# (pure functions over files and rows, so the self-test can plant violations into them)
+
+#: the outcomes of a decided changeset that keep its records (``soak_hy.PUBLISH_DONE``)
+HY_PUBLISH_DONE = ("applied", "rebased", "converged", "skipped")
+#: H-agent operations, by workload item
+HY_QUERY_OPS = ("hy_decompile", "hy_xrefs", "hy_functions")
+GEN_DIR_RX = re.compile(r"^\d{4}$")
+
+
+def hy_default_name(subject: str, base_names: dict) -> str | None:
+    addr = subject.split(":", 1)[1] if subject.startswith("address:") else subject
+    return base_names.get(addr)
+
+
+def hy_model_records(changeset: dict) -> list:
+    """A Hydralysis changeset (``pending/<csid>.json``) as model records ``{id, seq, subject, field, before, after}``:
+    one per effect of each record (store v3)."""
+    out = []
+    for r in changeset.get("records", []):
+        for e in r.get("effects") or []:
+            out.append({"id": r["id"], "seq": r.get("seq", 0), "subject": e["subject"], "field": e["field"],
+                        "before": e.get("before"), "after": e.get("after")})
+    return out
+
+
+def hy_effective_chain(lines) -> list:
+    """The ``CURRENT.log`` lines that the head rests on: a ``rollback`` line returns to an earlier generation, so the
+    lines after that generation are dropped from the chain (``views.reconcile``)."""
+    chain = []
+    for ln in lines:
+        if ln.get("reason") == "rollback":
+            chain = [c for c in chain if (c.get("gen") or 0) <= (ln.get("gen") or 0)]
+            continue
+        chain.append(ln)
+    return chain
+
+
+def hy_state_at(chain, changesets: dict, base_state: dict, gen=None) -> dict:
+    """The model state after folding the chain's changesets up to generation ``gen`` (all when None)."""
+    m = oracle.Model(base_state)
+    for ln in chain:
+        if gen is not None and (ln.get("gen") or 0) > gen:
+            break
+        for cs in ln.get("csids", []):
+            if cs in changesets:
+                m.apply_changeset(changesets[cs]["records"])
+    return m.state
+
+
+def hy_lineages(root) -> list:
+    lr = pathlib.Path(root) / "lineages"
+    return sorted(p for p in lr.glob("L-*") if p.is_dir()) if lr.is_dir() else []
+
+
+def judge_hy_store(root, base_names: dict, acked_csids, views: dict, head_names: dict | None,
+                   engine_logs=(), rep: oracle.Report | None = None) -> oracle.Report:
+    """K1, K8, K12, K16 and K17 over a Hydralysis root after the run.
+
+    ``views`` is ``{agent id: {"view_key", "base": {"generation"}, "names": {addr: name}}}`` (``soak_hy facts``),
+    ``head_names`` the head as a view without edits shows it, ``acked_csids`` the changesets the H-agents' ledgers
+    acknowledged with a generation, ``base_names`` the names of generation 0 (``soak_hy setup``)."""
+    rep = rep or oracle.Report("hy")
+    root = pathlib.Path(root)
+    acked = set(acked_csids)
+    known = set()
+    sealed_gprs = []
+    for lin in hy_lineages(root):
+        lg = oracle.load_lineage(lin)
+        lines = [o for (_off, o, _b) in lg["log"]["lines"]]
+        mine = {cs for ln in lines for cs in ln.get("csids", [])}
+        here = {c for c in acked if c in mine or c in lg["pending"] or c in lg["done"]}
+        known |= here
+        oracle.check_k12(lg, sorted(here), rep)
+        # K17: every sealed record of the lineage (the leader label publish.leader.json is not one) and its log
+        for sub in ("pending", "done", "declined", "failures", "views"):
+            if (lin / sub).is_dir():
+                oracle.check_k17(lin / sub, None, rep)
+        oracle.check_k17(None, lin / "CURRENT.log", rep)
+        # K1: every sealed generation equals its manifest (abandoned candidates, gen/NNNN.abandoned-*, are not)
+        for g in sorted(p for p in (lin / "gen").glob("*") if p.is_dir() and GEN_DIR_RX.match(p.name)) \
+                if (lin / "gen").is_dir() else []:
+            mp = g / "MANIFEST.json"
+            if not mp.is_file():
+                if any(ln.get("gen") == int(g.name) for ln in lines):
+                    rep.violation("K1", "generation_without_manifest", f"{lin.name}/gen/{g.name} is named by CURRENT.log "
+                                  "and has no MANIFEST.json", g)
+                continue
+            try:
+                man = json.loads(mp.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as e:
+                rep.violation("K1", "manifest_unreadable", f"{mp}: {e}", mp)
+                continue
+            oracle.verify_manifest(man, rep, mp)
+            oracle.check_k1(g, oracle.manifest_snapshot(man), rep, label=f"{lin.name}/gen/{g.name}")
+            sealed_gprs += [str(x) for x in g.glob("*.gpr")]
+        # K16: the model folds the chain's changesets in log order and equals the head
+        changesets = {cs: {"records": hy_model_records(body)} for cs, body in lg["changesets"].items()}
+        chain = hy_effective_chain(lines)
+        subjects = {r["subject"] for c in changesets.values() for r in c["records"]}
+        base_state = {(s, "name"): hy_default_name(s, base_names) for s in subjects}
+        if head_names is not None:
+            head_state = {(s, "name"): hy_default_name(s, head_names) for s in subjects}
+            oracle.check_k16(base_state, chain, changesets, head_state,
+                             manifests={g: m for g, m in lg["manifests"].items()}, rep=rep)
+        # K8: each H-agent view = its store replayed onto its base generation, over every subject any changeset or
+        # any view's store names (a view that shows another view's unpublished name differs from its replay)
+        stores = {}
+        for who, v in views.items():
+            if v.get("view_key"):
+                stores[who] = oracle.read_sealed(root / "overlays" / f"{v['view_key']}.json")[0]
+        all_subjects = subjects | {r["subject"] for st_ in stores.values() if st_
+                                   for r in hy_model_records({"records": st_.get("edits", [])})}
+        for who, v in views.items():
+            vk = v.get("view_key")
+            if not vk or (v.get("base") or {}).get("lineage") not in (None, lin.name):
+                continue
+            store = stores.get(who)
+            if store is None:
+                rep.violation("K8", "store_unreadable", f"{who}: overlays/{vk}.json and its .bak fail validation")
+                continue
+            # the store replayed as Hydralysis replays it (workcopy.pending_of): every record not in a live commit, in
+            # store order (a committed record is already in the base generation)
+            committed = {i for c in store.get("commits") or [] if not c.get("reverted") for i in c.get("ids", [])}
+            pend = [r for r in store.get("edits", []) if r.get("id") not in committed]
+            recs = [{**r, "seq": k} for k, r in enumerate(hy_model_records({"records": pend}))]
+            keys = all_subjects
+            base_v = {(s, "name"): hy_default_name(s, base_names) for s in keys}
+            at = hy_state_at(chain, changesets, base_v, (v.get("base") or {}).get("generation", 0))
+            view_state = {(s, "name"): hy_default_name(s, v.get("names") or {}) for s in keys}
+            oracle.check_k8(at, recs, view_state, kid="K8", rep=rep)
+    # K1 (engine side): no writable open of a sealed generation in the Hydralysis engine's logs
+    if sealed_gprs:
+        for log in engine_logs:
+            for line in oracle.engine_log_writable_opens(log, sealed_gprs):
+                rep.violation("K1", "writable_open_of_sealed", line, log)
+    oracle.check_k17(root / "overlays", None, rep) if (root / "overlays").is_dir() else None
+    for cs in sorted(acked - known):
+        rep.ran("K12")
+        rep.violation("K12", "acked_publish_missing", f"acknowledged changeset {cs!r} is in no lineage", None, csid=cs)
+    return rep
+
+
+def judge_hy_rows(rows, windows=()) -> tuple:
+    """The H-agents' rows: ``(violations, summary)``. A failed call is an unexpected error unless it is an explained
+    ``busy``; a ``hy_k15`` row with a difference is a K15 violation (a view rebuilt from base + store differs from
+    the live view); a publish that ended in another outcome than the four that keep the records is a violation."""
+    viol, k15 = [], {"probes": 0, "rebuilt": 0, "differ": 0}
+    unexpected = {}
+    for r in rows:
+        if r.get("op") == "hy_k15":
+            k15["probes"] += 1
+            k15["rebuilt"] += bool(r.get("rebuilt"))
+            if r.get("diff"):
+                k15["differ"] += 1
+                viol.append(("K15:view_rebuilt_differs", f"{r.get('agent')}: {json.dumps(r.get('diff'))[:300]}"))
+            continue
+        if r.get("ok") or r.get("op") == "ready":
+            continue
+        code = r.get("code") or ""
+        if code == "busy" and any(k in (r.get("details") or {}) for k in BUSY_EXPLAINERS):
+            continue
+        unexpected.setdefault(f"{r.get('op')}:{code}", []).append(r)
+    for k, rs in sorted(unexpected.items()):
+        viol.append(("hy_unexpected_error", f"{k}: {len(rs)} time(s); first: {json.dumps(rs[0], default=str)[:300]}"))
+    counts = {"publish": sum(1 for r in rows if r.get("op") == "hy_publish" and r.get("ok")),
+              "rebase": sum(1 for r in rows if r.get("op") == "hy_rebase" and r.get("ok")),
+              "hydralysis_queries": sum(1 for r in rows if r.get("op") in HY_QUERY_OPS and r.get("ok"))}
+    return viol, {"unexpected": sum(len(v) for v in unexpected.values()), "k15": k15, "counts": counts}
+
+
+def judge_k11p(facts: dict, rep: oracle.Report | None = None) -> oracle.Report:
+    """K11p (D59, Y5 ``subagents_one_process``): two sub-agents of one MCP server process; without ``as`` they share
+    one view (Q sees P's unpublished tag: documented, D59); with distinct ``options.as`` they do not, and P sees its
+    own."""
+    rep = rep or oracle.Report("K11p")
+    rep.ran("K11p")
+    if facts.get("errors"):
+        rep.violation("K11p", "probe_failed", json.dumps(facts["errors"])[:300])
+        return rep
+    sh, iso = facts.get("shared") or {}, facts.get("isolated") or {}
+    if sh.get("q_saw") != sh.get("tag"):
+        rep.violation("K11p", "shared_id_not_shared", f"without as, Q saw {sh.get('q_saw')!r}, not P's {sh.get('tag')!r}")
+    if iso.get("q_saw") == iso.get("tag"):
+        rep.violation("K11p", "unpublished_tag_visible", f"as Q saw P's unpublished tag {iso.get('tag')!r}")
+    if iso.get("p_saw") != iso.get("tag"):
+        rep.violation("K11p", "own_edit_missing", f"as P saw {iso.get('p_saw')!r}, not its own {iso.get('tag')!r}")
+    return rep
+
+
+def judge_view_probe(res: dict, rep: oracle.Report | None = None) -> oracle.Report:
+    """GR8, the 100-view probe of 9.14/9.17 inside the soak: opening up to 100 programs ends in a structured
+    ``busy`` (reason ``capacity``) at ``maxViews``, never an out-of-memory error or a dead daemon; the governor never
+    holds more than ``maxViews`` views. ``res``: ``{"max_views", "opened", "governor_views_max", "refusals":
+    [{code, details}], "errors": [...], "daemon_alive", "oom_lines"}``."""
+    rep = rep or oracle.Report("GR8")
+    rep.ran("GR8")
+    mx = res.get("max_views")
+    if not res.get("daemon_alive", True):
+        rep.violation("GR8", "daemon_died", "the daemon did not survive the 100-view probe")
+    for line in res.get("oom_lines") or []:
+        rep.violation("GR8", "out_of_memory", line[:300])
+    for e in res.get("errors") or []:
+        rep.violation("GR8", "unstructured_refusal", json.dumps(e, default=str)[:300])
+    for f in res.get("refusals") or []:
+        det = f.get("details") or {}
+        if f.get("code") != "busy" or det.get("reason") != "capacity":
+            rep.violation("GR8", "unstructured_refusal", json.dumps(f, default=str)[:300])
+    if mx is not None:
+        if (res.get("governor_views_max") or 0) > mx:
+            rep.violation("GR8", "views_above_max", f"governor views {res.get('governor_views_max')} > maxViews {mx}")
+        if res.get("opened", 0) + res.get("held_by_others", 0) < 100 and not res.get("refusals"):
+            rep.violation("GR8", "not_refused", f"{res.get('opened')} opened, no refusal before 100")
+    return rep
+
+
+def judge_leader_kill(ev: dict, rep: oracle.Report | None = None) -> oracle.Report:
+    """A publish leader killed mid-build: the lock is free again (the OS released it) and the queue moves on (the
+    killed changeset is decided later, judged by K12 and K16 at the end)."""
+    rep = rep or oracle.Report("leader")
+    if ev.get("killed") and ev.get("lock_held_after"):
+        rep.violation("K12", "leader_lock_stuck", f"publish.lock still held {ev.get('waited_s')} s after the leader "
+                      f"{ev.get('pid')} was killed", None)
+    return rep
+
+
+def hy_engine_facts(status: dict, health: dict | None) -> dict:
+    """What a client sees of the Hydralysis engine daemon: the governor's views and the programs nobody uses that still
+    hold unsaved edits (an orphan with work is kept until ``orphanKeepS``, 0 = for ever, and counts as a view)."""
+    pr = {p.get("id"): p for p in status.get("projects", [])}
+    orphans = [{"project": p.get("project"), "gpr": (pr.get(p.get("project")) or {}).get("gpr"),
+                "unsaved": p.get("unsavedEdits"), "orphanedMs": p.get("orphanedMs")}
+               for p in status.get("programs", []) if not p.get("users") and (p.get("unsavedEdits") or 0) > 0]
+    g = (health or {}).get("governor") or {}
+    return {"views": g.get("views"), "max_views": g.get("maxViews"), "refused": g.get("refused"),
+            "programs": len(status.get("programs", [])), "orphans": orphans}
+
+
+def judge_hy_engine(facts: dict, rep: oracle.Report | None = None) -> oracle.Report:
+    """No leak (9.17) on the Hydralysis side, once every H-agent has ended: no program that nobody uses holds unsaved
+    edits (each one is a view the daemon keeps for ever and counts against ``maxViews``)."""
+    rep = rep or oracle.Report("hy-engine")
+    rep.ran("K7")
+    orph = facts.get("orphans") or []
+    if orph:
+        rep.violation("K7", "orphaned_unsaved_programs",
+                      f"{len(orph)} program(s) nobody uses hold unsaved edits and stay open as views "
+                      f"({facts.get('views')} of maxViews {facts.get('max_views')}); first: "
+                      f"{[(o.get('gpr'), o.get('unsaved')) for o in orph[:3]]}", None, count=len(orph))
+    return rep
+
+
+def writable_opens_after_seal(log_lines, gprs) -> list:
+    """Daemon log lines that open one of ``gprs`` writable after the line that sealed it (``Seals``: "<client> sealed
+    <gpr> at revision ..."; ``Session``: "opened project pN <gpr> (writable)"). The candidate's own writable open
+    before its seal is not one."""
+    keys = {str(pathlib.Path(g)).lower().replace("\\", "/") for g in gprs}
+    sealed, out = set(), []
+    for line in log_lines:
+        low = line.lower().replace("\\", "/")
+        for k in keys:
+            if k not in low:
+                continue
+            if " sealed " + k in low:
+                sealed.add(k)
+            elif k in sealed and "opened project" in low and "(writable)" in low:
+                out.append(line.strip())
+    return out
 
 
 # ================================================================================ the supervisor
@@ -894,8 +1269,8 @@ class Soak:
         self.instance = "soak"
         self.report = oracle.Report("soak")
         self.extra_viol: list = []
-        self.hits = {c: 0 for c in FAULT_CLASSES + ["backup_lane"]}
-        self.attempts = {c: 0 for c in FAULT_CLASSES + ["backup_lane"]}
+        self.hits = {c: 0 for c in FAULT_CLASSES + ["backup_lane", "k11p_probe"]}
+        self.attempts = {c: 0 for c in FAULT_CLASSES + ["backup_lane", "k11p_probe"]}
         self.windows: list = []
         self.fault_log: list = []
         self.procs: dict = {}
@@ -937,6 +1312,18 @@ class Soak:
         self.guard = None
         self.k6_sweep_log = None
         self.daemon_logs = self.work / "daemon-logs"   # every incarnation's log (rotate_daemon_log)
+        # the Hydralysis lane (VF items)
+        self.hy_enabled = bool(getattr(a, "hy_binary", None) and getattr(a, "hy_src", None) and getattr(a, "hy_python", None))
+        self.hy_root = self.work / "hy"
+        self.hy_dir = self.work / "hy-agents"
+        self.hy_n = (getattr(a, "hy_agents", 0) or HY_AGENTS[a.profile]) if self.hy_enabled else 0
+        self.hy_procs: dict = {}
+        self.hy_setup = None
+        self.hy_error = None
+        self.hy_rc: list = []
+        self.hy_log: list = []
+        self.k11p_round = 0
+        self.probe_copies = self.work / "probe-views"
 
     # ---------------------------------------------------------------------------- layout
     def master_gpr(self, p: int) -> pathlib.Path:
@@ -1072,6 +1459,8 @@ class Soak:
             shutil.copytree(self.masters_dir / "p0", self.canary)   # a project no agent and no daemon touches
         self.guard = oracle.TreeGuard(**{f"p{p}": self.masters_dir / f"p{p}" for p in range(self.nproj)},
                                       **({"canary": self.canary} if self.canary.is_dir() else {}))
+        if self.hy_enabled:
+            self.hy_prepare()
         return h
 
     def prepare_masters(self):
@@ -1613,12 +2002,15 @@ class Soak:
         "stalled_reader": lambda s: s.f_stalled_reader(),
         "handle_holder": lambda s: s.f_handle_holder(),
         "backup_lane": lambda s: s.f_backup_lane(),
+        "oom_probe_100_views": lambda s: s.f_oom_probe(),
+        "kill_publish_leader": lambda s: s.f_kill_publish_leader(),
+        "k11p_probe": lambda s: s.f_k11p_probe(),
     }
 
     def schedule(self) -> list:
         """The deck of fault events: each class its minimum (plus a fifth more, rounded up, where a hit can
         miss), shuffled with the seed, spread over the run after a warm-up and before a cool-down."""
-        mins = MIN_FAULTS[self.profile]
+        mins = profile_minimums(self.profile, getattr(self, "hy_enabled", False))
         deck = []
         for cls, n in mins.items():
             extra = 0 if self.profile == "smoke" else -(-n // 5)
@@ -1644,6 +2036,9 @@ class Soak:
                 continue
             with contextlib.suppress(Exception):
                 self.reap_agents()
+            if self.hy_enabled:
+                with contextlib.suppress(Exception):
+                    self.hy_reap()
             now = time.time()
             if now - last_status >= 5.0:
                 last_status = now
@@ -1791,6 +2186,8 @@ class Soak:
         self.watchers = [w1, w2]
         for i in range(self.agents):
             self.spawn_agent(i)
+        if self.hy_enabled:
+            self.hy_start()
         mon = threading.Thread(target=self.monitor_loop, daemon=True, name="monitor")
         mon.start()
         deck = [] if self.a.no_faults else self.schedule()
@@ -1836,6 +2233,8 @@ class Soak:
             rep.violation("K10", "no_ping", f"periodic: {e}")
         self.merge(rep, "periodic")
         self.tmp_round("periodic")
+        if self.hy_ready():
+            self.hy_engine_sample("periodic")
 
     def finish(self, early: bool = False) -> dict:
         """Drain, the quiescent oracle, the verdict, the evidence, the clean-up."""
@@ -1856,6 +2255,9 @@ class Soak:
         for w in self.watchers:
             w.report(self.report)
         rows = self.load_rows()
+        hy_counts = {}
+        if self.hy_enabled and not early:
+            hy_counts = self.hy_finish()
         if not early and self.sess is not None and not self.daemon_down.is_set():
             self.drain_checks()
         viol, summ = classify_rows(rows, self.windows, tolerated_after_s=5.0,
@@ -1868,11 +2270,15 @@ class Soak:
             self.extra_viol.append(("quick_lane_p99", f"{lat['quick']['p99_ms']} ms above the bound {self.a.quick_p99_ms}"))
         workload = {op: sum(1 for r in rows if r["op"] == self.WORKLOAD_ROW.get(op, op) and (r.get("ok") or r.get("expected")))
                     for op in OPS if op in self.a.ops}
+        workload["candidate_analysis"] = workload.get("candidate", 0)
+        workload.update(hy_counts)
+        if self.hy_error:
+            self.setup_error = self.setup_error or f"hydralysis lane: {self.hy_error}"
         res = verdict_of(self.profile, self.report, self.hits, workload, self.features, self.extra_viol,
                          self.cut_short, self.setup_error, set(self.report.checked),
                          plants_expected=[self.PLANT_CODES[p] for p in (list(self.PLANT_CODES) if self.plant == ["all"]
                                                                        else self.plant) if p in self.PLANT_CODES],
-                         overrides=self.overrides)
+                         overrides=self.overrides, hy_enabled=self.hy_enabled)
         if self.plant and ("all" in self.plant or "WINDOW" in self.plant):
             wm = self.window_plants_missing(viol, summ)
             res["plants_missing"] = list(res["plants_missing"]) + wm
@@ -1884,7 +2290,11 @@ class Soak:
                "violation_details": self.report.findings, "runner_violations": [{"code": c, "detail": d} for c, d in self.extra_viol],
                "tolerated": self.report.tolerated, "notes": self.report.notes,
                "oracle_checks_ran": sorted(self.report.checked), "oracle_not_exercised": UNEXERCISED_CHECKS,
-               "fault_hits": self.hits, "fault_attempts": self.attempts, "fault_minimums": MIN_FAULTS[self.profile],
+               "fault_hits": self.hits, "fault_attempts": self.attempts,
+               "fault_minimums": profile_minimums(self.profile, self.hy_enabled),
+               "hydralysis_lane": {"enabled": self.hy_enabled, "agents": self.hy_n, "error": self.hy_error,
+                                   "setup": {k: v for k, v in (self.hy_setup or {}).items() if k not in ("functions",)},
+                                   "exits": self.hy_rc, "log": self.hy_log[-200:]},
                "fault_unavailable": UNAVAILABLE_FAULTS, "workload_unavailable": UNAVAILABLE_WORKLOAD,
                "workload_counts": workload, "row_summary": summ, "latency_ms": lat,
                "workload_counts_note": "an operation counts as run when it succeeded or failed with an EXPECTED code "
@@ -1908,7 +2318,7 @@ class Soak:
 
     WORKLOAD_ROW = {"edit_save": "save", "quick_script": "quick_script", "long_script": "long_script",
                     "read": "read_decompile", "cancel": "cancel", "fork": "fork", "bulk_open": "bulk_open",
-                    "deaf": "deaf", "burn": "burn"}
+                    "deaf": "deaf", "burn": "burn", "candidate": "candidate"}
 
     def engine_hello(self):
         h = (self.sess.hello if self.sess is not None else {}) or {}
@@ -1990,6 +2400,7 @@ class Soak:
         self.merge(rep2, "quiescent")
         self.k6_sweep()
         self.file_round("quiescent", quiescent=True, daemon_alive=False, swept=True)
+        self.candidate_round()
         self.tmp_round("end")
 
     def k6_sweep(self):
@@ -2017,7 +2428,25 @@ class Soak:
                 oracle.check_k6_tree(root, swept=False, rep=after)
             left = oracle.k6_pending_parents(after)
             out["cleared_by_restart"] = [p for p in pend if p not in left]
-            out["trigger"] = "daemon start (8.13)" if not left else "daemon start, then fork_project into each folder left (D41)"
+            out["trigger"] = "daemon start (8.13)" if not left else "daemon start, then open_project, then fork_project (8.13)"
+            # 8.13 (2): open_project sweeps the folder of the project it opens (a record dropped at the start, the case of
+            # a sidecar temporary file next to a complete fork, waits for this or for a fork_project)
+            out["opened"] = []
+            for parent in left:
+                for gpr in sorted(pathlib.Path(parent).glob("*.gpr"))[:1]:
+                    try:
+                        o2 = self.sup_call("open_project", path=str(gpr))
+                        out["opened"].append({"parent": parent, "gpr": str(gpr)})
+                        with contextlib.suppress(Exception):
+                            self.sup_call("close_project", project=o2["id"])
+                    except self.gs.SessionError as e:
+                        out["opened"].append({"parent": parent, "gpr": str(gpr), "result": e.code})
+            if left:
+                again = oracle.Report("k6-after-open")
+                for root in self.k6_roots():
+                    oracle.check_k6_tree(root, swept=False, rep=again)
+                left = oracle.k6_pending_parents(again)
+            # 8.13 (3): fork_project sweeps its destination name before staging (D41)
             if left:
                 o = self.sup_call("open_project", path=str(self.master_gpr(0)))
                 for parent in left:
@@ -2042,6 +2471,389 @@ class Soak:
                     self.daemon.stop(force=True, timeout=120)
         return out
 
+    # ---------------------------------------------------------------------------- the Hydralysis lane (VF items)
+    def hy_spec(self) -> dict:
+        return {"hy_src": str(pathlib.Path(self.a.hy_src).absolute()), "root": str(self.hy_root),
+                "config": str(self.hy_dir / "config.json")}
+
+    def hy_run(self, cmd: str, spec: dict, timeout: float) -> int | None:
+        """One ``soak_hy.py`` command under the Hydralysis Python; its output goes to ``hy-agents/<cmd>.log``."""
+        sp = self.hy_dir / f"{cmd}-{int(time.time() * 1000)}.json"
+        sp.write_text(json.dumps(spec), encoding="utf-8")
+        with open(self.hy_dir / f"{cmd}.log", "ab") as lf:
+            try:
+                return subprocess.run([self.a.hy_python, "-I", str(HERE / "soak_hy.py"), cmd, str(sp)], stdout=lf,
+                                      stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, timeout=timeout).returncode
+            except subprocess.TimeoutExpired:
+                self.hy_log.append({"t": round(self.t(), 1), "cmd": cmd, "error": f"timed out after {timeout} s"})
+                return None
+
+    def hy_prepare(self):
+        """Prepares the Hydralysis target (a copy of ``--hy-binary``) on a fresh Hydralysis root and picks each H-agent's
+        subjects: functions no CALL or JUMP reaches (a rename of one changes no other function's decompile)."""
+        self.hy_dir.mkdir(parents=True, exist_ok=True)
+        self.hy_root.mkdir(parents=True, exist_ok=True)
+        eng = pathlib.Path(self.a.ghidra)
+        cfg = {"root": str(self.hy_root), "hydra_dir": str(eng),
+               "hydra_client": str(eng / "Ghidra" / "Features" / "HeadlessSession" / "support" / "ghidra_session.py"),
+               "hydra_idle_s": 1800}
+        (self.hy_dir / "config.json").write_text(json.dumps(cfg), encoding="utf-8")
+        tdir = self.work / "hy-target"
+        tdir.mkdir(parents=True, exist_ok=True)
+        target = tdir / pathlib.Path(self.a.hy_binary).name
+        shutil.copy2(self.a.hy_binary, target)
+        out = self.hy_dir / "setup.json"
+        t0 = time.time()
+        rc = self.hy_run("setup", {**self.hy_spec(), "binary": str(target), "out": str(out)}, 1800)
+        try:
+            st = json.loads(out.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            st = {"ok": False}
+        if not st.get("ok"):
+            self.hy_error = f"setup failed (rc {rc}): {json.dumps(st)[:300]}"
+            return
+        free, called = st.get("free", []), st.get("called", [])
+        per = 2 if len(free) >= 2 * self.hy_n else 1
+        if len(free) < self.hy_n * per or len(called) < 2:
+            self.hy_error = f"too few subjects: {len(free)} functions no call reaches for {self.hy_n} H-agents"
+            return
+        st["subjects"] = {i: free[i * per:(i + 1) * per] for i in range(self.hy_n)}
+        st["k11p_subjects"] = called[:2]
+        st["setup_s"] = round(time.time() - t0, 1)
+        self.hy_setup = st
+
+    def hy_ready(self) -> bool:
+        return self.hy_enabled and self.hy_setup is not None and not self.hy_error
+
+    def hy_start(self):
+        if not self.hy_ready():
+            return
+        for i in range(self.hy_n):
+            self.hy_spawn(i)
+
+    def hy_spawn(self, i: int):
+        d = self.hy_dir / f"h{i}"
+        d.mkdir(parents=True, exist_ok=True)
+        spec = {**self.hy_spec(), "index": i, "as": f"h{i:02d}", "dir": str(d), "seed": self.rng.randrange(1 << 30),
+                "stop_file": str(self.work / "STOP"), "subjects": self.hy_setup["subjects"][i],
+                "all_functions": sorted(self.hy_setup["functions"]), "deadline": self.t_start + self.duration + 30}
+        sp = d / f"spec-{int(time.time() * 1000)}.json"
+        sp.write_text(json.dumps(spec), encoding="utf-8")
+        with open(d / "agent.log", "ab") as lf:
+            self.hy_procs[i] = subprocess.Popen([self.a.hy_python, "-I", str(HERE / "soak_hy.py"), "agent", str(sp)],
+                                                stdout=lf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+
+    def hy_reap(self):
+        """An H-agent that ends before the stop is a violation (no fault of this runner targets it); it is restarted
+        so that the lane keeps its load."""
+        for i, p in list(self.hy_procs.items()):
+            rc = p.poll()
+            if rc is None or self.stopping.is_set():
+                continue
+            self.hy_rc.append({"agent": i, "rc": rc, "t": round(self.t(), 1)})
+            tail = ""
+            with contextlib.suppress(OSError):
+                tail = (self.hy_dir / f"h{i}" / "agent.log").read_text(errors="replace")[-400:]
+            self.extra_viol.append(("hy_agent_lost", f"H-agent {i} exited {rc} during the run: {tail!r}"))
+            if time.time() < self.t_start + self.duration - 30:
+                self.hy_spawn(i)
+            else:
+                self.hy_procs.pop(i, None)
+
+    def hy_rows(self) -> list:
+        rows = []
+        for i in range(self.hy_n):
+            p = self.hy_dir / f"h{i}" / "results.jsonl"
+            if p.exists():
+                for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+                    with contextlib.suppress(ValueError):
+                        rows.append(json.loads(line))
+        return rows
+
+    def hy_daemon(self):
+        return self.gs.Daemon(self.a.ghidra, str(self.hy_root / "hydra" / "state"), "rusticre")
+
+    def hy_engine_sample(self, phase: str):
+        """The Hydralysis engine daemon as a client sees it: the governor's views and every program nobody uses that
+        still holds unsaved edits (``judge_hy_engine``)."""
+        s = None
+        try:
+            s = self.hy_daemon().connect("soak-hy-inspect", "soak", start=False, timeout=30)
+            st, h = s.call("status"), s.call("health")
+            res = hy_engine_facts(st, h)
+            res["phase"], res["t"] = phase, round(self.t(), 1)
+            self.hy_log.append({k: v for k, v in res.items() if k != "orphans"} | {"orphans": res["orphans"][:5]})
+            return res
+        except Exception as e:  # noqa: BLE001
+            self.hy_log.append({"t": round(self.t(), 1), "phase": phase, "inspect_error": f"{type(e).__name__}: {e}"})
+            return None
+        finally:
+            if s is not None:
+                with contextlib.suppress(Exception):
+                    s.close()
+
+    def hy_locks(self):
+        src = str(pathlib.Path(self.a.hy_src).absolute())
+        if src not in sys.path:
+            sys.path.append(src)
+        from hydralysis import locks  # noqa: PLC0415  (only os, time and pathlib; no Hydralysis state)
+        return locks
+
+    def f_kill_publish_leader(self):
+        """kill -9 of a publish leader mid-build (9.17): the process that holds a lineage's ``publish.lock`` (its pid is
+        the label ``publish.leader.json``), killed 0.2 to 1.2 s into its drain. The OS releases the lock; the killed
+        changeset stays queued and the next leader settles it (``views.reconcile``); K12 and K16 judge the result at
+        the end. Waits up to 120 s for a leader."""
+        import chaos_lib as chaos
+        if not self.hy_ready():
+            return False
+        locks = self.hy_locks()
+        end = time.time() + 120
+        with self.fault_window("kill_publish_leader", scope="hy", extra_s=30):
+            while time.time() < end and not self.stopping.is_set():
+                for lin in hy_lineages(self.hy_root):
+                    lk = lin / "publish.lock"
+                    try:
+                        if not lk.is_file() or not locks.held(str(lk)):
+                            continue
+                        pid = int(json.loads((lin / "publish.leader.json").read_text(encoding="utf-8")).get("pid") or 0)
+                    except (OSError, ValueError):
+                        continue
+                    if not pid or not oracle.pid_alive(pid):
+                        continue
+                    time.sleep(self.rng.uniform(0.2, 1.2))
+                    try:
+                        still = locks.held(str(lk)) and int(json.loads((lin / "publish.leader.json").read_text(
+                            encoding="utf-8")).get("pid") or 0) == pid
+                    except (OSError, ValueError):
+                        still = False
+                    if not still:
+                        continue
+                    k = chaos.terminate(pid, 10)
+                    t_kill = time.time()
+                    while time.time() - t_kill < 30 and locks.held(str(lk)):
+                        time.sleep(0.25)
+                    ev = {"t": round(self.t(), 1), "fault": "kill_publish_leader", "lineage": lin.name, "pid": pid,
+                          "killed": bool(k.get("terminated", True)) if isinstance(k, dict) else True,
+                          "lock_held_after": locks.held(str(lk)), "waited_s": round(time.time() - t_kill, 1)}
+                    self.fault_log.append(ev)
+                    self.merge(judge_leader_kill(ev), "kill_publish_leader")
+                    return True
+                time.sleep(0.25)
+        self.fault_log.append({"t": round(self.t(), 1), "fault": "kill_publish_leader", "missed": "no leader in 120 s"})
+        return False
+
+    def probe_copy(self, k: int) -> pathlib.Path:
+        d = self.probe_copies / f"v{k:03d}"
+        if not d.is_dir():
+            shutil.copytree(self.masters_dir / "p0", d, ignore=shutil.ignore_patterns("*.lock", "*.lock~", "projectState"))
+        return next(d.glob("*.gpr"))
+
+    def f_oom_probe(self):
+        """GR8's 100-view probe against the soak daemon while the agents work: up to 100 programs (copies of master 0)
+        opened read-only by clients of ``maxViewsPerClient`` each, until the governor refuses. Judged by
+        ``judge_view_probe``: a structured ``busy``/``capacity`` at ``maxViews``, no out-of-memory error in the daemon
+        log, the daemon alive, never more than ``maxViews`` views. Every probe client then leaves."""
+        res = {"max_views": None, "opened": 0, "refusals": [], "errors": [], "governor_views_max": 0,
+               "daemon_alive": True, "oom_lines": [], "held_by_others": 0}
+        per = 4
+        try:
+            g = self.sup_call("health")["governor"]
+            res["max_views"], per, res["held_by_others"] = g.get("maxViews"), g.get("maxViewsPerClient") or 4, g.get("views", 0)
+        except Exception:  # noqa: BLE001
+            res["max_views"] = ((self.sess.hello or {}).get("limits") or {}).get("maxViews")
+        log = self.state / f"{self.instance}.log"
+        off = log.stat().st_size if log.exists() else 0
+        clients = []
+        with self.fault_window("oom_probe_100_views", scope="all", extra_s=10):
+            try:
+                for k in range(100):
+                    gpr = self.probe_copy(k)
+                    if k % per == 0:
+                        clients.append(self.daemon.connect(f"soak-probe-{len(clients):02d}", "soak", start=False, timeout=60))
+                    c = clients[-1]
+                    try:
+                        c.call("open_project", path=str(gpr))
+                        c.call("open_program", path=self.a.program)
+                        res["opened"] += 1
+                    except self.gs.SessionError as e:
+                        det = e.details if isinstance(e.details, dict) else None
+                        if e.code == "busy":
+                            res["refusals"].append({"view": k, "code": e.code, "details": det})
+                        else:
+                            res["errors"].append({"view": k, "code": e.code, "message": (e.message or "")[:200]})
+                        break
+                    if k % 8 == 7:
+                        with contextlib.suppress(Exception):
+                            res["governor_views_max"] = max(res["governor_views_max"], self.sup_call("health")["governor"]["views"])
+                with contextlib.suppress(Exception):
+                    res["governor_views_max"] = max(res["governor_views_max"], self.sup_call("health")["governor"]["views"])
+            finally:
+                for c in clients:
+                    with contextlib.suppress(Exception):
+                        c.close()
+            try:
+                self.sup_call("ping")
+            except Exception:  # noqa: BLE001
+                res["daemon_alive"] = False
+        with contextlib.suppress(OSError):
+            with open(log, "rb") as f:
+                f.seek(off)
+                res["oom_lines"] = [ln.strip()[:300] for ln in f.read().decode("utf-8", "replace").splitlines()
+                                    if "OutOfMemoryError" in ln][:5]
+        self.fault_log.append({"t": round(self.t(), 1), "fault": "oom_probe_100_views",
+                               **{k: v for k, v in res.items() if k != "refusals"}, "refusals": res["refusals"][:2]})
+        self.merge(judge_view_probe(res), "oom_probe_100_views")
+        return bool(res["opened"] or res["refusals"] or res["errors"])
+
+    def f_k11p_probe(self):
+        """K11p: two sub-agents of one real stdio MCP server process (``soak_hy k11p``), judged by ``judge_k11p``."""
+        if not self.hy_ready():
+            return False
+        self.k11p_round += 1
+        out = self.hy_dir / f"k11p-{self.k11p_round}.json"
+        with self.fault_window("k11p_probe", scope="k11p"):
+            rc = self.hy_run("k11p", {**self.hy_spec(), "round": self.k11p_round, "subjects": self.hy_setup["k11p_subjects"],
+                                      "out": str(out)}, 900)
+        try:
+            facts = json.loads(out.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            self.extra_viol.append(("k11p_probe_failed", f"round {self.k11p_round}: rc {rc}, no facts"))
+            return False
+        self.hy_log.append({"t": round(self.t(), 1), "k11p": {k: facts.get(k) for k in ("shared", "isolated", "errors")}})
+        self.merge(judge_k11p(facts), "k11p")
+        return True
+
+    def hy_finish(self) -> dict:
+        """After the stop: the H-agents end (their publish wait is bounded by the run's end), their rows are judged
+        (K15 and every error), the Hydralysis daemon is inspected for leaked views, the publish queue is drained and
+        the root judged (K1, K8, K12, K16, K17). Returns the lane's workload counts."""
+        import chaos_lib as chaos
+        if not self.hy_ready():
+            return {}
+        end = time.time() + 240
+        while any(p.poll() is None for p in self.hy_procs.values()) and time.time() < end:
+            time.sleep(0.5)
+        for i, p in self.hy_procs.items():
+            if p.poll() is None:
+                self.extra_viol.append(("hy_agent_did_not_stop", f"H-agent {i} still running 240 s after the stop"))
+                chaos.kill_client_proc(p)
+            self.hy_rc.append({"agent": i, "rc": p.returncode, "t": round(self.t(), 1), "final": True})
+            if p.returncode not in (0, None):
+                self.extra_viol.append(("hy_agent_failed", f"H-agent {i} exited {p.returncode}"))
+        rows = self.hy_rows()
+        viol, summ = judge_hy_rows(rows, self.windows)
+        self.extra_viol += viol
+        self.hy_log.append({"t": round(self.t(), 1), "rows": summ})
+        rep = oracle.Report("hydralysis")
+        if summ["k15"]["rebuilt"]:
+            rep.ran("K15")
+        eng = self.hy_engine_sample("after the H-agents")
+        if eng is not None:
+            judge_hy_engine(eng, rep)
+        views = {}
+        acked = []
+        for i in range(self.hy_n):
+            recs = oracle.Ledger.read(self.hy_dir / f"h{i}" / "ledger.jsonl")
+            vk = [r.get("view_key") for r in recs if r.get("view_key")]
+            views[f"h{i:02d}"] = vk[-1] if vk else None
+            acked += [r["csid"] for r in recs if r.get("kind") == "hypublish" and r.get("phase") == "ack"
+                      and r.get("generation") is not None and r.get("csid")]
+        out = self.hy_dir / "facts.json"
+        rc = self.hy_run("facts", {**self.hy_spec(), "views": views, "out": str(out)}, 1800)
+        try:
+            facts = json.loads(out.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            self.extra_viol.append(("hy_facts_failed", f"soak_hy facts: rc {rc}, no facts"))
+            self.merge(rep, "hydralysis")
+            return summ["counts"]
+        for e in facts.get("errors") or []:
+            self.extra_viol.append(("hy_facts_error", json.dumps(e)[:300]))
+        for d in facts.get("drain") or []:
+            if d.get("failure"):
+                self.extra_viol.append(("hy_drain_failed", json.dumps(d)[:300]))
+        vf = {who: {**v, "view_key": views.get(who)} for who, v in (facts.get("views") or {}).items()}
+        judge_hy_store(self.hy_root, self.hy_setup["functions"], acked, vf, (facts.get("head") or {}).get("names"), rep=rep)
+        for who, k in (facts.get("k15") or {}).items():
+            if k.get("rebuilt"):
+                rep.ran("K15")
+            if k.get("diff"):
+                rep.violation("K15", "view_rebuilt_differs", f"{who} at the end: {json.dumps(k['diff'])[:300]}")
+        self.hy_log.append({"t": round(self.t(), 1), "facts": {"drain": facts.get("drain"), "k15": facts.get("k15"),
+                                                               "acked": len(acked)}})
+        self.merge(rep, "hydralysis")
+        return summ["counts"]
+
+    def hy_stop_all(self):
+        """No Hydralysis process and no Hydralysis daemon outlives the run."""
+        import chaos_lib as chaos
+        for p in list(self.hy_procs.values()):
+            if p.poll() is None:
+                chaos.kill_client_proc(p)
+        if not self.hy_root.is_dir():
+            return
+        with contextlib.suppress(Exception):
+            self.hy_run("stop", self.hy_spec(), 180)
+        with contextlib.suppress(Exception):
+            d = self.hy_daemon()
+            if d.jvm_alive():
+                d.stop(force=True, timeout=120)
+
+    def hy_keep_evidence(self):
+        """The lane's evidence: rows, ledgers and logs of the H-agents, setup, facts and K11p results, the Hydralysis
+        daemon log, and each lineage's records and log (the generations' projects are not kept)."""
+        import gzip
+        kd = self.evidence_dir / "hy"
+        kd.mkdir(parents=True, exist_ok=True)
+        for f in sorted(self.hy_dir.rglob("*")) if self.hy_dir.is_dir() else []:
+            if f.is_file() and f.suffix in (".jsonl", ".json", ".log") and not f.name.startswith("spec-"):
+                dst = kd / "lane" / f.relative_to(self.hy_dir)
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                with open(f, "rb") as src, gzip.open(str(dst) + ".gz", "wb") as out:
+                    shutil.copyfileobj(src, out)
+        st = self.hy_root / "hydra" / "state"
+        for f in sorted(st.glob("*.log*")) if st.is_dir() else []:
+            with open(f, "rb") as src, gzip.open(kd / (f.name + ".gz"), "wb") as out:
+                shutil.copyfileobj(src, out)
+        for lin in hy_lineages(self.hy_root):
+            dst = kd / "lineages" / lin.name
+            dst.mkdir(parents=True, exist_ok=True)
+            for f in lin.iterdir():
+                if f.is_file():
+                    shutil.copy2(f, dst / f.name)
+            for sub in ("pending", "done", "declined", "failures"):
+                if (lin / sub).is_dir():
+                    shutil.copytree(lin / sub, dst / sub, dirs_exist_ok=True)
+            for g in sorted((lin / "gen").glob("*/MANIFEST.json")) if (lin / "gen").is_dir() else []:
+                (dst / "manifests").mkdir(exist_ok=True)
+                shutil.copy2(g, dst / "manifests" / f"{g.parent.name}.json")
+
+    def candidate_round(self):
+        """K1 of the engine-level candidates: every sealed candidate's files equal the snapshot taken at its seal, the
+        seal union holds (K1u), and no daemon log of the run shows a writable open of it after its seal line."""
+        rep = oracle.Report("candidates")
+        gprs = []
+        logs = sorted(self.daemon_logs.glob("daemon.*.log")) if self.daemon_logs.is_dir() else []
+        cur = self.state / f"{self.instance}.log"
+        lines = []
+        for f in logs + ([cur] if cur.exists() else []):
+            with contextlib.suppress(OSError):
+                lines += f.read_text(encoding="utf-8", errors="replace").splitlines()
+        for i in range(self.agents):
+            for sj in sorted((self.agent_dir(i) / "cand").glob("c*.seal.json")) if (self.agent_dir(i) / "cand").is_dir() else []:
+                try:
+                    d = json.loads(sj.read_text(encoding="utf-8"))
+                except (OSError, ValueError) as e:
+                    rep.violation("K1", "seal_snapshot_unreadable", f"{sj}: {e}", sj)
+                    continue
+                oracle.check_k1(d["dir"], d["snapshot"], rep, label=f"a{i:02d}/{pathlib.Path(d['dir']).name}")
+                oracle.check_k1u(d["gpr"], self.state, rep=rep)
+                gprs.append(d["gpr"])
+        for line in writable_opens_after_seal(lines, gprs):
+            rep.violation("K1", "writable_open_of_sealed", line[:300])
+        self.fault_log.append({"t": round(self.t(), 1), "candidates_judged": len(gprs)})
+        self.merge(rep, "candidates")
+
     def cleanup(self):
         import chaos_lib as chaos
         for pr in self.planted_pids:
@@ -2054,6 +2866,8 @@ class Soak:
         with contextlib.suppress(Exception):
             if self.daemon is not None and self.daemon.jvm_alive():
                 self.daemon.stop(force=True, timeout=120)
+        if self.hy_enabled:
+            self.hy_stop_all()
         if self.a.keep_scratch:
             return
         # keep ledgers, results and logs in the evidence folder (gzip); delete the heavy trees (projects,
@@ -2079,7 +2893,10 @@ class Soak:
         for f in sorted(self.daemon_logs.glob("daemon.*.log")) if self.daemon_logs.is_dir() else []:
             with open(f, "rb") as src, gzip.open(kd / (f.name + ".gz"), "wb") as dst:
                 shutil.copyfileobj(src, dst)
-        for n in ("agents", "masters", "state", "tmp", "canary", "canary-forks", "stage-src", "backup-test", "daemon-logs"):
+        if self.hy_enabled:
+            self.hy_keep_evidence()
+        for n in ("agents", "masters", "state", "tmp", "canary", "canary-forks", "stage-src", "backup-test", "daemon-logs",
+                  "hy", "hy-agents", "hy-target", "probe-views"):
             rmtree(self.work / n)
         if self.tree_root != self.work:
             # the masters and the agents' trees live on another volume (--master-root): "a fixture under
@@ -2679,6 +3496,194 @@ def selftest(work: pathlib.Path | None = None, verbose: bool = True) -> int:
     check("Wilson bound after 0 of 3 is wide", wilson_upper(0, 3) > 0.4)
     check("every fault class has a function or is listed unavailable",
           all(c in Soak.FAULT_FUNCS or c in UNAVAILABLE_FAULTS for c in FAULT_CLASSES))
+    check("every VF minimum has a function", all(c in Soak.FAULT_FUNCS for p in VF_MIN_FAULTS.values() for c in p))
+
+    # ---- the VF items: the Hydralysis lane's judgement on a synthetic Hydralysis root, then one planted violation each
+    def hy_make(root, *, head=None, view=None, corrupt_done=False, extra_line=None, tamper_gen=False, acked=("c-1",)):
+        """A lineage with generation 1 = changeset c-1 (FUN_100 -> hy00x1) and a view h00 based on it with one pending
+        record (hy00x1 -> hy00x2); returns the arguments of judge_hy_store."""
+        root = pathlib.Path(root)
+        lin = root / "lineages" / "L-t"
+        for sub in ("pending", "done", "gen/0001/analysis.rep"):
+            (lin / sub).mkdir(parents=True, exist_ok=True)
+        r1 = {"id": "r1", "seq": 1, "address": "0x100", "effects": [{"subject": "address:0x100", "field": "name",
+                                                                       "before": "FUN_100", "after": "hy00x1"}]}
+        r2 = {"id": "r2", "seq": 2, "address": "0x100", "effects": [{"subject": "address:0x100", "field": "name",
+                                                                       "before": "hy00x1", "after": "hy00x2"}]}
+        (lin / "pending" / "c-1.json").write_text(json.dumps(oracle.seal_record({"csid": "c-1", "records": [r1], "ids": ["r1"]})))
+        done = oracle.seal_record({"csid": "c-1", "outcome": "applied", "generation": 1})
+        if corrupt_done:
+            done["outcome"] = "tampered"
+        (lin / "done" / "c-1.json").write_text(json.dumps(done))
+        g = lin / "gen" / "0001"
+        (g / "analysis.gpr").write_text("")
+        (g / "analysis.rep" / "data.bin").write_bytes(b"x" * 10)
+        files = [{"path": rel, "sha256": sha} for rel, sha in sorted(oracle.seal_snapshot(g).items())]
+        man = {"files": files, "store": {"ids": ["r1"]}}
+        man["filesetSha256"] = oracle.sha256_hex(oracle.canonical(files))
+        man["selfSha256"] = oracle.sha256_hex(oracle.canonical(man))
+        (g / "MANIFEST.json").write_text(json.dumps(man))
+        if tamper_gen:
+            (g / "analysis.rep" / "data.bin").write_bytes(b"y" * 10)
+        lines = [{"seq": 1, "gen": 0, "reason": "register"}, {"seq": 2, "gen": 1, "reason": "commit", "csids": ["c-1"]}]
+        if extra_line:
+            lines.append(extra_line)
+        (lin / "CURRENT.log").write_bytes(b"".join(oracle.crc_line(x) for x in lines))
+        (root / "overlays").mkdir(parents=True, exist_ok=True)
+        (root / "overlays" / "vk0.json").write_text(json.dumps(oracle.seal_record({"edits": [r1, r2], "revision": 2})))
+        r3 = {"id": "r3", "seq": 1, "address": "0x200", "effects": [{"subject": "address:0x200", "field": "name",
+                                                                       "before": "FUN_200", "after": "hy01x9"}]}
+        (root / "overlays" / "vk1.json").write_text(json.dumps(oracle.seal_record({"edits": [r3], "revision": 1})))
+        base_names = {"0x100": "FUN_100", "0x200": "FUN_200"}
+        views = {"h00": {"view_key": "vk0", "base": {"lineage": "L-t", "generation": 1},
+                         "names": view or {"0x100": "hy00x2", "0x200": "FUN_200"}},
+                 "h01": {"view_key": "vk1", "base": {"lineage": "L-t", "generation": 1},
+                         "names": {"0x100": "hy00x1", "0x200": "hy01x9"}}}
+        return root, base_names, list(acked), views, head or {"0x100": "hy00x1", "0x200": "FUN_200"}
+
+    def hy_judge(tag, **kw):
+        root = base / "hy" / tag
+        if root.exists():
+            rmtree(root)
+        r, bn, ack, vw, hd = hy_make(root, **kw)
+        return judge_hy_store(r, bn, ack, vw, hd)
+
+    rep = hy_judge("clean")
+    check("Hydralysis root: a consistent lineage, view and head pass K1, K8, K12, K16 and K17",
+          rep.ok and {"K1", "K8", "K12", "K16", "K17"} <= set(rep.checked), (rep.codes(), rep.checked))
+    rep = hy_judge("k1", tamper_gen=True)
+    check("planted K1: a file of a sealed generation changed after its manifest", "K1:changed" in rep.codes(), rep.codes())
+    rep = hy_judge("k8", view={"0x100": "hy00x1", "0x200": "FUN_200"})
+    check("planted K8: a view that lost its pending record differs from its store's replay",
+          "K8:view_differs_from_replay" in rep.codes(), rep.codes())
+    rep = hy_judge("k8b", view={"0x100": "hy00x2", "0x200": "hy01x9"})
+    check("planted K8: a view that shows another view's unpublished name differs from its replay",
+          "K8:view_differs_from_replay" in rep.codes(), rep.codes())
+    rep = hy_judge("k12", acked=("c-1", "c-9"))
+    check("planted K12: an acknowledged publish no CURRENT.log line names", "K12:acked_publish_missing" in rep.codes(), rep.codes())
+    rep = hy_judge("k12b", extra_line={"seq": 3, "gen": 2, "reason": "commit", "csids": ["c-1"]})
+    check("planted K12: a changeset applied twice", "K12:applied_twice" in rep.codes(), rep.codes())
+    rep = hy_judge("k16", head={"0x100": "FUN_100", "0x200": "FUN_200"})
+    check("planted K16: a head that lost a published rename (a silent lost update)",
+          "K16:head_differs_from_model" in rep.codes(), rep.codes())
+    rep = hy_judge("k17", corrupt_done=True)
+    check("planted K17: a sealed record whose seal does not match (and no .bak)", "K17:record_corrupt" in rep.codes(), rep.codes())
+    r_, bn, ack, vw, hd = hy_make(base / "hy" / "k17b")
+    with open(r_ / "lineages" / "L-t" / "CURRENT.log", "r+b") as f:
+        f.seek(12)
+        f.write(b"#")
+    rep = judge_hy_store(r_, bn, ack, vw, hd)
+    check("planted K17: a torn middle line of CURRENT.log", "K17:torn_middle" in rep.codes(), rep.codes())
+    check("K16 model: a rollback line drops the generations after it from the chain",
+          [x["gen"] for x in hy_effective_chain([{"gen": 1}, {"gen": 2}, {"gen": 1, "reason": "rollback"}, {"gen": 2}])] == [1, 2])
+
+    t = time.time()
+    hrows = [{"t": t, "agent": "h00", "op": "hy_decompile", "ok": True}, {"t": t, "agent": "h00", "op": "hy_publish", "ok": True},
+             {"t": t, "agent": "h00", "op": "hy_rebase", "ok": True},
+             {"t": t, "agent": "h00", "op": "hy_k15", "ok": True, "rebuilt": True, "diff": []}]
+    viol, summ = judge_hy_rows(hrows)
+    check("H-agent rows: clean rows give no violation and count publish, rebase and queries",
+          not viol and summ["counts"] == {"publish": 1, "rebase": 1, "hydralysis_queries": 1} and summ["k15"]["rebuilt"] == 1,
+          (viol, summ))
+    viol, _ = judge_hy_rows(hrows + [{"t": t, "agent": "h00", "op": "hy_k15", "ok": True, "rebuilt": True,
+                                      "diff": [["0x100", "hy00x2", "hy00x1"]]}])
+    check("planted K15: a view rebuilt from base + store that differs from the live view",
+          any(k == "K15:view_rebuilt_differs" for k, _ in viol), viol)
+    viol, _ = judge_hy_rows(hrows + [{"t": t, "agent": "h00", "op": "hy_publish", "ok": False, "code": "candidate_failed"}])
+    check("planted: a publish that ended candidate_failed is an unexpected error", any(k == "hy_unexpected_error" for k, _ in viol), viol)
+    viol, _ = judge_hy_rows(hrows + [{"t": t, "agent": "h00", "op": "hy_edit", "ok": False, "code": "busy",
+                                      "details": {"reason": "capacity"}}])
+    check("an explained busy of an H-agent is not a violation", not viol, viol)
+
+    k11 = {"shared": {"tag": "k11s1", "q_saw": "k11s1"}, "isolated": {"tag": "k11P1", "q_saw": "FUN_1", "p_saw": "k11P1"},
+           "errors": []}
+    check("K11p: shared id shares, distinct as isolates: clean", judge_k11p(k11).ok and "K11p" in judge_k11p(k11).checked)
+    check("planted K11p: Q with its own as sees P's unpublished tag",
+          "K11p:unpublished_tag_visible" in judge_k11p({**k11, "isolated": {**k11["isolated"], "q_saw": "k11P1"}}).codes())
+    check("planted K11p: two sub-agents without as do not share a view",
+          "K11p:shared_id_not_shared" in judge_k11p({**k11, "shared": {"tag": "k11s1", "q_saw": "FUN_1"}}).codes())
+    check("planted K11p: a probe that could not run is a violation, not a pass",
+          "K11p:probe_failed" in judge_k11p({**k11, "errors": [["mcp_no_reply", "x"]]}).codes())
+
+    vp = {"max_views": 32, "opened": 20, "held_by_others": 12, "governor_views_max": 32,
+          "refusals": [{"code": "busy", "details": {"reason": "capacity", "resource": "views"}}], "errors": [],
+          "daemon_alive": True, "oom_lines": []}
+    check("100-view probe: refused busy/capacity at maxViews: clean", judge_view_probe(vp).ok)
+    check("planted GR8: an OutOfMemoryError in the daemon log",
+          "GR8:out_of_memory" in judge_view_probe({**vp, "oom_lines": ["java.lang.OutOfMemoryError: Java heap space"]}).codes())
+    check("planted GR8: a dead daemon", "GR8:daemon_died" in judge_view_probe({**vp, "daemon_alive": False}).codes())
+    check("planted GR8: more views than maxViews", "GR8:views_above_max" in judge_view_probe({**vp, "governor_views_max": 40}).codes())
+    check("planted GR8: 100 views opened, never refused",
+          "GR8:not_refused" in judge_view_probe({**vp, "opened": 30, "held_by_others": 0, "refusals": []}).codes())
+    check("planted GR8: a refusal that is not a structured busy",
+          "GR8:unstructured_refusal" in judge_view_probe({**vp, "refusals": [], "errors": [{"code": "failed"}]}).codes())
+    check("publish leader kill: the lock freed after the kill is clean",
+          judge_leader_kill({"killed": True, "lock_held_after": False}).ok)
+    check("planted: a publish lock still held after its leader was killed",
+          "K12:leader_lock_stuck" in judge_leader_kill({"killed": True, "lock_held_after": True, "pid": 1}).codes())
+
+    st_ok = {"projects": [{"id": "p1", "gpr": "C:/w/w-1/analysis.gpr"}],
+             "programs": [{"project": "p1", "users": [3], "unsavedEdits": 2}, {"project": "p1", "users": [], "unsavedEdits": 0}]}
+    check("Hydralysis engine: programs in use, or unused without edits: no leak",
+          judge_hy_engine(hy_engine_facts(st_ok, {"governor": {"views": 2, "maxViews": 32}})).ok)
+    st_bad = {"projects": st_ok["projects"], "programs": st_ok["programs"] + [{"project": "p1", "users": [], "unsavedEdits": 3}]}
+    check("planted K7: a program nobody uses that holds unsaved edits (a view kept for ever)",
+          "K7:orphaned_unsaved_programs" in judge_hy_engine(hy_engine_facts(st_bad, None)).codes())
+
+    sl = ["INFO  client 3 (soak-a01, soak) opened project p8 C:\\w\\cand\\c1\\Cand.gpr (writable) in 10 ms (Session)",
+          "INFO  client 3 (soak-a01, soak) sealed C:\\w\\cand\\c1\\Cand.gpr at revision 1 (Seals)",
+          "INFO  client 4 (x, soak) opened project p9 C:\\w\\cand\\c1\\Cand.gpr (read-only view) in 5 ms (Session)"]
+    check("K1 log: the candidate's own writable open before its seal and a read-only open after it are not violations",
+          writable_opens_after_seal(sl, ["C:\\w\\cand\\c1\\Cand.gpr"]) == [])
+    check("planted K1: a writable open of a sealed candidate after its seal line",
+          len(writable_opens_after_seal(sl + ["INFO  client 5 (y, soak) opened project p10 C:\\w\\cand\\c1\\Cand.gpr (writable) "
+                                              "in 3 ms (Session)"], ["C:\\w\\cand\\c1\\Cand.gpr"])) == 1)
+
+    # K6 of a generation candidate: complete in state candidate (before its seal), a violation in another state
+    cdir = base / "k6cand"
+    cdir.mkdir(parents=True, exist_ok=True)
+    (cdir / "Cand.gpr").write_text("")
+    (cdir / "Cand.rep").mkdir(exist_ok=True)
+    (cdir / "Cand.fork.json").write_text(json.dumps({"purpose": "generation", "state": "candidate"}))
+    rep = oracle.check_k6_tree(base / "k6cand", swept=True)
+    check("K6: an unsealed generation candidate (state candidate) is a complete fork", rep.ok, rep.codes())
+    (cdir / "Cand.fork.json").write_text(json.dumps({"purpose": "fork", "state": "candidate"}))
+    rep = oracle.check_k6_tree(base / "k6cand", swept=True)
+    check("planted K6: a plain fork left in state candidate", "K6:sidecar_state" in rep.codes(), rep.codes())
+    (cdir / "Cand.fork.json").write_text(json.dumps({"purpose": "fork", "state": "complete"}))
+    (cdir / "Cand.fork.json.4242.tmp").write_text("{}")
+    rep = oracle.check_k6_tree(base / "k6cand", swept=False)
+    check("K6: a pid-named sidecar temporary (8.13 A62) next to a complete fork is pending before the sweep",
+          rep.ok and oracle.k6_pending_parents(rep) == [str(cdir)], (rep.codes(), rep.notes))
+    rep = oracle.check_k6_tree(base / "k6cand", swept=True)
+    check("planted K6: a pid-named sidecar temporary left after the sweep", "K6:sidecar_tmp_left" in rep.codes(), rep.codes())
+
+    # the verdict with the lane: every VF item must have run
+    full_hy = profile_minimums("pr", True)
+    wl_hy = {**{op: 5 for op in OPS}, "publish": 3, "rebase": 3, "hydralysis_queries": 9, "candidate_analysis": 2}
+    vf_checks = set(UNEXERCISED_CHECKS)
+    v = verdict_of("pr", rep_ok, full_hy, wl_hy, feats_ok, [], None, None, vf_checks, hy_enabled=True)
+    check("with the Hydralysis lane and every VF item run, a full pr run is PASS by itself",
+          v["verdict"] == "PASS" and v["gate_eligible"], v["gaps"])
+    v = verdict_of("pr", rep_ok, {**full_hy, "kill_publish_leader": 1}, wl_hy, feats_ok, [], None, None, vf_checks,
+                   hy_enabled=True)
+    check("planted: one publish-leader kill short of the minimum: INCOMPLETE and named",
+          v["verdict"] == "INCOMPLETE" and any("kill_publish_leader" in g for g in v["hard_gaps"]), v["gaps"])
+    v = verdict_of("pr", rep_ok, full_hy, {**wl_hy, "rebase": 0}, feats_ok, [], None, None, vf_checks, hy_enabled=True)
+    check("planted: no rebase ran: INCOMPLETE and named", v["verdict"] == "INCOMPLETE" and any("rebase" in g for g in v["hard_gaps"]))
+    v = verdict_of("pr", rep_ok, full_hy, wl_hy, feats_ok, [], None, None, vf_checks - {"K16"}, hy_enabled=True)
+    check("planted: K16 never ran: INCOMPLETE and named", v["verdict"] == "INCOMPLETE" and any("K16" in g for g in v["hard_gaps"]))
+    v = verdict_of("pr", rep_ok, full_hy, {**wl_hy, "candidate": 0}, feats_ok, [], None, None, vf_checks, hy_enabled=True)
+    check("planted: no analysis in a candidate ran: INCOMPLETE and named",
+          v["verdict"] == "INCOMPLETE" and any("candidate" in g for g in v["hard_gaps"]))
+    v = verdict_of("pr", rep_ok, full_hy, wl_hy, feats_ok, [], None, None, vf_checks, hy_enabled=False)
+    check("without the lane the Hydralysis items stay named gaps (never PASS)",
+          v["verdict"] == "INCOMPLETE" and any("kill_publish_leader" in g for g in v["soft_gaps"]))
+    v = verdict_of("pr", rep_ok, {**full_hy, "oom_probe_100_views": 0}, wl_hy, feats_ok, [], None, None, vf_checks,
+                   hy_enabled=True)
+    check("planted: the 100-view probe never ran: INCOMPLETE and named",
+          v["verdict"] == "INCOMPLETE" and any("oom_probe_100_views" in g for g in v["hard_gaps"]))
+
     check("the scripts compile as text (class names match file names)", all(f"class {n} " in s for n, s in SCRIPTS.items()))
     n_fail = len(bad)
     print(f"soak selftest: {len(log) - n_fail} of {len(log)} checks ok" + (f"; FAILED: {bad}" if bad else ""))
@@ -2722,6 +3727,12 @@ def main(argv=None) -> int:
                    help="schedule no faults (a run to prove the plumbing; the verdict then lists every fault class as missing)")
     r.add_argument("--keep-scratch", action="store_true")
     r.add_argument("--reuse-work", action="store_true")
+    r.add_argument("--hy-binary", help="the Hydralysis lane (VF items): the executable Hydralysis prepares as its target "
+                                       "(copied into --work; never written in place)")
+    r.add_argument("--hy-src", help="the Hydralysis source folder to import (e.g. <worktree>/src)")
+    r.add_argument("--hy-python", help="the Python that runs Hydralysis (its virtual environment)")
+    r.add_argument("--hy-agents", type=int, default=0, help="H-agents (default per profile: " +
+                   ", ".join(f"{k} {v}" for k, v in HY_AGENTS.items()) + ")")
     a = ap.parse_args(argv)
     if a.cmd == "selftest":
         return selftest(pathlib.Path(a.work) if a.work else None)

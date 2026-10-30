@@ -513,7 +513,12 @@ def check_k6_tree(root, swept: bool, rep: Report | None = None, skip_prefixes=("
         for f in files:
             if not f.endswith(".gpr"):
                 continue
-            one = check_k6(here / f, require_sidecar=False, rep=Report("k6-one"))
+            kind = "fork"
+            with contextlib.suppress(OSError, ValueError, AttributeError):
+                side = json.loads((here / (f[:-4] + ".fork.json")).read_text(encoding="utf-8"))
+                kind = "generation" if side.get("purpose") == "generation" else "fork"
+            # a generation candidate (D38) is complete in state candidate before its seal, complete after it
+            one = check_k6(here / f, kind=kind, require_sidecar=False, rep=Report("k6-one"))
             codes = set()
             for x in one.findings:
                 code = x["code"]
@@ -524,10 +529,12 @@ def check_k6_tree(root, swept: bool, rep: Report | None = None, skip_prefixes=("
                     pending(x["code"], x["detail"], x.get("path"), here)
                 else:
                     rep.violation("K6", x["code"], x["detail"], x.get("path"))
-            # the temporary sidecar of a publisher killed between its write and its rename, next to a complete fork
-            tmp = f[:-4] + ".fork.json.tmp"
-            if tmp in files and "sidecar_tmp_left" not in codes and (here / f[:-4]).with_suffix(".rep").is_dir():
-                pending("sidecar_tmp_left", f"{tmp} is next to a complete fork", here / tmp, here)
+            # the temporary sidecar of a publisher killed between its write and its rename, next to a complete fork:
+            # <name>.fork.json.tmp, or <name>.fork.json.<pid>.tmp since 8.13 A62
+            rx = re.compile(re.escape(f[:-4]) + r"\.fork\.json(\.\d+)?\.tmp$")
+            for tmp in sorted(x for x in files if rx.match(x)):
+                if "sidecar_tmp_left" not in codes and (here / f[:-4]).with_suffix(".rep").is_dir():
+                    pending("sidecar_tmp_left", f"{tmp} is next to a complete fork", here / tmp, here)
     return rep
 
 
