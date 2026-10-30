@@ -1,0 +1,21 @@
+# Hydra Engine native byte scanner (SIMD through memchr / aho-corasick), loaded by
+# ghidra.program.database.mem.NativeByteScanner through the Java FFM API.
+[package]
+name = "hydra_scan"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+memchr = "2.7"
+aho-corasick = "1.1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
