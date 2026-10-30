@@ -179,6 +179,8 @@ public class DecompInterface {
 	private DecompileDebug debug;
 	private ProgramSnapshotFile snapshot;		// Leased byte snapshot (Hydra), null if not in use
 	private Path snapshotSent;			// Snapshot the current process maps, null if none
+	private Path snapshotRejected;		// Snapshot the current process could not map, not resent
+	private boolean snapshotUnsupported;	// Current process has no setSnapshot command
 	protected CancelledListener monitorListener = new CancelledListener() {
 		@Override
 		public void cancelled() {
@@ -367,6 +369,8 @@ public class DecompInterface {
 
 		decompCallback.setErrorMessage("");
 		snapshotSent = null;
+		snapshotRejected = null;
+		snapshotUnsupported = false;
 		decompProcess.registerProgram(decompCallback, specs.pspecxml, specs.cspecxml, specs.tspec,
 			specs.coretypes, program);
 		String nativeMessage = decompCallback.getErrorMessage();
@@ -1007,22 +1011,39 @@ public class DecompInterface {
 	/**
 	 * Give the decompiler process the byte snapshot of the program's current generation, or take
 	 * it away when snapshots are off or a debug dump needs every byte request (Hydra prototype,
-	 * see {@link ProgramSnapshotFile}). A snapshot the process cannot use leaves it on callbacks.
+	 * see {@link ProgramSnapshotFile}). A snapshot the process cannot map is not sent again, and a
+	 * process without the setSnapshot command stays on callbacks.
 	 * @throws IOException for problems with the pipe to the decompiler process
-	 * @throws DecompileException for problems executing the command
 	 */
-	private void syncSnapshot() throws IOException, DecompileException {
-		boolean wanted = ProgramSnapshotFile.isEnabled() && debug == null;
+	private void syncSnapshot() throws IOException {
+		boolean wanted = ProgramSnapshotFile.isEnabled() && debug == null && !snapshotUnsupported;
 		if (wanted) {
 			snapshot = ProgramSnapshotFile.acquire(program, snapshot);
 		}
+		else if (snapshot != null) {
+			ProgramSnapshotFile.release(snapshot);
+			snapshot = null;
+		}
 		Path path = wanted && snapshot != null ? snapshot.getPath() : null;
-		if (Objects.equals(path, snapshotSent)) {
+		if (Objects.equals(path, snapshotSent) ||
+			(path != null && path.equals(snapshotRejected))) {
 			return;
 		}
-		decompProcess.sendCommand2Params("setSnapshot", path == null ? "" : path.toString(), "",
-			stringResponse);
-		snapshotSent = stringResponse.toString().equals("t") ? path : null;
+		try {
+			decompProcess.sendCommand2Params("setSnapshot", path == null ? "" : path.toString(),
+				"", stringResponse);
+		}
+		catch (DecompileException e) {
+			// An older decompiler without setSnapshot: stay on callbacks for this process
+			snapshotUnsupported = true;
+			ProgramSnapshotFile.release(snapshot);
+			snapshot = null;
+			snapshotSent = null;
+			return;
+		}
+		boolean mapped = stringResponse.toString().equals("t");
+		snapshotSent = mapped ? path : null;
+		snapshotRejected = mapped ? null : path;
 	}
 
 	private void releaseSnapshot() {

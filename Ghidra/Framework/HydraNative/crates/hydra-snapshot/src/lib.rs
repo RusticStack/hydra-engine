@@ -82,14 +82,16 @@ pub struct ReadRequest {
 }
 
 enum Backing {
-    Map(Mmap),
+    /// The map and the handle it was made from: keeping the handle open keeps its share mode
+    /// (no writers on Windows) in force for as long as the map is in use.
+    Map(Mmap, #[allow(dead_code)] File),
     Owned(Vec<u8>),
 }
 
 impl Backing {
     fn bytes(&self) -> &[u8] {
         match self {
-            Backing::Map(m) => m,
+            Backing::Map(m, _) => m,
             Backing::Owned(v) => v,
         }
     }
@@ -103,6 +105,24 @@ pub struct Snapshot {
     regions: Vec<Region>,
 }
 
+/// Open `path` for reading while refusing writers: share read and delete only on Windows.
+fn open_shared_read(path: &Path) -> std::io::Result<File> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_READ: u32 = 0x1;
+        const FILE_SHARE_DELETE: u32 = 0x4;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
+            .open(path)
+    }
+    #[cfg(not(windows))]
+    {
+        File::open(path)
+    }
+}
+
 fn u32_at(b: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(b[at..at + 4].try_into().unwrap())
 }
@@ -114,10 +134,14 @@ fn u64_at(b: &[u8], at: usize) -> u64 {
 impl Snapshot {
     /// Map and validate the snapshot file at `path`.
     pub fn open(path: impl AsRef<Path>) -> Result<Snapshot, Error> {
-        let file = File::open(path)?;
-        // SAFETY: snapshot files are written once and never modified while in use (sealed generation).
+        let file = open_shared_read(path.as_ref())?;
+        // SAFETY: the mapping is treated as immutable. On Windows the file is opened without
+        // FILE_SHARE_WRITE, so no other handle can write it while it is open (as in the C++
+        // reader). On other systems this rests on the writer's contract: a snapshot file is
+        // written once and never modified or truncated while in use (sealed generation); a
+        // truncation there would raise SIGBUS on access.
         let map = unsafe { Mmap::map(&file)? };
-        Self::parse(Backing::Map(map))
+        Self::parse(Backing::Map(map, file))
     }
 
     /// Validate a snapshot held in memory (tests and in-process writers).
@@ -141,6 +165,10 @@ impl Snapshot {
             return Err(Error::Format("truncated region table"));
         }
         let mut pos = HEADER_SIZE as u64 + region_count * REGION_ENTRY_SIZE as u64;
+        // Each space entry takes at least 4 bytes: bound the count before allocating for it.
+        if space_count > (size - pos) / 4 {
+            return Err(Error::Format("truncated space table"));
+        }
         let mut spaces = Vec::with_capacity(space_count as usize);
         for _ in 0..space_count {
             if pos + 4 > size {
