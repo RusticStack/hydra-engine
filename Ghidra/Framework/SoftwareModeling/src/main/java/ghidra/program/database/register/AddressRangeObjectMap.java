@@ -38,6 +38,12 @@ import ghidra.util.task.TaskMonitor;
  * under an optimistic stamp and fall back to a read lock only if an update ran meanwhile, so they
  * always see a state between two complete updates, as before, without readers taking turns.
  * Iterators are weakly consistent views (the old ones were unsynchronized list walks).
+ * <p>
+ * Memory tradeoff (estimate, 64-bit JVM with compressed oops, not measured on a heap dump): a
+ * skip-list entry is a 24-byte node plus on average about half a 24-byte index node, about 36
+ * bytes, where an {@code ArrayList} slot is a 4-byte reference (about 6 with growth slack). That is
+ * about 30 extra bytes per stored range, about 5 MB at 166k ranges; the {@code AddressValueRange}
+ * and {@code Address} objects, which dominate, are the same in both.
  */
 public class AddressRangeObjectMap<T> {
 
@@ -312,34 +318,55 @@ public class AddressRangeObjectMap<T> {
 		}
 	}
 
+	/** The stored range starting at or before the address (it may not contain it), or null. */
+	private AddressValueRange<T> floorRange(Address address) {
+		Map.Entry<Address, AddressValueRange<T>> e = ranges.floorEntry(address);
+		return e == null ? null : e.getValue();
+	}
+
 	/**
-	 * Returns the stored range starting at or before the address (it may not contain it), as a
-	 * consistent read: optimistic and lock-free unless an update runs at the same time.
+	 * Remembers a range that was just found to contain an address, read consistently under
+	 * {@code stamp}. Allocates and writes the shared field only when the cached entry changes, so
+	 * readers that miss (holes) or keep hitting the same range do not allocate or write.
 	 */
-	private CachedRange<T> lookupAtOrBefore(Address address) {
-		long stamp = lock.tryOptimisticRead();
-		if (stamp != 0) {
-			Map.Entry<Address, AddressValueRange<T>> e = ranges.floorEntry(address);
-			if (lock.validate(stamp)) {
-				return new CachedRange<>(e == null ? null : e.getValue(), stamp);
-			}
-		}
-		stamp = lock.readLock();
-		try {
-			Map.Entry<Address, AddressValueRange<T>> e = ranges.floorEntry(address);
-			return new CachedRange<>(e == null ? null : e.getValue(), stamp);
-		}
-		finally {
-			lock.unlockRead(stamp);
+	private void cacheHit(CachedRange<T> current, AddressValueRange<T> range, long stamp) {
+		if (current == null || current.range != range || current.stamp != stamp) {
+			lastRange = new CachedRange<>(range, stamp);
 		}
 	}
 
-	private AddressValueRange<T> cachedRangeContaining(Address address) {
+	/**
+	 * Returns the stored range containing the address, or null, as a consistent read: from the
+	 * cache if no update ran since it was filled, else optimistic and lock-free unless an update runs
+	 * at the same time.
+	 */
+	private AddressValueRange<T> rangeAt(Address address) {
 		CachedRange<T> cached = lastRange;
 		if (cached != null && cached.range.contains(address) && lock.validate(cached.stamp)) {
 			return cached.range;
 		}
-		return null;
+		AddressValueRange<T> range = null;
+		long stamp = lock.tryOptimisticRead();
+		if (stamp != 0) {
+			range = floorRange(address);
+			if (!lock.validate(stamp)) {
+				stamp = 0;
+			}
+		}
+		if (stamp == 0) {
+			stamp = lock.readLock();
+			try {
+				range = floorRange(address);
+			}
+			finally {
+				lock.unlockRead(stamp);
+			}
+		}
+		if (range == null || !range.contains(address)) {
+			return null;
+		}
+		cacheHit(cached, range, stamp);
+		return range;
 	}
 
 	/**
@@ -350,15 +377,7 @@ public class AddressRangeObjectMap<T> {
 	 * is null.
 	 */
 	public boolean contains(Address address) {
-		if (cachedRangeContaining(address) != null) {
-			return true;
-		}
-		CachedRange<T> found = lookupAtOrBefore(address);
-		if (found.range == null) {
-			return false;
-		}
-		lastRange = found;
-		return found.range.contains(address);
+		return rangeAt(address) != null;
 	}
 
 	/**
@@ -375,19 +394,8 @@ public class AddressRangeObjectMap<T> {
 		if (address == null) {
 			return null;
 		}
-		AddressValueRange<T> cached = cachedRangeContaining(address);
-		if (cached != null) {
-			return cached.getValue();
-		}
-		CachedRange<T> found = lookupAtOrBefore(address);
-		if (found.range == null) {
-			return null;
-		}
-		lastRange = found;
-		if (found.range.contains(address)) {
-			return found.range.getValue();
-		}
-		return null;
+		AddressValueRange<T> range = rangeAt(address);
+		return range == null ? null : range.getValue();
 	}
 
 	public boolean isEmpty() {
@@ -524,49 +532,54 @@ public class AddressRangeObjectMap<T> {
 	 * @param addr
 	 */
 	public AddressRange getAddressRangeContaining(Address addr) {
-		AddressValueRange<T> cached = cachedRangeContaining(addr);
-		if (cached != null) {
-			return new AddressRangeImpl(cached.getStart(), cached.getEnd());
+		CachedRange<T> cached = lastRange;
+		if (cached != null && cached.range.contains(addr) && lock.validate(cached.stamp)) {
+			return new AddressRangeImpl(cached.range.getStart(), cached.range.getEnd());
 		}
 
+		// The reads below cannot throw on a torn (concurrently modified) state: the skip list is
+		// weakly consistent, the stored ranges are immutable, and next()/previous() are only taken
+		// on a neighbour in addr's own space that lies strictly below/above addr.
 		long stamp = lock.tryOptimisticRead();
 		if (stamp != 0) {
-			try {
-				AddressRange result = rangeContaining(addr, stamp);
-				if (lock.validate(stamp)) {
-					return result;
-				}
-			}
-			catch (RuntimeException e) {
-				// torn optimistic read during an update; retry under the read lock below
-				if (lock.validate(stamp)) {
-					throw e;
-				}
+			AddressValueRange<T> before = floorRange(addr);
+			AddressRange hole = holeAround(addr, before);
+			if (lock.validate(stamp)) {
+				return found(cached, before, hole, stamp);
 			}
 		}
 		stamp = lock.readLock();
 		try {
-			return rangeContaining(addr, stamp);
+			AddressValueRange<T> before = floorRange(addr);
+			AddressRange hole = holeAround(addr, before);
+			return found(cached, before, hole, stamp);
 		}
 		finally {
 			lock.unlockRead(stamp);
 		}
 	}
 
-	private AddressRange rangeContaining(Address addr, long stamp) {
+	private AddressRange found(CachedRange<T> cached, AddressValueRange<T> before,
+			AddressRange hole, long stamp) {
+		if (hole != null) {
+			return hole;
+		}
+		cacheHit(cached, before, stamp);
+		return new AddressRangeImpl(before.getStart(), before.getEnd());
+	}
+
+	/**
+	 * The hole around addr, given the stored range at or before it (or null); null if that range
+	 * contains addr.
+	 */
+	private AddressRange holeAround(Address addr, AddressValueRange<T> before) {
+		if (before != null && before.contains(addr)) {
+			return null;
+		}
 		Address min = addr.getAddressSpace().getMinAddress();
 		Address max = addr.getAddressSpace().getMaxAddress();
-
-		Map.Entry<Address, AddressValueRange<T>> before = ranges.floorEntry(addr);
-		if (before != null) {
-			AddressValueRange<T> range = before.getValue();
-			if (range.getEnd().compareTo(addr) >= 0) {
-				lastRange = new CachedRange<>(range, stamp);
-				return new AddressRangeImpl(range.getStart(), range.getEnd());
-			}
-			if (min.getAddressSpace().equals(range.getEnd().getAddressSpace())) {
-				min = range.getEnd().next();
-			}
+		if (before != null && min.getAddressSpace().equals(before.getEnd().getAddressSpace())) {
+			min = before.getEnd().next();
 		}
 		Map.Entry<Address, AddressValueRange<T>> after = ranges.higherEntry(addr);
 		if (after != null) {

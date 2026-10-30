@@ -67,18 +67,22 @@ public class AddressRangeObjectMapEquivalenceTest extends AbstractGenericTest {
 	// ---------------------------------------------------------------- randomized equivalence
 
 	private static final class Stats {
-		long ops, queries, legacyNpeFixed;
+		long ops, queries, legacyNpeFixed, crossSpaceClears;
 	}
 
 	@Test
 	public void testRandomizedEquivalenceWithLegacyAndModel() throws Exception {
+		// 100 seeds by default (unit gate); -Dhydra.rangemap.seeds=400 for the deep run.
+		int seeds = Integer.getInteger("hydra.rangemap.seeds", 100);
 		Stats stats = new Stats();
-		for (long seed = 1; seed <= 400; seed++) {
+		for (long seed = 1; seed <= seeds; seed++) {
 			runRandomSequence(seed, 400, stats);
 		}
-		System.out.println("rangemap equivalence: ops=" + stats.ops + " queries=" + stats.queries +
+		System.out.println("rangemap equivalence: seeds=" + seeds + " ops=" + stats.ops +
+			" queries=" + stats.queries + " crossSpaceClears=" + stats.crossSpaceClears +
 			" legacyNpeFixed=" + stats.legacyNpeFixed);
-		assertTrue(stats.ops >= 160_000);
+		assertEquals(seeds * 400L, stats.ops);
+		assertTrue("cross-space clear never exercised", stats.crossSpaceClears > 0);
 		// the max-address edge must actually have been exercised
 		assertTrue("max-address edge never hit", stats.legacyNpeFixed > 0);
 	}
@@ -110,7 +114,17 @@ public class AddressRangeObjectMapEquivalenceTest extends AbstractGenericTest {
 				}
 			}
 			else if (kind < 85) {
-				int[] r = randomRange(rnd);
+				int[] r;
+				if (rnd.nextInt(5) == 0) {
+					// across the A/B boundary: start in A, end in B (often the space min/max)
+					int s = rnd.nextBoolean() ? 0 : rnd.nextInt(SPACE_SIZE);
+					int e = rnd.nextBoolean() ? SPACE_SIZE - 1 : rnd.nextInt(SPACE_SIZE);
+					r = new int[] { s, SPACE_SIZE + e };
+					stats.crossSpaceClears++;
+				}
+				else {
+					r = randomRange(rnd);
+				}
 				op = "clear " + r[0] + ".." + r[1];
 				map.clearRange(addr(r[0]), addr(r[1]));
 				legacy.clearRange(addr(r[0]), addr(r[1]));
@@ -389,33 +403,42 @@ public class AddressRangeObjectMapEquivalenceTest extends AbstractGenericTest {
 			futures.add(pool.submit(() -> {
 				Random rnd = new Random(7);
 				long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(1500);
-				while (System.nanoTime() < deadline) {
-					int s = 100 + rnd.nextInt(100);
-					int e = Math.min(199, s + rnd.nextInt(20));
-					map.setObject(sp.getAddress(s), sp.getAddress(e), 42); // merge into fixed range
-					int o = 210 + rnd.nextInt(50);
-					map.setObject(sp.getAddress(o), sp.getAddress(o + rnd.nextInt(30)), o & 3);
-					map.setObject(sp.getAddress(200), sp.getAddress(205), 42); // adjacent merge
-					map.clearRange(sp.getAddress(200), sp.getAddress(205));
-					map.setObject(sp.getAddress(90), sp.getAddress(99), rnd.nextInt(3));
-					map.clearRange(sp.getAddress(0), sp.getAddress(99));
+				try {
+					while (!stop.get() && System.nanoTime() < deadline) {
+						int s = 100 + rnd.nextInt(100);
+						int e = Math.min(199, s + rnd.nextInt(20));
+						map.setObject(sp.getAddress(s), sp.getAddress(e), 42); // merge into fixed range
+						int o = 210 + rnd.nextInt(50);
+						map.setObject(sp.getAddress(o), sp.getAddress(o + rnd.nextInt(30)), o & 3);
+						map.setObject(sp.getAddress(200), sp.getAddress(205), 42); // adjacent merge
+						map.clearRange(sp.getAddress(200), sp.getAddress(205));
+						map.setObject(sp.getAddress(90), sp.getAddress(99), rnd.nextInt(3));
+						map.clearRange(sp.getAddress(0), sp.getAddress(99));
+					}
 				}
-				stop.set(true);
+				finally {
+					stop.set(true); // readers must stop even if the writer throws
+				}
 				return null;
 			}));
 			for (int r = 0; r < readers; r++) {
 				final int seed = r;
 				futures.add(pool.submit(() -> {
 					Random rnd = new Random(seed);
-					while (!stop.get()) {
-						Address a = sp.getAddress(100 + rnd.nextInt(100));
-						assertEquals(Integer.valueOf(42), map.getObject(a));
-						assertTrue(map.contains(a));
-						AddressRange c = map.getAddressRangeContaining(a);
-						assertTrue(c.contains(a));
-						assertTrue(c.getMinAddress().getOffset() <= 100);
-						assertFalse(map.isEmpty());
-						reads.incrementAndGet();
+					try {
+						while (!stop.get() && !Thread.currentThread().isInterrupted()) {
+							Address a = sp.getAddress(100 + rnd.nextInt(100));
+							assertEquals(Integer.valueOf(42), map.getObject(a));
+							assertTrue(map.contains(a));
+							AddressRange c = map.getAddressRangeContaining(a);
+							assertTrue(c.contains(a));
+							assertTrue(c.getMinAddress().getOffset() <= 100);
+							assertFalse(map.isEmpty());
+							reads.incrementAndGet();
+						}
+					}
+					finally {
+						stop.set(true); // a failing reader ends the writer's run early too
 					}
 					return null;
 				}));
