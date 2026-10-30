@@ -558,6 +558,10 @@ static void segvHandler(int4 sig)
 
 } // End namespace ghidra
 
+#ifdef HYDRA_ALLOC_IDLE
+extern "C" void hydra_alloc_idle(void);
+#endif
+
 int main(int argc,char **argv)
 
 {
@@ -575,6 +579,9 @@ int main(int argc,char **argv)
   int4 status = 0;
   while(status == 0) {
     status = GhidraCapability::readCommand(cin,cout);
+#ifdef HYDRA_ALLOC_IDLE
+    hydra_alloc_idle();	// Return freed allocator pages to the OS while waiting (hydra_alloc.cc)
+#endif
   }
   GhidraCapability::shutDown();
 }

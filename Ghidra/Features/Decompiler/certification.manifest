@@ -1,6 +1,7 @@
 ##VERSION: 2.0
 ##MODULE IP: Crystal Clear Icons - LGPL 2.1
 ##MODULE IP: FAMFAMFAM Icons - CC 2.5
+##MODULE IP: MIT
 ##MODULE IP: Modified Nuvola Icons - LGPL 2.1
 ##MODULE IP: Oxygen Icons - LGPL 3.0
 ##MODULE IP: Tango Icons - Public Domain
@@ -122,6 +123,50 @@ src/decompile/datatests/union_datatype.xml||GHIDRA||||END|
 src/decompile/datatests/varcross.xml||GHIDRA||||END|
 src/decompile/datatests/wayoffarray.xml||GHIDRA||||END|
 src/decompile/datatests/wraprange.xml||GHIDRA||||END|
+src/decompile/mimalloc/LICENSE||MIT||||END|
+src/decompile/mimalloc/README.hydra.md||GHIDRA||||END|
+src/decompile/mimalloc/include/mimalloc-new-delete.h||MIT||||END|
+src/decompile/mimalloc/include/mimalloc-override.h||MIT||||END|
+src/decompile/mimalloc/include/mimalloc-stats.h||MIT||||END|
+src/decompile/mimalloc/include/mimalloc.h||MIT||||END|
+src/decompile/mimalloc/include/mimalloc/atomic.h||MIT||||END|
+src/decompile/mimalloc/include/mimalloc/internal.h||MIT||||END|
+src/decompile/mimalloc/include/mimalloc/prim.h||MIT||||END|
+src/decompile/mimalloc/include/mimalloc/track.h||MIT||||END|
+src/decompile/mimalloc/include/mimalloc/types.h||MIT||||END|
+src/decompile/mimalloc/src/alloc-aligned.c||MIT||||END|
+src/decompile/mimalloc/src/alloc-override.c||MIT||||END|
+src/decompile/mimalloc/src/alloc-posix.c||MIT||||END|
+src/decompile/mimalloc/src/alloc.c||MIT||||END|
+src/decompile/mimalloc/src/arena-abandon.c||MIT||||END|
+src/decompile/mimalloc/src/arena.c||MIT||||END|
+src/decompile/mimalloc/src/bitmap.c||MIT||||END|
+src/decompile/mimalloc/src/bitmap.h||MIT||||END|
+src/decompile/mimalloc/src/free.c||MIT||||END|
+src/decompile/mimalloc/src/heap.c||MIT||||END|
+src/decompile/mimalloc/src/init.c||MIT||||END|
+src/decompile/mimalloc/src/libc.c||MIT||||END|
+src/decompile/mimalloc/src/options.c||MIT||||END|
+src/decompile/mimalloc/src/os.c||MIT||||END|
+src/decompile/mimalloc/src/page-queue.c||MIT||||END|
+src/decompile/mimalloc/src/page.c||MIT||||END|
+src/decompile/mimalloc/src/prim/emscripten/prim.c||MIT||||END|
+src/decompile/mimalloc/src/prim/osx/alloc-override-zone.c||MIT||||END|
+src/decompile/mimalloc/src/prim/osx/prim.c||MIT||||END|
+src/decompile/mimalloc/src/prim/prim.c||MIT||||END|
+src/decompile/mimalloc/src/prim/readme.md||MIT||||END|
+src/decompile/mimalloc/src/prim/unix/prim.c||MIT||||END|
+src/decompile/mimalloc/src/prim/wasi/prim.c||MIT||||END|
+src/decompile/mimalloc/src/prim/windows/etw-mimalloc.wprp||MIT||||END|
+src/decompile/mimalloc/src/prim/windows/etw.h||MIT||||END|
+src/decompile/mimalloc/src/prim/windows/etw.man||MIT||||END|
+src/decompile/mimalloc/src/prim/windows/prim.c||MIT||||END|
+src/decompile/mimalloc/src/prim/windows/readme.md||MIT||||END|
+src/decompile/mimalloc/src/random.c||MIT||||END|
+src/decompile/mimalloc/src/segment-map.c||MIT||||END|
+src/decompile/mimalloc/src/segment.c||MIT||||END|
+src/decompile/mimalloc/src/static.c||MIT||||END|
+src/decompile/mimalloc/src/stats.c||MIT||||END|
 src/decompile/zlib/README.txt||GHIDRA||||END|
 src/main/doc/commonprofile.xsl||GHIDRA||||END|
 src/main/doc/cspec.xml||GHIDRA||||END|
