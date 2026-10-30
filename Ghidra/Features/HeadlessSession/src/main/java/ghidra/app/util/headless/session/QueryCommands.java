@@ -96,6 +96,13 @@ final class QueryCommands {
 			// Hydra (daemon-async): pages are slices of the program state's one shared listing
 			FunctionIndex.Snapshot ix = FunctionIndex.of(prog);
 			int n = ix.size();
+			if (ReplyEncoder.enabled()) {
+				// Hydra reply-encode: the rows are written by the native encoder, not as a tree
+				JsonElement rows = nativeRows(ix, pat, sub, offset, limit);
+				if (rows != null) {
+					return rows;
+				}
+			}
 			if (pat == null && sub == null) {
 				int from = (int) Math.min(n, (long) offset);
 				int to = (int) Math.min(n, (long) from + limit);
@@ -146,6 +153,59 @@ final class QueryCommands {
 		}
 		return Json.of("functions", a, "offset", offset, "returned", a.size(), "truncated",
 			truncated);
+	}
+
+	/**
+	 * The {@code functions} reply with its rows encoded by {@link ReplyEncoder}: the same rows, in
+	 * the same order and with the same {@code returned}/{@code truncated}, as the tree path above;
+	 * null when the native encoder failed.
+	 */
+	private static JsonElement nativeRows(FunctionIndex.Snapshot ix, Pattern pat, String sub,
+			int offset, int limit) {
+		int n = ix.size();
+		byte[] rows;
+		int returned;
+		boolean truncated;
+		if (pat == null && sub == null) {
+			int from = (int) Math.min(n, (long) offset);
+			int to = (int) Math.min(n, (long) from + limit);
+			rows = ix.page(from, to);
+			returned = to - from;
+			truncated = to < n;
+		}
+		else {
+			int[] idx = new int[Math.min(limit, 1024)];
+			int k = 0;
+			int seen = 0;
+			truncated = false;
+			for (int i = 0; i < n; i++) {
+				String nm = ix.names[i];
+				if (pat != null && !pat.matcher(nm).find()) {
+					continue;
+				}
+				if (sub != null && !nm.contains(sub)) {
+					continue;
+				}
+				if (seen++ < offset) {
+					continue;
+				}
+				if (k >= limit) {
+					truncated = true;
+					break;
+				}
+				if (k == idx.length) {
+					idx = java.util.Arrays.copyOf(idx, Math.min(limit, idx.length * 2));
+				}
+				idx[k++] = i;
+			}
+			rows = ReplyEncoder.functionRows(ix, idx, k, 0, 0);
+			returned = k;
+		}
+		if (rows == null) {
+			return null;
+		}
+		return Json.of("functions", RawJson.of(rows), "offset", offset, "returned", returned,
+			"truncated", truncated);
 	}
 
 	/** The code of a decompile that failed in the native process (E9, 3.11): retryable. */

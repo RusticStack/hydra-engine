@@ -637,7 +637,7 @@ final class Connection {
 
 	/** Queues a line for the writer thread: events may be dropped, a reply may not (BP23). */
 	void send(JsonObject o) {
-		byte[] bytes = encode(o);
+		byte[][] bytes = encodeParts(o);
 		boolean reply = o.has("ok");
 		if (!open && !reply) {
 			return;
@@ -658,25 +658,125 @@ final class Connection {
 	 * reply (a function listing, a long decompile) is no longer held three times.
 	 */
 	static byte[] encode(JsonObject o) {
+		byte[][] parts = encodeParts(o);
+		if (parts.length == 1) {
+			return parts[0];
+		}
+		byte[] all = new byte[(int) length(parts)];
+		int at = 0;
+		for (byte[] p : parts) {
+			System.arraycopy(p, 0, all, at, p.length);
+			at += p.length;
+		}
+		return all;
+	}
+
+	/**
+	 * {@link #encode} as the parts the writer sends one after the other (Hydra reply-encode): a
+	 * value already encoded ({@link RawJson}, such as a {@code functions} page written by the
+	 * native encoder) is a part of its own, sent from its array as it is. The JSON around it is
+	 * written by a {@code JsonWriter} set up as {@code GSON.toJson(JsonElement, Appendable)} sets
+	 * up its own (HTML escaping off, nulls written, lenient), element by element as Gson's
+	 * {@code JsonElement} adapter writes them, so the bytes are the same.
+	 */
+	static byte[][] encodeParts(JsonObject o) {
 		LineBuffer buf = new LineBuffer();
 		try (Writer w = new OutputStreamWriter(buf, StandardCharsets.UTF_8)) {
-			Json.GSON.toJson(o, w);
+			com.google.gson.stream.JsonWriter jw = Json.GSON.newJsonWriter(w);
+			jw.setStrictness(Strictness.LENIENT); // as Gson.toJson(JsonElement, JsonWriter)
+			write(jw, o, buf);
+			jw.flush();
 			w.write('\n');
 		}
 		catch (IOException e) {
 			throw new UncheckedIOException(e); // an in-memory buffer does not fail
 		}
-		return buf.bytes();
+		return buf.parts();
 	}
 
-	/** A byte buffer that hands over its array without a copy when it is exactly full. */
+	/** Gson's {@code JsonElement} adapter, plus the already encoded values. */
+	private static void write(com.google.gson.stream.JsonWriter out, JsonElement value,
+			LineBuffer buf) throws IOException {
+		if (value == null || value.isJsonNull()) {
+			out.nullValue();
+		}
+		else if (value.isJsonPrimitive()) {
+			JsonPrimitive p = value.getAsJsonPrimitive();
+			byte[] raw = RawJson.bytes(p);
+			if (raw != null) {
+				out.jsonValue(""); // the separator and the writer's state of a value, no text
+				out.flush();
+				buf.raw(raw);
+			}
+			else if (p.isNumber()) {
+				out.value(p.getAsNumber());
+			}
+			else if (p.isBoolean()) {
+				out.value(p.getAsBoolean());
+			}
+			else {
+				out.value(p.getAsString());
+			}
+		}
+		else if (value.isJsonArray()) {
+			out.beginArray();
+			for (JsonElement e : value.getAsJsonArray()) {
+				write(out, e, buf);
+			}
+			out.endArray();
+		}
+		else {
+			out.beginObject();
+			for (Map.Entry<String, JsonElement> e : value.getAsJsonObject().entrySet()) {
+				out.name(e.getKey());
+				write(out, e.getValue(), buf);
+			}
+			out.endObject();
+		}
+	}
+
+	static long length(byte[][] parts) {
+		long n = 0;
+		for (byte[] p : parts) {
+			n += p.length;
+		}
+		return n;
+	}
+
+	/**
+	 * A byte buffer that hands over its array without a copy when it is exactly full, and keeps an
+	 * already encoded value as a part of its own.
+	 */
 	private static final class LineBuffer extends ByteArrayOutputStream {
+		private java.util.List<byte[]> parts;
+
 		LineBuffer() {
 			super(256);
 		}
 
-		byte[] bytes() {
+		private byte[] bytes() {
 			return count == buf.length ? buf : java.util.Arrays.copyOf(buf, count);
+		}
+
+		void raw(byte[] b) {
+			if (parts == null) {
+				parts = new java.util.ArrayList<>();
+			}
+			if (count > 0) {
+				parts.add(java.util.Arrays.copyOf(buf, count));
+				count = 0;
+			}
+			parts.add(b);
+		}
+
+		byte[][] parts() {
+			if (parts == null) {
+				return new byte[][] { bytes() };
+			}
+			if (count > 0) {
+				parts.add(java.util.Arrays.copyOf(buf, count));
+			}
+			return parts.toArray(new byte[0][]);
 		}
 	}
 
@@ -713,7 +813,7 @@ final class Connection {
 		private static final long REPLY_BYTES_MAX = 64L << 20;
 
 		final long stallMs = Math.max(250, Settings.integer("writeStallMs", 5000));
-		private final java.util.ArrayDeque<byte[]> queue = new java.util.ArrayDeque<>();
+		private final java.util.ArrayDeque<byte[][]> queue = new java.util.ArrayDeque<>();
 		private long queued;
 		private boolean stopping;
 		/** {@code System.nanoTime()} when the current socket write began, 0 when none is running. */
@@ -736,20 +836,20 @@ final class Connection {
 			}, 500, 500, TimeUnit.MILLISECONDS);
 		}
 
-		synchronized void offerEvent(byte[] b) {
+		synchronized void offerEvent(byte[][] b) {
 			if (stopping || queued > EVENT_BYTES_MAX || queue.size() >= EVENT_COUNT_MAX) {
 				return; // dropped: progress is best effort
 			}
 			queue.add(b);
-			queued += b.length;
+			queued += length(b);
 			notifyAll();
 		}
 
 		/** @return false when the client does not read: the reply is not queued */
-		synchronized boolean offerReply(byte[] b) {
+		synchronized boolean offerReply(byte[][] b) {
 			long end = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(stallMs);
 			try {
-				while (!stopping && !queue.isEmpty() && queued + b.length > REPLY_BYTES_MAX) {
+				while (!stopping && !queue.isEmpty() && queued + length(b) > REPLY_BYTES_MAX) {
 					if (writerStalled() || System.nanoTime() - end >= 0) {
 						return false;
 					}
@@ -766,7 +866,7 @@ final class Connection {
 				return false;
 			}
 			queue.add(b);
-			queued += b.length;
+			queued += length(b);
 			notifyAll();
 			return true;
 		}
@@ -811,7 +911,7 @@ final class Connection {
 		@Override
 		public void run() {
 			while (true) {
-				byte[] b;
+				byte[][] b;
 				synchronized (this) {
 					while (queue.isEmpty()) {
 						if (stopping) {
@@ -837,7 +937,9 @@ final class Connection {
 				}
 				boolean ok = true;
 				try {
-					out.write(b);
+					for (byte[] part : b) {
+						out.write(part);
+					}
 					out.flush();
 				}
 				catch (IOException e) {
@@ -846,7 +948,7 @@ final class Connection {
 				synchronized (this) {
 					writing = 0;
 					queue.pollFirst();
-					queued -= b.length;
+					queued -= length(b);
 					if (!ok) {
 						open = false;
 						queue.clear();

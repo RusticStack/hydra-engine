@@ -76,6 +76,45 @@ final class FunctionIndex {
 			return Json.of("name", names[i], "address", addresses[i], "size", sizes[i], "thunk",
 				(flags[i] & 1) != 0, "external", (flags[i] & 2) != 0);
 		}
+
+		/** Hydra reply-encode: the off-heap copy for the native encoder, made on first use. */
+		private volatile ReplyEncoder.Columns columns;
+		/** Encoded unfiltered pages by {@code from << 32 | to}, shared by every client. */
+		private final java.util.concurrent.ConcurrentHashMap<Long, byte[]> pages =
+			new java.util.concurrent.ConcurrentHashMap<>();
+		private final AtomicLong pageBytes = new AtomicLong();
+
+		ReplyEncoder.Columns columns() {
+			ReplyEncoder.Columns c = columns;
+			if (c == null) {
+				synchronized (this) {
+					c = columns;
+					if (c == null) {
+						columns = c = new ReplyEncoder.Columns(this);
+					}
+				}
+			}
+			return c;
+		}
+
+		/**
+		 * The JSON array of rows {@code from..to}, encoded natively once per page of this program
+		 * state; null when the native encoder failed.
+		 */
+		byte[] page(int from, int to) {
+			long key = ((long) from << 32) | (to & 0xffffffffL);
+			byte[] b = pages.get(key);
+			if (b != null) {
+				ReplyEncoder.pageHit();
+				return b;
+			}
+			b = ReplyEncoder.functionRows(this, null, 0, from, to);
+			if (b != null && pageBytes.get() + b.length <= ReplyEncoder.PAGE_CACHE_BYTES &&
+				pages.putIfAbsent(key, b) == null) {
+				pageBytes.addAndGet(b.length);
+			}
+			return b;
+		}
 	}
 
 	/** The build of one program, or its finished snapshot. */
