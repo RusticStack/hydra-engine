@@ -23,8 +23,12 @@
 // with mimalloc 2.2.4 (vendored, MIT, ../mimalloc), compiled here as C++, its supported
 // MI_USE_CXX mode, so the native build needs no C sources.
 //
-// Output is unaffected: the decompiler never orders by pointer value (Varnode comparisons tie-break
-// on the create index, varnode.cc), and the golden run is byte-identical with and without it.
+// Output identity: the ordered containers that drive output compare by value (Varnode sets
+// tie-break on the create index, varnode.cc; multiEntrySet is SymbolNameTree, ordered by name).
+// Some maps are keyed by pointer (map<HighVariable*,...> in coreaction.cc, the type warnings map
+// in type.hh, maps in subflow.cc, jumptable.cc and constseq.cc); the ones checked are used for
+// lookup only, so a different address pattern does not reorder output. Identity is verified by the
+// golden run (byte-identical on all 8616 KotOR functions), not guaranteed by construction.
 // CRT malloc/free are left alone; nothing in the decompiler frees new-ed memory with free().
 // Define HYDRA_NO_MIMALLOC to build with the CRT heap.
 #if defined(_WIN32) && !defined(HYDRA_NO_MIMALLOC)
@@ -38,6 +42,16 @@
 // decompile.exe holds 33 MB of private memory (2.5 MB without), once per process.
 #ifndef MI_DEFAULT_EAGER_COMMIT
 #define MI_DEFAULT_EAGER_COMMIT 0
+#endif
+// Cost of this choice: an idle decompile.exe holds about 2.5 MB private memory instead of about
+// 0.6 MB with the process heap (+1.9 MB per process), against about 9% lower peak private memory
+// and 13% less CPU while decompiling.
+// Ignore MIMALLOC_* environment variables. decompile.exe inherits whatever environment its launcher
+// has, and a variable meant for another mimalloc-using tool (MIMALLOC_EAGER_COMMIT=1,
+// MIMALLOC_RESERVE_OS_MEMORY, MIMALLOC_VERBOSE, ...) would otherwise change this process's memory
+// behaviour or write to stderr. The options above are then fixed at compile time.
+#ifndef MI_NO_GETENV
+#define MI_NO_GETENV
 #endif
 #include "../mimalloc/src/static.c"
 #include "mimalloc-new-delete.h"
