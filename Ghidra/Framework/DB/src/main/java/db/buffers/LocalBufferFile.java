@@ -735,6 +735,93 @@ public class LocalBufferFile implements BufferFile {
 		}
 	}
 
+	/**
+	 * Hydra H3: copy the buffers {@code first .. first+count-1} of {@code src} into this file with
+	 * one positional read and one positional write, instead of a {@link #get}/{@link #put} pair per
+	 * buffer (two seeks, three reads and three writes per buffer, the read through a native buffer
+	 * allocated per call). The blocks written are byte for byte what that pair writes:
+	 * <ul>
+	 * <li>a non-empty buffer: flags 0, its id, its data;</li>
+	 * <li>an empty buffer: flags {@link #EMPTY_BUFFER}, id -1 (the id {@link #get} gives an empty
+	 * buffer) and a zero data area ({@link #put} writes only the prefix of an empty buffer, and the
+	 * blocks of a new file read as zero until written; the source may keep stale data there).</li>
+	 * </ul>
+	 * Only for a new file being filled in index order, as the pre-save does, with the same block
+	 * size as the source.
+	 * @param src source buffer file, same block size
+	 * @param first index of the first buffer
+	 * @param count number of buffers, at most {@code chunk.capacity() / blockSize}
+	 * @param chunk scratch buffer of at least {@code count * blockSize} bytes (a direct buffer
+	 * avoids a copy through the JDK's temporary buffer)
+	 * @throws IOException if an I/O error occurs or the source ends early
+	 */
+	synchronized void copyBuffersFrom(LocalBufferFile src, int first, int count,
+			java.nio.ByteBuffer chunk) throws IOException {
+		if (readOnly) {
+			throw new IOException("File is read-only");
+		}
+		if (raf == null) {
+			throw new ClosedException();
+		}
+		if (src.blockSize != blockSize) {
+			throw new IllegalArgumentException("Block size mismatch");
+		}
+		if (count <= 0) {
+			return;
+		}
+		int bytes = Math.multiplyExact(count, blockSize);
+		long pos = (long) (first + 1) * (long) blockSize;
+		chunk.clear().limit(bytes);
+		src.readFully(chunk, pos);
+		for (int off = 0; off < bytes; off += blockSize) {
+			if ((chunk.get(off) & EMPTY_BUFFER) != 0) {
+				chunk.put(off, EMPTY_BUFFER);
+				chunk.putInt(off + 1, -1);
+				zero(chunk, off + BUFFER_PREFIX_SIZE, bufferSize);
+			}
+			else {
+				chunk.put(off, (byte) 0);
+			}
+		}
+		chunk.position(0).limit(bytes);
+		java.nio.channels.FileChannel ch = raf.getChannel();
+		while (chunk.hasRemaining()) {
+			ch.write(chunk, pos + chunk.position());
+		}
+		if (first + count > bufferCount) {
+			bufferCount = first + count;
+		}
+	}
+
+	private synchronized void readFully(java.nio.ByteBuffer dst, long pos) throws IOException {
+		if (raf == null) {
+			throw new ClosedException();
+		}
+		java.nio.channels.FileChannel ch = raf.getChannel();
+		long start = pos - dst.position();
+		while (dst.hasRemaining()) {
+			if (ch.read(dst, start + dst.position()) < 0) {
+				throw new EOFException("Unexpected end of buffer file " + file);
+			}
+		}
+	}
+
+	/** Hydra H3: size of one block on disk, buffer plus prefix (sizes the pre-save chunks). */
+	int getBlockSize() {
+		return blockSize;
+	}
+
+	private static final byte[] ZEROS = new byte[4096];
+
+	private static void zero(java.nio.ByteBuffer buf, int off, int len) {
+		while (len > 0) {
+			int n = Math.min(len, ZEROS.length);
+			buf.put(off, ZEROS, 0, n);
+			off += n;
+			len -= n;
+		}
+	}
+
 	@Override
 	public int getBufferSize() {
 		return bufferSize;
