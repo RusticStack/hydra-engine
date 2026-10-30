@@ -260,6 +260,124 @@ final class ForkSweeper {
 		return sweep(destDir, first ? null : name);
 	}
 
+	// ---- 8.13: the sweep also runs at daemon start and at open_project ----------------------
+
+	/** The folder under the state directory that names every directory this engine forked into. */
+	static final String PARENTS = "fork-parents";
+
+	/**
+	 * Records {@code destDir} under {@code <stateDir>/fork-parents/} before anything is staged in it,
+	 * so that the next start of a daemon on this state directory sweeps it even when no other
+	 * {@code fork_project} or {@code open_project} ever names it again (8.13). One file per
+	 * directory, named by the hash of its canonical path; a daemon without a state directory
+	 * records nothing.
+	 */
+	static void registerParent(File destDir) {
+		Path dir = parentsDir();
+		if (dir == null) {
+			return;
+		}
+		try {
+			String canon = destDir.getCanonicalPath();
+			Path f = dir.resolve(key(canon));
+			if (!Files.exists(f)) {
+				Files.createDirectories(dir);
+				Path tmp = dir.resolve(f.getFileName() + "." + ProcessHandle.current().pid() + ".tmp");
+				Files.writeString(tmp, canon, java.nio.charset.StandardCharsets.UTF_8);
+				Files.move(tmp, f, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+			}
+		}
+		catch (IOException | RuntimeException e) {
+			Msg.warn(ForkSweeper.class, "fork_project: could not record " + destDir +
+				" for the start-up sweep: " + e);
+		}
+	}
+
+	/**
+	 * The start-up sweep (8.13): every directory recorded by {@link #registerParent} is swept as
+	 * the first {@code fork_project} under it would sweep it. A record whose directory is gone, or
+	 * holds no staging folder after the sweep, is dropped. Never throws.
+	 *
+	 * @return what was removed, resumed and reported, per directory
+	 */
+	static JsonObject sweepAtStart() {
+		JsonObject out = new JsonObject();
+		Path dir = parentsDir();
+		if (dir == null || !Files.isDirectory(dir)) {
+			return out;
+		}
+		File[] recs = dir.toFile().listFiles((d, n) -> !n.endsWith(".tmp"));
+		if (recs == null) {
+			return out;
+		}
+		for (File rec : recs) {
+			try {
+				File parent = new File(Files.readString(rec.toPath(),
+					java.nio.charset.StandardCharsets.UTF_8).trim());
+				if (!parent.isDirectory()) {
+					Files.deleteIfExists(rec.toPath());
+					continue;
+				}
+				Report r = sweep(parent, null);
+				if (!r.empty()) {
+					out.add(parent.getPath(), Json.of("removed", r.removed(), "resumed",
+						r.resumed(), "reported", r.reported()));
+				}
+				File[] staging = parent.listFiles(f -> f.isDirectory() &&
+					ForkIntent.isStagingName(f.getName()));
+				if (staging != null && staging.length == 0) {
+					Files.deleteIfExists(rec.toPath());
+				}
+			}
+			catch (IOException | RuntimeException e) {
+				Msg.warn(ForkSweeper.class, "start-up fork sweep of " + rec + ": " + e);
+			}
+		}
+		if (out.size() > 0) {
+			Msg.info(ForkSweeper.class, "start-up fork sweep: " + out);
+		}
+		return out;
+	}
+
+	/**
+	 * The sweep at {@code open_project} (8.13): the directory that holds the project named by
+	 * {@code path} (a {@code .gpr}, a {@code .rep} or a directory) is swept whole. Never throws: an
+	 * open never fails because of the sweep.
+	 */
+	static void sweepForOpen(String path) {
+		if (path == null) {
+			return;
+		}
+		try {
+			File f = new File(path).getAbsoluteFile();
+			String n = f.getName();
+			File dir = n.endsWith(ProjectLocator.getProjectExtension()) ||
+				n.endsWith(ProjectLocator.getProjectDirExtension()) ? f.getParentFile() : f;
+			if (dir != null && dir.isDirectory()) {
+				sweep(dir, null);
+			}
+		}
+		catch (RuntimeException e) {
+			Msg.warn(ForkSweeper.class, "open_project: fork sweep of " + path + ": " + e);
+		}
+	}
+
+	private static Path parentsDir() {
+		String state = Json.str(Identity.paths(), "stateDir", null);
+		return state == null ? null : Path.of(state, PARENTS);
+	}
+
+	private static String key(String canon) {
+		try {
+			byte[] h = java.security.MessageDigest.getInstance("SHA-256")
+				.digest(canon.toLowerCase(Locale.ROOT).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+			return HexFormat.of().formatHex(h, 0, 16);
+		}
+		catch (java.security.NoSuchAlgorithmException e) {
+			throw new IllegalStateException(e);
+		}
+	}
+
 	/** Sweeps {@code destDir}; {@code onlyName} restricts it to the staging folders of one fork. */
 	static Report sweep(File destDir, String onlyName) {
 		Report r = new Report(new ArrayList<>(), new ArrayList<>(), new ArrayList<>());
@@ -389,11 +507,17 @@ final class ForkSweeper {
 		if (Files.exists(gpr)) {
 			// the commit point was passed: the fork is complete, finish what the publisher did
 			JsonObject sc = ProjectFork.readSidecar(new ProjectResolver.Resolved(destDir, name));
-			if (sc != null && ProjectFork.STATE_PUBLISHING.equals(Json.str(sc, "state", null)) &&
-				i.id().equals(Json.str(sc, "forkId", null))) {
+			boolean mine = sc != null && i.id().equals(Json.str(sc, "forkId", null));
+			if (mine && ProjectFork.STATE_PUBLISHING.equals(Json.str(sc, "state", null))) {
 				sc.addProperty("state", ProjectFork.STATE_COMPLETE);
 				ProjectFork.writeSidecar(sidecar, sc);
 				r.resumed().add(name);
+			}
+			// 8.13: the dead publisher's temporary sidecar (killed between the write of
+			// <name>.fork.json.tmp and its rename) is removed with its staging folder
+			Path scTmp = Path.of(sidecar.getPath() + ".tmp");
+			if (mine && Files.deleteIfExists(scTmp)) {
+				r.removed().add(scTmp.getFileName().toString());
 			}
 		}
 		else if (ForkIntent.MOVING.equals(i.phase()) && Files.isDirectory(rep) && !liveOther) {

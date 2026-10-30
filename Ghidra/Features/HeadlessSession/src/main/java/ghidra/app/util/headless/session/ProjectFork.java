@@ -461,6 +461,27 @@ final class ProjectFork {
 	}
 
 	/**
+	 * Test hook only (launch property {@code ghidra.session.testHooks}): holds the publish between
+	 * the move of the {@code .rep} and the move of the {@code .gpr} for
+	 * {@code ghidra.session.testForkPauseAfterRepMs} ms, so a test can kill the daemon exactly
+	 * there (8.13, {@code e2a_sweep_at_start}). Does nothing without the hooks.
+	 */
+	private static void pauseBetweenRenames() {
+		if (!Health.testHooks()) {
+			return;
+		}
+		long ms = Long.getLong("ghidra.session.testForkPauseAfterRepMs", 0L);
+		if (ms > 0) {
+			try {
+				Thread.sleep(ms);
+			}
+			catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+			}
+		}
+	}
+
+	/**
 	 * {@link #publish(Staged, File, String, JsonObject, String)} for a fork that also carries
 	 * files staged next to the project (a backup's {@code backup.json}, the {@code SEALED.json}
 	 * marker): each is moved into {@code destDir} after the {@code .rep} and before the
@@ -499,6 +520,7 @@ final class ProjectFork {
 		catch (FileAlreadyExistsException e) {
 			throw new RaceLost("another publisher holds " + destRep);
 		}
+		pauseBetweenRenames();
 		boolean committed = false;
 		try {
 			sidecar.addProperty("forkId", st.id());

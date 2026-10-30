@@ -53,6 +53,8 @@ final class ProjectCommands {
 	 * a writable request on a writable project, and a read-only request on one, join it.
 	 */
 	JsonElement openProject(Client c, JsonObject req) {
+		// 8.13: a half fork a dead publisher left in this directory is swept before the open
+		ForkSweeper.sweepForOpen(Json.str(req, "path", null));
 		ProjectResolver.Resolved r;
 		String canonical;
 		try {
