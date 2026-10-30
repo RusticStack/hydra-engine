@@ -44,7 +44,7 @@ def run(engine, exe, work, tag, java_opts, order="address"):
     proj = os.path.join(work, "proj-" + tag)
     os.makedirs(proj, exist_ok=True)
     p = subprocess.run([launcher, proj, "p", "-import", exe, "-scriptPath", HERE, "-postScript",
-        "DecompileAllC.java", out, "0x7fffffff", order, "-deleteProject"], env=env, stdin=subprocess.DEVNULL,
+        "DecompileAllC.java", out, "2147483647", order, "-deleteProject"], env=env, stdin=subprocess.DEVNULL,
         capture_output=True, text=True, errors="replace", timeout=1800)
     m = re.search(r"DECOMPILE_ALL functions=(\d+) ms=(\d+) processes=(\d+) kept=(-?\d+) "
         r"repeats_differing=(\d+)", p.stdout + p.stderr)
