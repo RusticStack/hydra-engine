@@ -825,6 +825,7 @@ public class LocalManagedBufferFile extends LocalBufferFile implements ManagedBu
 	 */
 	private void startPreSave() {
 		synchronized (preSaveLock) {
+			flushAheadHinted = false;
 			try {
 				preSaveTask = new PreSaveTask();
 			}
@@ -834,6 +835,28 @@ public class LocalManagedBufferFile extends LocalBufferFile implements ManagedBu
 				preSaveFile = null;
 				preSaveTask = null;
 			}
+		}
+	}
+
+	/** Hydra (round 2): the flush-ahead of this pre-save was asked for (see changeCommitted). */
+	private volatile boolean flushAheadHinted;
+
+	/**
+	 * Hydra (round 2): the buffer manager closed a checkpoint that changed buffers, so a save is
+	 * likely soon. Asks the pre-save to write its copy back to disk now (see
+	 * {@link PreSaveTask#flushAhead}), once per pre-save. Cheap when repeated: one volatile read.
+	 */
+	void changeCommitted() {
+		if (flushAheadHinted) {
+			return;
+		}
+		flushAheadHinted = true;
+		PreSaveTask task;
+		synchronized (preSaveLock) {
+			task = preSaveTask;
+		}
+		if (task != null) {
+			task.flushAhead();
 		}
 	}
 
@@ -908,10 +931,9 @@ public class LocalManagedBufferFile extends LocalBufferFile implements ManagedBu
 			preSaveFile = new LocalManagedBufferFile(psFile, getBufferSize());
 
 			taskThread = new Thread(this, "Pre-Save");
-			// Hydra H3: below normal, not the lowest. On Windows MIN_PRIORITY is
-			// THREAD_PRIORITY_LOWEST, which a machine busy with other agents' work starves for
-			// seconds at a time (seen: 10 s without a step), so the copy, now a few 1 MB chunks
-			// of cheap I/O, was still not done when the save came.
+			// Hydra (round 2): normal priority (see PRESAVE_PRIORITY) so a busy machine with many
+			// agents does not starve the copy a save is about to need (H3: below normal; Ghidra:
+			// lowest, which on Windows is THREAD_PRIORITY_LOWEST and was seen 10 s without a step).
 			taskThread.setPriority(PRESAVE_PRIORITY);
 			taskThread.start();
 		}
@@ -1025,9 +1047,11 @@ public class LocalManagedBufferFile extends LocalBufferFile implements ManagedBu
 
 			boolean success = false;
 			try {
-				// Initial delay
-				synchronized (preSaveLock) {
-					pause(100);
+				// Initial delay (none by default, see PRESAVE_START_DELAY_MS)
+				if (PRESAVE_START_DELAY_MS > 0) {
+					synchronized (preSaveLock) {
+						pause(PRESAVE_START_DELAY_MS);
+					}
 				}
 
 				// Copy non-empty buffers only
@@ -1041,6 +1065,7 @@ public class LocalManagedBufferFile extends LocalBufferFile implements ManagedBu
 					bufferCopy(cnt);
 				}
 				success = true;
+				copyFinished(); // writes the copy back at once when a change is already committed
 			}
 			catch (InterruptedException e) {
 				checkPreSaveMonitor();
@@ -1083,13 +1108,61 @@ public class LocalManagedBufferFile extends LocalBufferFile implements ManagedBu
 			}
 		}
 
+		/** Hydra (round 2): the copy is complete (set and read with preSaveLock held). */
+		private boolean copyDone;
+
+		/** Hydra (round 2): write the finished copy back as soon as it exists (preSaveLock). */
+		private boolean flushWanted;
+
 		/**
-		 * Back off while the primary file is being read, unless a saver waits.
-		 * @param bounded Hydra H3: back off at most once (50 ms) before this step. The original
-		 * waited until 50 ms passed with no read of the primary file, so a program read without a
-		 * pause (decompiles of many agents) kept its pre-save from making any progress at all, and
-		 * the next save waited for the whole copy. One pause per chunk of about 1 MB still leaves
-		 * the disk to the primary file, at no more than 20 MB/s of copy.
+		 * Hydra (round 2): the end of the copy, on the pre-save thread. If a change was committed
+		 * while the copy ran ({@link #flushAhead}), the copy is written back now, before this
+		 * thread ends, so that a saver waiting in {@link #waitForTask} gets a copy that is on
+		 * disk, and its own flush has only the changed blocks left to write.
+		 */
+		private void copyFinished() {
+			boolean flush;
+			synchronized (preSaveLock) {
+				copyDone = true;
+				flush = flushWanted;
+				flushWanted = false;
+			}
+			LocalManagedBufferFile f = preSaveFile;
+			if (flush && f != null) {
+				f.flushAhead();
+			}
+		}
+
+		/**
+		 * Hydra (round 2): a change was committed to the program, so a save is likely soon. The
+		 * save's flush of the new file must write back every block of the copy, 128 MB for the
+		 * database of a large program (35 to 95 ms measured), because the copy is dirty in the OS
+		 * cache. Written back now, in the time between the edit and the save (a decompile, an
+		 * agent's next thought), the save finds a clean file. If the copy is still running, its
+		 * thread does it when it ends.
+		 */
+		void flushAhead() {
+			LocalManagedBufferFile f;
+			synchronized (preSaveLock) {
+				if (!copyDone) {
+					flushWanted = true;
+					return;
+				}
+				f = preSaveFile;
+			}
+			if (f == null) {
+				return;
+			}
+			Thread t = new Thread(f::flushAhead, "Pre-Save-Flush");
+			t.setDaemon(true);
+			t.start();
+		}
+
+		/**
+		 * Back off while the primary file is being read, unless a saver waits. Hydra (round 2):
+		 * none by default ({@link #PRESAVE_BACKOFF_MS} is 0), because a save that finds the copy
+		 * unfinished pays for the rest. With a pause set, back off at most once per chunk
+		 * ({@code bounded}) when the caller is the 1 MB bulk copy.
 		 * @return false if the task was cancelled
 		 */
 		private boolean backOff(boolean bounded) throws InterruptedException {
@@ -1101,13 +1174,13 @@ public class LocalManagedBufferFile extends LocalBufferFile implements ManagedBu
 						return false;
 					}
 					// Continue to back-off while primary buffer file instance is in use
-					if (!preSaveBackoff || saverWaiting) {
+					if (!preSaveBackoff || saverWaiting || PRESAVE_BACKOFF_MS == 0) {
 						preSaveBackoff = false;
 						return true;
 					}
 					preSaveBackoff = false;
 					// Back-off a little
-					pause(50);
+					pause(PRESAVE_BACKOFF_MS);
 					if (bounded) {
 						checkPreSaveMonitor();
 						return !taskThread.isInterrupted();
@@ -1167,9 +1240,33 @@ public class LocalManagedBufferFile extends LocalBufferFile implements ManagedBu
 	static final boolean BULK_PRESAVE =
 		!"false".equalsIgnoreCase(System.getProperty("hydra.presave.bulk"));
 
-	/** Hydra H3: priority of the pre-save thread (default 3, below normal; 1 was the original). */
+	/**
+	 * Hydra (round 2): priority of the pre-save thread (default 5, normal; H3 had 3 and Ghidra 1).
+	 * A save needs the finished copy, so on a machine busy with other agents a pre-save that is
+	 * kept behind them is a save that waits for it: the copy is cheap, 1 MB reads and writes.
+	 */
 	static final int PRESAVE_PRIORITY = Math.max(Thread.MIN_PRIORITY,
-		Math.min(Thread.NORM_PRIORITY, Integer.getInteger("hydra.presave.priority", 3)));
+		Math.min(Thread.NORM_PRIORITY, Integer.getInteger("hydra.presave.priority", 5)));
+
+	/**
+	 * Hydra (round 2): how long the pre-save waits before it starts copying (default 0; Ghidra
+	 * and H3: 100 ms). The wait protected a GUI from a copy it might not need; a session that
+	 * opened a program for update is about to edit and save it, and a save that comes within
+	 * the first second (an agent's edit, a decompile, the save) otherwise waits for the copy
+	 * that was still asleep.
+	 */
+	static final long PRESAVE_START_DELAY_MS =
+		Math.max(0, Long.getLong("hydra.presave.startDelayMs", 0L));
+
+	/**
+	 * Hydra (round 2): the pause before a pre-save chunk while the primary file is being read
+	 * (default 0: none; Ghidra: 50 ms per buffer; H3: 50 ms per 1 MB chunk, 6 s for a 128 MB
+	 * database). The reads of a program that is decompiled are served from the buffer cache or
+	 * the OS cache, so the copy hardly competes for the disk, and a save that finds the copy
+	 * unfinished waits for the rest at the saver's expense.
+	 */
+	static final long PRESAVE_BACKOFF_MS =
+		Math.max(0, Long.getLong("hydra.presave.backoffMs", 0L));
 
 	/** Hydra H3: size of one pre-save chunk, rounded down to whole blocks (default 1 MiB). */
 	static final int PRESAVE_CHUNK_BYTES =

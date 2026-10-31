@@ -19,6 +19,7 @@ import java.io.IOException;
 import java.math.BigInteger;
 import java.util.List;
 import java.util.StringTokenizer;
+import java.util.concurrent.ConcurrentHashMap;
 
 import db.*;
 import ghidra.framework.data.OpenMode;
@@ -50,6 +51,27 @@ class PrototypeManager {
 	// protoID is an index into the prototype arrays
 	private ObjectArray protoArray;
 	private int nextKey;
+
+	/**
+	 * Hydra: opening a program used to create every stored prototype at once
+	 * ({@code populatePrototypes}: one Sleigh parse per stored prototype, ~50 % of the CPU of a
+	 * program open, and of the heap of every extra instance of the program: an overlay, a
+	 * fork). Now a prototype is created from its record on first use ({@link #getPrototype}), and
+	 * the table from prototype to id, which only {@link #getID} and
+	 * {@link #getOriginalPrototypeContext} need, is built by the first call of either
+	 * ({@link #ensureTable}). A prototype is the same object whenever it is asked for, as before.
+	 * Null when the manager is eager (see {@link #LAZY}).
+	 */
+	private volatile ConcurrentHashMap<Integer, InstructionPrototype> lazyProtos;
+	/** In lazy mode: {@link #protoHt} holds every stored prototype. */
+	private volatile boolean tableLoaded;
+
+	/**
+	 * System property {@code ghidra.program.lazyPrototypes} (default true); false restores the
+	 * eager creation of every stored prototype when a program is opened.
+	 */
+	private static final boolean LAZY =
+		Boolean.parseBoolean(System.getProperty("ghidra.program.lazyPrototypes", "true"));
 
 	private Language language;
 	private Table contextTable;
@@ -234,6 +256,19 @@ class PrototypeManager {
 		protoArray = new ObjectArray();
 		programContext = program.getProgramContext();
 		baseContextRegister = programContext.getBaseContextRegister();
+		// prior to a language upgrade every stored prototype is forced invalid: eager as before
+		if (LAZY && !program.isLanguageUpgradePending()) {
+			lazyProtos = new ConcurrentHashMap<>();
+			tableLoaded = false;
+			try {
+				nextKey = (int) protoAdapter.getKey();
+			}
+			catch (IOException e) {
+				program.dbError(e);
+			}
+			return;
+		}
+		lazyProtos = null;
 		populatePrototypes();
 	}
 
@@ -253,6 +288,7 @@ class PrototypeManager {
 	 */
 	int getID(InstructionPrototype prototype, MemBuffer memBuf, ProcessorContextView context) {
 
+		ensureTable();
 		try {
 			return protoHt.get(prototype);
 		}
@@ -264,7 +300,13 @@ class PrototypeManager {
 			protoID = (int) protoAdapter.getKey();
 			nextKey = protoID + 1;
 			int protoArrayIndex = protoID;
-			protoArray.put(protoArrayIndex, prototype);
+			ConcurrentHashMap<Integer, InstructionPrototype> lazy = lazyProtos;
+			if (lazy != null) {
+				lazy.put(protoArrayIndex, prototype);
+			}
+			else {
+				protoArray.put(protoArrayIndex, prototype);
+			}
 			protoHt.put(prototype, protoID);
 
 			byte[] b = new byte[prototype.getLength()];
@@ -301,7 +343,62 @@ class PrototypeManager {
 		if (protoID < 0) {
 			return null;
 		}
-		return (InstructionPrototype) protoArray.get(protoID);
+		ConcurrentHashMap<Integer, InstructionPrototype> lazy = lazyProtos;
+		if (lazy == null) {
+			return (InstructionPrototype) protoArray.get(protoID);
+		}
+		InstructionPrototype proto = lazy.get(protoID);
+		if (proto != null) {
+			return proto;
+		}
+		try {
+			DBRecord record = protoAdapter.getRecord(protoID);
+			if (record == null) {
+				return null;
+			}
+			proto = createPrototype(protoID, record);
+		}
+		catch (IOException e) {
+			program.dbError(e);
+			return null;
+		}
+		InstructionPrototype prev = lazy.putIfAbsent(protoID, proto);
+		return prev != null ? prev : proto;
+	}
+
+	/**
+	 * In lazy mode, creates every stored prototype that is not created yet and fills the table
+	 * from prototype to id, as {@link #populatePrototypes} does for an eager manager (the id of
+	 * the highest record wins for equal prototypes, as it does there). Idempotent.
+	 */
+	private void ensureTable() {
+		ConcurrentHashMap<Integer, InstructionPrototype> lazy = lazyProtos;
+		if (lazy == null || tableLoaded) {
+			return;
+		}
+		synchronized (this) {
+			if (tableLoaded) {
+				return;
+			}
+			try {
+				RecordIterator iter = protoAdapter.getRecords();
+				while (iter.hasNext()) {
+					DBRecord record = iter.next();
+					int protoID = (int) record.getKey();
+					InstructionPrototype proto = lazy.get(protoID);
+					if (proto == null) {
+						proto = createPrototype(protoID, record);
+						lazy.put(protoID, proto);
+					}
+					protoHt.put(proto, protoID);
+				}
+				nextKey = (int) protoAdapter.getKey();
+			}
+			catch (IOException e) {
+				program.dbError(e);
+			}
+			tableLoaded = true;
+		}
 	}
 
 	///////////////////////////////////////////////////////
@@ -338,7 +435,15 @@ class PrototypeManager {
 			if (nextKey != (int) protoAdapter.getKey()) {
 				protoArray = new ObjectArray(protoAdapter.getNumRecords());
 				protoHt.removeAll();
-				populatePrototypes();
+				if (lazyProtos != null) {
+					lazyProtos = new ConcurrentHashMap<>();
+					tableLoaded = false;
+					protoHt.removeAll();
+					nextKey = (int) protoAdapter.getKey();
+				}
+				else {
+					populatePrototypes();
+				}
 			}
 
 		}
@@ -363,6 +468,7 @@ class PrototypeManager {
 
 	RegisterValue getOriginalPrototypeContext(InstructionPrototype prototype,
 			Register baseContextReg) throws NoValueException {
+		ensureTable();
 		try {
 			DBRecord record = contextTable.getRecord(protoHt.get(prototype));
 			if (record != null) {

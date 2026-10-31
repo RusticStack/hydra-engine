@@ -125,8 +125,20 @@ final class PrivateInstance implements AutoCloseable {
 		DomainFile file = e.file;
 		try {
 			UpgradeCache.Plan plan = e.cachePlan;
-			if (e.cacheView != null && plan != null) {
-				UpgradeCache.Opened op = cache.openReady(plan, consumer, m);
+			if (plan != null) {
+				// also when the shared program was upgraded in memory (opened before the copy was
+				// ready): the copy is ready now, and an in-memory upgrade costs ~300 ms per open of
+				// KotOR (SymbolDatabaseAdapter.upgrade), the copy's open ~25 ms
+				UpgradeCache.Opened op = null;
+				try {
+					op = cache.openReady(plan, consumer, m);
+				}
+				catch (IOException | VersionException ex) {
+					if (e.cacheView != null) {
+						throw ex;
+					}
+					// an instance of a program that was not served from the copy: the source
+				}
 				if (op != null) {
 					prog = op.program();
 					view = op.view();

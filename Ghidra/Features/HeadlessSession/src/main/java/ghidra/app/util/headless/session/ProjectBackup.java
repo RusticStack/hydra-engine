@@ -186,7 +186,10 @@ final class ProjectBackup {
 	/** The SHA-256 of a file, streamed; checks cancellation between blocks when {@code m} is set. */
 	static String sha256Of(Path f, RequestMonitor m) throws IOException, CancelledException {
 		MessageDigest md = sha256();
-		byte[] buf = new byte[1 << 20];
+		byte[] buf = HASH_BUFFERS.poll();
+		if (buf == null) {
+			buf = new byte[1 << 20];
+		}
 		try (InputStream in = Files.newInputStream(f)) {
 			int n;
 			while ((n = in.read(buf)) > 0) {
@@ -196,8 +199,20 @@ final class ProjectBackup {
 				}
 			}
 		}
+		finally {
+			if (HASH_BUFFERS.size() < 4) {
+				HASH_BUFFERS.offer(buf);
+			}
+		}
 		return HexFormat.of().formatHex(md.digest());
 	}
+
+	/**
+	 * Hydra: read buffers of {@link #sha256Of}, kept for the next hash. A fresh megabyte per file
+	 * was 6 % of the daemon's allocation in the 16-agent benchmark (every fork hashes its copy).
+	 */
+	private static final java.util.concurrent.ConcurrentLinkedQueue<byte[]> HASH_BUFFERS =
+		new java.util.concurrent.ConcurrentLinkedQueue<>();
 
 	// ---- the manifest --------------------------------------------------------------------------
 

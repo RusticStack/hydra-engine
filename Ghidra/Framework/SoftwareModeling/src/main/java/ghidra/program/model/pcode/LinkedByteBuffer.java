@@ -169,6 +169,46 @@ public class LinkedByteBuffer {
 
 	public final static int BUFFER_SIZE = 1024;
 
+	/**
+	 * Hydra: pages retired by the last stream of this thread, for the next one. The decompiler
+	 * bridge decodes a few hundred streams per decompile (one per query element), each a chain of
+	 * {@link #BUFFER_SIZE} pages that dies with the stream: allocating and zeroing them was 15 %
+	 * of the daemon's allocation in the 16-agent profile. {@link PackedDecode#open} hands the
+	 * pages of the stream it replaces back here; a stream that is garbage without a new
+	 * {@code open} (a disposed process) leaves its pages to the collector as before. Bounded, so
+	 * the pool cannot grow with the largest reply ever decoded.
+	 */
+	private static final ThreadLocal<java.util.ArrayDeque<byte[]>> FREE_PAGES =
+		ThreadLocal.withInitial(java.util.ArrayDeque::new);
+	private static final int FREE_PAGES_MAX = 128;	// 128 KB per decoding thread
+
+	private static byte[] page() {
+		byte[] p = FREE_PAGES.get().pollFirst();
+		return p != null ? p : new byte[BUFFER_SIZE];
+	}
+
+	private static void recycle(byte[] p) {
+		if (p != null && p.length == BUFFER_SIZE) {
+			java.util.ArrayDeque<byte[]> q = FREE_PAGES.get();
+			if (q.size() < FREE_PAGES_MAX) {
+				q.addFirst(p);
+			}
+		}
+	}
+
+	/**
+	 * Hands the pages of this buffer back to the thread's pool, except {@code keep} (the page
+	 * that goes on to the next stream). Only for a buffer that is no longer read: every
+	 * {@link Position} of it is then dead.
+	 */
+	void recyclePages(byte[] keep) {
+		for (ArrayIter it = initialBuffer; it != null; it = it.next) {
+			if (it.array != keep) {
+				recycle(it.array);
+			}
+		}
+	}
+
 	private ArrayIter initialBuffer;	// The initial page in the linked list
 	private long byteCount;				// Total number of bytes cached
 	private long maxCount;				// Maximum bytes that can be cached
@@ -178,15 +218,36 @@ public class LinkedByteBuffer {
 	private String description;		// Describes source of bytes for use in error messages
 
 	public LinkedByteBuffer(long max, String desc) {
+		this(max, desc, null);
+	}
+
+	/**
+	 * @param max is the maximum number of bytes that can be cached
+	 * @param desc describes the source of the bytes
+	 * @param firstPage is a page of {@link #BUFFER_SIZE} bytes to use as the first page (its
+	 *            contents are not read before they are written), or null for a new one. Hydra:
+	 *            the decompiler bridge decodes a few hundred streams per decompile, each of which
+	 *            allocated a kilobyte page; {@link PackedDecode} hands the last one's page on.
+	 */
+	public LinkedByteBuffer(long max, String desc, byte[] firstPage) {
 		initialBuffer = new ArrayIter();
 		currentBuffer = initialBuffer;
 		byteCount = 0;
 		currentPos = 0;
 		maxCount = max;
-		initialBuffer.array = new byte[BUFFER_SIZE];
+		initialBuffer.array =
+			firstPage != null && firstPage.length == BUFFER_SIZE ? firstPage : page();
 		initialBuffer.length = BUFFER_SIZE;
 		initialBuffer.next = null;
 		description = desc;
+	}
+
+	/**
+	 * @return the first page, which a later buffer may be given to reuse once this one is no
+	 *         longer read
+	 */
+	byte[] firstPage() {
+		return initialBuffer.array;
 	}
 
 	/**
@@ -250,7 +311,7 @@ public class LinkedByteBuffer {
 			// Set up next buffer
 			currentBuffer.next = new ArrayIter();
 			currentBuffer = currentBuffer.next;
-			currentBuffer.array = new byte[BUFFER_SIZE];
+			currentBuffer.array = page();
 			currentBuffer.length = BUFFER_SIZE;
 			currentPos = 0;
 		}
@@ -294,7 +355,7 @@ public class LinkedByteBuffer {
 			// Set up next buffer
 			currentBuffer.next = new ArrayIter();
 			currentBuffer = currentBuffer.next;
-			currentBuffer.array = new byte[BUFFER_SIZE];
+			currentBuffer.array = page();
 			currentBuffer.length = BUFFER_SIZE;
 			currentPos = 0;
 		}
@@ -321,7 +382,7 @@ public class LinkedByteBuffer {
 				// Set up next buffer
 				currentBuffer.next = new ArrayIter();
 				currentBuffer = currentBuffer.next;
-				currentBuffer.array = new byte[BUFFER_SIZE];
+				currentBuffer.array = page();
 				currentBuffer.length = BUFFER_SIZE;
 				currentPos = 0;
 			}
@@ -367,7 +428,7 @@ public class LinkedByteBuffer {
 		}
 		currentBuffer = new ArrayIter();
 		buffer.next = currentBuffer;
-		currentBuffer.array = new byte[BUFFER_SIZE];
+		currentBuffer.array = page();
 		currentBuffer.length = BUFFER_SIZE;
 		currentPos = 0;
 		try {

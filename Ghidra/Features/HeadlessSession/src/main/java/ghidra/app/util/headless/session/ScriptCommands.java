@@ -74,6 +74,8 @@ final class ScriptCommands {
 				Preflight.register("script", ScriptCommands::validate);
 				// H4: the resolved-script cache's figures (an added member of health only)
 				Health.contribute("scriptCache", ScriptClassCache::describe);
+				// the same figures under the name of the cache this one replaced (one cache now)
+				Health.contribute("scriptClasses", ScriptClassCache::describe);
 			}
 		}
 	}
@@ -227,6 +229,75 @@ final class ScriptCommands {
 		ProgramEntry e = (noProgram || (c.active == null && !req.has("program"))) ? null
 				: s.access.selected(c, req);
 		m.deadline(Json.num(req, "timeout", 0, 0, 7 * 86_400));
+		ScriptResults results = ScriptResults.wanted(c, req, e, iso) ? ScriptResults.get() : null;
+		if (results != null && e.program != null) {
+			return viaResults(results, c, src, name, req, m, e, iso);
+		}
+		try (Runaway.Flight flight = v3 ? Runaway.enter(c) : null) {
+			return scriptIn(c, src, name, req, m, e, iso);
+		}
+	}
+
+	/**
+	 * A {@code pure} read script on a program the caller does not write ({@link ScriptResults}):
+	 * answered from the output of an earlier run of the same request on the same program state,
+	 * with no lock and no run; else run once for all callers that ask at once, and stored.
+	 */
+	private JsonElement viaResults(ScriptResults results, Client c, ResourceFile src, String name,
+			JsonObject req, RequestMonitor m, ProgramEntry e, String iso) {
+		long t0 = System.nanoTime();
+		boolean v3 = c.v3();
+		Program p = e.program;
+		DecompileCache.Key key = results.key(p, sha256(src), req);
+		JsonElement[] own = new JsonElement[1];
+		RuntimeException[] failed = new RuntimeException[1];
+		long timeout = Json.num(req, "timeout", 0, 0, 7 * 86_400);
+		long waitNanos = TimeUnit.SECONDS.toNanos(timeout > 0 ? Math.min(timeout, 600) : 60) +
+			TimeUnit.MILLISECONDS.toNanos(waitMs(req));
+		DecompileCache.Outcome o = results.cache().compute(key, m::isCancelled, waitNanos,
+			p::getModificationNumber, () -> {
+				try (Runaway.Flight flight = v3 ? Runaway.enter(c) : null) {
+					JsonElement r = scriptIn(c, src, name, req, m, e, iso);
+					own[0] = r;
+					if (r instanceof JsonObject ro && ro.has("seconds") &&
+						ScriptResults.storable(ro, req, ro.get("seconds").getAsDouble())) {
+						return ScriptResults.result(ro, ScriptResults.id(req));
+					}
+					return new DecompileCache.Failure(null);
+				}
+				catch (RuntimeException ex) {
+					if (m.isCancelled()) {
+						throw ex; // a cancelled leader: one of its waiters leads again
+					}
+					failed[0] = ex;
+					return new DecompileCache.Failure(null);
+				}
+			});
+		if (own[0] != null) {
+			return own[0];
+		}
+		if (failed[0] != null) {
+			throw failed[0];
+		}
+		if (o instanceof DecompileCache.Result stored) {
+			String id = ScriptResults.id(req);
+			String out = ScriptResults.output(stored, id);
+			if (out != null) {
+				JsonObject r = Json.of("script", src.getAbsolutePath(), "mode", "contained", "program",
+					e.key, "seconds", (System.nanoTime() - t0) / 1e9, "chars", out.length(),
+					"truncated", false, "output", out, "changed", false, "unsaved", p.isChanged());
+				Json.put(r, "artifact", Json.str(req, "artifact", null));
+				if (v3) {
+					addV3Reply(r, m, "shared", p, e, null, 0, !p.isChanged(), null);
+				}
+				return r;
+			}
+			// the stored output cannot carry this request's id: run it as if nothing was stored
+		}
+		if (o == null) {
+			throw new SessionException(SessionException.CANCELLED, "script cancelled");
+		}
+		// the caller whose run this waited for did not store one: run on its own
 		try (Runaway.Flight flight = v3 ? Runaway.enter(c) : null) {
 			return scriptIn(c, src, name, req, m, e, iso);
 		}
@@ -535,6 +606,31 @@ final class ScriptCommands {
 		return src;
 	}
 
+	/** The full way to load a script (bundle activation); the caller holds SCRIPT_COMPILE. */
+	private static GhidraScript loadScript(ResourceFile src, PrintWriter pw, StringWriter sw) {
+		GhidraScriptProvider provider = GhidraScriptUtil.getProvider(src);
+		if (provider == null) {
+			throw new SessionException(SessionException.BAD_REQUEST,
+				"no script provider for " + src.getName());
+		}
+		ScriptClassCache.Before before = ScriptClassCache.before(src, provider);
+		GhidraScript s;
+		try {
+			s = provider.getScriptInstance(src, pw);
+		}
+		catch (Exception ex) {
+			pw.flush();
+			throw new SessionException(SessionException.FAILED,
+				"script did not load: " + ex.getMessage(), Json.of("output", sw.toString()), ex);
+		}
+		pw.flush();
+		if (sw.getBuffer().length() == 0) {
+			// a load that printed nothing (no build messages): the same on a hit
+			ScriptClassCache.remember(src, provider, before, s);
+		}
+		return s;
+	}
+
 	/**
 	 * Runs the script. {@code mode} is {@code owner}, {@code contained}, {@code private} or
 	 * {@code none} (the reply's {@code mode}); {@code isolation} is what a protocol 3 reply says
@@ -547,35 +643,17 @@ final class ScriptCommands {
 		int cap = (int) Json.num(req, "maxChars", DEFAULT_TEXT_CAP, 1, MAX_TEXT_CAP);
 		StringWriter sw = new StringWriter();
 		PrintWriter pw = new PrintWriter(sw, true);
-		ScriptClasses.Lookup look = ScriptClasses.lookup(src);
-		GhidraScript s = look.instance();
-		if (s == null) {
-			// H4: an unchanged script that loaded cleanly before needs no bundle activation; the
-			// hit takes no lock (ScriptClassCache says when an entry is valid)
-			s = ScriptClassCache.instance(src);
-		}
+		// H4: an unchanged script that loaded cleanly before needs no bundle activation; the hit
+		// takes no lock (ScriptClassCache says when an entry is valid)
+		GhidraScript s = ScriptClassCache.instance(src);
 		if (s == null) {
 			synchronized (SCRIPT_COMPILE) {
-				GhidraScriptProvider provider = GhidraScriptUtil.getProvider(src);
-				if (provider == null) {
-					throw new SessionException(SessionException.BAD_REQUEST,
-						"no script provider for " + src.getName());
-				}
-				ScriptClassCache.Before before = ScriptClassCache.before(src, provider);
-				try {
-					s = provider.getScriptInstance(src, pw);
-				}
-				catch (Exception ex) {
-					pw.flush();
-					throw new SessionException(SessionException.FAILED,
-						"script did not load: " + ex.getMessage(), Json.of("output", sw.toString()),
-						ex);
-				}
-				look.remember(provider, s);
-				pw.flush();
-				if (sw.getBuffer().length() == 0) {
-					// a load that printed nothing (no build messages): the same on a hit
-					ScriptClassCache.remember(src, provider, before, s);
+				// Hydra: callers that queued here while another one loaded the same script find it
+				// now; each of them used to repeat the whole bundle activation in turn (a burst of
+				// agents' first calls)
+				s = ScriptClassCache.instance(src);
+				if (s == null) {
+					s = loadScript(src, pw, sw);
 				}
 			}
 		}
@@ -617,7 +695,12 @@ final class ScriptCommands {
 					modAtEnd = p.getModificationNumber();
 				}
 				if (contained) {
-					p.endTransaction(outer, false);
+					// A script that changed nothing leaves nothing to roll back, and a rollback is itself
+					// a change to the program's modification number (+1, measured), which would end the
+					// life of every cached result of an unchanged program at each contained script. An
+					// empty transaction ends without an event: committing it is the same state and keeps
+					// the number. Anything else is rolled back.
+					p.endTransaction(outer, modAtEnd == modBefore && mode.equals("contained"));
 				}
 				pw.flush();
 			}

@@ -47,6 +47,9 @@ import ghidra.util.cpu.HydraCpu;
  * decompile results of unchanged programs shared by every connection (0 turns it off)</td></tr>
  * <tr><td>{@code functionTable}</td><td>1/64 of {@code -Xmx}, at most 64 MB, off below 1 MB: the
  * function listings of program states shared by every connection (0 turns it off)</td></tr>
+ * <tr><td>{@code scriptResults}</td><td>1/64 of {@code -Xmx}, at most 64 MB, off below 4 MB: the
+ * output of {@code pure} read scripts on unchanged programs shared by every connection (0 turns it
+ * off)</td></tr>
  * <tr><td>{@code decompilerWaitS}</td><td>60: the longest a request waits for a decompiler
  * permit before {@code busy}</td></tr>
  * </table>
@@ -154,6 +157,14 @@ final class Budgets {
 		return size("functionTable", FunctionTable.defaultBytes(maxHeapBytes()));
 	}
 
+	/**
+	 * {@code scriptResults}: the bytes of read-script output kept for unchanged programs
+	 * ({@link ScriptResults}); default 1/64 of the heap, at most 64 MB, 0 (off) below 4 MB.
+	 */
+	static long scriptResultBytes() {
+		return size("scriptResults", ScriptResults.defaultBytes(maxHeapBytes()));
+	}
+
 	static long viewDiskBudgetBytes() {
 		return size("viewDiskBudget", 20L << 30);
 	}
@@ -229,6 +240,7 @@ final class Budgets {
 		// a bad cache size fails the launch, not every later request that uses the cache
 		decompileCacheBytes();
 		functionTableBytes();
+		scriptResultBytes();
 		long xmxMb = maxHeapBytes() >> 20;
 		// the JVM reports a little less than -Xmx with some collectors; 10% of slack
 		if (min > 0 && xmxMb * 10 < (long) min * 9) {

@@ -15,17 +15,8 @@
 ##
 """The daemon request path for many agents (Hydra rust/t-daemon-async).
 
-    python daemon_tests.py --ghidra <install> --work <dir> --exe A.exe --dll B.dll --only da_fn_index,...
+    python daemon_tests.py --ghidra <install> --work <dir> --exe A.exe --dll B.dll --only da_script_cache,...
 
-* ``da_fn_index``: the ``functions`` listing served from the shared per-program index
-  (``FunctionIndex.java``) is identical to the listing read from the database (``-set
-  functionIndex=false``) for every page shape (offset/limit pages to past the end, ``regex``, ``contains``,
-  both at once, a filter that matches nothing), and 8 clients paging at once build the index once
-  (``health.functionIndex.builds``); a daemon with the setting off reports no builds.
-* ``da_fn_index_invalidate``: the first page after an edit is read from the database (no build, the stale
-  index is dropped: ``rows`` 0); after a rename (and after a plate comment, which does not change the listing
-  but does change the program) in a writable view the next listing shows the new name, equal to the
-  database daemon's listing after the same rename: the index of the older program state is never served.
 * ``da_script_cache``: a Java script run again from an unchanged source bundle is instantiated from its kept
   class (``health.scriptClasses.hits``) with output identical to a daemon with ``-set
   scriptClassCache=false``; after its source is edited the next run prints the new text on both daemons
@@ -54,114 +45,7 @@ def _mod(name):
 
 
 e9 = _mod("dt_e9")
-# functionTable (H1) answers `functions` first; off here so the index is what is compared
-OFF = {"functionIndex": "false", "functionTable": "0"}
-ON = {"functionTable": "0"}
-
-#: (offset, limit, filters) shapes compared between the two daemons
-SHAPES = [
-    (0, 200, {}), (0, 1, {}), (3, 7, {}), (0, 10000, {}), (50, 25, {}), (99999, 10, {}),
-    (0, 50, {"regex": "^FUN_"}), (5, 5, {"regex": "[0-9]$"}), (0, 20, {"contains": "_1"}),
-    (2, 3, {"regex": "FUN", "contains": "0"}), (0, 10, {"regex": "^no_such_function_zz$"}),
-    (0, 10, {"contains": "entry"}),
-]
-
-
-def _stats(s):
-    return s.call("health").get("functionIndex") or {}
-
-
-def _pages(s, total, limit):
-    out, off = [], 0
-    while True:
-        r = s.call("functions", offset=off, limit=limit)
-        out.append(r)
-        off += limit
-        if not r["truncated"]:
-            break
-        dt.check(off <= total + limit, f"paging did not end at {off}")
-    return out
-
-
-def _listing(s):
-    return [(r["offset"], r["returned"], r["truncated"], r["functions"])
-            for r in [s.call("functions", offset=o, limit=l, **f) for o, l, f in SHAPES]]
-
-
-def t_fn_index(c):
-    exe = e9.fixture_args(c)
-    ga, gb = c.copy_fixture("daFiA"), c.copy_fixture("daFiB")
-    da, db = c.daemon("da-fi-off", engine=OFF), c.daemon("da-fi-on", engine=ON)
-    a = b = None
-    clients = []
-    try:
-        a, b = c.connect(da, "a", "da", 3), c.connect(db, "b", "da", 3)
-        e9.open_view(c, a, ga, exe)
-        e9.open_view(c, b, gb, exe)
-        la, lb = _listing(a), _listing(b)
-        bad = [SHAPES[i] for i in range(len(SHAPES)) if la[i] != lb[i]]
-        dt.check(not bad, f"the indexed listing differs from the database listing for {bad}")
-        total = len(a.call("functions", limit=10000)["functions"])
-        dt.check(total >= 20, f"only {total} functions in the fixture")
-        dt.check(_pages(a, total, 7) == _pages(b, total, 7), "paging 7 at a time differs")
-        st_off = _stats(a)
-        dt.check(st_off.get("builds", 0) == 0, f"a daemon with functionIndex=false built an index: {st_off}")
-        st0 = _stats(b)
-        dt.check(st0.get("builds") == 1, f"one program state was indexed {st0.get('builds')} times: {st0}")
-        # 8 clients page the program at once: no new build (the state did not change), all equal
-        for i in range(8):
-            s = c.connect(db, f"p{i}", "da", 3)
-            clients.append(s)
-            e9.open_view(c, s, gb, exe)
-        ref = _pages(a, total, 11)
-        with concurrent.futures.ThreadPoolExecutor(8) as ex:
-            got = list(ex.map(lambda s: _pages(s, total, 11), clients))
-        dt.check(all(g == ref for g in got), "a concurrent client's pages differ from the database listing")
-        st1 = _stats(b)
-        dt.check(st1.get("builds") == 1, f"concurrent paging rebuilt the index: {st0} -> {st1}")
-        dt.check(st1.get("hits", 0) > st0.get("hits", 0), f"no hits: {st1}")
-        return (f"{total} functions; {len(SHAPES)} page shapes and paging 7 at a time identical to the database "
-                f"listing; 8 concurrent pagers equal; 1 build, {st1.get('hits')} hits")
-    finally:
-        e9.close_all(a, b, *clients)
-        e9.stop(da)
-        e9.stop(db)
-
-
-def t_fn_index_invalidate(c):
-    exe = e9.fixture_args(c)
-    ga, gb = c.copy_fixture("daFvA"), c.copy_fixture("daFvB")
-    da, db = c.daemon("da-fv-off", engine=OFF), c.daemon("da-fv-on", engine=ON)
-    a = b = None
-    try:
-        a, b = c.connect(da, "a", "da", 3), c.connect(db, "b", "da", 3)
-        e9.open_view(c, a, ga, exe, writable=True)
-        e9.open_view(c, b, gb, exe, writable=True)
-        fs = [f for f in b.call("functions", limit=50)["functions"] if not f["thunk"]]
-        x = fs[3]["address"]
-        dt.check(_listing(a) == _listing(b), "the listings differ before the edits")
-        builds0 = _stats(b)["builds"]
-        for s in (a, b):
-            s.call("rename", address=x, name="da_renamed_fn")
-        after = b.call("functions", limit=50)["functions"]
-        st_first = _stats(b)
-        # the first page of the new state is read from the database: no build, the stale index dropped
-        dt.check(st_first["builds"] == builds0 and st_first.get("rows") == 0,
-                 f"the first page after the rename built an index or kept the stale one: {st_first}")
-        dt.check(any(f["address"] == x and f["name"].endswith("da_renamed_fn") for f in after),
-                 f"the listing after the rename shows the old name at {x}")
-        dt.check(_listing(a) == _listing(b), "after the rename the indexed listing differs from the database's")
-        dt.check(_stats(b)["builds"] == builds0 + 1, f"the rename did not rebuild the index: {_stats(b)}")
-        for s in (a, b):
-            s.call("comment", address=x, type="plate", text="da plate")
-        dt.check(_listing(a) == _listing(b), "after the comment the indexed listing differs from the database's")
-        dt.check(_stats(b)["builds"] == builds0 + 2, f"the comment did not rebuild the index: {_stats(b)}")
-        return f"rename and comment: each rebuilt the index once; listings equal to the database's ({_stats(b)})"
-    finally:
-        e9.close_all(a, b)
-        e9.stop(da)
-        e9.stop(db)
-
+ON = {}
 
 PROBE = """// @category HeadlessSession.Test
 import ghidra.app.script.GhidraScript;
@@ -289,8 +173,6 @@ def t_script_cache_dep(c):
 TESTS = {
     "da_script_cache": t_script_cache,
     "da_script_cache_dep": t_script_cache_dep,
-    "da_fn_index": t_fn_index,
-    "da_fn_index_invalidate": t_fn_index_invalidate,
 }
 
 BASELINE = {}

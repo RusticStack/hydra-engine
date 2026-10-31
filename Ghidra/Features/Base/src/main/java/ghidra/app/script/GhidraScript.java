@@ -1035,7 +1035,7 @@ public abstract class GhidraScript extends FlatProgramAPI {
 	public void println(String message) {
 		String decoratedMessage = decorate(message);
 
-		Msg.info(GhidraScript.class, new ScriptMessage(decoratedMessage));
+		Msg.info(GhidraScript.class, new ScriptMessage(forLog(decoratedMessage)));
 
 		if (writer != null) {
 			writer.println(decorateOutput ? decoratedMessage : message);
@@ -1057,7 +1057,7 @@ public abstract class GhidraScript extends FlatProgramAPI {
 
 		String decoratedMessage = decorate(message);
 
-		Msg.info(GhidraScript.class, new ScriptMessage(decoratedMessage));
+		Msg.info(GhidraScript.class, new ScriptMessage(forLog(decoratedMessage)));
 
 		if (writer instanceof DecoratingPrintWriter scriptWriter) {
 			scriptWriter.println(decorateOutput ? decoratedMessage : message, color);
@@ -1082,7 +1082,7 @@ public abstract class GhidraScript extends FlatProgramAPI {
 
 		String decoratedMessage = decorate(message);
 
-		Msg.info(GhidraScript.class, new ScriptMessage(decoratedMessage));
+		Msg.info(GhidraScript.class, new ScriptMessage(forLog(decoratedMessage)));
 
 		if (writer instanceof DecoratingPrintWriter scriptWriter) {
 			scriptWriter.print(decorateOutput ? decoratedMessage : message, color);
@@ -1127,7 +1127,7 @@ public abstract class GhidraScript extends FlatProgramAPI {
 		else if (message.endsWith("\n")) {
 			strippedMessage = message.substring(0, message.length() - 1);
 		}
-		Msg.info(GhidraScript.class, new ScriptMessage(strippedMessage));
+		Msg.info(GhidraScript.class, new ScriptMessage(forLog(strippedMessage)));
 
 		if (writer != null) {
 			writer.print(message);
@@ -1164,6 +1164,27 @@ public abstract class GhidraScript extends FlatProgramAPI {
 	 */
 	protected String decorate(String message) {
 		return getScriptName() + "> " + message;
+	}
+
+	private static volatile int logLimit = Integer.MAX_VALUE;
+
+	/**
+	 * Limits how many characters of one printed message reach Ghidra's log (the script's own
+	 * output is never cut). A long-running host that returns each script's output to its client
+	 * set this: the log otherwise carries a second copy of every reply (Hydra: 1.1 of the daemon
+	 * log's 1.3 MB per benchmark run, and the formatting and write that go with it).
+	 *
+	 * @param chars the most characters logged per message; at least 80
+	 */
+	public static void setLogLimit(int chars) {
+		logLimit = Math.max(80, chars);
+	}
+
+	private static String forLog(String message) {
+		int max = logLimit;
+		return message.length() <= max ? message
+				: message.substring(0, max) + "... (" + (message.length() - max) +
+					" more characters not logged)";
 	}
 
 	/**

@@ -262,8 +262,12 @@ final class FunctionTable {
 	/** The least a row can weigh (see the constructor): the first estimate of a program's table. */
 	static final long MIN_ROW_BYTES = 8 + 8 + 8 + 1 + 56 + 56 + 2;
 
+	/** A program object and its {@link Holder}, kept on its {@link ProgramEntry}. */
+	record Tag(Program program, Holder holder) {
+	}
+
 	/** One program's newest table and its build lock. */
-	private static final class Holder {
+	static final class Holder {
 		final ReentrantLock build = new ReentrantLock();
 		volatile Snap snap;
 		/** The modification number of the last listing answered without a table. */
@@ -280,6 +284,8 @@ final class FunctionTable {
 		private final Map<Program, Holder> holders = new WeakHashMap<>();
 		private final AtomicLong clock = new AtomicLong();
 		final AtomicLong hits = new AtomicLong();
+		/** The hits answered with no lock ({@link #sealed}); part of {@link #hits}. */
+		final AtomicLong sealedHits = new AtomicLong();
 		final AtomicLong builds = new AtomicLong();
 		final AtomicLong walks = new AtomicLong();
 		final AtomicLong joined = new AtomicLong();
@@ -316,15 +322,50 @@ final class FunctionTable {
 		 */
 		JsonElement functions(Program prog, Pattern pat, String sub, int offset, int limit,
 				long waitMs, boolean raw) {
+			return functions(null, prog, pat, sub, offset, limit, waitMs, raw);
+		}
+
+		/**
+		 * The page of {@code e}'s program state when a sealed table of exactly this state is
+		 * there, else null. It takes no lock of the program or of the project and reads nothing
+		 * from the database but the modification number: the table was built from the state that
+		 * number names and never changes, so any number of requests read it at once. A program
+		 * that changes after the check is read as of the instant of the check (the reply a
+		 * request that ran just before the change gives).
+		 */
+		JsonElement sealed(ProgramEntry e, Pattern pat, String sub, int offset, int limit) {
+			Program prog = e.program;
+			Tag t = e.tableTag;
+			if (prog == null || t == null || t.program() != prog) {
+				return null;
+			}
+			Snap s = t.holder().snap;
+			if (s == null || s.mod() != prog.getModificationNumber()) {
+				return null;
+			}
+			t.holder().used = clock.incrementAndGet();
+			hits.incrementAndGet();
+			sealedHits.incrementAndGet();
+			return s.table().page(pat, sub, offset, limit, true);
+		}
+
+		JsonElement functions(ProgramEntry e, Program prog, Pattern pat, String sub, int offset,
+				int limit, long waitMs, boolean raw) {
 			long mod = prog.getModificationNumber();
 			Holder h = holder(prog);
+			if (e != null) {
+				Tag t = e.tableTag;
+				if (t == null || t.program() != prog) {
+					e.tableTag = new Tag(prog, h);
+				}
+			}
 			h.used = clock.incrementAndGet();
 			Snap s = h.snap;
 			if (s != null && s.mod() == mod) {
 				hits.incrementAndGet();
 				return s.table().page(pat, sub, offset, limit, raw);
 			}
-			if (h.listedMod != mod) {
+			if (h.listedMod != mod && !wholeListing(prog, pat, sub, offset, limit)) {
 				// the first listing of this state (an edit, analysis): the walk stops at
 				// offset + limit, so a program that keeps changing never pays for full builds
 				h.listedMod = mod;
@@ -343,6 +384,18 @@ final class FunctionTable {
 				return walk(prog, pat, sub, offset, limit);
 			}
 			return t.page(pat, sub, offset, limit, raw);
+		}
+
+		/**
+		 * True when a walk for these arguments would visit every function anyway (no filter that
+		 * could stop it early, a page that reaches the end): the walk costs what a build costs, so
+		 * the first such listing of a state builds the table, and the clients that ask at the same
+		 * moment share that one build instead of each walking the program.
+		 */
+		private static boolean wholeListing(Program prog, Pattern pat, String sub, int offset,
+				int limit) {
+			return pat == null && sub == null &&
+				(long) offset + limit >= prog.getFunctionManager().getFunctionCount();
 		}
 
 		/**
@@ -433,6 +486,7 @@ final class FunctionTable {
 			o.addProperty("bytes", bytes);
 			o.addProperty("nativeBytes", nativeBytes);
 			o.addProperty("hits", hits.get());
+			o.addProperty("sealedHits", sealedHits.get());
 			o.addProperty("builds", builds.get());
 			o.addProperty("walks", walks.get());
 			o.addProperty("joined", joined.get());

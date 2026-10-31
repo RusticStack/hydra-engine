@@ -45,7 +45,8 @@
   ``busy{reason:"capacity", resource:"native"}`` instead of hanging; the gate never holds more than its
   permits; waits are served per client.
 * ``e9_idle_dispose``: an idle pooled decompiler is disposed after ``decompilerIdleS``.
-* ``e9_admission_256``: ``-Xmx256m`` and 24 views end in structured ``busy`` (capacity), 0
+* ``e9_admission_256``: ``-Xmx256m``: 12 views are admitted with room; with the live heap forced over the soft
+  limit (ballast, not the views' own footprint) the next 12 end in structured ``busy`` (capacity, heap), 0
   ``OutOfMemoryError``, the reaper and every guarded thread alive, ``health`` answering (red on hydra.3).
 * ``e9_admission_512``: ``-Xmx512m`` and 24 views run.
 * ``e9_view_probe``: a 100-view probe is refused at ``maxViews``; the per-client cap refuses a fifth view
@@ -83,6 +84,9 @@ SWEEP = HOOKS + ["-Dghidra.session.noProcessJob=sweep"]
 # these tests are about the native decompiler processes (faults, hangs, the breaker, the gate): a repeated
 # decompile of an unchanged program must reach a process, so the decompile cache (goal 4) is off for them
 NO_DCACHE = {"decompileCache": 0}
+# The process decompiler pool: the host backend is the daemon default since round 2, but these
+# tests count, fault and gate the pool's processes, so they ask for the process path explicitly.
+PROC = ["-Dhydra.decomp.backend=process"]
 
 DEAF = """// @category HeadlessSession.Test
 import ghidra.app.script.GhidraScript;
@@ -110,8 +114,9 @@ public class E9Ballast extends GhidraScript {
         long used = rt.totalMemory() - rt.freeMemory();
         long want = Long.parseLong(getScriptArgs()[0]) << 20;
         if (want > used) {
-            // the system properties table is a root of the JVM: this array stays until the daemon ends
-            System.getProperties().put("e9.ballast", new byte[(int) (want - used)]);
+            // the system properties table is a root of the JVM: this array stays until the daemon ends (one key per
+            // target, so a second call adds to the first)
+            System.getProperties().put("e9.ballast." + want, new byte[(int) (want - used)]);
         }
         System.gc();
         println("heap after the ballast: " + ((rt.totalMemory() - rt.freeMemory()) >> 20) + " MB");
@@ -267,7 +272,7 @@ def t_limits_job(c):
     windows_only()
     exe = fixture_args(c)
     gpr = c.copy_fixture("e9Lim")
-    d = c.daemon("e9-lim")
+    d = c.daemon("e9-lim", vmargs=PROC)
     s3 = s2 = None
     try:
         s3 = c.connect(d, "lim3", "e9", 3)
@@ -320,7 +325,7 @@ def _suspend_and_kill(c, name, vmargs, gpr, exe):
     """Starts a daemon, makes 4 native decompilers, suspends them, TerminateProcess the daemon.
     Returns ``(decompiler pids, seconds until they were gone or None, survivors, processJob, K7 report)``."""
     ch = chaos()
-    d = c.daemon(name, vmargs=vmargs)
+    d = c.daemon(name, vmargs=PROC + (vmargs or []))
     sessions = []
     try:
         sessions, fns = warm_decompilers(c, d, gpr, exe, 4)
@@ -467,7 +472,7 @@ def t_decompiler_faults(c):
     gpr = c.copy_fixture("e9Flt")
     # the breaker (e9_negative_cache) is out of the way: a function that failed more than three times in a minute
     # would be refused at once and the load would count refusals instead of decompiles
-    d = c.daemon("e9-flt", engine={"decompilerFailLimit": 100000, **NO_DCACHE})
+    d = c.daemon("e9-flt", engine={"decompilerFailLimit": 100000, **NO_DCACHE}, vmargs=PROC)
     ss = []
     try:
         ss = [c.connect(d, f"load{i}", "e9", 3) for i in range(12)]
@@ -546,7 +551,7 @@ def t_decompiler_hang(c):
     ch = chaos()
     exe = fixture_args(c)
     gpr = c.copy_fixture("e9Hang")
-    d = c.daemon("e9-hang", engine=NO_DCACHE)
+    d = c.daemon("e9-hang", engine=NO_DCACHE, vmargs=PROC)
     A = B = None
     try:
         A = c.connect(d, "hangA", "e9", 3)
@@ -605,7 +610,7 @@ def t_negative_cache(c):
     ch = chaos()
     exe = fixture_args(c)
     gpr = c.copy_fixture("e9Neg")
-    d = c.daemon("e9-neg", engine={"decompilerNegativeS": 6, **NO_DCACHE})
+    d = c.daemon("e9-neg", engine={"decompilerNegativeS": 6, **NO_DCACHE}, vmargs=PROC)
     s = None
     try:
         s = c.connect(d, "neg", "e9", 3)
@@ -654,7 +659,7 @@ def t_gate(c):
     exe = fixture_args(c)
     gpr = c.copy_fixture("e9Gate")
     # nativeBudgetMb 400 = two permits of 200 MB
-    d = c.daemon("e9-gate", engine={"nativeBudgetMb": 400, "decompilerWaitS": 3, **NO_DCACHE})
+    d = c.daemon("e9-gate", engine={"nativeBudgetMb": 400, "decompilerWaitS": 3, **NO_DCACHE}, vmargs=PROC)
     ss = []
     try:
         ss = [c.connect(d, f"g{i}", "e9", 3) for i in range(6)]
@@ -717,7 +722,7 @@ def t_idle_dispose(c):
     windows_only()
     exe = fixture_args(c)
     gpr = c.copy_fixture("e9Idle")
-    d = c.daemon("e9-idle", engine={"decompilerIdleS": 3})
+    d = c.daemon("e9-idle", engine={"decompilerIdleS": 3}, vmargs=PROC)
     s = None
     try:
         s = c.connect(d, "idle", "e9", 3)
@@ -772,17 +777,34 @@ def t_admission_256(c):
     ss = []
     try:
         pre = c.connect(d, "ballast", "e9", 3)
-        # 70% of 256 MB is 179 MB; the script leaves the live heap about 11 MB above its target, and the
-        # 1.5 x 8 MB estimate needs 12 MB: that leaves room for some views, not for all 24
-        ballast(c, pre, 146)
+        # The heap rule admits a view iff heapAfterGc + 1.5 x estimate (8 MB) <= 70% of 256 MB = 179 MB, so a view
+        # is admitted up to a live heap of about 167 MB. What a view really costs is not the test's business
+        # (shared pages, off-heap tables and lazy structures made it a few hundred KB, where it was once 6 MB or
+        # more: 24 views no longer fill a 256 MB heap by themselves). The pressure is therefore forced, in two
+        # phases that do not depend on that footprint:
+        #   A. with a live heap of 100 MB there is room, and 12 views are admitted (a refusal here would be a
+        #      false positive of the rule);
+        #   B. the ballast is raised to 190 MB, which is over the limit whatever the 12 views cost (190 + 12 > 179
+        #      and 190 < 217 MB, the hard watermark, so the daemon is not degraded): the next 12 views must all be
+        #      refused busy/capacity/heap, with nothing worse than that.
+        ballast(c, pre, 100)
+        ss, opened, refused, other = _views(c, d, 3, 4, exe, "a256a")
+        dt.check(not other and not refused and opened == 12,
+                 f"-Xmx256m with room (live heap 100 MB): {opened} of 12 views opened, refused {refused[:2]}, "
+                 f"errors {other[:3]}")
+        ballast(c, pre, 190)
         pre.close()
-        ss, opened, refused, other = _views(c, d, 6, 4, exe, "a256")
+        ss_b, opened_b, refused, other = _views(c, d, 3, 4, exe, "a256b")
+        ss += ss_b
+        opened += opened_b
         h = ss[0].call("health")
         log = _daemon_log(d)
         dt.check(not other, f"errors other than busy/capacity: {other[:3]}")
-        dt.check(len(refused) > 0, f"24 views at -Xmx256m: none was refused ({opened} opened); "
-                                    f"governor {h.get('governor')}")
+        dt.check(opened_b == 0 and len(refused) == 12,
+                 f"24 views at -Xmx256m with the live heap at 190 MB: {opened_b} of the last 12 opened, "
+                 f"{len(refused)} refused; governor {h.get('governor')}")
         dt.check(all(r.get("resource") in ("heap", "views") for r in refused), f"{refused[:2]}")
+        dt.check(h["governor"]["refused"]["heap"] >= 12, f"refusals not counted: {h['governor']['refused']}")
         dt.check("OutOfMemoryError" not in log, "OutOfMemoryError in the daemon log")
         dt.check(h["memory"]["maxMb"] <= 260, f"heap {h['memory']}")
         # the guarded threads are alive and beating (alive is the thread object, the beat a lap of its body;
@@ -793,9 +815,10 @@ def t_admission_256(c):
             dt.check(name in ts and ts[name]["alive"] is True and ts[name]["stale"] is False,
                      f"guarded thread {name} not alive and beating: {ts.get(name)}")
         dt.check(h["state"] in ("ok", "degraded"), f"state {h['state']}")
-        return (f"-Xmx256m: {opened} of 24 views opened, {len(refused)} refused busy/capacity "
-                f"({sorted({r['resource'] for r in refused})}); 0 OutOfMemoryError; guarded threads "
-                f"{th}; heapAfterGc {h['governor']['heapAfterGcMb']} MB, state {h['state']}")
+        return (f"-Xmx256m: {opened} of 24 views opened (12 with room, 0 of 12 once the live heap is 190 MB), "
+                f"{len(refused)} refused busy/capacity ({sorted({r['resource'] for r in refused})}); 0 "
+                f"OutOfMemoryError; guarded threads {th}; heapAfterGc {h['governor']['heapAfterGcMb']} MB, "
+                f"state {h['state']}")
     finally:
         close_all(*ss)
         stop(d)

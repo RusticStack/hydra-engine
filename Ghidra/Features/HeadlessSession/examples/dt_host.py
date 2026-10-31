@@ -56,7 +56,7 @@ def _mod(name):
 e9 = _mod("dt_e9")
 ENGINE = {"decompileCache": 0}
 HOST = ["-Dhydra.decomp.backend=host"]
-PROC = []                                   # the default: the decompile process
+PROC = ["-Dhydra.decomp.backend=process"]    # the process path explicitly (the host is the default since round 2)
 
 
 def _fns(s, n):

@@ -403,7 +403,8 @@ final class ProjectFork {
 	 */
 	record Staged(File dir, String id, ForkIntent intent, String sourceName, long ms,
 			long freeBefore, long freeAfter,
-			java.util.concurrent.atomic.AtomicBoolean unfinished, Steps steps) {
+			java.util.concurrent.atomic.AtomicBoolean unfinished, Steps steps,
+			Map<Path, Path> linked) {
 
 		boolean keep() {
 			return unfinished.get();
@@ -440,7 +441,7 @@ final class ProjectFork {
 	static Staged stage(ProjectResolver.Resolved r, File destDir, String name, String id,
 			String rk, RequestMonitor m) throws IOException, CancelledException {
 		return stage(r, destDir, name, id, rk, m,
-			UpgradeCache.sourceFiles(r.gpr().toPath(), r.name()), new Steps());
+			UpgradeCache.sourceFiles(r.gpr().toPath(), r.name()), new Steps(), false);
 	}
 
 	/**
@@ -449,8 +450,8 @@ final class ProjectFork {
 	 * same listing gives the cost, the revision and the copy), timed into {@code steps}.
 	 */
 	static Staged stage(ProjectResolver.Resolved r, File destDir, String name, String id,
-			String rk, RequestMonitor m, SortedMap<String, Path> sourceFiles, Steps steps)
-			throws IOException, CancelledException {
+			String rk, RequestMonitor m, SortedMap<String, Path> sourceFiles, Steps steps,
+			boolean link) throws IOException, CancelledException {
 		Files.createDirectories(destDir.toPath());
 		FileStore store = Files.getFileStore(destDir.toPath());
 		long freeBefore = store.getUsableSpace();
@@ -459,12 +460,17 @@ final class ProjectFork {
 		Files.createDirectory(tmp.toPath());
 		ForkIntent intent = ForkIntent.create(id, rk, name);
 		intent.write(tmp.toPath());
-		UpgradeCache.copyProject(r.dir().toPath(), r.name(), tmp.toPath(), m, sourceFiles);
+		// the stored database versions are hard-linked, not copied, where the file system can (a
+		// version file is never written once named; see UpgradeCache.linkable); a backup is
+		// always a real copy
+		Map<Path, Path> linked = new java.util.concurrent.ConcurrentHashMap<>();
+		UpgradeCache.copyProject(r.dir().toPath(), r.name(), tmp.toPath(), m, sourceFiles,
+			link ? linked : null);
 		m.checkCancelled();
 		long ms = (System.nanoTime() - t0) / 1_000_000;
 		steps.mark("copy");
 		return new Staged(tmp, id, intent, r.name(), ms, freeBefore, store.getUsableSpace(),
-			new java.util.concurrent.atomic.AtomicBoolean(), steps);
+			new java.util.concurrent.atomic.AtomicBoolean(), steps, linked);
 	}
 
 	/** Removes a staging folder (and warns when it cannot). */
@@ -544,7 +550,7 @@ final class ProjectFork {
 		List<String> moved = new ArrayList<>();
 		// E12: every staged byte and name is on the disk before anything is moved, so that the
 		// .gpr (the commit point) can never be durable while a file it names is not
-		forceTree(st.dir().toPath());
+		forceTree(st.dir().toPath(), st.linked());
 		st.steps().mark("force");
 		// the intent says the .rep may be ours from here on, and which one it is
 		st.intent().withPhase(ForkIntent.MOVING, ForkSweeper.creationMs(stagedRep))
@@ -634,14 +640,93 @@ final class ProjectFork {
 	 *             discards the staging folder)
 	 */
 	static void forceTree(Path root) throws IOException {
+		forceTree(root, Map.of());
+	}
+
+	/**
+	 * The files forced as linked version files, by source path, size and time: one file is shared
+	 * by every fork of a source, and it is forced to the disk once by this process, not once per
+	 * fork (its bytes do not change: Ghidra never writes into a named version). Bounded.
+	 */
+	private static final Map<String, Boolean> FORCED_LINKS =
+		java.util.Collections.synchronizedMap(new LinkedHashMap<>() {
+			private static final long serialVersionUID = 1L;
+
+			@Override
+			protected boolean removeEldestEntry(Map.Entry<String, Boolean> e) {
+				return size() > 512;
+			}
+		});
+
+	static String linkKey(Path source, java.nio.file.attribute.BasicFileAttributes a) {
+		return source + "|" + a.size() + "|" + a.lastModifiedTime().toMillis();
+	}
+
+	/**
+	 * Forces {@code link}, a hard link to {@code source}, unless this process already forced that
+	 * source (same size and time): the bytes are the source's, and they do not change.
+	 */
+	static void forceLinkedFile(Path link, Path source) throws IOException {
+		java.nio.file.attribute.BasicFileAttributes a =
+			Files.readAttributes(link, java.nio.file.attribute.BasicFileAttributes.class);
+		String key = linkKey(source, a);
+		if (FORCED_LINKS.containsKey(key)) {
+			return;
+		}
+		forceLinked(link);
+		FORCED_LINKS.put(key, Boolean.TRUE);
+	}
+
+	/**
+	 * Forces a file that other projects share by hard link. Its attributes are never touched: they
+	 * belong to the source and to every fork linked to it, and flipping read-only on a shared inode
+	 * races with the other forks forcing the same file (an access error in the middle of their
+	 * flush). A read-only file is a sealed version: Ghidra flushes it, renames it, syncs the folder
+	 * and only then marks it read-only (LocalManagedBufferFile.saveCompleted, pinned by
+	 * dt_e12.py e12_source_guards), so it is already on the disk and there is nothing to flush.
+	 * A writable one is opened for write and forced as it is.
+	 */
+	static void forceLinked(Path f) throws IOException {
+		if (WINDOWS) {
+			java.nio.file.attribute.DosFileAttributeView v = Files.getFileAttributeView(f,
+				java.nio.file.attribute.DosFileAttributeView.class, LinkOption.NOFOLLOW_LINKS);
+			if (v != null && v.readAttributes().isReadOnly()) {
+				return;
+			}
+			try (java.nio.channels.FileChannel ch =
+				java.nio.channels.FileChannel.open(f, StandardOpenOption.WRITE)) {
+				ch.force(true);
+			}
+			return;
+		}
+		forceFile(f);
+	}
+
+	/**
+	 * {@link #forceTree(Path)} where {@code linked} (path in the tree to the source it shares an
+	 * inode with) names files that are hard links: a linked file already forced by this process
+	 * (same source, size and time) is not forced again. E12 is unchanged: the file is on the disk
+	 * before the fork is moved into place, by this flush or by the earlier one.
+	 */
+	static void forceTree(Path root, Map<Path, Path> linked) throws IOException {
 		List<Path> files = new ArrayList<>();
+		List<Path> linkedFiles = new ArrayList<>();
+		List<String> keys = new ArrayList<>();
 		List<Path> dirs = new ArrayList<>();
 		Files.walkFileTree(root, new SimpleFileVisitor<>() {
 			@Override
 			public FileVisitResult visitFile(Path f, java.nio.file.attribute.BasicFileAttributes a)
 					throws IOException {
 				if (a.isRegularFile()) {
-					files.add(f);
+					Path src = linked.get(f);
+					String key = src == null ? null : linkKey(src, a);
+					if (key == null) {
+						files.add(f);
+					}
+					else if (!FORCED_LINKS.containsKey(key)) {
+						linkedFiles.add(f);
+						keys.add(key);
+					}
 				}
 				return FileVisitResult.CONTINUE;
 			}
@@ -656,6 +741,12 @@ final class ProjectFork {
 			}
 		});
 		forceFiles(files);
+		for (Path f : linkedFiles) {
+			forceLinked(f);
+		}
+		for (String key : keys) {
+			FORCED_LINKS.put(key, Boolean.TRUE);
+		}
 		for (Path d : dirs) {
 			syncDirectory(d);
 		}

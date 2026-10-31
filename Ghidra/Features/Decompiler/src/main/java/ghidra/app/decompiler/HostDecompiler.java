@@ -122,7 +122,7 @@ public final class HostDecompiler {
 
 	private static final class Lib {
 		final MethodHandle storeNew;
-		final MethodHandle storePut;
+		final MethodHandle storePutBulk;
 		final MethodHandle storeStats;
 		final MethodHandle storeClose;
 		final MethodHandle decompile;
@@ -135,9 +135,8 @@ public final class HostDecompiler {
 			storeNew = l.downcallHandle(lookup.findOrThrow("hydra_dhost_store_new"),
 				FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS,
 					JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG));
-			storePut = l.downcallHandle(lookup.findOrThrow("hydra_dhost_store_put"),
-				FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG,
-					ADDRESS, JAVA_LONG));
+			storePutBulk = l.downcallHandle(lookup.findOrThrow("hydra_dhost_store_put_bulk"),
+				FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_LONG));
 			storeStats = l.downcallHandle(lookup.findOrThrow("hydra_dhost_store_stats"),
 				FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS));
 			storeClose = l.downcallHandle(lookup.findOrThrow("hydra_dhost_store_close"),
@@ -372,7 +371,6 @@ public final class HostDecompiler {
 		final Set<Address> prefetched = ConcurrentHashMap.newKeySet();
 		/** Functions whose p-code was exported after a p-code miss in their body. */
 		final Set<Address> pcodeBodies = ConcurrentHashMap.newKeySet();
-		final Set<ByteBuffer> sent = ConcurrentHashMap.newKeySet();	// keys in the store
 		/** The options' comment filter, learned from the first getComments miss (-1: not yet). */
 		volatile long commentFlags = -1;
 		private int inflight;
@@ -456,6 +454,15 @@ public final class HostDecompiler {
 	private static Gen generation(Lib l, Program program, DecompileOptions options)
 			throws IOException {
 		long mod = program.getModificationNumber();
+		// The common case: the generation is current. Its options were encoded when it was made;
+		// the modification number covers a change of the program's options, so no per-request
+		// encode of the options (and no DecompileInterface made to encode them) is needed.
+		synchronized (GENS) {
+			Gen current = GENS.get(program);
+			if (current != null && current.modification == mod) {
+				return current;
+			}
+		}
 		byte[] opts = DecompileSnapshot.encodeOptions(options);
 		List<Gen> stale = new ArrayList<>();
 		Gen g;
@@ -602,27 +609,87 @@ public final class HostDecompiler {
 
 	// ---- exporting answers --------------------------------------------------------------------
 
-	/** Export one answer to the store; false when it must not be stored. */
-	private static boolean put(Lib l, Gen g, Arena arena, byte[] scope,
-			DecompileSnapshot.Answer ans, byte[] query) throws Throwable {
+	private static final byte[] EMPTY = new byte[0];
+
+	/**
+	 * The answers of one call, packed for {@code hydra_dhost_store_put_bulk}: for each answer the
+	 * little-endian u32 length and the bytes of its scope, its query and its response. One crossing
+	 * and one buffer per function, instead of one crossing and three segments per answer.
+	 */
+	private static final class AnswerBlock {
+		private byte[] buf = new byte[8192];
+		private int len;
+		private int count;
+
+		void add(byte[] scope, byte[] query, byte[] response) {
+			need(12 + scope.length + query.length + response.length);
+			putInt(scope.length);
+			put(scope);
+			putInt(query.length);
+			put(query);
+			putInt(response.length);
+			put(response);
+			count++;
+		}
+
+		int count() {
+			return count;
+		}
+
+		int size() {
+			return len;
+		}
+
+		byte[] array() {
+			return buf;
+		}
+
+		private void need(int n) {
+			if (len + n > buf.length) {
+				buf = Arrays.copyOf(buf, Math.max(buf.length * 2, len + n));
+			}
+		}
+
+		private void putInt(int v) {
+			buf[len++] = (byte) v;
+			buf[len++] = (byte) (v >>> 8);
+			buf[len++] = (byte) (v >>> 16);
+			buf[len++] = (byte) (v >>> 24);
+		}
+
+		private void put(byte[] b) {
+			System.arraycopy(b, 0, buf, len, b.length);
+			len += b.length;
+		}
+	}
+
+	/** Exports a block of answers to the store (one downcall). */
+	private static void putAll(Lib l, Gen g, Arena arena, AnswerBlock block) throws Throwable {
+		if (block.size() == 0) {
+			return;
+		}
+		MemorySegment seg = arena.allocate(block.size());
+		MemorySegment.copy(block.array(), 0, seg, JAVA_BYTE, 0, block.size());
+		int rc = (int) l.storePutBulk.invokeExact(g.store, seg, (long) block.size());
+		if (rc != 0) {
+			throw new IOException("the host refused answers");
+		}
+		STORE_ANSWERS.addAndGet(block.count());
+	}
+
+	/**
+	 * Adds the answer to one query to a block; false when it must not be stored. The store keeps
+	 * the first answer of a query, so a duplicate (an answer shared by many functions) is harmless
+	 * and needs no bookkeeping here: the C++ side drops it, and the generation's answers never
+	 * change.
+	 */
+	private static boolean add(AnswerBlock block, byte[] scope, DecompileSnapshot a, byte[] query) {
+		DecompileSnapshot.Answer ans = a.answer(query);
 		if (ans.kind() == DecompileSnapshot.UNSTORABLE) {
 			return false;
 		}
-		byte[] sc = ans.kind() == DecompileSnapshot.SCOPED ? scope : new byte[0];
-		int rc = (int) l.storePut.invokeExact(g.store, segment(arena, sc), (long) sc.length,
-			segment(arena, query), (long) query.length, segment(arena, ans.response()),
-			(long) ans.response().length);
-		if (rc != 0) {
-			throw new IOException("the host refused an answer");
-		}
-		STORE_ANSWERS.incrementAndGet();
+		block.add(ans.kind() == DecompileSnapshot.SCOPED ? scope : EMPTY, query, ans.response());
 		return true;
-	}
-
-	private static ByteBuffer key(byte[] scope, byte[] query) {
-		ByteBuffer b = ByteBuffer.allocate(scope.length + 1 + query.length);
-		b.put(scope).put((byte) 0).put(query).flip();
-		return b;
 	}
 
 	/**
@@ -637,23 +704,30 @@ public final class HostDecompiler {
 		Program p = g.program;
 		Address entry = f.getEntryPoint();
 		AddressSetView body = f.getBody();
-		List<byte[]> queries = new ArrayList<>();
-		queries.add(DecompileSnapshot.queryMappedSymbols(entry));
-		queries.add(DecompileSnapshot.queryTrackedRegisters(entry));
+		AnswerBlock block = new AnswerBlock();
+		if (add(block, scope, a, DecompileSnapshot.queryMappedSymbols(entry))) {
+			PREFETCHED.increment();
+		}
+		if (add(block, scope, a, DecompileSnapshot.queryTrackedRegisters(entry))) {
+			PREFETCHED.increment();
+		}
 		long flags = g.commentFlags;
-		if (flags >= 0) {
-			queries.add(DecompileSnapshot.queryComments(entry, flags));
+		if (flags >= 0 && add(block, scope, a, DecompileSnapshot.queryComments(entry, flags))) {
+			PREFETCHED.increment();
 		}
 		FunctionManager fm = p.getFunctionManager();
 		for (Instruction in : p.getListing().getInstructions(body, true)) {
-			queries.add(DecompileSnapshot.queryPcode(in.getAddress()));
+			if (add(block, scope, a, DecompileSnapshot.queryPcode(in.getAddress()))) {
+				PREFETCHED.increment();
+			}
 			if (in.getFlowType().isCall()) {
 				// a call to a function with a call-fixup: its injection, asked per call site
 				for (Address to : in.getFlows()) {
 					Function callee = fm.getFunctionAt(to);
 					String fixup = callee == null ? null : callee.getCallFixup();
-					if (fixup != null) {
-						queries.add(DecompileSnapshot.queryCallFixup(fixup, in.getAddress(), to));
+					if (fixup != null && add(block, scope, a,
+						DecompileSnapshot.queryCallFixup(fixup, in.getAddress(), to))) {
+						PREFETCHED.increment();
 					}
 				}
 			}
@@ -669,58 +743,46 @@ public final class HostDecompiler {
 			}
 		}
 		for (Address to : targets) {
-			queries.add(DecompileSnapshot.queryMappedSymbols(to));
-			queries.add(DecompileSnapshot.queryCodeLabel(to));	// jump targets (LAB_...)
-			queries.add(DecompileSnapshot.queryExternalRef(to));	// import pointers (PTR_...)
-		}
-		try (Arena arena = Arena.ofConfined()) {
-			for (int i = 0; i < queries.size(); i++) {
-				byte[] q = queries.get(i);
-				ByteBuffer global = key(new byte[0], q);
-				// queries[0], the function's own symbol, is scoped: the global answer for its entry
-				// (stored while decompiling a caller) is not the one its own decompile gets
-				if ((i > 0 && g.sent.contains(global)) || g.sent.contains(key(scope, q))) {
-					continue;
-				}
-				DecompileSnapshot.Answer ans = a.answer(q);
-				if (put(l, g, arena, scope, ans, q)) {
-					g.sent.add(ans.kind() == DecompileSnapshot.SCOPED ? key(scope, q) : global);
+			for (byte[] q : new byte[][] { DecompileSnapshot.queryMappedSymbols(to),
+				DecompileSnapshot.queryCodeLabel(to),	// jump targets (LAB_...)
+				DecompileSnapshot.queryExternalRef(to) }) {	// import pointers (PTR_...)
+				if (add(block, scope, a, q)) {
 					PREFETCHED.increment();
 				}
 			}
+		}
+		try (Arena arena = Arena.ofConfined()) {
+			putAll(l, g, arena, block);
 		}
 	}
 
 	/**
-	 * Export the answers registration asks for one by one (each would otherwise cost a native run):
-	 * the user-defined op names, index 0 up to the first empty one.
+	 * Export the answers registration asks for: every register by name and the user-defined op
+	 * names, index 0 up to the first empty one (each would otherwise cost a native run).
 	 */
 	private static void registrationAnswers(Lib l, Gen g, DecompileSnapshot a) throws Throwable {
+		AnswerBlock block = new AnswerBlock();
 		try (Arena arena = Arena.ofConfined()) {
 			// every register by name: global answers that otherwise cost one run each
 			for (String name : a.registerNames()) {
-				byte[] q = DecompileSnapshot.queryRegister(name);
-				DecompileSnapshot.Answer ans = a.answer(q);
-				if (put(l, g, arena, new byte[0], ans, q)) {
-					g.sent.add(key(new byte[0], q));
+				if (add(block, EMPTY, a, DecompileSnapshot.queryRegister(name))) {
 					PREFETCHED.increment();
 				}
 			}
-		}
-		try (Arena arena = Arena.ofConfined()) {
 			for (int i = 0; i < 1 << 16; i++) {
 				byte[] q = DecompileSnapshot.queryUserOpName(i);
 				DecompileSnapshot.Answer ans = a.answer(q);
-				if (!put(l, g, arena, new byte[0], ans, q)) {
-					return;
+				if (ans.kind() == DecompileSnapshot.UNSTORABLE) {
+					break;
 				}
-				g.sent.add(key(new byte[0], q));
+				block.add(EMPTY, q, ans.response());
 				PREFETCHED.increment();
 				byte[] r = ans.response();
 				if (r.length < 4 || r[3] != 8 || DecompileSnapshot.isEmptyString(r)) {
-					return;
+					break;
 				}
 			}
+			putAll(l, g, arena, block);
 		}
 	}
 
@@ -763,19 +825,14 @@ public final class HostDecompiler {
 			if (holder == null || !g.pcodeBodies.add(holder.getEntryPoint())) {
 				continue;
 			}
-			try (Arena arena = Arena.ofConfined()) {
-				for (Instruction in : p.getListing().getInstructions(holder.getBody(), true)) {
-					byte[] pq = DecompileSnapshot.queryPcode(in.getAddress());
-					ByteBuffer global = key(new byte[0], pq);
-					if (g.sent.contains(global)) {
-						continue;
-					}
-					DecompileSnapshot.Answer ans = a.answer(pq);
-					if (put(l, g, arena, new byte[0], ans, pq)) {
-						g.sent.add(global);
-						PREFETCHED.increment();
-					}
+			AnswerBlock block = new AnswerBlock();
+			for (Instruction in : p.getListing().getInstructions(holder.getBody(), true)) {
+				if (add(block, EMPTY, a, DecompileSnapshot.queryPcode(in.getAddress()))) {
+					PREFETCHED.increment();
 				}
+			}
+			try (Arena arena = Arena.ofConfined()) {
+				putAll(l, g, arena, block);
 			}
 		}
 	}
@@ -784,38 +841,41 @@ public final class HostDecompiler {
 	private static String learn(Lib l, Gen g, DecompileSnapshot a, byte[] scope, Run r)
 			throws Throwable {
 		pcodeAround(l, g, a, r);
-		try (Arena arena = Arena.ofConfined()) {
-			Set<ByteBuffer> seen = new HashSet<>();
-			for (int i = 0; i < r.misses().size(); i++) {
-				byte[] q = r.misses().get(i);
-				if (!seen.add(ByteBuffer.wrap(q))) {
-					continue;	// a run that goes on after a miss may ask the same query again
-				}
-				boolean again = g.sent.contains(key(new byte[0], q)) || g.sent.contains(key(scope, q));
-				long flags = a.commentFlagsOf(q);
-				if (flags >= 0) {
-					g.commentFlags = flags;
-				}
-				DecompileSnapshot.Answer ans = a.answer(q);
-				byte[] fed = r.fed().get(i);
-				boolean neutral = fed.length > 0 && Arrays.equals(fed, ans.response());
-				MISS_KINDS.computeIfAbsent(
-					a.commandOf(q) + (neutral ? " neutral" : "") + (again ? " again" : ""),
-					k -> new LongAdder()).increment();
-				if (TRACE_MISSES && !neutral && TRACED.incrementAndGet() <= 400) {
-					Msg.info(HostDecompiler.class, "decompile host miss for " +
-						a.getFunctionEntry() + ": " + a.describe(q) + " fed " + hex(fed) +
-						" real " + hex(ans.response()));
-				}
-				if (!put(l, g, arena, scope, ans, q)) {
-					return "unstorable answer: " + ans.why();
-				}
-				g.sent.add(ans.kind() == DecompileSnapshot.SCOPED ? key(scope, q)
-						: key(new byte[0], q));
-				MISSES_LEARNED.increment();
+		AnswerBlock block = new AnswerBlock();
+		String unstorable = null;
+		Set<ByteBuffer> seen = new HashSet<>();
+		for (int i = 0; i < r.misses().size(); i++) {
+			byte[] q = r.misses().get(i);
+			if (!seen.add(ByteBuffer.wrap(q))) {
+				continue;	// a run that goes on after a miss may ask the same query again
 			}
+			long flags = a.commentFlagsOf(q);
+			if (flags >= 0) {
+				g.commentFlags = flags;
+			}
+			DecompileSnapshot.Answer ans = a.answer(q);
+			byte[] fed = r.fed().get(i);
+			boolean neutral = fed.length > 0 && Arrays.equals(fed, ans.response());
+			MISS_KINDS.computeIfAbsent(a.commandOf(q) + (neutral ? " neutral" : ""),
+				k -> new LongAdder()).increment();
+			if (TRACE_MISSES && !neutral && TRACED.incrementAndGet() <= 400) {
+				Msg.info(HostDecompiler.class, "decompile host miss for " +
+					a.getFunctionEntry() + ": " + a.describe(q) + " fed " + hex(fed) +
+					" real " + hex(ans.response()));
+			}
+			if (ans.kind() == DecompileSnapshot.UNSTORABLE) {
+				if (unstorable == null) {
+					unstorable = "unstorable answer: " + ans.why();
+				}
+				continue;
+			}
+			block.add(ans.kind() == DecompileSnapshot.SCOPED ? scope : EMPTY, q, ans.response());
+			MISSES_LEARNED.increment();
 		}
-		return null;
+		try (Arena arena = Arena.ofConfined()) {
+			putAll(l, g, arena, block);
+		}
+		return unstorable;
 	}
 
 	// ---- decompile ----------------------------------------------------------------------------

@@ -300,11 +300,24 @@ final class UpgradeCache {
 		return null;
 	}
 
+	/** Published generations whose programs were checked to be in the current format. Bounded. */
+	private static final Map<String, Boolean> VERIFIED =
+		java.util.Collections.synchronizedMap(new LinkedHashMap<>() {
+			private static final long serialVersionUID = 1L;
+
+			@Override
+			protected boolean removeEldestEntry(Map.Entry<String, Boolean> e) {
+				return size() > 1024;
+			}
+		});
+
 	private Opened openCopy(Plan plan, File copyDir, String gen, Object consumer, Lease lease,
 			RequestMonitor m) throws IOException, CancelledException, VersionException {
 		long t0 = System.nanoTime();
 		ProjectLocator copy = new ProjectLocator(copyDir.getPath(), plan.resolved().name());
 		SessionProject view = openProject(copy, false);
+		long t1 = System.nanoTime();
+		long t2 = t1;
 		Program program;
 		try {
 			DomainFile cdf = view.getProjectData().getFile(plan.path());
@@ -312,20 +325,30 @@ final class UpgradeCache {
 				throw new IOException(plan.path() + " is missing from the upgrade cache copy " +
 					copyDir);
 			}
-			String still = olderFormat(view.getProjectData(), cdf);
-			if (still != null) {
-				throw new IOException("the upgrade cache copy of " + plan.path() + " is still in " +
-					"an older format (" + still + "): " + copyDir);
+			// the format of a published generation does not change (it is written once and its
+			// build checked it): read the stored database version on the first open of each
+			// (key, generation, program), not on every open (it opens the database file once more)
+			String verified = plan.key() + "/" + gen + plan.path();
+			if (!VERIFIED.containsKey(verified)) {
+				String still = olderFormat(view.getProjectData(), cdf);
+				if (still != null) {
+					throw new IOException("the upgrade cache copy of " + plan.path() +
+						" is still in an older format (" + still + "): " + copyDir);
+				}
+				VERIFIED.put(verified, Boolean.TRUE);
 			}
+			t2 = System.nanoTime();
 			program = (Program) cdf.getReadOnlyDomainObject(consumer, DomainFile.DEFAULT_VERSION, m);
 		}
 		catch (IOException | CancelledException | VersionException | RuntimeException e) {
 			view.close();
 			throw e;
 		}
+		long t3 = System.nanoTime();
 		JsonObject info = Json.of("used", true, "reason", plan.why(), "key", plan.key(),
-			"generation", gen, "dir", copyDir.getParent(), "openMs",
-			(System.nanoTime() - t0) / 1_000_000);
+			"generation", gen, "dir", copyDir.getParent(), "openMs", (t3 - t0) / 1_000_000,
+			"projectUs", (t1 - t0) / 1_000, "checkUs", (t2 - t1) / 1_000, "programUs",
+			(t3 - t2) / 1_000);
 		return new Opened(program, view, lease, info);
 	}
 
@@ -585,8 +608,16 @@ final class UpgradeCache {
 			Path tmp = forkDb.toPath().resolve("tmp" + System.nanoTime() + TMP_SUFFIX);
 			boolean placed = false;
 			try {
-				Files.copy(upgradedVersion, tmp, StandardCopyOption.COPY_ATTRIBUTES);
-				ProjectFork.forceFile(tmp); // E12: the content is durable before the name is
+				// a version file is never written once named (see linkable): the fork shares the
+				// cache's file by a hard link where it can, and copies it where it cannot
+				if (Settings.bool("forkHardLinks", true) && tryLink(upgradedVersion, tmp)) {
+					// E12: the content is durable before the name is (once per file)
+					ProjectFork.forceLinkedFile(tmp, upgradedVersion);
+				}
+				else {
+					Files.copy(upgradedVersion, tmp, StandardCopyOption.COPY_ATTRIBUTES);
+					ProjectFork.forceFile(tmp); // E12: the content is durable before the name is
+				}
 				Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE);
 				placed = true;
 			}
@@ -1288,7 +1319,7 @@ final class UpgradeCache {
 	static void copyProject(Path base, String name, Path dest, RequestMonitor m)
 			throws IOException, CancelledException {
 		copyProject(base, name, dest, m,
-			sourceFiles(base.resolve(name + ProjectLocator.getProjectExtension()), name), false);
+			sourceFiles(base.resolve(name + ProjectLocator.getProjectExtension()), name), false, null);
 	}
 
 	/**
@@ -1300,11 +1331,62 @@ final class UpgradeCache {
 	 */
 	static void copyProject(Path base, String name, Path dest, RequestMonitor m,
 			SortedMap<String, Path> files) throws IOException, CancelledException {
-		copyProject(base, name, dest, m, files, true);
+		copyProject(base, name, dest, m, files, true, null);
+	}
+
+	/**
+	 * Version files of a Ghidra database ({@code db.<n>.gbf}) of at least this size are hard-linked
+	 * into a fork instead of copied ({@link #copyProject(Path, String, Path, RequestMonitor,
+	 * SortedMap, Map)}). Smaller files (properties, indexes: Ghidra rewrites them) are always
+	 * copied.
+	 */
+	static final long LINK_MIN = 1 << 20;
+	private static final java.util.regex.Pattern VERSION_FILE =
+		java.util.regex.Pattern.compile("db\\.\\d+\\.gbf");
+
+	/**
+	 * Whether {@code file} is a stored database version that may be shared between projects by a
+	 * hard link. Ghidra never writes into such a file once it is named {@code db.<n>.gbf}: a save
+	 * writes the next version under a temporary name (the pre-save copy, {@code tmp<n>.ps}) and
+	 * renames it to {@code db.<n+1>.gbf} (E8/E12 in {@code LocalManagedBufferFile}), and deleting
+	 * a version removes one name only. So two projects can share the inode, and a fork costs no copy.
+	 */
+	static boolean linkable(Path file, long size) {
+		return size >= LINK_MIN && VERSION_FILE.matcher(file.getFileName().toString()).matches();
+	}
+
+	/**
+	 * Hard-links {@code src} as {@code to}. False when the file system cannot (another volume, no
+	 * hard links, the link limit of the file): the caller copies.
+	 */
+	static boolean tryLink(Path src, Path to) throws IOException {
+		try {
+			Files.createLink(to, src);
+			return true;
+		}
+		catch (NoSuchFileException | FileAlreadyExistsException e) {
+			throw e;
+		}
+		catch (IOException | UnsupportedOperationException | SecurityException e) {
+			return false;
+		}
+	}
+
+	/**
+	 * {@link #copyProject(Path, String, Path, RequestMonitor, SortedMap)} that hard-links the
+	 * {@link #linkable} files instead of copying them when {@code linked} is not null (any file
+	 * that cannot be linked is copied, so the result is the same project either way). Each linked
+	 * file is put in {@code linked}, by its path in {@code dest}, with the source it shares an
+	 * inode with.
+	 */
+	static void copyProject(Path base, String name, Path dest, RequestMonitor m,
+			SortedMap<String, Path> files, Map<Path, Path> linked)
+			throws IOException, CancelledException {
+		copyProject(base, name, dest, m, files, true, linked);
 	}
 
 	private static void copyProject(Path base, String name, Path dest, RequestMonitor m,
-			SortedMap<String, Path> files, boolean skipGone)
+			SortedMap<String, Path> files, boolean skipGone, Map<Path, Path> linked)
 			throws IOException, CancelledException {
 		Files.createDirectories(dest);
 		long total = 0;
@@ -1325,7 +1407,12 @@ final class UpgradeCache {
 			Path to = dest.resolve(base.relativize(src).toString());
 			Files.createDirectories(to.getParent());
 			try {
-				Files.copy(src, to, StandardCopyOption.COPY_ATTRIBUTES);
+				if (linked != null && linkable(src, Files.size(src)) && tryLink(src, to)) {
+					linked.put(to, src);
+				}
+				else {
+					Files.copy(src, to, StandardCopyOption.COPY_ATTRIBUTES);
+				}
 			}
 			catch (NoSuchFileException e) {
 				if (!skipGone || Files.exists(src, LinkOption.NOFOLLOW_LINKS)) {
@@ -1543,6 +1630,7 @@ final class UpgradeCache {
 		Language lang;
 		try {
 			lang = DefaultLanguageService.getLanguageService().getLanguage(new LanguageID(langId));
+			WarmHints.loaded(langId);
 		}
 		catch (LanguageNotFoundException e) {
 			return null; // a language translation; the normal open reports what it can do
