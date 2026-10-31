@@ -17,11 +17,14 @@
 #include "loadimage_ghidra.hh"
 #include "paramid.hh"
 #include "libdecomp.hh"
+#include "sleigh.hh"
+#include "ghidra_translate.hh"
 
 #include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <list>
+#include <map>
 #include <mutex>
 #include <sstream>
 
@@ -37,6 +40,9 @@ static const string QUERY_OPEN("\000\000\001\004",4);
 static const string QUERY_CLOSE("\000\000\001\005",4);
 static const string STRING_OPEN("\000\000\001\016",4);
 static const string STRING_CLOSE("\000\000\001\017",4);
+static const string RESPONSE_OPEN("\000\000\001\010",4);
+static const string RESPONSE_CLOSE("\000\000\001\011",4);
+static const string EXCEPTION_OPEN("\000\000\001\012",4);
 
 /// \param tp is the exception type
 /// \param msg is the message
@@ -51,13 +57,90 @@ static string exceptionResponse(const string &tp,const string &msg)
   return res;
 }
 
+string SnapshotStore::nativeReason;
+/// Guards nativeReason: one thread writes it while another may read it (both on the error path).
+static std::mutex nativeReasonLock;
+
+/// Validation mode (diagnostics): decode natively and compare with the Java p-code answer, which
+/// the Java side exports too (hydra.decomp.host.decodeValidate). A mismatch uses the Java answer.
+/// Set from the environment at start, or by the client through hydra_snapshot_set_validate().
+static std::atomic<bool> VALIDATE_NATIVE = []() {
+  const char *v = getenv("HYDRA_SNAPSHOT_VALIDATE");
+  return v != (const char *)0 && v[0] != 0 && v[0] != '0';
+}();
+
+/// Mismatch log lines printed so far (a bounded number: the status counts the rest).
+static std::atomic<uint4> mismatchLogCount(0);
+
+static uint4 mismatchLogs(void)
+
+{
+  return mismatchLogCount.fetch_add(1);
+}
+
+/// Records that native decode works for this generation (a later failure still disables it).
+void SnapshotStore::enableNative(void)
+
+{
+  int4 expected = 0;
+  nativeState.compare_exchange_strong(expected,1);
+}
+
+/// \param why is the reason, kept for the status report
+void SnapshotStore::disableNative(const string &why)
+
+{
+  int4 expected = 0;
+  if (nativeState.compare_exchange_strong(expected,-1)) {
+    std::lock_guard<std::mutex> guard(nativeReasonLock);
+    nativeReason = why;
+  }
+  else if (nativeState == 1)
+    nativeState = -1;		// a late failure still turns this generation off
+}
+
+/// Records one native decode that fell back to the Java answer. A few are expected (an odd
+/// instruction the local engine cannot reproduce); a run of them means the .sla or the snapshot
+/// does not fit this generation, and native decode is turned off so the Java answers are exported
+/// again instead of being learned one missed run at a time.
+/// \param why is what failed
+void SnapshotStore::nativeError(const string &why)
+
+{
+  uint8 count = nativeErrors.fetch_add(1) + 1;
+  if (count >= 8) {
+    std::ostringstream msg;
+    msg << "native decode failed " << count << " times: " << why;
+    string text(msg.str());
+    disableNative(text);
+  }
+}
+
+/// \param why receives the reason when native decode is disabled
+/// \return 1 when native decode is usable, 0 before it was tried, -1 when disabled
+int4 SnapshotStore::getNativeState(string &why) const
+
+{
+  int4 state = nativeState;
+  if (state < 0) {
+    std::lock_guard<std::mutex> guard(nativeReasonLock);
+    why = nativeReason;
+  }
+  return state;
+}
+
 SnapshotStore::SnapshotStore(uint8 i,const string &p,const string &c,const string &t,const string &core,
-			     const string &opt,const string &snap)
-  : id(i), pspec(p), cspec(c), tspec(t), corespec(core), options(opt), snapshotPath(snap)
+			     const string &opt,const string &snap,const string &sla)
+  : id(i), pspec(p), cspec(c), tspec(t), corespec(core), options(opt), snapshotPath(snap),
+    slaPath(sla)
 
 {
   bytes = 0;
   closed = false;
+  nativeState = 0;
+  nativeErrors = 0;
+  validated = 0;
+  mismatches = 0;
 }
 
 size_t SnapshotStore::shardOf(const string &key)
@@ -132,6 +215,72 @@ void SnapshotStore::putBulk(const char *blob,size_t len)
 	bytes += sn + 1 + qn + rn;
     }
   }
+}
+
+/// \The native-decode form: one record per function body. For each address space the
+/// instructions live in, the space name and the addresses of the body's instructions. The host
+/// decodes them itself, so their p-code is not exported at all; the instruction context comes
+/// from the generation's context export (putContext) instead of a blob per instruction.
+/// \param blob is the packed block (little endian): u32 name length + name, u32 count,
+///   then count x u64 instruction offset
+/// \param len is its size in bytes
+void SnapshotStore::putDecode(const char *blob,size_t len)
+
+{
+  std::unique_lock<std::shared_mutex> guard(decodeLock);
+  size_t i = 0;
+  auto read32 = [&](size_t &at,uint4 &v) -> bool {
+    if (at + 4 > len) return false;
+    v = (uint1)blob[at] | ((uint1)blob[at+1] << 8) | ((uint1)blob[at+2] << 16) | ((uint4)(uint1)blob[at+3] << 24);
+    at += 4;
+    return true;
+  };
+  while (i < len) {
+    uint4 namelen;
+    if (!read32(i,namelen) || i + namelen > len)
+      throw LowlevelError("snapshot store: bad decode record (space)");
+    string name(blob + i,namelen);
+    i += namelen;
+    uint4 count;
+    if (!read32(i,count))
+      throw LowlevelError("snapshot store: bad decode record (count)");
+    if ((uintb)count * 8 > len - i)
+      throw LowlevelError("snapshot store: bad decode record (offsets)");
+    std::unordered_set<uintb> &space(decode[name]);
+    for(uint4 n=0;n<count;++n) {
+      uintb offset = 0;
+      for(int4 b=0;b<8;++b)
+	offset |= ((uintb)(uint1)blob[i+b]) << (8*b);
+      i += 8;
+      space.insert(offset);
+    }
+  }
+}
+
+/// The instruction context of the generation: the program context register's default value and
+/// the address ranges where it changes, exported once by the Java side (the native translator
+/// needs it for every instruction it decodes, and it is the same for the whole generation).
+/// \param blob is the packed block (little endian): u32 words, words x u32 default value,
+///   u32 range count, then per range u32 name length + space name, u64 first, u64 last
+///   (inclusive), words x u32 value
+/// \param len is its size in bytes
+void SnapshotStore::putContext(const char *blob,size_t len)
+
+{
+  contextBlob.assign(blob,len);
+}
+
+/// \param space is an address space name
+/// \param offset is an address offset in it
+/// \return true when the host decodes the instruction there itself
+bool SnapshotStore::hasDecode(const string &space,uintb offset) const
+
+{
+  std::shared_lock<std::shared_mutex> guard(decodeLock);
+  std::unordered_map<string,std::unordered_set<uintb> >::const_iterator iter(decode.find(space));
+  if (iter == decode.end())
+    return false;
+  return (*iter).second.find(offset) != (*iter).second.end();
 }
 
 /// A scoped answer for the given scope wins over a global one.
@@ -239,22 +388,39 @@ void SnapshotChannel::answerNext(void)
     inbuf.set(exceptionResponse("alignment","snapshot channel: read with no pending query"));
     return;
   }
+  prepare(payload);
+}
+
+/// \param payload is the packed query payload
+/// \return true when the response is a stored answer, false for a miss (an exception is fed)
+bool SnapshotChannel::prepare(const string &payload)
+
+{
   const string *resp = store->find(scope,payload,keybuf);
   if (resp != (const string *)0) {
     answered += 1;
     if (!resp->empty()) {
       inbuf.set(resp->data(),resp->size());
-      return;
+      return true;
     }
   }
   misses.push_back(payload);
   if (misses.size() <= MAX_SPECULATED && speculate(payload,inbuf.owned)) {
     fed.push_back(inbuf.owned);
     inbuf.set(inbuf.owned.data(),inbuf.owned.size());
-    return;
+    return false;
   }
   fed.push_back(string());
   inbuf.set(exceptionResponse(MISS_TYPE,"query not in the program snapshot"));
+  return false;
+}
+
+/// \param payload is the packed query payload
+/// \return the stored answer, or null when there is none
+const string *SnapshotChannel::peek(const string &payload) const
+
+{
+  return store->find(scope,payload,keybuf);
 }
 
 /// The command element id of a packed query payload (PackedEncode::writeHeader), or -1
@@ -354,12 +520,521 @@ void SnapshotChannel::begin(const string &sc)
   sout.clear();
 }
 
+// ---- native instruction translation ---------------------------------------------------------
+//
+// The host translates instructions itself with the decompiler's own Sleigh engine instead of
+// asking Java for their p-code (DecompileSnapshot exports, per instruction, only the context
+// register value; the store's decode table). The engine is the one decompile.exe uses for a
+// standalone binary, over the generation's byte snapshot; its p-code is the p-code the Java
+// translator produces for the same bytes and context, which the engine's validation mode
+// (`hydra.decomp.host.decodeValidate`) checks answer by answer.
+//
+// One translator is kept per worker and .sla file (a language) and reset per generation: reset
+// rebuilds only the parse caches, the parsed SLEIGH tables stay (a .sla parse is the expensive
+// part and a worker sees only a few languages).
+
+/// \brief P-code emitter that re-owns the varnode address spaces of the native translator
+///
+/// The worker's native Sleigh has its own AddrSpace objects (parsed from the .sla), while Funcdata
+/// holds the architecture's (from the tspec). Before native decode is enabled the two managers are
+/// checked to describe the same spaces in the same order, so a varnode's space is replaced by the
+/// architecture's space with the same index as it passes through.
+class SpaceMapEmit : public PcodeEmit {
+  PcodeEmit *inner;				///< The decompiler's emitter
+  const Architecture *arch;			///< Owner of the destination spaces
+  VarnodeData vars[12];				///< Mapped inputs
+  VarnodeData out;				///< Mapped output
+  void map(VarnodeData &dst,const VarnodeData &src) const {
+    dst = src;
+    if (src.space != (AddrSpace *)0)
+      dst.space = arch->getSpace(src.space->getIndex());
+  }
+public:
+  SpaceMapEmit(PcodeEmit *i,const Architecture *a) : inner(i), arch(a) {}
+  virtual void dump(const Address &addr,OpCode opc,VarnodeData *outvar,VarnodeData *vars,
+		    int4 isize) {
+    if (isize > 12)
+      throw LowlevelError("native decode: p-code op with too many inputs");
+    for(int4 i=0;i<isize;++i)
+      map(this->vars[i],vars[i]);
+    if ((opc == CPUI_LOAD || opc == CPUI_STORE) && isize > 0) {
+      // The first input of a load/store names the address space as a pointer to the translator's
+      // space object (SleighBuilder::dump); re-own it in the architecture's manager, as
+      // PcodeOpRaw::decode does for a Java answer.
+      const VarnodeData &in(vars[0]);
+      AddrSpace *spc = (AddrSpace *)(uintp)in.offset;
+      if (in.space != (AddrSpace *)0 && in.space->getType() == IPTR_CONSTANT &&
+	  spc != (AddrSpace *)0)
+	this->vars[0].offset = (uintb)(uintp)arch->getSpace(spc->getIndex());
+    }
+    if (outvar != (VarnodeData *)0) {
+      map(out,*outvar);
+      inner->dump(addr,opc,&out,this->vars,isize);
+    }
+    else
+      inner->dump(addr,opc,(VarnodeData *)0,this->vars,isize);
+  }
+};
+
+/// One worker's native translator for one language.
+struct WorkerSleigh {
+  Sleigh *sleigh;				///< The translator (parsed .sla)
+  ContextInternal *context;			///< Instruction context of the generation it serves
+  const SnapshotStore *store;			///< The generation it currently serves, or null
+  WorkerSleigh(void) : sleigh((Sleigh *)0), context((ContextInternal *)0),
+		       store((const SnapshotStore *)0) {}
+};
+
+/// Parsed translators of the calling worker, one per .sla file. Thread-local: a Sleigh is
+/// thread-affine (its parse caches are), and each worker decodes only its own jobs.
+static thread_local std::map<string,WorkerSleigh> workerSleighs;
+/// The translator of this thread the caller last prepared (`SnapshotArchitecture` this), so a
+/// decompile that runs right after the previous one on the same architecture skips the reset.
+static thread_local const SnapshotArchitecture *nativeOwner = (const SnapshotArchitecture *)0;
+
+/// Loads a .sla file into a translator: the format Sleigh::initialize reads is a tag whose content
+/// is the file path (as SleighArchitecture::buildSpecFile builds it).
+/// \param sleigh is the translator
+/// \param path is the .sla file
+static void parseSla(Sleigh *sleigh,const string &path)
+
+{
+  DocumentStorage store;
+  istringstream s("<sleigh>" + path + "</sleigh>");
+  Document *doc = store.parseDocument(s);
+  store.registerTag(doc->getRoot());
+  sleigh->initialize(store);
+}
+
+/// The calling worker's translator for \b path, parsed on first use; null when it cannot be used.
+/// \param path is the .sla file
+static WorkerSleigh *workerSleighFor(const string &path)
+
+{
+  std::map<string,WorkerSleigh>::iterator iter = workerSleighs.find(path);
+  if (iter != workerSleighs.end())
+    return &(*iter).second;
+  WorkerSleigh &w(workerSleighs[path]);
+  try {
+    w.context = new ContextInternal();
+    w.sleigh = new Sleigh((LoadImage *)0,w.context);
+    parseSla(w.sleigh,path);
+  }
+  catch(std::exception &e) {
+    delete w.sleigh;
+    delete w.context;
+    w.sleigh = (Sleigh *)0;
+    w.context = (ContextInternal *)0;
+    throw LowlevelError("native decode: " + string(e.what()));
+  }
+  return &w;
+}
+
+/// \brief GhidraTranslate whose instructions are decoded by the host when it has their context
+class SnapshotTranslate : public GhidraTranslate {
+  SnapshotArchitecture *arch;			///< The architecture (and its store)
+public:
+  SnapshotTranslate(SnapshotArchitecture *a) : GhidraTranslate(a), arch(a) {}
+  virtual int4 oneInstruction(PcodeEmit &emit,const Address &baseaddr) const;
+};
+
+int4 SnapshotTranslate::oneInstruction(PcodeEmit &emit,const Address &baseaddr) const
+
+{
+  int4 len = arch->nativeDecode(emit,baseaddr);
+  if (len >= 0)
+    return len;
+  return GhidraTranslate::oneInstruction(emit,baseaddr);
+}
+
+// ---- validation of the native translation (diagnostics) --------------------------------------
+
+/// One p-code op in a form both the Java encoding and the native translator decode into.
+struct RawOp {
+  OpCode opc;			///< The opcode
+  bool hasOut;			///< True when the op has an output varnode
+  VarnodeData out;		///< The output
+  int4 isize;			///< Number of inputs
+  VarnodeData in[8];		///< The inputs
+};
+
+/// \brief Collects p-code ops instead of emitting them (validation mode)
+class RecordEmit : public PcodeEmit {
+public:
+  vector<RawOp> ops;		///< The ops, in order
+  virtual void dump(const Address &addr,OpCode opc,VarnodeData *outvar,VarnodeData *vars,int4 isize) {
+    if (isize > 8)
+      throw LowlevelError("validation: p-code op with more than 8 inputs");
+    ops.emplace_back();
+    RawOp &op(ops.back());
+    op.opc = opc;
+    op.hasOut = (outvar != (VarnodeData *)0);
+    if (op.hasOut)
+      op.out = *outvar;
+    op.isize = isize;
+    for(int4 i=0;i<isize;++i)
+      op.in[i] = vars[i];
+  }
+};
+
+/// \brief Replays recorded p-code ops into the decompiler (validation mode)
+class ReplayEmit : public PcodeEmit {
+  const vector<RawOp> &ops;	///< The ops to replay
+public:
+  ReplayEmit(const vector<RawOp> &o) : ops(o) {}
+  virtual void dump(const Address &addr,OpCode opc,VarnodeData *outvar,VarnodeData *vars,int4 isize) {}
+  void replay(PcodeEmit &inner,const Address &addr) {
+    for(vector<RawOp>::const_iterator iter=ops.begin();iter!=ops.end();++iter) {
+      const RawOp &op(*iter);
+      inner.dump(addr,op.opc,op.hasOut ? (VarnodeData *)&op.out : (VarnodeData *)0,
+		 (VarnodeData *)op.in,op.isize);
+    }
+  }
+};
+
 SnapshotArchitecture::SnapshotArchitecture(const std::shared_ptr<SnapshotStore> &st)
   : SnapshotChannelHolder(st),
     ArchitectureGhidra(st->pspec,st->cspec,st->tspec,st->corespec,channel.sin,channel.sout)
 
 {
   registered = false;
+  native = (Sleigh *)0;
+  nativePrepared = false;
+  nativeFailed = false;
+  nativeWords = 0;
+}
+
+SnapshotArchitecture::~SnapshotArchitecture(void)
+
+{
+  // The worker's translator is shared with the other generations of this thread and is reset
+  // before its next use; nothing here owns it.
+  native = (Sleigh *)0;
+  nativePrepared = false;
+}
+
+/// The Ghidra translator: registers, spaces and disassembly information come from the tspec as
+/// before. Only the p-code of an instruction the host has a native decode record for comes from
+/// the worker's Sleigh (SnapshotTranslate::oneInstruction).
+Translate *SnapshotArchitecture::buildTranslator(DocumentStorage &store)
+
+{
+  return new SnapshotTranslate(this);
+}
+
+/// \return true when this generation can be decoded natively
+/// \Apply the generation's instruction context to a worker's context database.
+/// The database keeps the variables the .sla registered; only the values are replaced.
+/// \param ctx is the worker's context database
+/// \param blob is the Java side's export (see SnapshotStore::putContext)
+/// \param words receives the number of context words, or -1 when the blob is unusable
+/// \return an empty string on success, else why the blob cannot be used
+static string applyContext(SnapshotArchitecture *arch,ContextInternal *ctx,
+			   const string &blob,int4 &words)
+
+{
+  size_t i = 0;
+  auto read32 = [&](uint4 &v) -> bool {
+    if (i + 4 > blob.size()) return false;
+    v = (uint1)blob[i] | ((uint1)blob[i+1] << 8) | ((uint1)blob[i+2] << 16) | ((uint4)(uint1)blob[i+3] << 24);
+    i += 4;
+    return true;
+  };
+  auto read64 = [&](uintb &v) -> bool {
+    if (i + 8 > blob.size()) return false;
+    v = 0;
+    for(int4 b=0;b<8;++b)
+      v |= ((uintb)(uint1)blob[i+b]) << (8*b);
+    i += 8;
+    return true;
+  };
+  uint4 count;
+  if (!read32(count) || count == 0 || count > 16)
+    return "bad context export (size)";
+  words = (int4)count;
+  if (ctx->getContextSize() != (int4)count)
+    return "the context export has " + std::to_string(count) + " words, the .sla needs " +
+      std::to_string(ctx->getContextSize());
+  ctx->clearValues();
+  vector<uintm> def(count);
+  for(uint4 w=0;w<count;++w) {
+    uint4 v;
+    if (!read32(v)) return "bad context export (default)";
+    def[w] = v;
+  }
+  ctx->setDefaultValues(def.data(),(int4)count);
+  uint4 ranges;
+  if (!read32(ranges))
+    return "bad context export (ranges)";
+  string lastSpace;
+  AddrSpace *spc = (AddrSpace *)0;
+  for(uint4 r=0;r<ranges;++r) {
+    uint4 namelen;
+    if (!read32(namelen) || i + namelen > blob.size())
+      return "bad context export (space)";
+    string name(blob,i,namelen);
+    i += namelen;
+    uintb first,last;
+    if (!read64(first) || !read64(last))
+      return "bad context export (range)";
+    if (name != lastSpace) {
+      spc = arch->getSpaceByName(name);
+      if (spc == (AddrSpace *)0)
+	return "context export: unknown space " + name;
+      lastSpace = name;
+    }
+    vector<uintm> value(count);
+    for(uint4 w=0;w<count;++w) {
+      uint4 v;
+      if (!read32(v)) return "bad context export (value)";
+      value[w] = v;
+    }
+    Address lo(spc,first);
+    Address hi;
+    if (last < spc->getHighest())
+      hi = Address(spc,last + 1);
+    else
+      hi = Address();		// through the end of the space
+    for(uint4 w=0;w<count;++w)
+      ctx->setContextRegion(lo,hi,(int4)w,0xffffffff,value[w]);
+  }
+  return "";
+}
+
+bool SnapshotArchitecture::prepareNative(void)
+
+{
+  if (nativePrepared)
+    return true;
+  if (nativeFailed)
+    return false;
+  SnapshotStore &st(*channel.getStore());
+  nativeFailed = true;		// until every check passed
+  if (st.slaPath.empty()) {
+    st.disableNative("no .sla file for the language");
+    return false;
+  }
+  if (st.snapshotPath.empty() || dynamic_cast<LoadImageGhidra *>(loader) == (LoadImageGhidra *)0) {
+    st.disableNative("no byte snapshot");
+    return false;
+  }
+  if (st.getContext().empty()) {
+    st.disableNative("no instruction context export");
+    return false;
+  }
+  WorkerSleigh *w;
+  try {
+    w = workerSleighFor(st.slaPath);
+  }
+  catch(LowlevelError &err) {
+    st.disableNative(err.explain);
+    return false;
+  }
+  if (w == (WorkerSleigh *)0 || w->sleigh == (Sleigh *)0) {
+    st.disableNative("the .sla file did not load");
+    return false;
+  }
+  // The translator's varnodes carry its own address spaces; the decompiler's carry this
+  // architecture's. They must be the same spaces in the same order for the remap by index.
+  if (w->sleigh->numSpaces() > numSpaces()) {
+    st.disableNative("the .sla and the translator spec disagree on the address spaces");
+    return false;
+  }
+  for(int4 i=0;i<w->sleigh->numSpaces();++i) {
+    if (w->sleigh->getSpace(i)->getName() != getSpace(i)->getName()) {
+      st.disableNative("address space " + w->sleigh->getSpace(i)->getName() +
+		       " is not space " + getSpace(i)->getName() + " of the translator spec");
+      return false;
+    }
+  }
+  // The instruction context of this generation (the program context register's values); the
+  // worker's database keeps the variables the .sla registered and takes the generation's values.
+  int4 words = 0;
+  string bad = applyContext(this,w->context,st.getContext(),words);
+  if (!bad.empty()) {
+    st.disableNative(bad);
+    return false;
+  }
+  w->sleigh->reset(loader,w->context);
+  w->sleigh->buildCaches();
+  native = w->sleigh;
+  nativeWords = words;
+  nativePrepared = true;
+  nativeFailed = false;
+  st.enableNative();
+  return true;
+}
+
+/// \param addr is an instruction address
+/// \param payload receives the packed query payload ArchitectureGhidra::getPcode would send
+static void pcodeQuery(const Address &addr,string &payload)
+
+{
+  ostringstream s;
+  {
+    PackedEncode encoder(s);
+    encoder.openElement(ELEM_COMMAND_GETPCODE);
+    addr.encode(encoder);
+    encoder.closeElement(ELEM_COMMAND_GETPCODE);
+  }
+  payload = s.str();
+}
+
+/// The stored Java answer to a p-code query, decoded into ops (validation mode).
+/// \param arch is the architecture (space manager of the packed encoding)
+/// \param ch is the channel (the store and the scope)
+/// \param addr is the instruction address
+/// \param ops receives the Java p-code ops
+/// \param length receives the instruction length from the answer's \<inst> element
+/// \return true when the store holds a readable p-code answer
+static bool javaPcode(SnapshotArchitecture *arch,SnapshotChannel &ch,const Address &addr,
+		      vector<RawOp> &ops,int4 &length)
+
+{
+  string payload;
+  pcodeQuery(addr,payload);
+  const string *resp = ch.peek(payload);
+  if (resp == (const string *)0 || resp->empty())
+    return false;
+  if (resp->size() < 8 || resp->compare(0,4,RESPONSE_OPEN) != 0)
+    return false;			// an exception record: nothing to compare
+  size_t pos = 4;
+  if (resp->compare(pos,4,RESPONSE_CLOSE) == 0)
+    return false;			// an empty answer: no p-code
+  if (resp->compare(pos,4,STRING_OPEN) != 0)
+    return false;
+  pos += 4;
+  size_t end = resp->find(STRING_CLOSE,pos);
+  if (end == string::npos || end + 8 > resp->size())
+    return false;
+  istringstream s(resp->substr(pos,end - pos));
+  PackedDecode decoder(arch);
+  try {
+    decoder.ingestStream(s);
+    int4 el = decoder.openElement();
+    length = decoder.readSignedInteger(ATTRIB_OFFSET);
+    if (el == ELEM_UNIMPL)
+      return false;
+    Address pc = Address::decode(decoder);
+    RecordEmit record;
+    while(decoder.peekElement() != 0)
+      record.decodeOp(pc,decoder);
+    ops = record.ops;
+    return true;
+  }
+  catch(DecoderError &err) {
+    return false;
+  }
+  catch(LowlevelError &err) {
+    return false;
+  }
+}
+
+/// \return true when the two op lists are the same instruction's p-code (spaces by index)
+static bool sameOps(const vector<RawOp> &a,const vector<RawOp> &b)
+
+{
+  if (a.size() != b.size())
+    return false;
+  for(size_t i=0;i<a.size();++i) {
+    const RawOp &x(a[i]);
+    const RawOp &y(b[i]);
+    if (x.opc != y.opc || x.hasOut != y.hasOut || x.isize != y.isize)
+      return false;
+    if (x.hasOut) {
+      if (x.out.size != y.out.size || x.out.offset != y.out.offset)
+	return false;
+      if ((x.out.space == (AddrSpace *)0) != (y.out.space == (AddrSpace *)0))
+	return false;
+      if (x.out.space != (AddrSpace *)0 && x.out.space->getIndex() != y.out.space->getIndex())
+	return false;
+    }
+    for(int4 j=0;j<x.isize;++j) {
+      if ((x.opc == CPUI_LOAD || x.opc == CPUI_STORE) && j == 0) {
+	// The load/store space operand is a space pointer: compare the space, not the object address.
+	AddrSpace *xs = (AddrSpace *)(uintp)x.in[0].offset;
+	AddrSpace *ys = (AddrSpace *)(uintp)y.in[0].offset;
+	if ((xs == (AddrSpace *)0) != (ys == (AddrSpace *)0))
+	  return false;
+	if (xs != (AddrSpace *)0 && xs->getIndex() != ys->getIndex())
+	  return false;
+	continue;
+      }
+      if (x.in[j].size != y.in[j].size || x.in[j].offset != y.in[j].offset)
+	return false;
+      if ((x.in[j].space == (AddrSpace *)0) != (y.in[j].space == (AddrSpace *)0))
+	return false;
+      if (x.in[j].space != (AddrSpace *)0 && x.in[j].space->getIndex() != y.in[j].space->getIndex())
+	return false;
+    }
+  }
+  return true;
+}
+
+/// \param emit is the decompiler's p-code emitter
+/// \param addr is the instruction address
+/// \return the instruction length, or -1 when the host has no decode record for the address (the
+/// caller then asks the store for the Java answer)
+int4 SnapshotArchitecture::nativeDecode(PcodeEmit &emit,const Address &addr)
+
+{
+  if (!nativePrepared)
+    return -1;
+  SnapshotStore &st(*channel.getStore());
+  if (!st.hasDecode(addr.getSpace()->getName(),addr.getOffset()))
+    return -1;
+  try {
+    if (!VALIDATE_NATIVE) {
+      SpaceMapEmit mapped(&emit,this);
+      return native->oneInstruction(mapped,addr);
+    }
+    // Validation (diagnostics): decode natively and compare with the Java answer; a mismatch is
+    // counted and the Java p-code is used, so the output stays the process path's.
+    RecordEmit record;
+    int4 len = native->oneInstruction(record,addr);
+    vector<RawOp> javaOps;
+    int4 javaLen = -1;
+    bool haveJava = javaPcode(this,channel,addr,javaOps,javaLen);
+    st.countValidated();
+    bool same = haveJava && javaLen == len && sameOps(record.ops,javaOps);
+    if (haveJava && !same) {
+      st.countMismatch();
+      if (mismatchLogs() < 20) {
+	std::ostringstream msg;
+	msg << "native decode mismatch at " << addr.getShortcut() << ": native " << record.ops.size()
+	    << " ops, len " << len << "; java " << javaOps.size() << " ops, len " << javaLen;
+	string text(msg.str());
+	fprintf(stderr,"%s\n",text.c_str());
+      }
+    }
+    const vector<RawOp> &use(same || !haveJava ? record.ops : javaOps);
+    SpaceMapEmit mapped(&emit,this);
+    for(vector<RawOp>::const_iterator iter=use.begin();iter!=use.end();++iter) {
+      const RawOp &op(*iter);
+      mapped.dump(addr,op.opc,op.hasOut ? (VarnodeData *)&op.out : (VarnodeData *)0,
+		  (VarnodeData *)op.in,op.isize);
+    }
+    return same || !haveJava ? len : javaLen;
+  }
+  catch(UnimplError &err) {
+    throw;			// the decompiler handles an unimplemented instruction as before
+  }
+  catch(std::exception &err) {
+    // Never fail the request on a native decode the Java answer can serve: the query becomes a
+    // miss and the Java side exports the p-code (the run is then repeated).
+    st.nativeError(err.what());
+    nativePrepared = false;
+    return -1;
+  }
+}
+
+/// \param addr is the instruction address
+/// \return true when the store holds the answer (or a miss exception is ready on the input stream)
+bool SnapshotArchitecture::preparePcode(const Address &addr)
+
+{
+  pcodeQuery(addr,payload);
+  return channel.prepare(payload);
 }
 
 /// The registerProgram command (RegisterProgram::rawAction: init from the spec strings), then
@@ -423,6 +1098,9 @@ string SnapshotArchitecture::registerHost(void)
   // and high variables is off here too. Sending it would encode, copy through the store and decode
   // in Java a tree that this path never reads, only to throw it away; the C markup is identical.
   setSendSyntaxTree(false);
+  // Parse the language's .sla (once per worker and language) and check that its address spaces are
+  // the ones of the translator spec, so the first decompile of this generation does not pay it.
+  prepareNative();
   registered = true;
   channel.setSpaces(this);
   return "";
@@ -435,6 +1113,7 @@ void SnapshotArchitecture::decompileAt(const string &addrBytes)
 
 {
   channel.begin(addrBytes);
+  prepareNative();		// the worker's translator serves this generation for this run
   ostream &out(channel.sout);
   out.write("\000\000\001\006",4);		// Command response header
   string errorMsg;
@@ -753,14 +1432,16 @@ extern "C" int hydra_snapshot_start(void)
 
 extern "C" void *hydra_snapshot_store_new(const char *pspec,size_t pspeclen,const char *cspec,size_t cspeclen,
 					  const char *tspec,size_t tspeclen,const char *core,size_t corelen,
-					  const char *opt,size_t optlen,const char *snap,size_t snaplen)
+					  const char *opt,size_t optlen,const char *snap,size_t snaplen,
+					  const char *sla,size_t slalen)
 
 {
   static std::atomic<uint8> nextId(1);
   try {
     std::shared_ptr<SnapshotStore> st(new SnapshotStore(nextId++,string(pspec,pspeclen),string(cspec,cspeclen),
 							string(tspec,tspeclen),string(core,corelen),
-							string(opt,optlen),string(snap,snaplen)));
+							string(opt,optlen),string(snap,snaplen),
+							string(sla,slalen)));
     return new std::shared_ptr<SnapshotStore>(st);
   }
   catch(...) {
@@ -793,6 +1474,92 @@ extern "C" int hydra_snapshot_store_put_bulk(void *h,const char *blob,size_t len
   catch(...) {
     return 1;
   }
+}
+
+extern "C" int hydra_snapshot_store_put_decode(void *h,const char *blob,size_t len)
+
+{
+  try {
+    std::shared_ptr<SnapshotStore> &st(*(std::shared_ptr<SnapshotStore> *)h);
+    st->putDecode(blob,len);
+    return 0;
+  }
+  catch(...) {
+    return 1;
+  }
+}
+
+extern "C" int hydra_snapshot_store_put_context(void *h,const char *blob,size_t len)
+
+{
+  try {
+    std::shared_ptr<SnapshotStore> &st(*(std::shared_ptr<SnapshotStore> *)h);
+    st->putContext(blob,len);
+    return 0;
+  }
+  catch(...) {
+    return 1;
+  }
+}
+
+extern "C" int hydra_snapshot_store_native(void *h,char **msg,size_t *msglen)
+
+{
+  std::shared_ptr<SnapshotStore> &st(*(std::shared_ptr<SnapshotStore> *)h);
+  string why;
+  int4 state = st->getNativeState(why);
+  *msg = (char *)0;
+  *msglen = 0;
+  if (state < 0 && !why.empty()) {
+    char *p = (char *)malloc(why.size() + 1);
+    if (p != (char *)0) {
+      memcpy(p,why.data(),why.size());
+      p[why.size()] = 0;
+      *msg = p;
+      *msglen = why.size();
+    }
+  }
+  return state;
+}
+
+extern "C" void hydra_snapshot_set_validate(int on)
+
+{
+  VALIDATE_NATIVE = on != 0;
+}
+
+extern "C" void hydra_snapshot_store_validate(void *h,uint64_t *checked,uint64_t *mismatched)
+
+{
+  std::shared_ptr<SnapshotStore> &st(*(std::shared_ptr<SnapshotStore> *)h);
+  *checked = st->getValidated();
+  *mismatched = st->getMismatches();
+}
+
+/// Parses the given .sla files on the calling (worker) thread, so no decompile pays the parse.
+/// \param paths is the '\0'-separated file list
+/// \param len is its size in bytes
+/// \return 0 on success, 1 when a file did not load
+extern "C" int hydra_snapshot_warm(const char *paths,size_t len)
+
+{
+  size_t i = 0;
+  int4 res = 0;
+  while (i < len) {
+    size_t end = i;
+    while (end < len && paths[end] != 0)
+      ++end;
+    if (end > i) {
+      try {
+	workerSleighFor(string(paths + i,end - i));
+      }
+      catch(...) {
+	res = 1;
+      }
+    }
+    i = end + 1;
+  }
+  return res;
 }
 
 extern "C" void hydra_snapshot_store_stats(void *h,uint64_t *count,uint64_t *bytes)
