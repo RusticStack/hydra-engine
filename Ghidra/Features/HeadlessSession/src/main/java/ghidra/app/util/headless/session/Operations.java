@@ -161,7 +161,7 @@ final class Operations {
 						"ops[" + i + "] is not an object");
 				}
 				long o0 = timing ? System.nanoTime() : 0;
-				results.add(applyOp(p, el.getAsJsonObject(), v3));
+				results.add(applyOp(p, el.getAsJsonObject(), v3, timing));
 				if (timing) {
 					opUs[i] = (System.nanoTime() - o0) / 1000;
 				}
@@ -201,23 +201,25 @@ final class Operations {
 	 * function, a C prototype), {@code data_type} (address, a data type such as {@code int},
 	 * {@code char[16]} or {@code MyStruct *}).
 	 */
-	private JsonObject applyOp(Program p, JsonObject op, boolean v3) throws Exception {
+	private JsonObject applyOp(Program p, JsonObject op, boolean v3, boolean timing)
+			throws Exception {
 		String kind = Json.str(op, "op");
+		long t0 = timing ? System.nanoTime() : 0;
 		switch (kind) {
 			case "rename": {
-				JsonObject r = renameIn(p, op);
+				JsonObject r = renameIn(p, op, timing);
 				Json.put(r, "op", kind);
 				return r;
 			}
 			case "label": {
 				JsonObject req = op.deepCopy();
 				req.addProperty("kind", "label");
-				JsonObject r = renameIn(p, req);
+				JsonObject r = renameIn(p, req, timing);
 				Json.put(r, "op", kind);
 				return r;
 			}
 			case "comment": {
-				JsonObject r = commentIn(p, op);
+				JsonObject r = commentIn(p, op, timing);
 				Json.put(r, "op", kind);
 				return r;
 			}
@@ -229,6 +231,7 @@ final class Operations {
 						"no function contains " + hex(a));
 				}
 				String text = Json.str(op, "signature");
+				long t1 = timing ? System.nanoTime() : 0;
 				String oldSig = f.getSignature().getPrototypeString();
 				ghidra.program.model.data.FunctionDefinitionDataType fd;
 				try {
@@ -243,6 +246,7 @@ final class Operations {
 					throw new SessionException(SessionException.BAD_REQUEST,
 						"bad signature '" + text + "'");
 				}
+				long t2 = timing ? System.nanoTime() : 0;
 				if (v3) {
 					expectV3(op, f.getEntryPoint(), "signature", oldSig,
 						Json.of("cmd", "decompile", "address", hex(f.getEntryPoint())));
@@ -253,6 +257,11 @@ final class Operations {
 				if (!cmd.applyTo(p)) {
 					throw new SessionException(SessionException.FAILED,
 						"could not apply the signature: " + cmd.getStatusMsg());
+				}
+				if (timing) {
+					long t3 = System.nanoTime();
+					Msg.info(this, "edit op signature us: oldPrototype " + (t1 - t0) / 1000 +
+						", parse " + (t2 - t1) / 1000 + ", apply " + (t3 - t2) / 1000);
 				}
 				return Json.of("op", kind, "address", hex(f.getEntryPoint()), "signature",
 					f.getSignature().getPrototypeString(), "old", oldSig, "new",
@@ -289,6 +298,10 @@ final class Operations {
 	}
 
 	JsonObject renameIn(Program p, JsonObject req) throws Exception {
+		return renameIn(p, req, Settings.bool("editTiming", false));
+	}
+
+	JsonObject renameIn(Program p, JsonObject req, boolean timing) throws Exception {
 		Address a = address(p, Json.str(req, "address"));
 		String name = Json.str(req, "name");
 		String kind = Json.str(req, "kind", "auto");
@@ -296,12 +309,18 @@ final class Operations {
 			throw new SessionException(SessionException.BAD_REQUEST,
 				"kind must be auto, function or label");
 		}
+		long t0 = timing ? System.nanoTime() : 0;
 		String old = null;
 		boolean created = false;
 		Tx tx = begin(p, "session rename");
 		boolean ok = false;
+		long t1 = 0;
+		long t2 = 0;
 		try {
 			Function f = p.getFunctionManager().getFunctionAt(a);
+			if (timing) {
+				t1 = System.nanoTime();
+			}
 			if (kind.equals("function") && f == null) {
 				throw new SessionException(SessionException.NOT_FOUND,
 					"no function starts at " + hex(a));
@@ -329,15 +348,27 @@ final class Operations {
 				kind = "label";
 			}
 			ok = true;
+			if (timing) {
+				t2 = System.nanoTime();
+			}
 		}
 		finally {
 			end(p, tx, ok);
+			if (timing) {
+				long t3 = System.nanoTime();
+				Msg.info(this, "edit op rename us: txBegin " + (t1 - t0) / 1000 + ", write " +
+					(t2 - t1) / 1000 + ", txEnd " + (t3 - t2) / 1000);
+			}
 		}
 		return Json.of("address", hex(a), "name", name, "old", old, "kind", kind, "created",
 			created);
 	}
 
 	JsonObject commentIn(Program p, JsonObject req) {
+		return commentIn(p, req, Settings.bool("editTiming", false));
+	}
+
+	JsonObject commentIn(Program p, JsonObject req, boolean timing) {
 		Address a = address(p, Json.str(req, "address"));
 		CommentType ct = switch (Json.str(req, "type", "eol")) {
 			case "eol" -> CommentType.EOL;
@@ -348,8 +379,10 @@ final class Operations {
 			default -> throw new SessionException(SessionException.BAD_REQUEST,
 				"type must be eol, pre, post, plate or repeatable");
 		};
+		long t0 = timing ? System.nanoTime() : 0;
 		String text = Json.has(req, "text") ? Json.str(req, "text") : null;
 		String old = p.getListing().getComment(ct, a);
+		long t1 = timing ? System.nanoTime() : 0;
 		expect(req, a, "comment", old);
 		Tx tx = begin(p, "session comment");
 		try {
@@ -357,6 +390,10 @@ final class Operations {
 		}
 		finally {
 			end(p, tx, true);
+			if (timing) {
+				Msg.info(this, "edit op comment us: read " + (t1 - t0) / 1000 + ", write " +
+					(System.nanoTime() - t1) / 1000);
+			}
 		}
 		return Json.of("address", hex(a), "type", Json.str(req, "type", "eol"), "old", old,
 			"text", text);
