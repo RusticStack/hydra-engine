@@ -84,6 +84,9 @@ SWEEP = HOOKS + ["-Dghidra.session.noProcessJob=sweep"]
 # these tests are about the native decompiler processes (faults, hangs, the breaker, the gate): a repeated
 # decompile of an unchanged program must reach a process, so the decompile cache (goal 4) is off for them
 NO_DCACHE = {"decompileCache": 0}
+# The process decompiler pool: the host backend is the daemon default since round 2, but these
+# tests count, fault and gate the pool's processes, so they ask for the process path explicitly.
+PROC = ["-Dhydra.decomp.backend=process"]
 
 DEAF = """// @category HeadlessSession.Test
 import ghidra.app.script.GhidraScript;
@@ -269,7 +272,7 @@ def t_limits_job(c):
     windows_only()
     exe = fixture_args(c)
     gpr = c.copy_fixture("e9Lim")
-    d = c.daemon("e9-lim")
+    d = c.daemon("e9-lim", vmargs=PROC)
     s3 = s2 = None
     try:
         s3 = c.connect(d, "lim3", "e9", 3)
@@ -322,7 +325,7 @@ def _suspend_and_kill(c, name, vmargs, gpr, exe):
     """Starts a daemon, makes 4 native decompilers, suspends them, TerminateProcess the daemon.
     Returns ``(decompiler pids, seconds until they were gone or None, survivors, processJob, K7 report)``."""
     ch = chaos()
-    d = c.daemon(name, vmargs=vmargs)
+    d = c.daemon(name, vmargs=PROC + (vmargs or []))
     sessions = []
     try:
         sessions, fns = warm_decompilers(c, d, gpr, exe, 4)
@@ -469,7 +472,7 @@ def t_decompiler_faults(c):
     gpr = c.copy_fixture("e9Flt")
     # the breaker (e9_negative_cache) is out of the way: a function that failed more than three times in a minute
     # would be refused at once and the load would count refusals instead of decompiles
-    d = c.daemon("e9-flt", engine={"decompilerFailLimit": 100000, **NO_DCACHE})
+    d = c.daemon("e9-flt", engine={"decompilerFailLimit": 100000, **NO_DCACHE}, vmargs=PROC)
     ss = []
     try:
         ss = [c.connect(d, f"load{i}", "e9", 3) for i in range(12)]
@@ -548,7 +551,7 @@ def t_decompiler_hang(c):
     ch = chaos()
     exe = fixture_args(c)
     gpr = c.copy_fixture("e9Hang")
-    d = c.daemon("e9-hang", engine=NO_DCACHE)
+    d = c.daemon("e9-hang", engine=NO_DCACHE, vmargs=PROC)
     A = B = None
     try:
         A = c.connect(d, "hangA", "e9", 3)
@@ -607,7 +610,7 @@ def t_negative_cache(c):
     ch = chaos()
     exe = fixture_args(c)
     gpr = c.copy_fixture("e9Neg")
-    d = c.daemon("e9-neg", engine={"decompilerNegativeS": 6, **NO_DCACHE})
+    d = c.daemon("e9-neg", engine={"decompilerNegativeS": 6, **NO_DCACHE}, vmargs=PROC)
     s = None
     try:
         s = c.connect(d, "neg", "e9", 3)
@@ -656,7 +659,7 @@ def t_gate(c):
     exe = fixture_args(c)
     gpr = c.copy_fixture("e9Gate")
     # nativeBudgetMb 400 = two permits of 200 MB
-    d = c.daemon("e9-gate", engine={"nativeBudgetMb": 400, "decompilerWaitS": 3, **NO_DCACHE})
+    d = c.daemon("e9-gate", engine={"nativeBudgetMb": 400, "decompilerWaitS": 3, **NO_DCACHE}, vmargs=PROC)
     ss = []
     try:
         ss = [c.connect(d, f"g{i}", "e9", 3) for i in range(6)]
@@ -719,7 +722,7 @@ def t_idle_dispose(c):
     windows_only()
     exe = fixture_args(c)
     gpr = c.copy_fixture("e9Idle")
-    d = c.daemon("e9-idle", engine={"decompilerIdleS": 3})
+    d = c.daemon("e9-idle", engine={"decompilerIdleS": 3}, vmargs=PROC)
     s = None
     try:
         s = c.connect(d, "idle", "e9", 3)
