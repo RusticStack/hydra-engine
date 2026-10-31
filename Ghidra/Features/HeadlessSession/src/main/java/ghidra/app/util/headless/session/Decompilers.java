@@ -16,9 +16,17 @@
 package ghidra.app.util.headless.session;
 
 import ghidra.app.decompiler.DecompInterface;
+import ghidra.program.model.listing.Program;
 
 /** A pool of decompilers bound to one program object: a shared program's, or an overlay's. */
 interface Decompilers {
+
+	/**
+	 * The program this pool's decompilers are bound to: a program's own, or the one an overlay
+	 * reads through ({@link Overlay#readProgram}).
+	 * @return the program, or null while an overlay has none
+	 */
+	Program program();
 
 	/**
 	 * A decompiler for the pool's program, warm when one is free.

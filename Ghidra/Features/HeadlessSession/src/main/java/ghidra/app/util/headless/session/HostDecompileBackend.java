@@ -39,9 +39,12 @@ import ghidra.util.Msg;
  * takes the existing {@code DecompInterface} path, so replies stay byte-for-byte what clients get
  * today.
  *
- * <p>Only decompiles of a {@link ProgramEntry} (the program's own decompilers, set up by
- * {@code ProgramEntry.newDecompiler}: options from the program, the default action, C code and
- * syntax tree on) are offered; overlays and anything else take the process path.
+ * <p>Offered for a pool bound to the decompiled program, with the set-up
+ * {@code ProgramEntry.newDecompiler} gives every session decompiler: a program's own decompilers
+ * ({@link ProgramEntry}) and an overlay's ({@link Overlay}, whose decompilers are built by the same
+ * {@code newDecompiler} on the overlay's own program object). The host's answers come from the
+ * program object the decompile names, so an overlay decompile sees the overlay's names and
+ * comments. Anything else takes the process path.
  */
 final class HostDecompileBackend {
 
@@ -80,8 +83,11 @@ final class HostDecompileBackend {
 	 * Why the host cannot be offered {@code f} decompiled by {@code e}, or {@code null} when it can.
 	 */
 	static String unsupportedReason(Program prog, Decompilers e, Function f) {
-		if (!(e instanceof ProgramEntry pe) || pe.program != prog) {
-			return "not a program entry's decompiler (overlay or other view)";
+		if (!(e instanceof ProgramEntry) && !(e instanceof Overlay)) {
+			return "not a session decompiler (overlay or other view)";
+		}
+		if (e.program() != prog) {
+			return "the decompilers are bound to another program object";
 		}
 		if (!SETUP_MATCHES) {
 			return "decompiler set-up differs from the registration the host makes";
@@ -100,10 +106,9 @@ final class HostDecompileBackend {
 		}
 		String reason = unsupportedReason(prog, e, f);
 		if (reason == null) {
-			// the options every ProgramEntry decompiler is opened with (newDecompiler)
-			DecompileOptions options = new DecompileOptions();
-			options.grabFromProgram(prog);
-			HostDecompiler.Outcome o = HostDecompiler.decompile(prog, f, options, timeoutS);
+			Program source = e instanceof Overlay o ? o.snapshotSource() : prog;
+			HostDecompiler.Outcome o =
+				HostDecompiler.decompile(prog, source == null ? prog : source, f, timeoutS);
 			if (o.results() != null) {
 				HOSTED.incrementAndGet();
 				return o.results();
@@ -120,6 +125,27 @@ final class HostDecompileBackend {
 				"process path for " + f.getName(true) + " (" + reason + ")");
 		}
 		return null;
+	}
+
+	/**
+	 * Starts the host's set-up for {@code prog} on a background thread, so the first decompile of
+	 * the program (or of an overlay over it) does not pay it: the store, the specs, the byte
+	 * snapshot and the registration answers. Called when a program or an overlay is opened and
+	 * after an overlay changes; a no-op when the backend is off or the program cannot be hosted.
+	 * @param prog the program
+	 */
+	static void warm(Program prog) {
+		warm(prog, prog);
+	}
+
+	/**
+	 * As {@link #warm(Program)}, with the byte snapshot taken from {@code snapshotSource} (an
+	 * overlay's memory is its base program's while the overlay only carries annotations).
+	 */
+	static void warm(Program prog, Program snapshotSource) {
+		if (enabled() && SETUP_MATCHES) {
+			HostDecompiler.warm(prog, snapshotSource == null ? prog : snapshotSource);
+		}
 	}
 
 	/** Requests answered by the host since start (for the gate and tests). */

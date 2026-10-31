@@ -82,6 +82,13 @@ final class Overlay implements Decompilers, DecompilerGate.Pool {
 	OverlayDelta delta = new OverlayDelta();
 	/** Bumped by every successful {@code apply_overlay}. */
 	volatile int version;
+	/**
+	 * Set when something other than the annotation log may have changed the program's memory (an
+	 * overlay script; the log's operations are annotations only). Until then the overlay's memory
+	 * is the stored image the base program holds, so the decompile host maps the base program's
+	 * byte snapshot instead of writing another copy of the same bytes.
+	 */
+	volatile boolean bytesChanged;
 	volatile long openMs;
 	/** What the overlay is over: the program's SHA-256, revision and project. */
 	volatile String sha256;
@@ -120,6 +127,24 @@ final class Overlay implements Decompilers, DecompilerGate.Pool {
 	Program readProgram() {
 		Program p = program;
 		return p != null ? p : shared;
+	}
+
+	@Override
+	public Program program() {
+		return readProgram();
+	}
+
+	/**
+	 * The program whose memory is this overlay's memory: the base program while the overlay only
+	 * carries annotations (its own program reads the same stored file), else the overlay's own.
+	 * @return the program to snapshot, or null while the overlay has none
+	 */
+	Program snapshotSource() {
+		if (bytesChanged) {
+			return readProgram();
+		}
+		Program p = base.program;
+		return p != null && !p.isClosed() ? p : readProgram();
 	}
 
 	/** A decompiler for the overlay's program, after a permit of the decompiler gate (E9). */

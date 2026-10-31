@@ -286,6 +286,13 @@ final class ProgramCommands {
 		c.programs.add(e.key);
 		c.active = e.key;
 		c.activeProject = e.project.id;
+		// the host's set-up for a program nobody can edit while it runs, in the background: the
+		// first decompile then does not pay the store, the specs and the byte snapshot. A
+		// writable program is left out: its bytes are about to change, and writing a snapshot of
+		// them would hold its read lock against the edit (and be thrown away)
+		if (e.program != null && e.mode == ProgramEntry.Mode.READ_ONLY) {
+			HostDecompileBackend.warm(e.program);
+		}
 		JsonObject info = programInfo(e, c);
 		Json.put(info, "openMs", openMs);
 		return info;
