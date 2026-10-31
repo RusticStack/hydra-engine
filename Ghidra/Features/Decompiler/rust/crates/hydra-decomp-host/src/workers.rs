@@ -251,6 +251,27 @@ impl Pool {
         slot.lock().unwrap_or_else(PoisonError::into_inner).take()
     }
 
+    /// Queues `f` once on every worker (after the jobs already queued there) and returns at once.
+    /// These jobs are never stolen; a job queued later on the same worker runs after its copy.
+    pub fn spawn_all(self: &Arc<Self>, f: impl Fn() + Send + Sync + 'static) {
+        let f = Arc::new(f);
+        {
+            let mut s = self.lock();
+            for i in 0..s.q.len() {
+                let f = Arc::clone(&f);
+                s.load[i] += 1;
+                s.q[i].push_back(Job {
+                    key: None,
+                    f: Box::new(move || f()),
+                    after: None,
+                });
+            }
+        }
+        for c in &self.cv {
+            c.notify_one();
+        }
+    }
+
     /// Runs `f` once on every worker (after the jobs queued there) and waits for all of them.
     /// These jobs are never stolen.
     pub fn broadcast(self: &Arc<Self>, f: impl Fn() + Send + Sync + 'static) {

@@ -297,6 +297,17 @@ public:
   virtual int4 getContextSize(void) const { return size; }
   virtual void registerVariable(const string &nm,int4 sbit,int4 ebit);
 
+  /// Drop the per-address values, keeping the default value and the registered variables (a
+  /// client that applies another program generation's context to the same database uses this).
+  void clearValues(void) { database.clear(); }
+  /// Replace the default context value (a client applying another program generation's context).
+  /// \param src is the new default blob
+  /// \param words is its size in words, which must not exceed the registered size
+  void setDefaultValues(const uintm *src,int4 words) {
+    if (words > size) throw LowlevelError("context default is larger than the context");
+    uintm *dst = database.defaultValue().array;
+    for(int4 i=0;i<words;++i) dst[i] = src[i];
+  }
   virtual const uintm *getContext(const Address &addr) const { return database.getValue(addr).array; }
   virtual const uintm *getContext(const Address &addr,uintb &first,uintb &last) const;
 

@@ -33,6 +33,12 @@ import java.util.concurrent.atomic.LongAdder;
 import ghidra.framework.Application;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.address.AddressSetView;
+import ghidra.program.model.data.BuiltIn;
+import ghidra.program.model.data.BuiltInDataTypeManager;
+import ghidra.program.model.data.DataType;
+import ghidra.program.model.data.DataTypeManager;
+import ghidra.program.model.data.DefaultDataType;
+import ghidra.program.model.lang.DecompilerLanguage;
 import ghidra.program.model.listing.*;
 import ghidra.program.model.symbol.Reference;
 import ghidra.program.model.symbol.ReferenceManager;
@@ -84,7 +90,7 @@ public final class HostDecompiler {
 	/** Native runs per decompile before falling back (each but the last learns its misses). */
 	public static final int MAX_ROUNDS = Math.max(1, Integer.getInteger(ROUNDS_PROPERTY, DEFAULT_ROUNDS));
 
-	private static final int ABI_VERSION = 3;
+	private static final int ABI_VERSION = 4;
 	private static final int OK = 0;
 	private static final int MISSES = 1;
 
@@ -130,6 +136,17 @@ public final class HostDecompiler {
 	private static final Map<String, LongAdder> MISS_KINDS = new ConcurrentHashMap<>();
 	private static final LongAdder REF_HITS = new LongAdder();
 	private static final LongAdder REF_MISSES = new LongAdder();
+	/** Instructions whose p-code the host translates itself (diagnostics). */
+	private static final LongAdder DECODE_RECORDS = new LongAdder();
+	/** Generations whose native translation the host refused (diagnostics). */
+	private static final LongAdder NATIVE_OFF = new LongAdder();
+	/** Instructions the validation compared with the Java p-code, and how many differed. */
+	private static final LongAdder VALIDATED = new LongAdder();
+	private static final LongAdder MISMATCHES = new LongAdder();
+	/** {@code hydra.decomp.host.decodeValidate}: export the Java p-code of native instructions too,
+	 * so the host compares its own translation against it (diagnostics; the output is unchanged). */
+	private static final boolean DECODE_VALIDATE =
+		Boolean.getBoolean("hydra.decomp.host.decodeValidate");
 
 	private HostDecompiler() {
 	}
@@ -139,24 +156,44 @@ public final class HostDecompiler {
 	private static final class Lib {
 		final MethodHandle storeNew;
 		final MethodHandle storePutBulk;
+		final MethodHandle storePutDecode;
+		final MethodHandle storePutContext;
+		final MethodHandle storeNative;
 		final MethodHandle storeStats;
 		final MethodHandle storeClose;
+		final MethodHandle warm;
+		final MethodHandle storeValidate;
 		final MethodHandle decompile;
 		final MethodHandle free;
 		final int threads;
 		final ExecutorService calls;
 
-		Lib(SymbolLookup lookup, int threads) {
+		Lib(SymbolLookup lookup, int threads) throws Throwable {
 			Linker l = Linker.nativeLinker();
 			storeNew = l.downcallHandle(lookup.findOrThrow("hydra_dhost_store_new"),
 				FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS,
-					JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG));
+					JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG, ADDRESS, JAVA_LONG,
+					ADDRESS, JAVA_LONG));
 			storePutBulk = l.downcallHandle(lookup.findOrThrow("hydra_dhost_store_put_bulk"),
 				FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_LONG));
+			storePutDecode = l.downcallHandle(lookup.findOrThrow("hydra_dhost_store_put_decode"),
+				FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_LONG));
+			storePutContext = l.downcallHandle(lookup.findOrThrow("hydra_dhost_store_put_context"),
+				FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_LONG));
+			storeNative = l.downcallHandle(lookup.findOrThrow("hydra_dhost_store_native"),
+				FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS));
 			storeStats = l.downcallHandle(lookup.findOrThrow("hydra_dhost_store_stats"),
 				FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS));
 			storeClose = l.downcallHandle(lookup.findOrThrow("hydra_dhost_store_close"),
 				FunctionDescriptor.ofVoid(ADDRESS));
+			warm = l.downcallHandle(lookup.findOrThrow("hydra_dhost_warm"),
+				FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG));
+			storeValidate = l.downcallHandle(lookup.findOrThrow("hydra_dhost_store_validate"),
+				FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS));
+			if (DECODE_VALIDATE) {
+				l.downcallHandle(lookup.findOrThrow("hydra_dhost_set_validate"),
+					FunctionDescriptor.ofVoid(JAVA_INT)).invokeExact(1);
+			}
 			decompile = l.downcallHandle(lookup.findOrThrow("hydra_dhost_decompile"),
 				FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_LONG, ADDRESS, ADDRESS,
 					ADDRESS, ADDRESS, ADDRESS));
@@ -387,6 +424,12 @@ public final class HostDecompiler {
 		final ProgramSnapshotFile snapshot;
 		final ConcurrentLinkedQueue<DecompileSnapshot> answerers = new ConcurrentLinkedQueue<>();
 		final DecompileOptions decompileOptions;
+		/** The language's .sla file the host translates instructions with, or null. */
+		final String slaFile;
+		/** True while the host translates this generation's plain instructions itself. */
+		volatile boolean nativeDecode;
+		/** The host reported native translation working for this generation. */
+		volatile boolean nativeConfirmed;
 		final Set<Address> prefetched = ConcurrentHashMap.newKeySet();
 		/** Functions whose p-code was exported after a p-code miss in their body. */
 		final Set<Address> pcodeBodies = ConcurrentHashMap.newKeySet();
@@ -396,6 +439,9 @@ public final class HostDecompiler {
 		 * A generation's answers never change, so a later function's prefetch only skips them.
 		 */
 		final ConcurrentHashMap<Address, byte[][]> refAnswers = new ConcurrentHashMap<>();
+		/** Validation counters already added to the statistics (validation mode). */
+		long validatedSeen;
+		long mismatchSeen;
 		/** The options' comment filter, learned from the first getComments miss (-1: not yet). */
 		volatile long commentFlags = -1;
 		private int inflight;
@@ -404,7 +450,7 @@ public final class HostDecompiler {
 
 		Gen(Program program, Program snapshotSource, long modification, byte[] options,
 				DecompileOptions decompileOptions, MemorySegment store,
-				ProgramSnapshotFile snapshot) {
+				ProgramSnapshotFile snapshot, String slaFile) {
 			this.program = program;
 			this.snapshotSource = snapshotSource;
 			this.modification = modification;
@@ -412,6 +458,8 @@ public final class HostDecompiler {
 			this.decompileOptions = decompileOptions;
 			this.store = store;
 			this.snapshot = snapshot;
+			this.slaFile = slaFile;
+			this.nativeDecode = slaFile != null;
 		}
 
 		synchronized boolean acquire() {
@@ -577,10 +625,15 @@ public final class HostDecompiler {
 			snapshotSource.getModificationNumber());
 		long tsnap = System.nanoTime();
 		String snapPath = snap == null ? "" : snap.getPath().toString();
+		// Native instruction translation needs the language's .sla, the instruction context of the
+		// generation and the byte snapshot (the host decodes the bytes itself); without any of
+		// them every p-code answer is exported instead.
+		byte[] context = snap == null ? null : first.contextExport();
+		String sla = context == null ? null : first.slaFile();
 		MemorySegment store;
 		try (Arena a = Arena.ofConfined()) {
 			byte[][] parts = { utf8(specs.pspec()), utf8(specs.cspec()), utf8(specs.tspec()),
-				utf8(specs.coretypes()), opts, utf8(snapPath) };
+				utf8(specs.coretypes()), opts, utf8(snapPath), utf8(sla == null ? "" : sla) };
 			MemorySegment[] segs = new MemorySegment[parts.length];
 			for (int i = 0; i < parts.length; i++) {
 				segs[i] = segment(a, parts[i]);
@@ -588,7 +641,7 @@ public final class HostDecompiler {
 			store = (MemorySegment) l.storeNew.invokeExact(segs[0], (long) parts[0].length,
 				segs[1], (long) parts[1].length, segs[2], (long) parts[2].length, segs[3],
 				(long) parts[3].length, segs[4], (long) parts[4].length, segs[5],
-				(long) parts[5].length);
+				(long) parts[5].length, segs[6], (long) parts[6].length);
 		}
 		catch (Throwable t) {
 			ProgramSnapshotFile.release(snap);
@@ -599,9 +652,16 @@ public final class HostDecompiler {
 			ProgramSnapshotFile.release(snap);
 			throw new IOException("the host could not create a store");
 		}
-		Gen made = new Gen(program, snapshotSource, mod, opts, options, store, snap);
+		Gen made = new Gen(program, snapshotSource, mod, opts, options, store, snap, sla);
+		if (sla != null) {
+			warmSla(l, sla);
+		}
 		try {
+			try (Arena arena = Arena.ofConfined()) {
+				putContext(l, made, arena, context);
+			}
 			registrationAnswers(l, made, first);
+			typeAnswers(l, made, first);
 			REGISTER_NANOS.add(System.nanoTime() - tstore);
 		}
 		catch (Throwable t) {
@@ -643,6 +703,30 @@ public final class HostDecompiler {
 
 	private static byte[] utf8(String s) {
 		return s.getBytes(StandardCharsets.UTF_8);
+	}
+
+	/** .sla files whose parse was broadcast to the pool (once per JVM: the parse is per thread). */
+	private static final Set<String> WARMED_SLA = ConcurrentHashMap.newKeySet();
+
+	/**
+	 * Parse the language's .sla on every host worker now, so the first native decode of a
+	 * generation does not pay it. Runs on the generation's (background) set-up thread.
+	 */
+	private static void warmSla(Lib l, String sla) {
+		if (!WARMED_SLA.add(sla)) {
+			return;
+		}
+		try (Arena a = Arena.ofConfined()) {
+			byte[] list = utf8(sla + '\0');	// NUL-terminated paths
+			MemorySegment seg = a.allocate(list.length);
+			MemorySegment.copy(list, 0, seg, JAVA_BYTE, 0, list.length);
+			if ((int) l.warm.invokeExact(seg, (long) list.length) != 0) {
+				Msg.warn(HostDecompiler.class, "decompile host: a worker could not load " + sla);
+			}
+		}
+		catch (Throwable t) {
+			Msg.warn(HostDecompiler.class, "decompile host: warming " + sla + ": " + t);
+		}
 	}
 
 	private static MemorySegment segment(Arena a, byte[] b) {
@@ -711,6 +795,94 @@ public final class HostDecompiler {
 	private static final Map<ghidra.app.plugin.processors.sleigh.SleighLanguage, byte[]> REG_BLOCKS =
 		new java.util.WeakHashMap<>();
 
+	/**
+	 * The native-decode records of one function body, packed for
+	 * {@code hydra_dhost_store_put_decode}: the space name, the number of instructions and, for
+	 * each, its offset and the SLEIGH context words the Java side exported for it. The host
+	 * decodes those instructions itself, so their p-code is not exported at all.
+	 */
+	private static final class DecodeBlock {
+		final String space;
+		private byte[] buf = new byte[1024];
+		private int len = 4;	// the count, filled at the end
+		private int count;
+
+		DecodeBlock(String space) {
+			this.space = space;
+		}
+
+		void add(long offset) {
+			need(8);
+			putLong(offset);
+			count++;
+		}
+
+		int count() {
+			return count;
+		}
+
+		byte[] blob() {
+			byte[] name = space.getBytes(StandardCharsets.UTF_8);
+			byte[] out = new byte[4 + name.length + 4 + (len - 4)];
+			int at = 0;
+			at = putInt(out, at, name.length);
+			System.arraycopy(name, 0, out, at, name.length);
+			at += name.length;
+			at = putInt(out, at, count);
+			System.arraycopy(buf, 4, out, at, len - 4);
+			return out;
+		}
+
+		private void need(int n) {
+			if (len + n > buf.length) {
+				buf = Arrays.copyOf(buf, Math.max(buf.length * 2, len + n));
+			}
+		}
+
+		private void putInt(int v) {
+			len = putInt(buf, len, v);
+		}
+
+		private static int putInt(byte[] b, int at, int v) {
+			b[at++] = (byte) v;
+			b[at++] = (byte) (v >>> 8);
+			b[at++] = (byte) (v >>> 16);
+			b[at++] = (byte) (v >>> 24);
+			return at;
+		}
+
+		private void putLong(long v) {
+			putInt((int) v);
+			putInt((int) (v >>> 32));
+		}
+	}
+
+	/** Exports a native-decode block to the store (one downcall). */
+	private static void putDecode(Lib l, Gen g, Arena arena, DecodeBlock block) throws Throwable {
+		if (block.count() == 0) {
+			return;
+		}
+		byte[] blob = block.blob();
+		MemorySegment seg = arena.allocate(blob.length);
+		MemorySegment.copy(blob, 0, seg, JAVA_BYTE, 0, blob.length);
+		if ((int) l.storePutDecode.invokeExact(g.store, seg, (long) blob.length) != 0) {
+			throw new IOException("the host refused native-decode records");
+		}
+		DECODE_RECORDS.add(block.count());
+	}
+
+	/** Exports the generation's instruction context (one downcall). */
+	private static void putContext(Lib l, Gen g, Arena arena, byte[] blob) throws Throwable {
+		if (blob == null) {
+			return;
+		}
+		MemorySegment seg = arena.allocate(blob.length);
+		MemorySegment.copy(blob, 0, seg, JAVA_BYTE, 0, blob.length);
+		if ((int) l.storePutContext.invokeExact(g.store, seg, (long) blob.length) != 0) {
+			throw new IOException("the host refused the instruction context");
+		}
+	}
+
 	/** Exports a block of answers to the store (one downcall). */
 	private static void putAll(Lib l, Gen g, Arena arena, AnswerBlock block) throws Throwable {
 		if (block.size() == 0) {
@@ -769,10 +941,52 @@ public final class HostDecompiler {
 			PREFETCHED.increment();
 		}
 		FunctionManager fm = p.getFunctionManager();
+		// One pass over the body's references: the targets to answer, and the instructions whose
+		// p-code the Java side adds to (an overriding reference, or a primary call reference that
+		// is not the instruction's own flow). Everything else is decoded by the host.
+		ReferenceManager rm = p.getReferenceManager();
+		Set<Address> targets = new LinkedHashSet<>();
+		Set<Address> overrides = new HashSet<>();
+		Map<Address, List<Address>> callRefs = new HashMap<>();
+		for (Address from : rm.getReferenceSourceIterator(body, true)) {
+			for (Reference r : rm.getReferencesFrom(from)) {
+				Address to = r.getToAddress();
+				ghidra.program.model.symbol.RefType type = r.getReferenceType();
+				if (type.isOverride()) {
+					overrides.add(from);
+				}
+				if (r.isPrimary() && type.isCall()) {
+					callRefs.computeIfAbsent(from, k -> new ArrayList<>(1)).add(to);
+				}
+				if (to.isMemoryAddress() && !to.getAddressSpace().isOverlaySpace()) {
+					targets.add(to);
+				}
+			}
+		}
+		DecodeBlock decode = null;
 		for (Instruction in : p.getListing().getInstructions(body, true)) {
+			Address at = in.getAddress();
+			if (g.nativeDecode) {
+				List<Address> refs = callRefs.get(at);
+				boolean nativeOk = a.nativeDecodable(in, overrides.contains(at), refs,
+					refs == null ? null : in.getFlows());
+				// One decode block names one address space; an instruction of another space (a
+				// body spanning spaces) is answered by its Java p-code.
+				if (nativeOk &&
+					(decode == null || decode.space.equals(at.getAddressSpace().getName()))) {
+					if (decode == null) {
+						decode = new DecodeBlock(at.getAddressSpace().getName());
+					}
+					decode.add(at.getOffset());
+					PREFETCHED.increment();
+					// validation: the Java p-code is exported too, the host compares the two
+					if (!DECODE_VALIDATE) {
+						continue;
+					}
+				}
+			}
 			// the query bytes as the native decompiler sends them (they key the answer), the
 			// answer without decoding the query again: the instruction is in the listing
-			Address at = in.getAddress();
 			byte[] q = DecompileSnapshot.queryPcode(at);
 			DecompileSnapshot.Answer ans = a.answerPcode(at);
 			if (ans.kind() == DecompileSnapshot.UNSTORABLE) {
@@ -789,16 +1003,6 @@ public final class HostDecompiler {
 						DecompileSnapshot.queryCallFixup(fixup, in.getAddress(), to))) {
 						PREFETCHED.increment();
 					}
-				}
-			}
-		}
-		ReferenceManager rm = p.getReferenceManager();
-		Set<Address> targets = new LinkedHashSet<>();
-		for (Address from : rm.getReferenceSourceIterator(body, true)) {
-			for (Reference r : rm.getReferencesFrom(from)) {
-				Address to = r.getToAddress();
-				if (to.isMemoryAddress() && !to.getAddressSpace().isOverlaySpace()) {
-					targets.add(to);
 				}
 			}
 		}
@@ -836,6 +1040,9 @@ public final class HostDecompiler {
 		}
 		try (Arena arena = Arena.ofConfined()) {
 			putAll(l, g, arena, block);
+			if (decode != null) {
+				putDecode(l, g, arena, decode);
+			}
 		}
 		for (Map.Entry<Address, byte[][]> e : learned) {
 			g.refAnswers.putIfAbsent(e.getKey(), e.getValue());
@@ -946,7 +1153,81 @@ public final class HostDecompiler {
 		}
 	}
 
-	/** Export the answers to missed queries; the reason when one cannot be stored, else null. */
+	/** Id prefix of a built-in data type in a {@code <typeref>} element (PcodeDataTypeManager). */
+	private static final long BUILTIN_ID_HEADER = 0xC000000000000000L;
+	/** Id of the default data type ("undefined") in a {@code <typeref>} element. */
+	private static final long DEFAULT_DECOMPILER_ID = 0xC000000000000000L;
+
+	/**
+	 * Export the program's data types once per generation, by the name and id the decompiler
+	 * knows them by. The decompiler asks for a type the first time it meets it, and a missed
+	 * answer costs a repeated run (the run is discarded); with every type in the store the first
+	 * decompile of a function that uses a new type no longer repeats. The ids are the ones
+	 * {@code PcodeDataTypeManager.encodeNameIdAttributes} writes in a {@code <typeref>} element.
+	 */
+	/** Data-type answers by data-type manager and options: every generation of a program shares them. */
+	private static final Map<DataTypeManager, Map<Long, byte[]>> TYPE_BLOCKS = new WeakHashMap<>();
+
+	private static void typeAnswers(Lib l, Gen g, DecompileSnapshot a) throws Throwable {
+		DecompilerLanguage lang = g.program.getCompilerSpec().getDecompilerOutputLanguage();
+		DataTypeManager dtm = g.program.getDataTypeManager();
+		long key = Arrays.hashCode(g.options);
+		byte[] cached;
+		synchronized (TYPE_BLOCKS) {
+			Map<Long, byte[]> byOptions = TYPE_BLOCKS.get(dtm);
+			cached = byOptions == null ? null : byOptions.get(key);
+		}
+		if (cached != null) {
+			// the same program and options: replay the block (an overlay's generation, a fork's)
+			try (Arena arena = Arena.ofConfined()) {
+				MemorySegment seg = arena.allocate(cached.length);
+				MemorySegment.copy(cached, 0, seg, JAVA_BYTE, 0, cached.length);
+				if ((int) l.storePutBulk.invokeExact(g.store, seg, (long) cached.length) != 0) {
+					throw new IOException("the host refused the data-type answers");
+				}
+			}
+			return;
+		}
+		AnswerBlock block = new AnswerBlock();
+		DataTypeManager builtins = BuiltInDataTypeManager.getDataTypeManager();
+		for (java.util.Iterator<DataType> it = builtins.getAllDataTypes(); it.hasNext();) {
+			DataType dt = it.next();
+			if (!(dt instanceof BuiltIn builtin)) {
+				continue;
+			}
+			long id = builtins.getID(dt.clone(builtins)) | BUILTIN_ID_HEADER;
+			String name = builtin.getDecompilerDisplayName(lang);
+			if (name != null && !name.isEmpty() &&
+				add(block, EMPTY, a, DecompileSnapshot.queryDataType(name, id))) {
+				PREFETCHED.increment();
+			}
+		}
+		for (java.util.Iterator<DataType> it = dtm.getAllDataTypes(); it.hasNext();) {
+			DataType dt = it.next();
+			boolean isDefault = dt instanceof DefaultDataType;
+			long id = isDefault ? DEFAULT_DECOMPILER_ID : dtm.getID(dt);
+			String name = dt.getName();
+			if (id <= 0 || name == null || name.isEmpty()) {
+				continue;
+			}
+			if (add(block, EMPTY, a, DecompileSnapshot.queryDataType(name, id))) {
+				PREFETCHED.increment();
+			}
+		}
+		try (Arena arena = Arena.ofConfined()) {
+			putAll(l, g, arena, block);
+		}
+		if (block.size() > 0) {
+			synchronized (TYPE_BLOCKS) {
+				TYPE_BLOCKS.computeIfAbsent(dtm, k -> new HashMap<>())
+						.put(key, Arrays.copyOf(block.array(), block.size()));
+			}
+		}
+	}
+
+	/**
+	 * Export the answers to missed queries; the reason when one cannot be stored, else null.
+	 */
 	private static String learn(Lib l, Gen g, DecompileSnapshot a, byte[] scope, Run r)
 			throws Throwable {
 		pcodeAround(l, g, a, r);
@@ -1197,6 +1478,7 @@ public final class HostDecompiler {
 		if (!g.acquire()) {
 			return Outcome.fallback("generation retired");
 		}
+		checkNative(l, g);
 		if (ASYNC) {
 			long deadline = timeoutSecs > 0
 					? System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSecs) | 1
@@ -1264,6 +1546,62 @@ public final class HostDecompiler {
 	static void checkDeadline(long deadline) throws TimeoutException {
 		if (deadline != 0 && System.nanoTime() - deadline >= 0) {
 			throw new TimeoutException();
+		}
+	}
+
+	/**
+	 * If the host says it cannot translate this generation's instructions (a .sla it could not
+	 * load, address spaces that disagree with the translator spec), stop exporting native-decode
+	 * records for it: the generation then exports the Java p-code answers as it did before, instead
+	 * of learning them one missed run at a time.
+	 */
+	private static void checkNative(Lib l, Gen g) {
+		if (DECODE_VALIDATE) {
+			try (Arena a = Arena.ofConfined()) {
+				MemorySegment checked = a.allocate(JAVA_LONG);
+				MemorySegment mismatched = a.allocate(JAVA_LONG);
+				l.storeValidate.invokeExact(g.store, checked, mismatched);
+				long c = checked.get(JAVA_LONG, 0);
+				long m = mismatched.get(JAVA_LONG, 0);
+				VALIDATED.add(c - g.validatedSeen);
+				MISMATCHES.add(m - g.mismatchSeen);
+				g.validatedSeen = c;
+				g.mismatchSeen = m;
+			}
+			catch (Throwable t) {
+				Msg.warn(HostDecompiler.class, "decompile host: validation counters: " + t);
+			}
+		}
+		if (!g.nativeDecode || g.nativeConfirmed) {
+			return;
+		}
+		try (Arena a = Arena.ofConfined()) {
+			MemorySegment msg = a.allocate(ADDRESS);
+			MemorySegment len = a.allocate(JAVA_LONG);
+			int state = (int) l.storeNative.invokeExact(g.store, msg, len);
+			if (state > 0) {
+				g.nativeConfirmed = true;
+				return;
+			}
+			if (state == 0) {
+				return;		// not tried yet (no worker has registered the generation)
+			}
+			g.nativeDecode = false;
+			NATIVE_OFF.increment();
+			String why = "";
+			MemorySegment p = msg.get(ADDRESS, 0);
+			long n = len.get(JAVA_LONG, 0);
+			if (!p.equals(MemorySegment.NULL)) {
+				why = new String(p.reinterpret(n).toArray(JAVA_BYTE), StandardCharsets.UTF_8);
+				l.free.invokeExact(p);
+			}
+			Msg.warn(HostDecompiler.class, "decompile host: native instruction translation off for " +
+				g.program.getName() + ": " + why);
+		}
+		catch (Throwable t) {
+			g.nativeDecode = false;
+			NATIVE_OFF.increment();
+			Msg.warn(HostDecompiler.class, "decompile host: native state: " + t);
 		}
 	}
 
@@ -1448,6 +1786,12 @@ public final class HostDecompiler {
 		m.put("prefetched", PREFETCHED.sum());
 		m.put("referenceHits", REF_HITS.sum());
 		m.put("referenceMisses", REF_MISSES.sum());
+		m.put("nativeDecodeRecords", DECODE_RECORDS.sum());
+		m.put("nativeDisabledGenerations", NATIVE_OFF.sum());
+		if (DECODE_VALIDATE) {
+			m.put("validatedInstructions", VALIDATED.sum());
+			m.put("validateMismatches", MISMATCHES.sum());
+		}
 		m.put("missesLearned", MISSES_LEARNED.sum());
 		Map<String, Long> kinds = new TreeMap<>();
 		MISS_KINDS.forEach((k, v) -> kinds.put(k, v.sum()));

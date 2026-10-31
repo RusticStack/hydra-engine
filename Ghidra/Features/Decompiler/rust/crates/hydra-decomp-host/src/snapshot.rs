@@ -15,7 +15,7 @@ use std::ffi::{c_char, c_int, c_void};
 use std::sync::OnceLock;
 
 /// Version of this C ABI; the Java binding refuses a library with another value.
-pub const ABI_VERSION: c_int = 3;
+pub const ABI_VERSION: c_int = 4;
 
 /// The command response is complete.
 pub const OK: c_int = 0;
@@ -46,6 +46,8 @@ mod ffi {
             optlen: usize,
             snap: *const c_char,
             snaplen: usize,
+            sla: *const c_char,
+            slalen: usize,
         ) -> *mut c_void;
         pub fn hydra_snapshot_store_put(
             h: *mut c_void,
@@ -61,6 +63,28 @@ mod ffi {
             blob: *const c_char,
             len: usize,
         ) -> c_int;
+        pub fn hydra_snapshot_store_put_decode(
+            h: *mut c_void,
+            blob: *const c_char,
+            len: usize,
+        ) -> c_int;
+        pub fn hydra_snapshot_store_put_context(
+            h: *mut c_void,
+            blob: *const c_char,
+            len: usize,
+        ) -> c_int;
+        pub fn hydra_snapshot_store_native(
+            h: *mut c_void,
+            msg: *mut *mut c_char,
+            msglen: *mut usize,
+        ) -> c_int;
+        pub fn hydra_snapshot_warm(paths: *const c_char, len: usize) -> c_int;
+        pub fn hydra_snapshot_store_validate(
+            h: *mut c_void,
+            checked: *mut u64,
+            mismatched: *mut u64,
+        );
+        pub fn hydra_snapshot_set_validate(on: c_int);
         pub fn hydra_snapshot_store_stats(h: *mut c_void, count: *mut u64, bytes: *mut u64);
         pub fn hydra_snapshot_store_close(h: *mut c_void);
         pub fn hydra_snapshot_decompile(
@@ -140,6 +164,8 @@ pub unsafe extern "C" fn hydra_dhost_store_new(
     optlen: usize,
     snap: *const c_char,
     snaplen: usize,
+    sla: *const c_char,
+    slalen: usize,
 ) -> *mut c_void {
     // SAFETY: the caller guarantees the buffers; the C++ side copies them.
     unsafe {
@@ -156,6 +182,8 @@ pub unsafe extern "C" fn hydra_dhost_store_new(
             optlen,
             nz(snap, snaplen),
             snaplen,
+            nz(sla, slalen),
+            slalen,
         )
     }
 }
@@ -219,6 +247,111 @@ pub unsafe extern "C" fn hydra_dhost_store_put_bulk(
     }
     // SAFETY: the caller guarantees the handle and the buffer; the C++ side copies the records.
     unsafe { ffi::hydra_snapshot_store_put_bulk(h, nz(blob, len), len) }
+}
+
+/// Adds the native-decode records of one function body (see `SnapshotStore::putDecode`): the
+/// instructions the host decodes itself, with the context register value exported for each.
+/// Returns 0, or 1 on failure.
+///
+/// # Safety
+/// `h` must be a live store handle; `blob` must be valid for reads of `len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hydra_dhost_store_put_decode(
+    h: *mut c_void,
+    blob: *const c_char,
+    len: usize,
+) -> c_int {
+    if h.is_null() {
+        return 1;
+    }
+    // SAFETY: the caller guarantees the handle and the buffer; the C++ side copies the records.
+    unsafe { ffi::hydra_snapshot_store_put_decode(h, nz(blob, len), len) }
+}
+
+/// Sets the generation's instruction-context export (default value and change ranges of the
+/// program context register), applied by every worker that decodes instructions natively.
+/// Returns 0, or 1 on failure.
+///
+/// # Safety
+/// `h` must be a live store handle; `blob` must be valid for reads of `len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hydra_dhost_store_put_context(
+    h: *mut c_void,
+    blob: *const c_char,
+    len: usize,
+) -> c_int {
+    if h.is_null() {
+        return 1;
+    }
+    // SAFETY: the caller guarantees the handle and the buffer; the C++ side copies it.
+    unsafe { ffi::hydra_snapshot_store_put_context(h, nz(blob, len), len) }
+}
+
+/// Native-decode state of a store: 1 usable, 0 not tried yet, -1 disabled (the reason is returned
+/// in `msg`, freed with [`hydra_dhost_free`]).
+///
+/// # Safety
+/// `h` must be a live store handle; `msg` and `msglen` must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hydra_dhost_store_native(
+    h: *mut c_void,
+    msg: *mut *mut c_char,
+    msglen: *mut usize,
+) -> c_int {
+    if h.is_null() {
+        return 0;
+    }
+    // SAFETY: the caller guarantees the handle and the out-pointers.
+    unsafe { ffi::hydra_snapshot_store_native(h, msg, msglen) }
+}
+
+/// Queues the parse of the given .sla files on every worker and returns at once: the worker that
+/// runs a decompile next has the translator ready (its parse job is queued before it). A parse
+/// that fails shows up as native decode disabled for the generations of that language.
+///
+/// # Safety
+/// `paths` must be valid for `len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hydra_dhost_warm(paths: *const c_char, len: usize) -> c_int {
+    let Some(Ok(pool)) = POOL.get() else {
+        return 1;
+    };
+    if len == 0 || paths.is_null() {
+        return 0;
+    }
+    // SAFETY: valid for `len` bytes (caller guarantee); copied before any worker runs.
+    let list = unsafe { std::slice::from_raw_parts(paths.cast::<u8>(), len) }.to_vec();
+    pool.spawn_all(move || {
+        // SAFETY: the buffer lives in the closure; the C++ side only reads it.
+        unsafe { ffi::hydra_snapshot_warm(list.as_ptr().cast(), list.len()) };
+    });
+    0
+}
+
+/// Instructions the native-vs-Java p-code validation compared on this store, and how many of them
+/// differed (validation mode; 0 otherwise).
+///
+/// # Safety
+/// `h` must be a live store handle; `checked` and `mismatched` must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hydra_dhost_store_validate(
+    h: *mut c_void,
+    checked: *mut u64,
+    mismatched: *mut u64,
+) {
+    if h.is_null() {
+        return;
+    }
+    // SAFETY: guaranteed by the caller.
+    unsafe { ffi::hydra_snapshot_store_validate(h, checked, mismatched) }
+}
+
+/// Turns the native-vs-Java p-code validation on (diagnostics: the Java side must also export the
+/// p-code answers, `-Dhydra.decomp.host.decodeValidate`).
+#[unsafe(no_mangle)]
+pub extern "C" fn hydra_dhost_set_validate(on: c_int) {
+    // SAFETY: no arguments but the flag; it only changes a process-wide mode flag.
+    unsafe { ffi::hydra_snapshot_set_validate(on) }
 }
 
 /// Number of answers and their bytes.
