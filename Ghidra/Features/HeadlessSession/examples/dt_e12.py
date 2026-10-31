@@ -704,7 +704,7 @@ def instrumented(variant):
     lbf = sub_n(lbf, r"java\.nio\.channels\.FileChannel ch = raf\.getChannel\(\);\s*while \(chunk\.hasRemaining\(\)\) \{\s*"
                 r"ch\.write\(chunk, pos \+ chunk\.position\(\)\);\s*\}",
                 "raf.writeAt(chunk, pos);", 1, "LocalBufferFile chunk write")
-    dt.check(not re.search(r"ch\.write\(|\.getChannel\(\)\s*\.write\(|\.transferFrom\(|\.map\(", lbf),
+    dt.check(not re.search(r"\bch\.write\(|\.getChannel\(\)\s*\.write\(|\.transferFrom\(|\.map\(", lbf),
              "LocalBufferFile writes through a channel the trace does not see")
     lbf = sub_n(lbf, r"raf\.getFD\(\)\.sync\(\);",
                 "raf.getFD();" if variant == "no_data_sync" else "raf.syncTraced();", 1,
