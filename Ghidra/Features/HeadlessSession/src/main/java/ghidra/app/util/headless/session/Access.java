@@ -43,6 +43,8 @@ final class Access {
 	}
 
 	static final Pattern PROGRAM_KEY = Pattern.compile("(p\\d+):(/.*)");
+	/** A project id ({@code p1}) as opposed to a path: checked on every command (no per-call compile). */
+	private static final Pattern PROJECT_ID = Pattern.compile("p\\d+");
 
 	/**
 	 * The project a command acts on: {@code "project"} (an id like {@code p1}, or a path to the
@@ -65,7 +67,7 @@ final class Access {
 				"no project selected; send open_project first");
 		}
 		ProjectEntry p = s.projectsById.get(key);
-		if (p == null && !key.matches("p\\d+")) {
+		if (p == null && !PROJECT_ID.matcher(key).matches()) {
 			try {
 				ProjectResolver.Resolved r = ProjectResolver.resolve(key);
 				p = s.projects.get(r.gpr().getCanonicalPath());

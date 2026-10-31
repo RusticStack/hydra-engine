@@ -47,7 +47,11 @@ public class NamespaceManager implements ProgramDBModule {
 	private SymbolManager symbolMgr;
 	private Namespace globalNamespace;
 	private Lock lock;
-	private Map<Namespace, AddressSet> bodyCache = Collections.synchronizedMap(new LRUMap<>(10));
+	// Hydra: ten entries thrashed (a decompile asks for the bodies of ~20 functions, over and over,
+	// and every miss walks the namespace's symbols); a body is a few ranges, and any change to the
+	// namespaces clears the cache
+	private Map<Namespace, AddressSet> bodyCache =
+		Collections.synchronizedMap(new LRUMap<>(512));
 
 	/**
 	 * Construct a new namespace manager.
@@ -268,6 +272,11 @@ public class NamespaceManager implements ProgramDBModule {
 			SymbolIterator it = symbolMgr.getSymbols(namespace);
 			while (it.hasNext()) {
 				Symbol s = it.next();
+				if (!s.getSymbolType().isNamespace()) {
+					// Hydra: only namespaces add to a body; resolving a parameter or local symbol
+					// to its Variable built the function's whole variable list for nothing
+					continue;
+				}
 				Object obj = s.getObject();
 				if (obj instanceof Namespace) {
 					set.add(((Namespace) obj).getBody());

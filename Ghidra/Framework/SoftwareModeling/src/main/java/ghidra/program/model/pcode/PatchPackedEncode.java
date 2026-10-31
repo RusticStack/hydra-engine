@@ -126,7 +126,7 @@ public class PatchPackedEncode extends PackedEncode implements PatchEncoder {
 
 	@Override
 	public void clear() {
-		editStream = new PackedBytes(512);
+		editStream = new PackedBytes(128);
 		outStream = editStream;
 	}
 
