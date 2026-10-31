@@ -73,6 +73,12 @@ final class Overlay implements Decompilers, DecompilerGate.Pool {
 	UpgradeCache.Lease lease;
 	/** The operations applied so far, in order (each with its {@code op} name). */
 	final JsonArray log = new JsonArray();
+	/**
+	 * The names and comments the log's operations changed while the overlay still read through
+	 * {@link #shared} ({@link OverlayDelta}): the first changes are answered without opening the
+	 * overlay's own program. Null once it has one; a later change applies to the program.
+	 */
+	OverlayDelta delta = new OverlayDelta();
 	/** Bumped by every successful {@code apply_overlay}. */
 	volatile int version;
 	volatile long openMs;
@@ -208,6 +214,7 @@ final class Overlay implements Decompilers, DecompilerGate.Pool {
 		}
 		finally {
 			program = null;
+			delta = new OverlayDelta();
 			Program s = shared;
 			shared = null;
 			if (s != null) {
@@ -239,7 +246,10 @@ final class Overlay implements Decompilers, DecompilerGate.Pool {
 			System.currentTimeMillis() - createdAt);
 		Json.put(o, "stale", generation != base.project.generation);
 		Json.put(o, "error", error);
-		Json.put(o, "changed", program != null && program.isChanged());
+		// its own program once it has one; before that, the changes its log holds (they are not in
+		// the shared program, so nothing else shows them until the overlay opens its own)
+		Json.put(o, "changed",
+			program != null ? program.isChanged() : shared != null && !log.isEmpty());
 		if (program instanceof ProgramDB db &&
 			db.getUndoDepth() != ProgramDB.DEFAULT_UNDO_DEPTH) {
 			// lightOverlays (PrivateInstance.lighten): only shown when it differs from the

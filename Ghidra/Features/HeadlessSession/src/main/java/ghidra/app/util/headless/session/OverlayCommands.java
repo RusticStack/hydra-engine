@@ -150,21 +150,27 @@ final class OverlayCommands {
 				cmd.equals("comment") || cmd.equals("drop_overlay");
 			// a script may change the program too, so it gets one of its own like a change does
 			boolean needsProgram = write || cmd.equals("script");
-			if (needsProgram && !cmd.equals("drop_overlay") && o.error == null &&
-				o.program == null) {
-				// the first change gives the overlay a program of its own, over the stored file:
-				// taken with the base's lock (and before the overlay's write lock), the order the
-				// overlay's open takes them in (a materialize under the overlay lock alone could
-				// deadlock against it)
-				Lock bl = PrivateInstance.baseLock(e, waitMs(req), c, cmd);
-				try {
-					materialize(o, m);
+			JsonArray batch = null;
+			boolean noProgram = o.error == null && o.program == null;
+			if (noProgram && needsProgram && !cmd.equals("drop_overlay")) {
+				boolean logOnly = false;
+				if (cmd.equals("apply_overlay") || cmd.equals("rename") || cmd.equals("comment")) {
+					batch = ops(req, cmd.equals("rename") ? "rename"
+							: cmd.equals("comment") ? "comment" : null);
+					logOnly = OverlayDelta.canApply(batch);
 				}
-				finally {
-					if (bl != null) {
-						e.release(bl);
-					}
+				if (!logOnly) {
+					// the first change gives the overlay a program of its own, over the stored file:
+					// taken with the base's lock (and before the overlay's write lock), the order the
+					// overlay's open takes them in (a materialize under the overlay lock alone could
+					// deadlock against it)
+					materialize(o, e, c, cmd, waitMs(req), m);
 				}
+			}
+			else if (noProgram && !write && o.shared != null && !o.log.isEmpty()) {
+				// a change the log holds but the program does not (OverlayDelta): this read needs
+				// the program, so it is opened now
+				materialize(o, e, c, cmd, waitMs(req), m);
 			}
 			Lock ol = write ? o.lock.writeLock() : o.lock.readLock();
 			Waits.Outcome got = Waits.lock(o.lock, write, waitMs(req), Waits.counter(o));
@@ -219,9 +225,9 @@ final class OverlayCommands {
 						yield withOverlay(o,
 							s.scripts.runOverlayScript(c, src, req, p.project, o.program, m));
 					}
-					case "rename" -> applyOverlay(o, ops(req, "rename"));
-					case "comment" -> applyOverlay(o, ops(req, "comment"));
-					case "apply_overlay" -> applyOverlay(o, ops(req, null));
+					case "rename" -> applyOverlay(o, batch != null ? batch : ops(req, "rename"));
+					case "comment" -> applyOverlay(o, batch != null ? batch : ops(req, "comment"));
+					case "apply_overlay" -> applyOverlay(o, batch != null ? batch : ops(req, null));
 					default -> throw new SessionException(SessionException.UNKNOWN_COMMAND,
 						cmd + " does not take an overlay");
 				};
@@ -365,6 +371,7 @@ final class OverlayCommands {
 		p.addConsumer(o);
 		o.shared = p;
 		o.program = null;
+		o.delta = new OverlayDelta(); // an empty log: nothing to shadow yet
 		o.view = null;
 		o.lease = null;
 		o.openMs = 0;
@@ -417,6 +424,24 @@ final class OverlayCommands {
 		}
 	}
 
+	/**
+	 * {@link #materialize} taking the base program's shared lock first ({@link
+	 * PrivateInstance#baseLock}), which keeps its stored file in place while the overlay's program
+	 * is opened from it. The caller holds the project's lock, not the overlay's.
+	 */
+	private void materialize(Overlay o, ProgramEntry e, Client c, String cmd, long wait,
+			RequestMonitor m) {
+		Lock bl = PrivateInstance.baseLock(e, wait, c, cmd);
+		try {
+			materialize(o, m);
+		}
+		finally {
+			if (bl != null) {
+				e.release(bl);
+			}
+		}
+	}
+
 	/** {@link #loadOverlay}'s open: the program, its view and lease, and the log applied. */
 	private void openPrivate(Overlay o, RequestMonitor m) {
 		ProgramEntry e = o.base;
@@ -436,6 +461,7 @@ final class OverlayCommands {
 		o.view = l.view();
 		o.lease = l.lease();
 		o.program = prog;
+		o.delta = new OverlayDelta(); // its own program answers the changes now
 		o.openMs = l.openMs();
 		o.sha256 = prog.getExecutableSHA256();
 		o.programRevision = e.revision;
@@ -496,9 +522,27 @@ final class OverlayCommands {
 
 	/**
 	 * Applies operations to the overlay as one unit, and logs them. Held: its write lock; the
-	 * overlay has a program of its own already ({@link #materialize}, before the lock).
+	 * overlay has a program of its own already ({@link #materialize}, before the lock), unless the
+	 * batch is its first change and {@link OverlayDelta} answers it from the log alone.
 	 */
 	private JsonObject applyOverlay(Overlay o, JsonArray ops) {
+		if (o.program == null && o.shared != null && OverlayDelta.canApply(ops)) {
+			// its first rename, label or comment: the log's shadow answers it, and the overlay's
+			// program is opened by the first read that needs it (OverlayDelta); a batch that fails
+			// changes nothing here either
+			OverlayDelta next = o.delta.copy();
+			JsonArray results = next.applyOps(o.shared, ops);
+			o.delta = next;
+			for (JsonElement op : ops) {
+				o.log.add(op.deepCopy());
+			}
+			o.version++;
+			return Json.of("overlay", o.describe(), "applied", ops.size(), "results", results);
+		}
+		if (o.program == null) {
+			throw new SessionException(SessionException.FAILED,
+				"overlay " + o.name + " has no program and its change needs one");
+		}
 		JsonArray results = s.operations.applyOps(o.program, ops);
 		for (JsonElement op : ops) {
 			o.log.add(op.deepCopy());

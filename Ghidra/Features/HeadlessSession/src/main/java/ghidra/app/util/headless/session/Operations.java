@@ -45,8 +45,9 @@ final class Operations {
 	 * Compare-and-set: when the request carries {@code "expect"}, the value it changes must still
 	 * be that (null: none), or the change is refused with {@code conflict} ({@code reason:
 	 * "changed"}). Changes to one program are serialized, so the check and the write are one step.
+	 * Also used by {@link OverlayDelta}, whose shadow answers the first changes of an empty overlay.
 	 */
-	private static void expect(JsonObject req, Address a, String field, String current) {
+	static void expect(JsonObject req, Address a, String field, String current) {
 		if (!req.has("expect")) {
 			return;
 		}
