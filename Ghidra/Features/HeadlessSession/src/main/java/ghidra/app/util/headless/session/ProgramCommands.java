@@ -286,6 +286,13 @@ final class ProgramCommands {
 		c.programs.add(e.key);
 		c.active = e.key;
 		c.activeProject = e.project.id;
+		// the host's set-up for a program nobody can edit while it runs, in the background: the
+		// first decompile then does not pay the store, the specs and the byte snapshot. A
+		// writable program is left out: its bytes are about to change, and writing a snapshot of
+		// them would hold its read lock against the edit (and be thrown away)
+		if (e.program != null && e.mode == ProgramEntry.Mode.READ_ONLY) {
+			HostDecompileBackend.warm(e.program);
+		}
 		JsonObject info = programInfo(e, c);
 		Json.put(info, "openMs", openMs);
 		return info;
@@ -540,6 +547,7 @@ final class ProgramCommands {
 			if (stamp != null) {
 				ProjectBackup.remember(e, stamp);
 			}
+			warmFirstReads(program, adopted != null);
 			return program;
 		}
 		catch (VersionException ex) {
@@ -553,6 +561,85 @@ final class ProgramCommands {
 		catch (IOException ex) {
 			throw new SessionException(SessionException.FAILED, ex.getMessage(), null, ex);
 		}
+	}
+
+	/**
+	 * The reads a first change does before its writes, done at the open of a program opened
+	 * writable: they load the symbol, code-unit and function tables, which the first {@code
+	 * rename} (a {@code getFunctionAt}, a {@code getPrimarySymbol}, {@code setName}),
+	 * {@code comment} (a comment read, {@code setComment}) and {@code signature} (a
+	 * {@code getFunctionContaining}, the function's prototype, the {@code signature} parse) would
+	 * otherwise load themselves. Measured on o3-edit (1 agent, KotOR fork, editTiming): the same
+	 * rename/comment/signature batch costs 4.52-4.95 ms per edit without this and 3.65-3.90 ms
+	 * with it, the warm itself 0.9-1.1 ms at the open (which is inside the fork, 60-140 ms, not a
+	 * measured op). Nothing is written: no transaction, no modification-number move, no change to
+	 * save (measured: {@code changed true -> true}, {@code mod 3 -> 3} on the fork).
+	 * <p>
+	 * {@code dataTypeList} also builds the name-sorted data type list when the program came from
+	 * the upgrade cache: the in-memory upgrade that adoption replaces walks every table and so
+	 * leaves the list built (24 us here); a first {@code signature} parse asks {@code
+	 * findDataTypes} for each type name and builds it otherwise (4.2 ms). A program that was not
+	 * adopted is not walked: the build would cost the open 4.2 ms for a list most openings never
+	 * ask for.
+	 */
+	private static void warmFirstReads(Program program, boolean dataTypeList) {
+		long t0 = System.nanoTime();
+		long[] at = new long[9];
+		try {
+			if (dataTypeList) {
+				java.util.Iterator<ghidra.program.model.data.DataType> types =
+					program.getDataTypeManager().getAllDataTypes();
+				while (types.hasNext()) {
+					types.next();
+				}
+			}
+			at[0] = System.nanoTime();
+			program.getSymbolTable().getNumSymbols();
+			program.getListing().getNumCodeUnits();
+			program.getFunctionManager().getFunctionCount();
+			at[1] = System.nanoTime();
+			Function f = firstFunction(program);
+			if (f == null) {
+				return;
+			}
+			at[2] = System.nanoTime();
+			ghidra.program.model.address.Address a = f.getEntryPoint();
+			program.getFunctionManager().getFunctionAt(a);
+			at[3] = System.nanoTime();
+			program.getFunctionManager().getFunctionContaining(a);
+			at[4] = System.nanoTime();
+			program.getSymbolTable().getPrimarySymbol(a);
+			at[5] = System.nanoTime();
+			program.getSymbolTable().getSymbols(a);
+			program.getListing().getComment(CommentType.PLATE, a);
+			at[6] = System.nanoTime();
+			f.getSignature().getPrototypeString();
+			at[7] = System.nanoTime();
+		}
+		catch (RuntimeException ex) {
+			Msg.warn(ProgramCommands.class, "could not warm the first change: " + ex);
+		}
+		finally {
+			at[8] = System.nanoTime();
+			Msg.info(ProgramCommands.class, "warmed the first change of " + program.getName() +
+				" in " + (at[8] - t0) / 1000 + " us (counts " + (at[1] - at[0]) / 1000 +
+				", first function " + (at[2] - at[1]) / 1000 + ", functionAt " +
+				(at[3] - at[2]) / 1000 + ", containing " + (at[4] - at[3]) / 1000 + ", primary " +
+				(at[5] - at[4]) / 1000 + ", symbols+comment " + (at[6] - at[5]) / 1000 +
+				", prototype " + (at[7] - at[6]) / 1000 + ")");
+		}
+	}
+
+	/** The first function of the program that is neither external nor a thunk, or null. */
+	private static Function firstFunction(Program program) {
+		java.util.Iterator<Function> it = program.getFunctionManager().getFunctions(true);
+		while (it.hasNext()) {
+			Function f = it.next();
+			if (!f.isExternal() && !f.isThunk()) {
+				return f;
+			}
+		}
+		return null;
 	}
 
 	/**

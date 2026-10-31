@@ -112,6 +112,8 @@ final class EditCommands {
 	 */
 	JsonElement editProgram(Client c, ProgramEntry e, JsonArray ops, JsonObject req) {
 		boolean v3 = c.v3();
+		boolean timing = Settings.bool("editTiming", false);
+		long t0 = timing ? System.nanoTime() : 0;
 		String rk = null;
 		if (v3) { // behaviour gate 1: rk and requireExpect exist for a protocol 3 connection only
 			rk = rkOf(req);
@@ -124,14 +126,20 @@ final class EditCommands {
 			requireExpect(e, ops);
 		}
 		JsonArray results = s.operations.applyOps(e.program, ops, v3);
+		long t1 = timing ? System.nanoTime() : 0;
 		JsonArray seqs = new JsonArray();
 		for (JsonElement r : results) {
 			JsonObject o = r.getAsJsonObject();
 			journal(c, e, "edit", o.get("op").getAsString(), o, rk);
 			seqs.add(o.get("seq"));
 		}
-		return Json.of("program", e.key, "applied", ops.size(), "results", results, "seqs", seqs,
-			"unsavedEdits", e.journal.seq() - e.savedSeq);
+		JsonElement out = Json.of("program", e.key, "applied", ops.size(), "results", results,
+			"seqs", seqs, "unsavedEdits", e.journal.seq() - e.savedSeq);
+		if (timing) {
+			Msg.info(this, "edit journal+build us: journal " + (System.nanoTime() - t1) / 1000 +
+				", before " + (t1 - t0) / 1000);
+		}
+		return out;
 	}
 
 	/**

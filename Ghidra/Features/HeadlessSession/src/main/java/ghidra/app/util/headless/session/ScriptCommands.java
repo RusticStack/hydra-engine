@@ -653,6 +653,11 @@ final class ScriptCommands {
 				// agents' first calls)
 				s = ScriptClassCache.instance(src);
 				if (s == null) {
+					// the same script content built by an earlier daemon: load its class instead
+					// of compiling it again (ScriptBuildStore)
+					s = ScriptClassCache.persistent(src);
+				}
+				if (s == null) {
 					s = loadScript(src, pw, sw);
 				}
 			}

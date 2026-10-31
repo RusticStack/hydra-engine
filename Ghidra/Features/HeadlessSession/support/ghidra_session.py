@@ -270,6 +270,10 @@ def _read_properties(path: Path) -> list[tuple[str, str]]:
     return out
 
 
+_INSTALLS: dict[str, "Install"] = {}
+_INSTALL_DIRS: dict[str, str] = {}
+
+
 class Install:
     """A Ghidra installation (a release layout: ``<dir>/Ghidra/application.properties``)."""
 
@@ -303,9 +307,18 @@ class Install:
     @staticmethod
     def locate(explicit: str | None = None) -> "Install":
         """``explicit``, else the install this file belongs to, else ``GHIDRA_INSTALL_DIR`` (for a
-        copy of this file kept outside an install)."""
+        copy of this file kept outside an install). The result is kept per path: reading
+        application.properties and checking the two jars costs 0.3 ms on an idle machine and 4.5 ms
+        under a bench's disk load, and every connect (and every agent process' first request)
+        would pay it again."""
         if explicit:
-            return Install(explicit)
+            key = os.path.abspath(explicit)
+            hit = _INSTALLS.get(key)
+            if hit is not None:
+                return hit
+            inst = Install(explicit)
+            _INSTALLS[key] = inst
+            return inst
         here = Path(__file__).resolve()
         # <install>/Ghidra/Features/HeadlessSession/support/ghidra_session.py
         for parent in here.parents:
@@ -1463,6 +1476,27 @@ class Labelled:
 HELLO_DEADLINE_S = 5.0
 
 
+def _dial(host: str, port: int, timeout: float | None):
+    """A connected TCP socket to a session. A literal address (what a daemon's endpoint file
+    holds) is connected on a blocking socket: on Windows CPython's timeout path connects
+    non-blocking and polls for writability, and about a fifth of loopback connects then wait for
+    the next system timer tick (~15.5 ms, measured); a blocking connect returns at once. The
+    socket handed back is the same either way (the caller clears the timeout right after), and a
+    host name keeps ``create_connection``, which bounds every attempt by ``timeout``."""
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    try:
+        socket.inet_pton(family, host)
+    except (OSError, ValueError):
+        return socket.create_connection((host, port), timeout=timeout)
+    s = socket.socket(family, socket.SOCK_STREAM)
+    try:
+        s.connect((host, port))
+    except OSError:
+        s.close()
+        raise
+    return s
+
+
 def _hello_left(end: float) -> float:
     """The deadline for one ``hello``: at most HELLO_DEADLINE_S, at least 0.5 s, and no more
     than what is left until the monotonic time ``end``. The 0.5 s floor is deliberate (a hello
@@ -1490,8 +1524,7 @@ class SocketSession(_Base):
         if not isinstance(endpoint, dict):
             endpoint = json.loads(Path(endpoint).read_text(encoding="utf-8"))
         self.endpoint = endpoint
-        self.sock = socket.create_connection((endpoint["host"], endpoint["port"]),
-                                             timeout=timeout)
+        self.sock = _dial(endpoint["host"], endpoint["port"], timeout)
         self.sock.settimeout(None)
         self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         # The library owns its reader: lines are cut from a byte buffer here, and a wait can be
@@ -2174,10 +2207,18 @@ class Daemon:
             return None
 
     def _check_install(self, ep: dict, install: Install):
-        if ep.get("install") and Path(ep["install"]).resolve() != install.dir:
-            raise LaunchError(
-                f"the {self.instance!r} daemon runs {ep['install']} (Ghidra {ep.get('ghidra')}), "
-                f"not {install.dir}; stop it, or use another --instance")
+        their = ep.get("install")
+        if their:
+            # resolve once per path: under a bench's disk load the realpath was 5.6 ms of a connect
+            key = os.path.abspath(their)
+            resolved = _INSTALL_DIRS.get(key)
+            if resolved is None:
+                resolved = _INSTALL_DIRS[key] = str(Path(their).resolve())
+            if Path(resolved) != install.dir:
+                raise LaunchError(
+                    f"the {self.instance!r} daemon runs {ep['install']} "
+                    f"(Ghidra {ep.get('ghidra')}), not {install.dir}; stop it, or use another "
+                    f"--instance")
         # Any overlap of this client's range with the daemon's counts: the connection then runs
         # at the highest protocol both speak (``hello`` negotiates it). An endpoint that sends
         # no protocolMin/protocolMax serves the single ``protocol`` it names.
@@ -2304,12 +2345,14 @@ class Daemon:
         except OSError:
             pass
 
-    def _read_launch(self) -> dict | None:
+    def _read_launch(self, endpoint: dict | None = None) -> dict | None:
         """The launch record of the daemon that is running now (None if it has none, e.g. it was
-        started by an older launcher)."""
+        started by an older launcher). ``endpoint`` is the one already in hand, so a connect does
+        not read the endpoint file a second time (under a bench's disk load that read was 0.5 ms
+        of the connect)."""
         try:
             rec = json.loads(self.launch_file.read_text(encoding="utf-8"))
-            ep = self.read_endpoint()
+            ep = endpoint if endpoint is not None else self.read_endpoint()
             if ep and rec.get("pid") == ep.get("pid"):
                 return rec.get("launch")
         except (OSError, ValueError, AttributeError):
@@ -2318,7 +2361,7 @@ class Daemon:
 
     def _annotate(self, s: SocketSession) -> SocketSession:
         """A session that joined a running daemon: carry how that daemon was started."""
-        launch = self._read_launch()
+        launch = self._read_launch(s.endpoint)
         if launch:
             s.launch = launch
             s.warnings = list(launch.get("warnings") or [])
@@ -2340,7 +2383,7 @@ class Daemon:
         out = {"instance": self.instance, "stateDir": str(self.state), "alive": self.jvm_alive(),
                "pid": ep.get("pid") if ep else None, "answers": False, "source": None,
                "launch": None, "warnings": []}
-        launch = self._read_launch()
+        launch = self._read_launch(ep)
         if launch:
             out["launch"] = launch
             out["warnings"] = list(launch.get("warnings") or [])
@@ -2392,7 +2435,11 @@ class Daemon:
         launch.check_heap()
         args = ["-daemon", "-stateDir", str(self.state), "-instance", self.instance,
                 "-idleTimeout", str(cfg["idleTimeout"]), "-keepWarm", str(cfg["keepWarm"]),
-                "-maxQuick", str(cfg["maxQuick"]), "-maxLong", str(cfg["maxLong"])]
+                "-maxQuick", str(cfg["maxQuick"]), "-maxLong", str(cfg["maxLong"]),
+                # the same file the daemon's stdout/stderr go to: the application log appender
+                # then writes every line once (buffered); the console appender is turned off in
+                # the daemon, which has no console
+                "-log", str(self.log_file)]
         if cfg.get("maxImports"):
             args += ["-maxImports", str(cfg["maxImports"])]
         for d in cfg.get("scriptPath") or []:

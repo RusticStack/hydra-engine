@@ -25,6 +25,7 @@ import com.google.gson.*;
 import ghidra.program.model.address.*;
 import ghidra.program.model.listing.*;
 import ghidra.program.model.symbol.*;
+import ghidra.util.Msg;
 
 /**
  * The operations that change a program ({@code rename}, {@code label},
@@ -41,12 +42,36 @@ final class Operations {
 		Advertised.capability("expectAll", 1);
 	}
 
+	/** A transaction an operation runs in: its own, or the batch's it is already inside. */
+	private record Tx(int id, boolean own) {
+	}
+
+	/**
+	 * The transaction of one operation: the caller's when it already has one open (the batch of
+	 * {@link #applyOps} opens one, and a nested transaction only repeats its bookkeeping: an undo
+	 * entry and a change set per operation), its own otherwise (a lone {@code rename}/{@code
+	 * comment}). The batch transaction is still what makes the batch all-or-nothing.
+	 */
+	private static Tx begin(Program p, String name) {
+		if (p.getCurrentTransactionInfo() != null) {
+			return new Tx(0, false);
+		}
+		return new Tx(p.startTransaction(name), true);
+	}
+
+	private static void end(Program p, Tx tx, boolean ok) {
+		if (tx.own()) {
+			p.endTransaction(tx.id(), ok);
+		}
+	}
+
 	/**
 	 * Compare-and-set: when the request carries {@code "expect"}, the value it changes must still
 	 * be that (null: none), or the change is refused with {@code conflict} ({@code reason:
 	 * "changed"}). Changes to one program are serialized, so the check and the write are one step.
+	 * Also used by {@link OverlayDelta}, whose shadow answers the first changes of an empty overlay.
 	 */
-	private static void expect(JsonObject req, Address a, String field, String current) {
+	static void expect(JsonObject req, Address a, String field, String current) {
 		if (!req.has("expect")) {
 			return;
 		}
@@ -122,7 +147,11 @@ final class Operations {
 	 */
 	JsonArray applyOps(Program p, JsonArray ops, boolean v3) {
 		JsonArray results = new JsonArray();
+		boolean timing = Settings.bool("editTiming", false);
+		long t0 = timing ? System.nanoTime() : 0;
 		int tx = p.startTransaction("overlay operations");
+		long t1 = timing ? System.nanoTime() : 0;
+		long[] opUs = timing ? new long[ops.size()] : null;
 		boolean ok = false;
 		int i = 0;
 		try {
@@ -131,10 +160,18 @@ final class Operations {
 					throw new SessionException(SessionException.BAD_REQUEST,
 						"ops[" + i + "] is not an object");
 				}
-				results.add(applyOp(p, el.getAsJsonObject(), v3));
+				long o0 = timing ? System.nanoTime() : 0;
+				results.add(applyOp(p, el.getAsJsonObject(), v3, timing));
+				if (timing) {
+					opUs[i] = (System.nanoTime() - o0) / 1000;
+				}
 				i++;
 			}
 			ok = true;
+			if (timing) {
+				Msg.info(this, "edit " + ops.size() + " ops us: begin " + (t1 - t0) / 1000 +
+					", ops " + java.util.Arrays.toString(opUs) + ", commit pending");
+			}
 		}
 		catch (SessionException ex) {
 			JsonObject d = ex.details() == null ? new JsonObject() : ex.details().deepCopy();
@@ -149,7 +186,11 @@ final class Operations {
 				Json.of("index", i, "rolledBack", true), ex);
 		}
 		finally {
+			long c0 = timing ? System.nanoTime() : 0;
 			p.endTransaction(tx, ok);
+			if (timing) {
+				Msg.info(this, "edit commit " + (System.nanoTime() - c0) / 1000 + " us");
+			}
 		}
 		return results;
 	}
@@ -160,23 +201,25 @@ final class Operations {
 	 * function, a C prototype), {@code data_type} (address, a data type such as {@code int},
 	 * {@code char[16]} or {@code MyStruct *}).
 	 */
-	private JsonObject applyOp(Program p, JsonObject op, boolean v3) throws Exception {
+	private JsonObject applyOp(Program p, JsonObject op, boolean v3, boolean timing)
+			throws Exception {
 		String kind = Json.str(op, "op");
+		long t0 = timing ? System.nanoTime() : 0;
 		switch (kind) {
 			case "rename": {
-				JsonObject r = renameIn(p, op);
+				JsonObject r = renameIn(p, op, timing);
 				Json.put(r, "op", kind);
 				return r;
 			}
 			case "label": {
 				JsonObject req = op.deepCopy();
 				req.addProperty("kind", "label");
-				JsonObject r = renameIn(p, req);
+				JsonObject r = renameIn(p, req, timing);
 				Json.put(r, "op", kind);
 				return r;
 			}
 			case "comment": {
-				JsonObject r = commentIn(p, op);
+				JsonObject r = commentIn(p, op, timing);
 				Json.put(r, "op", kind);
 				return r;
 			}
@@ -188,6 +231,7 @@ final class Operations {
 						"no function contains " + hex(a));
 				}
 				String text = Json.str(op, "signature");
+				long t1 = timing ? System.nanoTime() : 0;
 				String oldSig = f.getSignature().getPrototypeString();
 				ghidra.program.model.data.FunctionDefinitionDataType fd;
 				try {
@@ -202,6 +246,7 @@ final class Operations {
 					throw new SessionException(SessionException.BAD_REQUEST,
 						"bad signature '" + text + "'");
 				}
+				long t2 = timing ? System.nanoTime() : 0;
 				if (v3) {
 					expectV3(op, f.getEntryPoint(), "signature", oldSig,
 						Json.of("cmd", "decompile", "address", hex(f.getEntryPoint())));
@@ -212,6 +257,11 @@ final class Operations {
 				if (!cmd.applyTo(p)) {
 					throw new SessionException(SessionException.FAILED,
 						"could not apply the signature: " + cmd.getStatusMsg());
+				}
+				if (timing) {
+					long t3 = System.nanoTime();
+					Msg.info(this, "edit op signature us: oldPrototype " + (t1 - t0) / 1000 +
+						", parse " + (t2 - t1) / 1000 + ", apply " + (t3 - t2) / 1000);
 				}
 				return Json.of("op", kind, "address", hex(f.getEntryPoint()), "signature",
 					f.getSignature().getPrototypeString(), "old", oldSig, "new",
@@ -248,6 +298,10 @@ final class Operations {
 	}
 
 	JsonObject renameIn(Program p, JsonObject req) throws Exception {
+		return renameIn(p, req, Settings.bool("editTiming", false));
+	}
+
+	JsonObject renameIn(Program p, JsonObject req, boolean timing) throws Exception {
 		Address a = address(p, Json.str(req, "address"));
 		String name = Json.str(req, "name");
 		String kind = Json.str(req, "kind", "auto");
@@ -255,12 +309,18 @@ final class Operations {
 			throw new SessionException(SessionException.BAD_REQUEST,
 				"kind must be auto, function or label");
 		}
+		long t0 = timing ? System.nanoTime() : 0;
 		String old = null;
 		boolean created = false;
-		int tx = p.startTransaction("session rename");
+		Tx tx = begin(p, "session rename");
 		boolean ok = false;
+		long t1 = 0;
+		long t2 = 0;
 		try {
 			Function f = p.getFunctionManager().getFunctionAt(a);
+			if (timing) {
+				t1 = System.nanoTime();
+			}
 			if (kind.equals("function") && f == null) {
 				throw new SessionException(SessionException.NOT_FOUND,
 					"no function starts at " + hex(a));
@@ -288,15 +348,27 @@ final class Operations {
 				kind = "label";
 			}
 			ok = true;
+			if (timing) {
+				t2 = System.nanoTime();
+			}
 		}
 		finally {
-			p.endTransaction(tx, ok);
+			end(p, tx, ok);
+			if (timing) {
+				long t3 = System.nanoTime();
+				Msg.info(this, "edit op rename us: txBegin " + (t1 - t0) / 1000 + ", write " +
+					(t2 - t1) / 1000 + ", txEnd " + (t3 - t2) / 1000);
+			}
 		}
 		return Json.of("address", hex(a), "name", name, "old", old, "kind", kind, "created",
 			created);
 	}
 
 	JsonObject commentIn(Program p, JsonObject req) {
+		return commentIn(p, req, Settings.bool("editTiming", false));
+	}
+
+	JsonObject commentIn(Program p, JsonObject req, boolean timing) {
 		Address a = address(p, Json.str(req, "address"));
 		CommentType ct = switch (Json.str(req, "type", "eol")) {
 			case "eol" -> CommentType.EOL;
@@ -307,15 +379,21 @@ final class Operations {
 			default -> throw new SessionException(SessionException.BAD_REQUEST,
 				"type must be eol, pre, post, plate or repeatable");
 		};
+		long t0 = timing ? System.nanoTime() : 0;
 		String text = Json.has(req, "text") ? Json.str(req, "text") : null;
 		String old = p.getListing().getComment(ct, a);
+		long t1 = timing ? System.nanoTime() : 0;
 		expect(req, a, "comment", old);
-		int tx = p.startTransaction("session comment");
+		Tx tx = begin(p, "session comment");
 		try {
 			p.getListing().setComment(a, ct, text);
 		}
 		finally {
-			p.endTransaction(tx, true);
+			end(p, tx, true);
+			if (timing) {
+				Msg.info(this, "edit op comment us: read " + (t1 - t0) / 1000 + ", write " +
+					(System.nanoTime() - t1) / 1000);
+			}
 		}
 		return Json.of("address", hex(a), "type", Json.str(req, "type", "eol"), "old", old,
 			"text", text);

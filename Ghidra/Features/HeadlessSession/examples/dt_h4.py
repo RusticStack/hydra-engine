@@ -222,9 +222,17 @@ public class H4Other$SFX extends GhidraScript {
 """
 
 
+# These two tests are about the compiled OSGi bundle behind the H4 cache: one edits a sibling
+# to force a rebuild and checks the old class loaders are dropped, the other wipes the compiled
+# bundle from another process. The persistent build store (ScriptBuildStore) serves a script whose
+# source directory was compiled before without an OSGi bundle at all, so the OSGi artifacts these
+# tests inspect would not exist; they pin the OSGi path with the store off (as dt_osgi does).
+NO_BUILD_STORE = ["-Dhydra.script.buildCache=false"]
+
+
 def t_script_cache_rebuild_frees(c):
     """A rebuild of a bundle drops every cache entry: none keeps an old bundle's class loader."""
-    d = c.daemon("h4-frees", engine=H4)
+    d = c.daemon("h4-frees", engine=H4, vmargs=NO_BUILD_STORE)
     s = None
     files = _two_probes(c, "F")
     try:
@@ -272,7 +280,7 @@ def _compiled_manifests(c, name):
 def t_script_cache_binary_wiped(c):
     """Another process wiping the shared compiled bundle makes the next call a miss (the usual
     path recompiles it), with the same output."""
-    d = c.daemon("h4-wiped", engine=H4)
+    d = c.daemon("h4-wiped", engine=H4, vmargs=NO_BUILD_STORE)
     s = None
     files = _two_probes(c, "W")
     try:

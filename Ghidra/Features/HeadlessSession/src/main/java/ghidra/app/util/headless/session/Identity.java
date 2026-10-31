@@ -46,6 +46,9 @@ final class Identity {
 	private static volatile JsonObject platform;
 	private static volatile Hashed hashed;
 	private static final Object HASH_LOCK = new Object();
+	/** The decompiler binary, resolved once (see {@link #decompilerFile()}); null when absent. */
+	private static volatile File decompiler;
+	private static volatile boolean decompilerResolved;
 
 	private Identity() {
 	}
@@ -173,13 +176,28 @@ final class Identity {
 	}
 
 	private static File decompilerFile() {
-		try {
-			boolean windows = System.getProperty("os.name", "").toLowerCase(Locale.ROOT)
-					.startsWith("windows");
-			return Application.getOSFile(windows ? "decompile.exe" : "decompile");
+		// Resolved once: Application.getOSFile walks the caller's module and then every module's
+		// os folder (a stack walk and a search of the install), about 2 ms here, and it is part of
+		// every hello. The install does not change while the daemon runs.
+		File f = decompiler;
+		if (decompilerResolved) {
+			return f;
 		}
-		catch (java.io.FileNotFoundException | RuntimeException e) {
-			return null;
+		synchronized (HASH_LOCK) {
+			if (decompilerResolved) {
+				return decompiler;
+			}
+			try {
+				boolean windows = System.getProperty("os.name", "").toLowerCase(Locale.ROOT)
+						.startsWith("windows");
+				f = Application.getOSFile(windows ? "decompile.exe" : "decompile");
+			}
+			catch (java.io.FileNotFoundException | RuntimeException e) {
+				f = null;
+			}
+			decompiler = f;
+			decompilerResolved = true;
+			return f;
 		}
 	}
 

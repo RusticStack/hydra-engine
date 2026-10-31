@@ -560,6 +560,11 @@ final class ProgramEntry implements Decompilers, DecompilerGate.Pool {
 		return o == null ? null : o.holder("open_program writable", ownedSince, ownerWho);
 	}
 
+	@Override
+	public Program program() {
+		return program;
+	}
+
 	/**
 	 * A decompiler for the program, after a permit of the decompiler gate (E9): the permit is held
 	 * until {@link #returnDecompiler}. It waits at most {@code decompilerWaitS}, then {@code busy}.

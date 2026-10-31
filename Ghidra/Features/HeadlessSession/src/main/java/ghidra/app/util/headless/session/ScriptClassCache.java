@@ -27,6 +27,8 @@ import java.util.concurrent.atomic.LongAdder;
 
 import org.osgi.framework.Bundle;
 
+import com.google.gson.JsonObject;
+
 import generic.jar.ResourceFile;
 import ghidra.app.plugin.core.osgi.*;
 import ghidra.app.script.*;
@@ -100,7 +102,7 @@ final class ScriptClassCache {
 	}
 
 	/** What a load saw before it ran: the files of its source directory. */
-	record Before(ResourceFile sourceDir, List<Stat> stats) {
+	record Before(ResourceFile sourceDir, List<Stat> stats, String fingerprint) {
 	}
 
 	/**
@@ -108,10 +110,15 @@ final class ScriptClassCache {
 	 * directory and its stat at load time. Installs with the same version share that directory
 	 * across processes; when another process wipes or recompiles it, the usual path rebuilds,
 	 * so a hit must miss.
+	 * <p>
+	 * {@code local}: the class came from the persistent build store
+	 * ({@link ScriptBuildStore}) rather than from a bundle this daemon activated; it is valid
+	 * while the files of its source directory are (no bundle can invalidate it, and nothing else
+	 * in the daemon holds it).
 	 */
 	private record Entry(ResourceFile sourceDir, List<Stat> stats, long generation,
 			GhidraSourceBundle bundle, Bundle osgi, Class<?> clazz, Path binManifest,
-			Stat binStat) {
+			Stat binStat, boolean local) {
 	}
 
 	/**
@@ -169,10 +176,13 @@ final class ScriptClassCache {
 	}
 
 	/** {@code health.scriptCache}: on, hits, misses and entries since start, and the run bound. */
-	static com.google.gson.JsonElement describe() {
-		return Json.of("enabled", enabled(), "hits", HITS.sum(), "misses", MISSES.sum(), "stale", STALE.sum(), "entries",
+	static JsonObject describe() {
+		JsonObject o = Json.of("enabled", enabled(),
+			"hits", HITS.sum(), "misses", MISSES.sum(), "stale", STALE.sum(), "entries",
 			CACHE.size(), "runPermits", RUN_PERMITS, "runWaited", RUN_WAITED.sum(), "runOverflow",
 			RUN_OVERFLOW.sum());
+		ScriptBuildStore.describe(o); // the persistent builds behind the same member
+		return o;
 	}
 
 	/**
@@ -192,8 +202,9 @@ final class ScriptClassCache {
 		try {
 			BundleHost host = GhidraScriptUtil.getBundleHost();
 			if (host == null || host != listening || e.generation != GENERATION.get() ||
-				!valid(host, e) || !e.binStat.equals(statOf(e.binManifest)) ||
-				!e.stats.equals(stats(e.sourceDir))) {
+				(e.local ? !e.stats.equals(stats(e.sourceDir))
+						: !valid(host, e) || !e.binStat.equals(statOf(e.binManifest)) ||
+							!e.stats.equals(stats(e.sourceDir)))) {
 				CACHE.remove(key, e);
 				STALE.increment();
 				MISSES.increment();
@@ -208,6 +219,50 @@ final class ScriptClassCache {
 			// the usual path reports whatever this was, in its own words
 			CACHE.remove(key, e);
 			MISSES.increment();
+			return null;
+		}
+	}
+
+	/**
+	 * A new instance of a class from the persistent build store of {@code src}'s source directory
+	 * ({@link ScriptBuildStore}), or null when it holds no build of exactly this content (the
+	 * caller then takes the unchanged OSGi path). Called only after {@link #instance} missed, so
+	 * the cost of the source fingerprint is paid once per script and daemon.
+	 */
+	static GhidraScript persistent(ResourceFile src) {
+		if (!enabled() || !ScriptBuildStore.enabled()) {
+			return null;
+		}
+		try {
+			BundleHost host = GhidraScriptUtil.getBundleHost();
+			if (host == null) {
+				return null;
+			}
+			listen(host);
+			ResourceFile dir = GhidraScriptUtil.findSourceDirectoryContaining(src);
+			if (dir == null) {
+				return null;
+			}
+			List<Stat> st = stats(dir);
+			if (st == null) {
+				return null;
+			}
+			String fingerprint = ScriptBuildStore.fingerprint(dir);
+			if (fingerprint == null) {
+				return null;
+			}
+			Class<?> clazz = ScriptBuildStore.load(src, dir, fingerprint);
+			if (clazz == null) {
+				return null;
+			}
+			GhidraScript script = (GhidraScript) clazz.getDeclaredConstructor().newInstance();
+			script.setSourceFile(src);
+			CACHE.put(src.getAbsolutePath(),
+				new Entry(dir, st, GENERATION.get(), null, null, clazz, null, null, true));
+			return script;
+		}
+		catch (Throwable t) {
+			// the usual path reports whatever this was, in its own words
 			return null;
 		}
 	}
@@ -240,7 +295,14 @@ final class ScriptClassCache {
 				return null;
 			}
 			List<Stat> st = stats(dir);
-			return st == null ? null : new Before(dir, st);
+			if (st == null) {
+				return null;
+			}
+			// the fingerprint is taken before the load: a store made from it describes the source
+			// as it was when the class was built, never a later change
+			String fingerprint =
+				ScriptBuildStore.enabled() ? ScriptBuildStore.fingerprint(dir) : null;
+			return new Before(dir, st, fingerprint);
 		}
 		catch (Throwable t) {
 			return null;
@@ -282,7 +344,14 @@ final class ScriptClassCache {
 				CACHE.clear();
 			}
 			CACHE.put(src.getAbsolutePath(), new Entry(b.sourceDir, b.stats, gen, bundle, osgi,
-				script.getClass(), binManifest, binStat));
+				script.getClass(), binManifest, binStat, false));
+			if (b.fingerprint != null) {
+				// the persistent store is keyed by content: a later daemon (or the same one from
+				// another working directory) loads these classes instead of running javac
+				Path binaryDir = binManifest.getParent() == null ? null
+						: binManifest.getParent().getParent();
+				ScriptBuildStore.store(b.fingerprint, binaryDir);
+			}
 		}
 		catch (Throwable t) {
 			// not cached: the next call takes the usual path again
