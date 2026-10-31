@@ -129,6 +129,7 @@ final class OverlayCommands {
 					info.get("key").getAsString() + " was closed meanwhile");
 			}
 			Overlay o = openOverlay(c, e, name, waitMs(req), m);
+			HostDecompileBackend.warm(o.program(), o.snapshotSource());
 			info.add("overlay", o.describe());
 			return info;
 		}
@@ -215,6 +216,7 @@ final class OverlayCommands {
 						ResourceFile src = findScript(Json.str(req, "script"));
 						m.deadline(Json.num(req, "timeout", 0, 0, 7 * 86_400));
 						// a script may undo: give it the default undo history (lightOverlays)
+						o.bytesChanged = true;	// it may change bytes: snapshot the overlay itself
 						PrivateInstance.unlighten(o.program);
 						yield withOverlay(o,
 							s.scripts.runOverlayScript(c, src, req, p.project, o.program, m));
@@ -504,6 +506,9 @@ final class OverlayCommands {
 			o.log.add(op.deepCopy());
 		}
 		o.version++;
+		// the overlay's generation changed: set the host up for it on a background thread, so the
+		// decompile that follows the edit does not pay the store and the byte snapshot
+		HostDecompileBackend.warm(o.program, o.snapshotSource());
 		return Json.of("overlay", o.describe(), "applied", ops.size(), "results", results);
 	}
 

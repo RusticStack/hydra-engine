@@ -494,235 +494,346 @@ public class DecompileSnapshot {
 	 * @return the answer and its classification
 	 */
 	public Answer answer(byte[] query) {
-		long tempIds = dtmanage.getTemporaryIdCount();
-		ByteArrayOutputStream out = new ByteArrayOutputStream();
-		int kind = GLOBAL;
-		String why = null;
+		long t0 = System.nanoTime();
+		int costCommand = -1;
 		try {
-			PackedDecode dec = decoder(query);
-			int commandId = dec.openElement();
-			switch (commandId) {
-				case COMMAND_ISNAMEUSED: {
-					String name = dec.readString(ATTRIB_NAME);
-					long startId = dec.readUnsignedInteger(ATTRIB_FIRST);
-					long stopId = dec.readUnsignedInteger(ATTRIB_LAST);
-					boolean res = callback.isNameUsed(name, startId, stopId);
-					out.write(QUERY_RESPONSE_START);
-					out.write(STRING_START);
-					out.write(res ? 't' : 'f');
-					out.write(STRING_END);
-					out.write(QUERY_RESPONSE_END);
-					break;
-				}
-				case COMMAND_GETBYTES: {
-					int el = dec.openElement(ELEM_ADDR);
-					Address addr = AddressXML.decodeFromAttributes(dec);
-					int size = (int) dec.readSignedInteger(ATTRIB_SIZE);
-					dec.closeElement(el);
-					byte[] res = callback.getBytes(addr, size);
-					out.write(QUERY_RESPONSE_START);
-					if ((res != null) && (res.length > 0)) {
-						out.write(BYTE_START);
-						byte[] dblres = new byte[res.length * 2];
-						for (int i = 0; i < res.length; i++) {
-							dblres[i * 2] = (byte) (((res[i] >> 4) & 0xf) + 65);
-							dblres[i * 2 + 1] = (byte) ((res[i] & 0xf) + 65);
-						}
-						out.write(dblres);
-						out.write(BYTE_END);
+			long tempIds = dtmanage.getTemporaryIdCount();
+			ByteArrayOutputStream out = new ByteArrayOutputStream();
+			int kind = GLOBAL;
+			String why = null;
+			try {
+				PackedDecode dec = decoder(query);
+				int commandId = dec.openElement();
+				costCommand = commandId;
+				switch (commandId) {
+					case COMMAND_ISNAMEUSED: {
+						String name = dec.readString(ATTRIB_NAME);
+						long startId = dec.readUnsignedInteger(ATTRIB_FIRST);
+						long stopId = dec.readUnsignedInteger(ATTRIB_LAST);
+						boolean res = callback.isNameUsed(name, startId, stopId);
+						out.write(QUERY_RESPONSE_START);
+						out.write(STRING_START);
+						out.write(res ? 't' : 'f');
+						out.write(STRING_END);
+						out.write(QUERY_RESPONSE_END);
+						break;
 					}
-					out.write(QUERY_RESPONSE_END);
-					break;
-				}
-				case COMMAND_GETCOMMENTS: {
-					PatchPackedEncode enc = newEncoder();
-					int types = (int) dec.readUnsignedInteger(ATTRIB_TYPE);
-					Address addr = AddressXML.decode(dec);
-					callback.getComments(addr, types, enc);
-					out.write(QUERY_RESPONSE_START);
-					writeString(out, enc);
-					out.write(QUERY_RESPONSE_END);
-					break;
-				}
-				case COMMAND_GETCALLFIXUP:
-				case COMMAND_GETCALLOTHERFIXUP:
-				case COMMAND_GETCALLMECH:
-				case COMMAND_GETPCODEEXECUTABLE: {
-					int type = injectType(commandId);
-					String name = dec.readString(ATTRIB_NAME);
-					why = injectUnstorable(query, type);
-					PatchPackedEncode enc = newEncoder();
-					callback.getPcodeInject(name, dec, type, enc);
-					writeOptional(out, enc);
-					break;
-				}
-				case COMMAND_GETCPOOLREF: {
-					PatchPackedEncode enc = newEncoder();
-					int size = (int) dec.readSignedInteger(ATTRIB_SIZE);
-					long refs[] = new long[size];
-					for (int i = 0; i < size; ++i) {
-						int el = dec.openElement(ELEM_VALUE);
-						refs[i] = dec.readUnsignedInteger(ATTRIB_CONTENT);
+					case COMMAND_GETBYTES: {
+						int el = dec.openElement(ELEM_ADDR);
+						Address addr = AddressXML.decodeFromAttributes(dec);
+						int size = (int) dec.readSignedInteger(ATTRIB_SIZE);
 						dec.closeElement(el);
-					}
-					callback.getCPoolRef(refs, enc);
-					writeOptional(out, enc);
-					break;
-				}
-				case COMMAND_GETEXTERNALREF: {
-					PatchPackedEncode enc = newEncoder();
-					Address addr = AddressXML.decode(dec);
-					if (addr.equals(funcEntry)) {
-						kind = SCOPED;
-					}
-					callback.getExternalRef(addr, enc);
-					writeOptional(out, enc);
-					break;
-				}
-				case COMMAND_GETMAPPEDSYMBOLS: {
-					PatchPackedEncode enc = newEncoder();
-					Address addr = AddressXML.decode(dec);
-					if (addr.equals(funcEntry)) {
-						kind = SCOPED;	// the function's own symbol carries its default names
-					}
-					callback.getMappedSymbols(addr, enc);
-					writeOptional(out, enc);
-					break;
-				}
-				case COMMAND_GETNAMESPACEPATH: {
-					PatchPackedEncode enc = newEncoder();
-					long id = dec.readUnsignedInteger(ATTRIB_ID);
-					callback.getNamespacePath(id, enc);
-					writeOptional(out, enc);
-					break;
-				}
-				case COMMAND_GETPCODE: {
-					PatchPackedEncode enc = newEncoder();
-					Address addr = AddressXML.decode(dec);
-					if (program.getListing().getInstructionAt(addr) == null) {
-						why = "p-code by pseudo-disassembly at " + addr;
-					}
-					callback.getPcode(addr, enc);
-					writeOptional(out, enc);
-					break;
-				}
-				case COMMAND_GETREGISTER: {
-					PatchPackedEncode enc = newEncoder();
-					String name = dec.readString(ATTRIB_NAME);
-					callback.getRegister(name, enc);
-					writeOptional(out, enc);
-					break;
-				}
-				case COMMAND_GETREGISTERNAME: {
-					int el = dec.openElement(ELEM_ADDR);
-					Address addr = AddressXML.decodeFromAttributes(dec);
-					int size = (int) dec.readSignedInteger(ATTRIB_SIZE);
-					dec.closeElement(el);
-					String res = callback.getRegisterName(addr, size);
-					out.write(QUERY_RESPONSE_START);
-					writeString(out, res);
-					out.write(QUERY_RESPONSE_END);
-					break;
-				}
-				case COMMAND_GETSTRINGDATA: {
-					int maxChars = (int) dec.readSignedInteger(ATTRIB_MAXSIZE);
-					String dtName = dec.readString(ATTRIB_TYPE);
-					long dtId = dec.readUnsignedInteger(ATTRIB_ID);
-					Address addr = AddressXML.decode(dec);
-					DecompileCallback.StringData stringData =
-						callback.getStringData(addr, maxChars, dtName, dtId);
-					out.write(QUERY_RESPONSE_START);
-					if (stringData != null) {
-						byte[] res = stringData.byteData;
-						int sz = res.length + 1;		// We add a null terminator character
-						int sz1 = (sz & 0x3f) + 0x20;
-						sz >>>= 6;
-						int sz2 = (sz & 0x3f) + 0x20;
-						out.write(BYTE_START);
-						out.write(sz1);
-						out.write(sz2);
-						out.write(stringData.isTruncated ? 1 : 0);
-						byte[] dblres = new byte[res.length * 2 + 2];
-						for (int i = 0; i < res.length; i++) {
-							dblres[i * 2] = (byte) (((res[i] >> 4) & 0xf) + 65);
-							dblres[i * 2 + 1] = (byte) ((res[i] & 0xf) + 65);
+						byte[] res = callback.getBytes(addr, size);
+						out.write(QUERY_RESPONSE_START);
+						if ((res != null) && (res.length > 0)) {
+							out.write(BYTE_START);
+							byte[] dblres = new byte[res.length * 2];
+							for (int i = 0; i < res.length; i++) {
+								dblres[i * 2] = (byte) (((res[i] >> 4) & 0xf) + 65);
+								dblres[i * 2 + 1] = (byte) ((res[i] & 0xf) + 65);
+							}
+							out.write(dblres);
+							out.write(BYTE_END);
 						}
-						dblres[res.length * 2] = 65;		// Adding null terminator
-						dblres[res.length * 2 + 1] = 65;
-						out.write(dblres);
-						out.write(BYTE_END);
+						out.write(QUERY_RESPONSE_END);
+						break;
 					}
-					out.write(QUERY_RESPONSE_END);
-					break;
-				}
-				case COMMAND_GETCODELABEL: {
-					Address addr = AddressXML.decode(dec);
-					if (inFunctionNamespace(addr)) {
-						kind = SCOPED;	// the label's prefix leaves out the decompiled function
+					case COMMAND_GETCOMMENTS: {
+						PatchPackedEncode enc = newEncoder();
+						int types = (int) dec.readUnsignedInteger(ATTRIB_TYPE);
+						Address addr = AddressXML.decode(dec);
+						callback.getComments(addr, types, enc);
+						out.write(QUERY_RESPONSE_START);
+						writeString(out, enc);
+						out.write(QUERY_RESPONSE_END);
+						break;
 					}
-					String res = callback.getCodeLabel(addr);
-					if (res == null) {
-						res = "";
+					case COMMAND_GETCALLFIXUP:
+					case COMMAND_GETCALLOTHERFIXUP:
+					case COMMAND_GETCALLMECH:
+					case COMMAND_GETPCODEEXECUTABLE: {
+						int type = injectType(commandId);
+						String name = dec.readString(ATTRIB_NAME);
+						why = injectUnstorable(query, type);
+						PatchPackedEncode enc = newEncoder();
+						callback.getPcodeInject(name, dec, type, enc);
+						writeOptional(out, enc);
+						break;
 					}
-					out.write(QUERY_RESPONSE_START);
-					writeString(out, res);
-					out.write(QUERY_RESPONSE_END);
-					break;
-				}
-				case COMMAND_GETDATATYPE: {
-					PatchPackedEncode enc = newEncoder();
-					String name = dec.readString(ATTRIB_NAME);
-					long id = dec.readSignedInteger(ATTRIB_ID);
-					callback.getDataType(name, id, enc);
-					writeOptional(out, enc);
-					break;
-				}
-				case COMMAND_GETTRACKEDREGISTERS: {
-					PatchPackedEncode enc = newEncoder();
-					Address addr = AddressXML.decode(dec);
-					callback.getTrackedRegisters(addr, enc);
-					out.write(QUERY_RESPONSE_START);
-					writeString(out, enc);
-					out.write(QUERY_RESPONSE_END);
-					break;
-				}
-				case COMMAND_GETUSEROPNAME: {
-					int index = (int) dec.readSignedInteger(ATTRIB_INDEX);
-					String res = callback.getUserOpName(index);
-					if (res == null) {
-						res = "";
+					case COMMAND_GETCPOOLREF: {
+						PatchPackedEncode enc = newEncoder();
+						int size = (int) dec.readSignedInteger(ATTRIB_SIZE);
+						long refs[] = new long[size];
+						for (int i = 0; i < size; ++i) {
+							int el = dec.openElement(ELEM_VALUE);
+							refs[i] = dec.readUnsignedInteger(ATTRIB_CONTENT);
+							dec.closeElement(el);
+						}
+						callback.getCPoolRef(refs, enc);
+						writeOptional(out, enc);
+						break;
 					}
-					out.write(QUERY_RESPONSE_START);
-					writeString(out, res);
-					out.write(QUERY_RESPONSE_END);
-					break;
+					case COMMAND_GETEXTERNALREF: {
+						PatchPackedEncode enc = newEncoder();
+						Address addr = AddressXML.decode(dec);
+						if (addr.equals(funcEntry)) {
+							kind = SCOPED;
+						}
+						callback.getExternalRef(addr, enc);
+						writeOptional(out, enc);
+						break;
+					}
+					case COMMAND_GETMAPPEDSYMBOLS: {
+						PatchPackedEncode enc = newEncoder();
+						Address addr = AddressXML.decode(dec);
+						if (addr.equals(funcEntry)) {
+							kind = SCOPED;	// the function's own symbol carries its default names
+						}
+						callback.getMappedSymbols(addr, enc);
+						writeOptional(out, enc);
+						break;
+					}
+					case COMMAND_GETNAMESPACEPATH: {
+						PatchPackedEncode enc = newEncoder();
+						long id = dec.readUnsignedInteger(ATTRIB_ID);
+						callback.getNamespacePath(id, enc);
+						writeOptional(out, enc);
+						break;
+					}
+					case COMMAND_GETPCODE: {
+						PatchPackedEncode enc = newEncoder();
+						Address addr = AddressXML.decode(dec);
+						if (program.getListing().getInstructionAt(addr) == null) {
+							why = "p-code by pseudo-disassembly at " + addr;
+						}
+						long tp = COST ? System.nanoTime() : 0;
+						callback.getPcode(addr, enc);
+						if (COST) {
+							PCODE_CALLBACK_NANOS.add(System.nanoTime() - tp);
+						}
+						writeOptional(out, enc);
+						break;
+					}
+					case COMMAND_GETREGISTER: {
+						PatchPackedEncode enc = newEncoder();
+						String name = dec.readString(ATTRIB_NAME);
+						callback.getRegister(name, enc);
+						writeOptional(out, enc);
+						break;
+					}
+					case COMMAND_GETREGISTERNAME: {
+						int el = dec.openElement(ELEM_ADDR);
+						Address addr = AddressXML.decodeFromAttributes(dec);
+						int size = (int) dec.readSignedInteger(ATTRIB_SIZE);
+						dec.closeElement(el);
+						String res = callback.getRegisterName(addr, size);
+						out.write(QUERY_RESPONSE_START);
+						writeString(out, res);
+						out.write(QUERY_RESPONSE_END);
+						break;
+					}
+					case COMMAND_GETSTRINGDATA: {
+						int maxChars = (int) dec.readSignedInteger(ATTRIB_MAXSIZE);
+						String dtName = dec.readString(ATTRIB_TYPE);
+						long dtId = dec.readUnsignedInteger(ATTRIB_ID);
+						Address addr = AddressXML.decode(dec);
+						DecompileCallback.StringData stringData =
+							callback.getStringData(addr, maxChars, dtName, dtId);
+						out.write(QUERY_RESPONSE_START);
+						if (stringData != null) {
+							byte[] res = stringData.byteData;
+							int sz = res.length + 1;		// We add a null terminator character
+							int sz1 = (sz & 0x3f) + 0x20;
+							sz >>>= 6;
+							int sz2 = (sz & 0x3f) + 0x20;
+							out.write(BYTE_START);
+							out.write(sz1);
+							out.write(sz2);
+							out.write(stringData.isTruncated ? 1 : 0);
+							byte[] dblres = new byte[res.length * 2 + 2];
+							for (int i = 0; i < res.length; i++) {
+								dblres[i * 2] = (byte) (((res[i] >> 4) & 0xf) + 65);
+								dblres[i * 2 + 1] = (byte) ((res[i] & 0xf) + 65);
+							}
+							dblres[res.length * 2] = 65;		// Adding null terminator
+							dblres[res.length * 2 + 1] = 65;
+							out.write(dblres);
+							out.write(BYTE_END);
+						}
+						out.write(QUERY_RESPONSE_END);
+						break;
+					}
+					case COMMAND_GETCODELABEL: {
+						Address addr = AddressXML.decode(dec);
+						if (inFunctionNamespace(addr)) {
+							kind = SCOPED;	// the label's prefix leaves out the decompiled function
+						}
+						String res = callback.getCodeLabel(addr);
+						if (res == null) {
+							res = "";
+						}
+						out.write(QUERY_RESPONSE_START);
+						writeString(out, res);
+						out.write(QUERY_RESPONSE_END);
+						break;
+					}
+					case COMMAND_GETDATATYPE: {
+						PatchPackedEncode enc = newEncoder();
+						String name = dec.readString(ATTRIB_NAME);
+						long id = dec.readSignedInteger(ATTRIB_ID);
+						callback.getDataType(name, id, enc);
+						writeOptional(out, enc);
+						break;
+					}
+					case COMMAND_GETTRACKEDREGISTERS: {
+						PatchPackedEncode enc = newEncoder();
+						Address addr = AddressXML.decode(dec);
+						callback.getTrackedRegisters(addr, enc);
+						out.write(QUERY_RESPONSE_START);
+						writeString(out, enc);
+						out.write(QUERY_RESPONSE_END);
+						break;
+					}
+					case COMMAND_GETUSEROPNAME: {
+						int index = (int) dec.readSignedInteger(ATTRIB_INDEX);
+						String res = callback.getUserOpName(index);
+						if (res == null) {
+							res = "";
+						}
+						out.write(QUERY_RESPONSE_START);
+						writeString(out, res);
+						out.write(QUERY_RESPONSE_END);
+						break;
+					}
+					default:
+						throw new Exception("Unsupported decompiler query");
 				}
-				default:
-					throw new Exception("Unsupported decompiler query");
+			}
+			catch (Exception e) { // DecompileProcess passes ANY exception down to the decompiler
+				out.reset();
+				try {
+					out.write(EXCEPTION_START);
+					String msg = e.getMessage();
+					writeString(out, e.getClass().getName());
+					writeString(out, msg == null ? "" : msg);
+					out.write(EXCEPTION_END);
+				}
+				catch (IOException e1) {
+					// a ByteArrayOutputStream does not throw
+				}
+			}
+			if (dtmanage.getTemporaryIdCount() != tempIds) {
+				// a temporary data-type id lives for one decompilation only
+				why = "temporary data-type id";
+				dtmanage.clearTemporaryIds();
+			}
+			if (why != null) {
+				return new Answer(out.toByteArray(), UNSTORABLE, why);
+			}
+			return new Answer(out.toByteArray(), kind, null);
+		}
+		finally {
+			long dt = System.nanoTime() - t0;
+			ANSWER_NANOS.add(dt);
+			ANSWER_CALLS.increment();
+			if (COST) {
+				COST_NANOS[costCommand & 0xff].add(dt);
+				COST_CALLS[costCommand & 0xff].increment();
 			}
 		}
-		catch (Exception e) { // DecompileProcess passes ANY exception down to the decompiler
-			out.reset();
+	}
+
+	private static final java.util.concurrent.atomic.LongAdder ANSWER_NANOS =
+		new java.util.concurrent.atomic.LongAdder();
+	private static final java.util.concurrent.atomic.LongAdder ANSWER_CALLS =
+		new java.util.concurrent.atomic.LongAdder();
+
+	/** Per-command answer cost (diagnostics; on with {@code -Dhydra.decomp.host.cost=true}). */
+	private static final boolean COST = Boolean.getBoolean("hydra.decomp.host.cost");
+	private static final java.util.concurrent.atomic.LongAdder[] COST_NANOS =
+		new java.util.concurrent.atomic.LongAdder[256];
+	private static final java.util.concurrent.atomic.LongAdder[] COST_CALLS =
+		new java.util.concurrent.atomic.LongAdder[256];
+	private static final java.util.concurrent.atomic.LongAdder PCODE_CALLBACK_NANOS =
+		new java.util.concurrent.atomic.LongAdder();
+	static {
+		for (int i = 0; i < 256; i++) {
+			COST_NANOS[i] = new java.util.concurrent.atomic.LongAdder();
+			COST_CALLS[i] = new java.util.concurrent.atomic.LongAdder();
+		}
+	}
+
+	/** @return the time inside {@code DecompileCallback.getPcode} (diagnostics) */
+	public static long pcodeCallbackNanos() {
+		return PCODE_CALLBACK_NANOS.sum();
+	}
+
+	/** @return per-command answers and their time, as {@code id -> {calls, nanos}} (diagnostics) */
+	public static java.util.Map<Integer, long[]> commandCost() {
+		java.util.Map<Integer, long[]> m = new java.util.TreeMap<>();
+		for (int i = 0; i < 256; i++) {
+			long c = COST_CALLS[i].sum();
+			if (c > 0) {
+				m.put(i, new long[] { c, COST_NANOS[i].sum() });
+			}
+		}
+		return m;
+	}
+
+	/** @return the answers computed since start and the time they took (diagnostics) */
+	public static long[] answerCost() {
+		return new long[] { ANSWER_CALLS.sum(), ANSWER_NANOS.sum() };
+	}
+
+	/**
+	 * The answer to the p-code query for {@code addr}, computed without decoding the query again:
+	 * the prefetch builds the query itself and knows the instruction exists. Same bytes as
+	 * {@link #answer} produces for a {@code COMMAND_GETPCODE} query whose address is an
+	 * instruction.
+	 * @param addr the instruction address (an instruction is in the listing)
+	 * @return the answer
+	 */
+	public Answer answerPcode(Address addr) {
+		long t0 = System.nanoTime();
+		try {
+			long tempIds = dtmanage.getTemporaryIdCount();
+			ByteArrayOutputStream out = new ByteArrayOutputStream(64);
+			PatchPackedEncode enc = newEncoder();
 			try {
+				callback.getPcode(addr, enc);
+				out.write(QUERY_RESPONSE_START);
+				if (!enc.isEmpty()) {
+					writeString(out, enc);
+				}
+				out.write(QUERY_RESPONSE_END);
+			}
+			catch (Exception e) {	// DecompileProcess passes ANY exception down to the decompiler
+				out.reset();
 				out.write(EXCEPTION_START);
 				String msg = e.getMessage();
 				writeString(out, e.getClass().getName());
 				writeString(out, msg == null ? "" : msg);
 				out.write(EXCEPTION_END);
 			}
-			catch (IOException e1) {
-				// a ByteArrayOutputStream does not throw
+			boolean temp = dtmanage.getTemporaryIdCount() != tempIds;
+			if (temp) {
+				dtmanage.clearTemporaryIds();
+				return new Answer(out.toByteArray(), UNSTORABLE, "temporary data-type id");
+			}
+			return new Answer(out.toByteArray(), GLOBAL, null);
+		}
+		catch (IOException e) {
+			return new Answer(new byte[0], UNSTORABLE, "p-code answer: " + e);
+		}
+		finally {
+			long dt = System.nanoTime() - t0;
+			ANSWER_NANOS.add(dt);
+			ANSWER_CALLS.increment();
+			if (COST) {
+				COST_NANOS[COMMAND_GETPCODE & 0xff].add(dt);
+				COST_CALLS[COMMAND_GETPCODE & 0xff].increment();
 			}
 		}
-		if (dtmanage.getTemporaryIdCount() != tempIds) {
-			// a temporary data-type id lives for one decompilation only
-			why = "temporary data-type id";
-			dtmanage.clearTemporaryIds();
-		}
-		if (why != null) {
-			return new Answer(out.toByteArray(), UNSTORABLE, why);
-		}
-		return new Answer(out.toByteArray(), kind, null);
 	}
 
 	private static int injectType(int commandId) {

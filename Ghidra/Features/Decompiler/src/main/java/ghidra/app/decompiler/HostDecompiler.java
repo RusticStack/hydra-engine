@@ -105,15 +105,31 @@ public final class HostDecompiler {
 	private static final LongAdder EXACT_RUNS = new LongAdder();
 	/** Diagnostics: log the first missed queries (property {@code hydra.decomp.host.traceMisses}). */
 	private static final boolean TRACE_MISSES = Boolean.getBoolean("hydra.decomp.host.traceMisses");
+	/** One line per hosted decompile with its steps (diagnostics; property {@code hydra.decomp.host.trace}). */
+	private static final String TRACE_FILE = System.getProperty("hydra.decomp.host.trace");
 	private static final AtomicLong TRACED = new AtomicLong();
 	private static final LongAdder MISSES_LEARNED = new LongAdder();
 	private static final LongAdder PREFETCHED = new LongAdder();
 	private static final LongAdder ANSWERED = new LongAdder();
 	private static final LongAdder NATIVE_NANOS = new LongAdder();
 	private static final LongAdder EXPORT_NANOS = new LongAdder();
+	/** Steps of a hosted decompile, for the profile: the generation lookup, the prefetch, a
+	 * decode of the run's result, and the answers computed twice (exactness check plus learn). */
+	private static final LongAdder GEN_NANOS = new LongAdder();
+	private static final LongAdder PREFETCH_NANOS = new LongAdder();
+	private static final LongAdder LEARN_NANOS = new LongAdder();
+	private static final LongAdder DECODE_NANOS = new LongAdder();
+	private static final LongAdder ANSWER_NANOS = new LongAdder();
+	private static final LongAdder ANSWER_CALLS = new LongAdder();
+	private static final LongAdder SPECS_NANOS = new LongAdder();
+	private static final LongAdder SNAPSHOT_NANOS = new LongAdder();
+	private static final LongAdder STORE_NANOS = new LongAdder();
+	private static final LongAdder REGISTER_NANOS = new LongAdder();
 	private static final Map<String, LongAdder> REASONS = new ConcurrentHashMap<>();
 	/** Missed queries by command element id ("again": the store already held the answer). */
 	private static final Map<String, LongAdder> MISS_KINDS = new ConcurrentHashMap<>();
+	private static final LongAdder REF_HITS = new LongAdder();
+	private static final LongAdder REF_MISSES = new LongAdder();
 
 	private HostDecompiler() {
 	}
@@ -362,6 +378,9 @@ public final class HostDecompiler {
 	/** The store of one program generation (modification number + options) and its exporters. */
 	private static final class Gen {
 		final Program program;
+		/** The program whose byte snapshot the store maps: {@link #program}, or an overlay's base
+		 * program (the overlay's memory is the stored file's, unchanged by its annotation log). */
+		final Program snapshotSource;
 		final long modification;
 		final byte[] options;
 		final MemorySegment store;
@@ -371,15 +390,23 @@ public final class HostDecompiler {
 		final Set<Address> prefetched = ConcurrentHashMap.newKeySet();
 		/** Functions whose p-code was exported after a p-code miss in their body. */
 		final Set<Address> pcodeBodies = ConcurrentHashMap.newKeySet();
+		/**
+		 * The reference-target answers already in the store, by target address: the queries, the
+		 * responses and the two other answers every function that references the address needs.
+		 * A generation's answers never change, so a later function's prefetch only skips them.
+		 */
+		final ConcurrentHashMap<Address, byte[][]> refAnswers = new ConcurrentHashMap<>();
 		/** The options' comment filter, learned from the first getComments miss (-1: not yet). */
 		volatile long commentFlags = -1;
 		private int inflight;
 		private boolean retired;
 		private boolean closed;
 
-		Gen(Program program, long modification, byte[] options, DecompileOptions decompileOptions,
-				MemorySegment store, ProgramSnapshotFile snapshot) {
+		Gen(Program program, Program snapshotSource, long modification, byte[] options,
+				DecompileOptions decompileOptions, MemorySegment store,
+				ProgramSnapshotFile snapshot) {
 			this.program = program;
+			this.snapshotSource = snapshotSource;
 			this.modification = modification;
 			this.options = options;
 			this.decompileOptions = decompileOptions;
@@ -453,6 +480,11 @@ public final class HostDecompiler {
 
 	private static Gen generation(Lib l, Program program, DecompileOptions options)
 			throws IOException {
+		return generation(l, program, program, options);
+	}
+
+	private static Gen generation(Lib l, Program program, Program snapshotSource,
+			DecompileOptions options) throws IOException {
 		long mod = program.getModificationNumber();
 		// The common case: the generation is current. Its options were encoded when it was made;
 		// the modification number covers a change of the program's options, so no per-request
@@ -462,6 +494,10 @@ public final class HostDecompiler {
 			if (current != null && current.modification == mod) {
 				return current;
 			}
+		}
+		if (options == null) {
+			options = new DecompileOptions();
+			options.grabFromProgram(program);
 		}
 		byte[] opts = DecompileSnapshot.encodeOptions(options);
 		List<Gen> stale = new ArrayList<>();
@@ -501,7 +537,7 @@ public final class HostDecompiler {
 			if (g != null && g.modification == mod && Arrays.equals(g.options, opts)) {
 				return g;
 			}
-			return makeGeneration(l, program, options, mod, opts);
+			return makeGeneration(l, program, snapshotSource, options, mod, opts);
 		}
 	}
 
@@ -530,13 +566,16 @@ public final class HostDecompiler {
 		return null;
 	}
 
-	private static Gen makeGeneration(Lib l, Program program, DecompileOptions options, long mod,
-			byte[] opts) throws IOException {
+	private static Gen makeGeneration(Lib l, Program program, Program snapshotSource,
+			DecompileOptions options, long mod, byte[] opts) throws IOException {
 		List<Gen> stale = new ArrayList<>();
 		long t0 = System.nanoTime();
 		DecompileSnapshot first = new DecompileSnapshot(program, options);
 		DecompileSnapshot.Specs specs = first.specs();
-		ProgramSnapshotFile snap = snapshotOf(program, mod);
+		long tspecs = System.nanoTime();
+		ProgramSnapshotFile snap = snapshotOf(snapshotSource,
+			snapshotSource.getModificationNumber());
+		long tsnap = System.nanoTime();
 		String snapPath = snap == null ? "" : snap.getPath().toString();
 		MemorySegment store;
 		try (Arena a = Arena.ofConfined()) {
@@ -555,13 +594,15 @@ public final class HostDecompiler {
 			ProgramSnapshotFile.release(snap);
 			throw new IOException("creating the decompile snapshot store: " + t, t);
 		}
+		long tstore = System.nanoTime();
 		if (store.equals(MemorySegment.NULL)) {
 			ProgramSnapshotFile.release(snap);
 			throw new IOException("the host could not create a store");
 		}
-		Gen made = new Gen(program, mod, opts, options, store, snap);
+		Gen made = new Gen(program, snapshotSource, mod, opts, options, store, snap);
 		try {
 			registrationAnswers(l, made, first);
+			REGISTER_NANOS.add(System.nanoTime() - tstore);
 		}
 		catch (Throwable t) {
 			made.retire(l);
@@ -571,6 +612,9 @@ public final class HostDecompiler {
 			throw new IOException("exporting the registration answers: " + t, t);
 		}
 		made.giveBack(first);
+		SPECS_NANOS.add(tspecs - t0);
+		SNAPSHOT_NANOS.add(tsnap - tspecs);
+		STORE_NANOS.add(tstore - tsnap);
 		EXPORT_NANOS.add(System.nanoTime() - t0);
 		Gen winner;
 		synchronized (GENS) {
@@ -663,6 +707,10 @@ public final class HostDecompiler {
 		}
 	}
 
+	/** The registration answers of a language: they depend on the language, not the program. */
+	private static final Map<ghidra.app.plugin.processors.sleigh.SleighLanguage, byte[]> REG_BLOCKS =
+		new java.util.WeakHashMap<>();
+
 	/** Exports a block of answers to the store (one downcall). */
 	private static void putAll(Lib l, Gen g, Arena arena, AnswerBlock block) throws Throwable {
 		if (block.size() == 0) {
@@ -684,7 +732,12 @@ public final class HostDecompiler {
 	 * change.
 	 */
 	private static boolean add(AnswerBlock block, byte[] scope, DecompileSnapshot a, byte[] query) {
-		DecompileSnapshot.Answer ans = a.answer(query);
+		return addComputed(block, scope, query, a.answer(query));
+	}
+
+	/** {@link #add} for an answer already computed (the reference-target prefetch computes three). */
+	private static boolean addComputed(AnswerBlock block, byte[] scope, byte[] query,
+			DecompileSnapshot.Answer ans) {
 		if (ans.kind() == DecompileSnapshot.UNSTORABLE) {
 			return false;
 		}
@@ -717,9 +770,16 @@ public final class HostDecompiler {
 		}
 		FunctionManager fm = p.getFunctionManager();
 		for (Instruction in : p.getListing().getInstructions(body, true)) {
-			if (add(block, scope, a, DecompileSnapshot.queryPcode(in.getAddress()))) {
-				PREFETCHED.increment();
+			// the query bytes as the native decompiler sends them (they key the answer), the
+			// answer without decoding the query again: the instruction is in the listing
+			Address at = in.getAddress();
+			byte[] q = DecompileSnapshot.queryPcode(at);
+			DecompileSnapshot.Answer ans = a.answerPcode(at);
+			if (ans.kind() == DecompileSnapshot.UNSTORABLE) {
+				continue;	// the run will miss it and the process path answers
 			}
+			block.add(EMPTY, q, ans.response());
+			PREFETCHED.increment();
 			if (in.getFlowType().isCall()) {
 				// a call to a function with a call-fixup: its injection, asked per call site
 				for (Address to : in.getFlows()) {
@@ -742,17 +802,43 @@ public final class HostDecompiler {
 				}
 			}
 		}
+		List<Map.Entry<Address, byte[][]>> learned = new ArrayList<>();
 		for (Address to : targets) {
-			for (byte[] q : new byte[][] { DecompileSnapshot.queryMappedSymbols(to),
-				DecompileSnapshot.queryCodeLabel(to),	// jump targets (LAB_...)
-				DecompileSnapshot.queryExternalRef(to) }) {	// import pointers (PTR_...)
-				if (add(block, scope, a, q)) {
-					PREFETCHED.increment();
-				}
+			if (g.refAnswers.containsKey(to)) {
+				// the store already holds this target's three answers (a previous function
+				// referenced it): nothing to compute and nothing to put
+				REF_HITS.increment();
+				continue;
+			}
+			byte[] qs = DecompileSnapshot.queryMappedSymbols(to);
+			byte[] ql = DecompileSnapshot.queryCodeLabel(to);	// LAB_...
+			byte[] qe = DecompileSnapshot.queryExternalRef(to);	// PTR_...
+			DecompileSnapshot.Answer as = a.answer(qs);
+			DecompileSnapshot.Answer al = a.answer(ql);
+			DecompileSnapshot.Answer ae = a.answer(qe);
+			REF_MISSES.increment();
+			if (as.kind() == DecompileSnapshot.GLOBAL && al.kind() == DecompileSnapshot.GLOBAL &&
+				ae.kind() == DecompileSnapshot.GLOBAL) {
+				block.add(EMPTY, qs, as.response());
+				block.add(EMPTY, ql, al.response());
+				block.add(EMPTY, qe, ae.response());
+				PREFETCHED.add(3);
+				learned.add(Map.entry(to, new byte[][] { qs, as.response(), ql, al.response(),
+					qe, ae.response() }));
+			}
+			else {
+				// the function's own entry (its symbol carries its default names) or a label in a
+				// function namespace: a per-function answer, not shareable
+				addComputed(block, scope, qs, as);
+				addComputed(block, scope, ql, al);
+				addComputed(block, scope, qe, ae);
 			}
 		}
 		try (Arena arena = Arena.ofConfined()) {
 			putAll(l, g, arena, block);
+		}
+		for (Map.Entry<Address, byte[][]> e : learned) {
+			g.refAnswers.putIfAbsent(e.getKey(), e.getValue());
 		}
 	}
 
@@ -761,6 +847,23 @@ public final class HostDecompiler {
 	 * names, index 0 up to the first empty one (each would otherwise cost a native run).
 	 */
 	private static void registrationAnswers(Lib l, Gen g, DecompileSnapshot a) throws Throwable {
+		ghidra.app.plugin.processors.sleigh.SleighLanguage language =
+			(ghidra.app.plugin.processors.sleigh.SleighLanguage) g.program.getLanguage();
+		byte[] cached;
+		synchronized (REG_BLOCKS) {
+			cached = REG_BLOCKS.get(language);
+		}
+		if (cached != null) {
+			// the same registers and user-op names: replay the language's block
+			try (Arena arena = Arena.ofConfined()) {
+				MemorySegment seg = arena.allocate(cached.length);
+				MemorySegment.copy(cached, 0, seg, JAVA_BYTE, 0, cached.length);
+				if ((int) l.storePutBulk.invokeExact(g.store, seg, (long) cached.length) != 0) {
+					throw new IOException("the host refused answers");
+				}
+			}
+			return;
+		}
 		AnswerBlock block = new AnswerBlock();
 		try (Arena arena = Arena.ofConfined()) {
 			// every register by name: global answers that otherwise cost one run each
@@ -783,6 +886,12 @@ public final class HostDecompiler {
 				}
 			}
 			putAll(l, g, arena, block);
+		}
+		if (block.size() > 0) {
+			synchronized (REG_BLOCKS) {
+				byte[] bytes = Arrays.copyOf(block.array(), block.size());
+				REG_BLOCKS.put(language, bytes);
+			}
 		}
 	}
 
@@ -1023,15 +1132,23 @@ public final class HostDecompiler {
 	 * error); a run over {@code timeoutSecs}.
 	 * @param program the program ({@code f}'s)
 	 * @param f the function
-	 * @param options the decompiler options, as the process decompilers use them
 	 * @param timeoutSecs the decompile timeout (0 = none)
 	 * @return the outcome
 	 */
-	public static Outcome decompile(Program program, Function f, DecompileOptions options,
+	public static Outcome decompile(Program program, Function f, int timeoutSecs) {
+		return decompile(program, program, f, timeoutSecs);
+	}
+
+	/**
+	 * Decompile {@code f} of {@code program}, with the byte snapshot taken from
+	 * {@code snapshotSource} (an overlay's base program: an annotation-only overlay's memory is
+	 * the same stored image, so its 40 MB snapshot is not written again per generation).
+	 */
+	public static Outcome decompile(Program program, Program snapshotSource, Function f,
 			int timeoutSecs) {
 		Outcome o;
 		try {
-			o = decompile0(program, f, options, timeoutSecs);
+			o = decompile0(program, snapshotSource, f, timeoutSecs);
 		}
 		catch (RuntimeException e) {
 			// a defect of the host path must never fail the request: the process path answers it
@@ -1049,7 +1166,7 @@ public final class HostDecompiler {
 		return o;
 	}
 
-	private static Outcome decompile0(Program program, Function f, DecompileOptions options,
+	private static Outcome decompile0(Program program, Program snapshotSource, Function f,
 			int timeoutSecs) {
 		Object lo = lib();
 		if (lo instanceof String why) {
@@ -1064,12 +1181,19 @@ public final class HostDecompiler {
 			return Outcome.fallback(why);
 		}
 		Gen g;
+		long tg = System.nanoTime();
 		try {
-			g = generation(l, program, options);
+			// options: the generation's own, made once with grabFromProgram (the modification
+			// number covers a change of the program's options)
+			g = generation(l, program, snapshotSource, null);
 		}
 		catch (IOException | IllegalArgumentException e) {
 			return Outcome.fallback("snapshot: " + e.getMessage());
 		}
+		finally {
+			GEN_NANOS.add(System.nanoTime() - tg);
+		}
+		DecompileOptions options = g.decompileOptions;
 		if (!g.acquire()) {
 			return Outcome.fallback("generation retired");
 		}
@@ -1078,7 +1202,7 @@ public final class HostDecompiler {
 					? System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSecs) | 1
 					: 0;
 			try {
-				return hosted(l, g, f, options, deadline);
+				return hosted(l, g, f, deadline);
 			}
 			catch (TimeoutException e) {
 				return Outcome.fallback("host run over the timeout");	// the run finishes unseen
@@ -1102,7 +1226,7 @@ public final class HostDecompiler {
 		try {
 			fut = l.calls.submit(() -> {
 				try {
-					return hosted(l, g, f, options, 0);
+					return hosted(l, g, f, 0);
 				}
 				catch (Exception | Error e) {
 					throw e;
@@ -1143,31 +1267,41 @@ public final class HostDecompiler {
 		}
 	}
 
-	private static Outcome hosted(Lib l, Gen g, Function f, DecompileOptions options,
-			long deadline) throws Throwable {
+	private static Outcome hosted(Lib l, Gen g, Function f, long deadline) throws Throwable {
+		DecompileOptions options = g.decompileOptions;
 		DecompileSnapshot a = g.borrow();
 		try {
 			a.setFunction(f);
 			byte[] addr = DecompileSnapshot.encodeAddress(f.getEntryPoint());
 			long t0 = System.nanoTime();
 			prefetch(l, g, a, f, addr);
-			EXPORT_NANOS.add(System.nanoTime() - t0);
-			for (int round = 1; round <= MAX_ROUNDS; round++) {
+			long t1 = System.nanoTime();
+			EXPORT_NANOS.add(t1 - t0);
+			PREFETCH_NANOS.add(t1 - t0);
+			long runNanos = 0;
+			int round = 0;
+			for (round = 1; round <= MAX_ROUNDS; round++) {
 				// the export work (prefetch, learn) runs on this thread: the deadline bounds it as
 				// the blocking path's fut.get(timeoutSecs) bounds the whole of hosted()
 				checkDeadline(deadline);
+				long tr = System.nanoTime();
 				Run r = ASYNC ? runAsync(l, g, addr, deadline) : run(l, g, addr);
+				runNanos += System.nanoTime() - tr;
 				if (r.rc() == MISSES && r.out().length > 0 && exactRun(a, r)) {
 					// every miss was fed its real answer: the run is the process path's run
 					EXACT_RUNS.increment();
+					long tl = System.nanoTime();
 					learn(l, g, a, addr, r);
+					LEARN_NANOS.add(System.nanoTime() - tl);
 					checkDeadline(deadline);
 					r = new Run(OK, r.out(), List.of(), List.of());
 				}
 				if (r.rc() == OK) {
 					a.setFunction(f);	// fresh temporary ids for decoding, as the process path
+					long td = System.nanoTime();
 					DecompileResults res =
 						a.decodeResults(f, r.out(), options.getMaxPayloadMBytes());
+					DECODE_NANOS.add(System.nanoTime() - td);
 					if (res == null) {
 						return Outcome.fallback("host result not decodable");
 					}
@@ -1175,6 +1309,7 @@ public final class HostDecompiler {
 						return Outcome.fallback("host decompile did not complete: " +
 							res.getErrorMessage().trim());
 					}
+					trace(f, t1 - t0, runNanos, System.nanoTime() - td, round);
 					return new Outcome(res, null);
 				}
 				if (r.rc() != MISSES) {
@@ -1184,9 +1319,11 @@ public final class HostDecompiler {
 				if (round == MAX_ROUNDS) {
 					break;
 				}
-				long t1 = System.nanoTime();
+				long tl2 = System.nanoTime();
 				String bad = learn(l, g, a, addr, r);
-				EXPORT_NANOS.add(System.nanoTime() - t1);
+				long te = System.nanoTime();
+				EXPORT_NANOS.add(te - tl2);
+				LEARN_NANOS.add(te - tl2);
 				if (bad != null) {
 					return Outcome.fallback(bad);
 				}
@@ -1195,6 +1332,84 @@ public final class HostDecompiler {
 		}
 		finally {
 			g.giveBack(a);
+		}
+	}
+
+	/** Appends one line for a hosted decompile to {@link #TRACE_FILE} (diagnostics). */
+	private static void trace(Function f, long prefetchNanos, long runNanos, long decodeNanos,
+			int rounds) {
+		if (TRACE_FILE == null) {
+			return;
+		}
+		String line = f.getEntryPoint() + " prefetch=" + prefetchNanos + " run=" + runNanos +
+			" decode=" + decodeNanos + " rounds=" + rounds + "\n";
+		synchronized (TRACE) {
+			try {
+				java.nio.file.Files.writeString(java.nio.file.Path.of(TRACE_FILE), line,
+					java.nio.charset.StandardCharsets.UTF_8,
+					java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+			}
+			catch (java.io.IOException e) {
+				// diagnostics only
+			}
+		}
+	}
+
+	private static final Object TRACE = new Object();
+
+	// ---- warming ------------------------------------------------------------------------------
+
+	/**
+	 * Low-priority background set-up: the pool is small because a generation is CPU and IO work
+	 * (specs, the byte snapshot, the registration answers) and several open at once.
+	 */
+	private static final ExecutorService WARM = Executors.newFixedThreadPool(
+		Math.max(1, Math.min(4, Runtime.getRuntime().availableProcessors() / 4)), r -> {
+			Thread t = new Thread(r, "decomp-host-warm");
+			t.setDaemon(true);
+			t.setPriority(Thread.MIN_PRIORITY);
+			return t;
+		});
+	/** Programs whose set-up is scheduled or running (one task per program). */
+	private static final Set<Program> WARMING = ConcurrentHashMap.newKeySet();
+
+	/**
+	 * Starts the set-up of a program's generation on a background thread: the caller does not
+	 * wait, and a decompile that arrives meanwhile waits for the same generation (one maker per
+	 * program) instead of making a second one.
+	 * @param program the program, or an overlay's program
+	 */
+	public static void warm(Program program) {
+		warm(program, program);
+	}
+
+	/** As {@link #warm(Program)}, with the byte snapshot taken from {@code snapshotSource}. */
+	public static void warm(Program program, Program snapshotSource) {
+		if (!(program instanceof ghidra.program.database.ProgramDB) || !WARMING.add(program)) {
+			return;
+		}
+		try {
+			WARM.execute(() -> {
+				try {
+					Object lo = lib();
+					if (lo instanceof Lib l) {
+						generation(l, program, snapshotSource, null);
+					}
+				}
+				catch (VirtualMachineError e) {
+					throw e;
+				}
+				catch (Throwable t) {
+					Msg.warn(HostDecompiler.class, "decompile host warm-up of " + program.getName() +
+						": " + t);
+				}
+				finally {
+					WARMING.remove(program);
+				}
+			});
+		}
+		catch (RejectedExecutionException e) {
+			WARMING.remove(program);
 		}
 	}
 
@@ -1231,6 +1446,8 @@ public final class HostDecompiler {
 		m.put("nativeRuns", ROUNDS.sum());
 		m.put("exactRunsWithMisses", EXACT_RUNS.sum());
 		m.put("prefetched", PREFETCHED.sum());
+		m.put("referenceHits", REF_HITS.sum());
+		m.put("referenceMisses", REF_MISSES.sum());
 		m.put("missesLearned", MISSES_LEARNED.sum());
 		Map<String, Long> kinds = new TreeMap<>();
 		MISS_KINDS.forEach((k, v) -> kinds.put(k, v.sum()));
@@ -1239,6 +1456,24 @@ public final class HostDecompiler {
 		m.put("answeredFromStore", ANSWERED.sum());
 		m.put("nativeMs", NATIVE_NANOS.sum() / 1_000_000);
 		m.put("exportMs", EXPORT_NANOS.sum() / 1_000_000);
+		m.put("generationMs", GEN_NANOS.sum() / 1_000_000);
+		m.put("specsMs", SPECS_NANOS.sum() / 1_000_000);
+		m.put("snapshotMs", SNAPSHOT_NANOS.sum() / 1_000_000);
+		m.put("storeMs", STORE_NANOS.sum() / 1_000_000);
+		m.put("registerMs", REGISTER_NANOS.sum() / 1_000_000);
+		m.put("prefetchMs", PREFETCH_NANOS.sum() / 1_000_000);
+		m.put("learnMs", LEARN_NANOS.sum() / 1_000_000);
+		m.put("decodeMs", DECODE_NANOS.sum() / 1_000_000);
+		long[] ac = DecompileSnapshot.answerCost();
+		m.put("answeredQueries", ac[0]);
+		m.put("answerMs", ac[1] / 1_000_000);
+		if (Boolean.getBoolean("hydra.decomp.host.cost")) {
+			Map<String, String> cm = new TreeMap<>();
+			DecompileSnapshot.commandCost().forEach((k, v) -> cm.put(Integer.toString(k),
+				v[0] + " calls " + v[1] / 1_000_000 + " ms"));
+			m.put("answerCostByCommand", cm);
+			m.put("pcodeCallbackMs", DecompileSnapshot.pcodeCallbackNanos() / 1_000_000);
+		}
 		return m;
 	}
 
