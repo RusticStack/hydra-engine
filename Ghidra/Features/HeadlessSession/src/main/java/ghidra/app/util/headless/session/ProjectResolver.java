@@ -34,6 +34,38 @@ public class ProjectResolver {
 
 	private static final int MAX_DEPTH = 2;
 
+	/**
+	 * A resolved path with the canonical {@code .gpr} path, which is how the session keys its
+	 * projects: the walk of {@link #resolve} plus one {@code getCanonicalPath} is about 1.4 ms of
+	 * a join on this machine, and the same client path is opened again and again.
+	 */
+	public record Open(Resolved resolved, String canonical) {
+	}
+
+	/** Resolved paths by the absolute path text they were asked for (successful resolutions only). */
+	private static final java.util.concurrent.ConcurrentHashMap<String, Open> OPEN =
+		new java.util.concurrent.ConcurrentHashMap<>();
+
+	/**
+	 * {@link #resolve} with the result kept for the next open of the same path. A hit still checks
+	 * that the {@code .gpr} exists, so a deleted project is resolved (and refused) again; the
+	 * directory and name of an existing project do not change while the daemon runs.
+	 */
+	public static Open resolveOpen(String path) throws IOException {
+		String key = new File(path).getAbsolutePath();
+		Open hit = OPEN.get(key);
+		if (hit != null && hit.resolved().gpr().isFile()) {
+			return hit;
+		}
+		Resolved r = resolve(path);
+		Open o = new Open(r, r.gpr().getCanonicalPath());
+		if (OPEN.size() > 1024) {
+			OPEN.clear();
+		}
+		OPEN.put(key, o);
+		return o;
+	}
+
 	public static Resolved resolve(String path) throws IOException {
 		File f = new File(path).getAbsoluteFile();
 		if (!f.exists()) {

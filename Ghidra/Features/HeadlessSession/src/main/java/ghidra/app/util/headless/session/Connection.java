@@ -649,6 +649,13 @@ final class Connection {
 			outbound.offerEvent(bytes);
 			return;
 		}
+		// A reply of a connection with no other request running is written by this thread when the
+		// writer has nothing queued: the client gets it a writer wakeup sooner, and no event of
+		// another request can be overtaken (a running request's events are already queued, which
+		// keeps this path off). A pipelined connection keeps the writer and its order.
+		if (client.running.isEmpty() && outbound.tryWrite(bytes)) {
+			return;
+		}
 		if (!outbound.offerReply(bytes)) {
 			onStall();
 		}
@@ -920,6 +927,9 @@ final class Connection {
 		private boolean stopping;
 		/** {@code System.nanoTime()} when the current socket write began, 0 when none is running. */
 		private volatile long writing;
+		/** Held for a whole line by whichever thread writes it (the writer, or a reply's own). */
+		private final java.util.concurrent.locks.ReentrantLock writeLock =
+			new java.util.concurrent.locks.ReentrantLock();
 		private final Thread thread;
 
 		private final java.util.concurrent.ScheduledFuture<?> watch;
@@ -976,6 +986,62 @@ final class Connection {
 		private boolean writerStalled() {
 			long w = writing;
 			return w != 0 && System.nanoTime() - w > TimeUnit.MILLISECONDS.toNanos(stallMs);
+		}
+
+		/**
+		 * Writes a reply from the thread that made it, when nothing is queued and no line is being
+		 * written: the reply does not wait for the writer thread to wake. False when the writer has
+		 * work (the caller queues its reply, so the order is kept), or is writing, or the connection
+		 * is ending. The line is written in the same chunks under {@link #writeLock} the writer
+		 * uses, and counted by the stall clock the same way.
+		 */
+		boolean tryWrite(byte[][] b) {
+			if (!writeLock.tryLock()) {
+				return false;
+			}
+			try {
+				synchronized (this) {
+					if (stopping || !queue.isEmpty() || writing != 0) {
+						return false;
+					}
+					writing = System.nanoTime();
+				}
+				boolean ok = true;
+				try {
+					writeAll(b);
+				}
+				catch (IOException e) {
+					ok = false;
+				}
+				finally {
+					synchronized (this) {
+						writing = 0;
+						if (!ok) {
+							open = false;
+							queue.clear();
+							queued = 0;
+						}
+						notifyAll();
+					}
+				}
+				return true;
+			}
+			finally {
+				writeLock.unlock();
+			}
+		}
+
+		/** One line, in chunks, each moving the stall clock (see {@link #run()}). */
+		private void writeAll(byte[][] b) throws IOException {
+			for (byte[] part : b) {
+				for (int off = 0; off < part.length; off += WRITE_CHUNK) {
+					out.write(part, off, Math.min(WRITE_CHUNK, part.length - off));
+					synchronized (this) {
+						writing = System.nanoTime();
+					}
+				}
+			}
+			out.flush();
 		}
 
 		/** Waits until everything queued was written, at most {@code ms}. */
@@ -1035,38 +1101,38 @@ final class Connection {
 						}
 					}
 					b = queue.peekFirst();
-					writing = System.nanoTime();
 				}
 				boolean ok = true;
+				writeLock.lock();
 				try {
-					// in chunks, each one moving the stall clock: writeStallMs is the time without
-					// progress, not the time a large reply takes to a client that reads it slowly.
-					// A virtual writer's socket is non-blocking underneath, so one big write waits
-					// for the reader where a platform thread's blocking send handed the reply to
-					// the kernel; a client that stops reading still stalls one chunk (as before)
-					for (byte[] part : b) {
-						for (int off = 0; off < part.length; off += WRITE_CHUNK) {
-							out.write(part, off, Math.min(WRITE_CHUNK, part.length - off));
-							synchronized (this) {
-								writing = System.nanoTime();
-							}
+					synchronized (this) {
+						writing = System.nanoTime();
+					}
+					try {
+						// in chunks, each one moving the stall clock: writeStallMs is the time without
+						// progress, not the time a large reply takes to a client that reads it slowly.
+						// A virtual writer's socket is non-blocking underneath, so one big write waits
+						// for the reader where a platform thread's blocking send handed the reply to
+						// the kernel; a client that stops reading still stalls one chunk (as before)
+						writeAll(b);
+					}
+					catch (IOException e) {
+						ok = false;
+					}
+					synchronized (this) {
+						writing = 0;
+						queue.pollFirst();
+						queued -= length(b);
+						if (!ok) {
+							open = false;
+							queue.clear();
+							queued = 0;
 						}
+						notifyAll();
 					}
-					out.flush();
 				}
-				catch (IOException e) {
-					ok = false;
-				}
-				synchronized (this) {
-					writing = 0;
-					queue.pollFirst();
-					queued -= length(b);
-					if (!ok) {
-						open = false;
-						queue.clear();
-						queued = 0;
-					}
-					notifyAll();
+				finally {
+					writeLock.unlock();
 				}
 			}
 		}

@@ -53,16 +53,26 @@ final class ProjectCommands {
 	 * a writable request on a writable project, and a read-only request on one, join it.
 	 */
 	JsonElement openProject(Client c, JsonObject req) {
-		// 8.13: a half fork a dead publisher left in this directory is swept before the open
-		ForkSweeper.sweepForOpen(Json.str(req, "path", null));
+		String path = Json.str(req, "path");
 		ProjectResolver.Resolved r;
 		String canonical;
 		try {
-			r = ProjectResolver.resolve(Json.str(req, "path"));
-			canonical = r.gpr().getCanonicalPath();
+			// the resolution and the canonical path are kept: a join is the common case, and the
+			// walk and getCanonicalPath were 1.4 ms of it
+			ProjectResolver.Open open = ProjectResolver.resolveOpen(path);
+			r = open.resolved();
+			canonical = open.canonical();
 		}
 		catch (IOException e) {
+			// 8.13: a half fork a dead publisher left in a directory that does not resolve is still
+			// swept before the refusal
+			ForkSweeper.sweepForOpen(path);
 			throw new SessionException(SessionException.NOT_FOUND, e.getMessage());
+		}
+		if (!s.projects.containsKey(canonical)) {
+			// 8.13: the first open of a project sweeps a half fork a dead publisher left in its
+			// directory; a project that is already open swept when it opened
+			ForkSweeper.sweepForOpen(path);
 		}
 		boolean writable = Json.bool(req, "writable", false);
 		boolean discard = Json.bool(req, "discard", false);
