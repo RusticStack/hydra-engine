@@ -148,6 +148,24 @@ final class OverlayCommands {
 			}
 			boolean write = cmd.equals("apply_overlay") || cmd.equals("rename") ||
 				cmd.equals("comment") || cmd.equals("drop_overlay");
+			// a script may change the program too, so it gets one of its own like a change does
+			boolean needsProgram = write || cmd.equals("script");
+			if (needsProgram && !cmd.equals("drop_overlay") && o.error == null &&
+				o.program == null) {
+				// the first change gives the overlay a program of its own, over the stored file:
+				// taken with the base's lock (and before the overlay's write lock), the order the
+				// overlay's open takes them in (a materialize under the overlay lock alone could
+				// deadlock against it)
+				Lock bl = PrivateInstance.baseLock(e, waitMs(req), c, cmd);
+				try {
+					materialize(o, m);
+				}
+				finally {
+					if (bl != null) {
+						e.release(bl);
+					}
+				}
+			}
 			Lock ol = write ? o.lock.writeLock() : o.lock.readLock();
 			Waits.Outcome got = Waits.lock(o.lock, write, waitMs(req), Waits.counter(o));
 			if (got != Waits.Outcome.GOT) {
@@ -177,7 +195,7 @@ final class OverlayCommands {
 					return Json.of("dropped", true, "overlay", name, "program", e.key, "ops",
 						o.log.size(), "overlayVersion", o.version);
 				}
-				if (o.error != null || o.program == null) {
+				if (o.error != null || o.readProgram() == null) {
 					JsonObject d = o.describe();
 					d.add("log", o.log.deepCopy());
 					throw new SessionException(SessionException.CONFLICT,
@@ -185,10 +203,14 @@ final class OverlayCommands {
 							"; drop_overlay it (its log is in details.log)",
 						d);
 				}
+				// an empty overlay over a read-only program reads through that program (no second
+				// open: Overlay.shared); its own program is opened by the first change
+				Program view = o.readProgram();
 				return switch (cmd) {
 					case "info" -> overlayInfo(o);
-					case "functions" -> withOverlay(o, s.queries.functions(o.program, req));
-					case "decompile" -> withOverlay(o, s.queries.decompile(o.program, o, req, m));
+					case "functions" -> withOverlay(o, s.queries.functions(view, req));
+					case "decompile" -> withOverlay(o,
+						s.queries.decompile(view, o, req, m));
 					case "script" -> {
 						ResourceFile src = findScript(Json.str(req, "script"));
 						m.deadline(Json.num(req, "timeout", 0, 0, 7 * 86_400));
@@ -321,17 +343,95 @@ final class OverlayCommands {
 	}
 
 	/**
+	 * An empty overlay of a read-only program <b>is</b> that program: its log is empty, so
+	 * replaying it changes nothing, and the program cannot be written. Opening it costs one
+	 * reference instead of a whole second {@link ProgramDB} (the measured ~28 ms an overlay open
+	 * took, mostly reading the database's metadata), and the first query reads through the shared
+	 * program. The entry keeps the program alive for the session; the overlay is a consumer too,
+	 * so a later writable open or a refresh cannot pull the snapshot from under it, and it is
+	 * given up when the overlay is dropped or gets a program of its own.
+	 */
+	private boolean shareable(ProgramEntry e) {
+		return e.program != null && e.mode == ProgramEntry.Mode.READ_ONLY &&
+			!e.program.isChanged() && !e.program.isClosed();
+	}
+
+	/**
+	 * Makes {@code o} read through {@code e.program} (see {@link #shareable}). Held: the overlay's
+	 * write lock.
+	 */
+	private void share(Overlay o, ProgramEntry e) {
+		Program p = e.program;
+		p.addConsumer(o);
+		o.shared = p;
+		o.program = null;
+		o.view = null;
+		o.lease = null;
+		o.openMs = 0;
+		o.sha256 = p.getExecutableSHA256();
+		o.programRevision = e.revision;
+		o.projectRevision = e.project.revision();
+		o.generation = e.project.generation;
+		o.error = null;
+	}
+
+	/**
 	 * Opens the overlay's own program object (from the upgrade cache copy when the shared program
-	 * came from one) and replays its log. The open is {@link PrivateInstance#load}, the mechanism a
-	 * {@code private} script shares. Held: the overlay's write lock, and the program's lock unless
-	 * {@link PrivateInstance#baseLock} said it is not needed.
+	 * came from one) and replays its log, unless an empty overlay over a read-only program can
+	 * read through the program ({@link #shareable}). The open is {@link PrivateInstance#load}, the
+	 * mechanism a {@code private} script shares. Held: the overlay's write lock, and the program's
+	 * lock unless {@link PrivateInstance#baseLock} said it is not needed.
 	 */
 	private void loadOverlay(Overlay o, RequestMonitor m) {
+		ProgramEntry e = o.base;
+		if (o.log.isEmpty() && shareable(e)) {
+			share(o, e);
+			return;
+		}
+		openPrivate(o, m);
+	}
+
+	/**
+	 * Gives {@code o} a program of its own over the stored file, replaying its log: before its
+	 * first change, or when it cannot read through the shared program. Takes the overlay's write
+	 * lock; the caller holds the base program's lock ({@link PrivateInstance#baseLock}), the order
+	 * {@link #openOverlay} takes them in.
+	 */
+	private void materialize(Overlay o, RequestMonitor m) {
+		if (o.program != null) {
+			return;
+		}
+		o.lock.writeLock().lock();
+		try {
+			if (o.program == null) {
+				ProgramEntry e = o.base;
+				if (e.program == null || e.program.isClosed()) {
+					throw new SessionException(SessionException.NO_PROGRAM,
+						e.key + " was closed");
+				}
+				openPrivate(o, m);
+			}
+		}
+		finally {
+			o.lock.writeLock().unlock();
+		}
+	}
+
+	/** {@link #loadOverlay}'s open: the program, its view and lease, and the log applied. */
+	private void openPrivate(Overlay o, RequestMonitor m) {
 		ProgramEntry e = o.base;
 		PrivateInstance.Loaded l = PrivateInstance.load(s.upgradeCache, e, o, m);
 		Program prog = l.program();
 		if (Settings.bool(PrivateInstance.LIGHT_OVERLAYS, false)) {
 			PrivateInstance.lighten(prog);
+		}
+		Program shared = o.shared;
+		o.shared = null;
+		if (shared != null) {
+			// decompilers built on the shared program would outlive it (Overlay.borrowDecompiler
+			// checks too); nothing is kept across the change of program
+			o.dropDecompilers();
+			shared.release(o);
 		}
 		o.view = l.view();
 		o.lease = l.lease();
@@ -394,7 +494,10 @@ final class OverlayCommands {
 		}
 	}
 
-	/** Applies operations to the overlay as one unit, and logs them. Held: its write lock. */
+	/**
+	 * Applies operations to the overlay as one unit, and logs them. Held: its write lock; the
+	 * overlay has a program of its own already ({@link #materialize}, before the lock).
+	 */
 	private JsonObject applyOverlay(Overlay o, JsonArray ops) {
 		JsonArray results = s.operations.applyOps(o.program, ops);
 		for (JsonElement op : ops) {
@@ -406,7 +509,7 @@ final class OverlayCommands {
 
 	/** {@code info} of an overlay: the program as this overlay shows it. */
 	private JsonObject overlayInfo(Overlay o) {
-		Program p = o.program;
+		Program p = o.readProgram();
 		ProgramEntry e = o.base;
 		JsonObject j = Json.of("key", e.key, "project", e.project.id, "path", e.path, "name",
 			p.getName(), "mode", "overlay", "language", p.getLanguageID().getIdAsString(),
