@@ -59,12 +59,28 @@ final class Revision {
 	 */
 	static String of(ProjectResolver.Resolved r, SortedMap<String, Path> sourceFiles)
 			throws IOException {
+		return snapshot(r, sourceFiles).revision();
+	}
+
+	/**
+	 * Everything a fork measures of its source from one read pass: the revision ({@link #of}), the
+	 * per-file identities ({@link #files}), the byte count and the bytes a fork could share with
+	 * its source by a hard link ({@link UpgradeCache#shareable}). Each file's attributes are read
+	 * once, where a fork used to read them three times (the cost, the before-map, the revision).
+	 */
+	record Snapshot(String revision, Map<String, String> files, long bytes, int count,
+			long shareableBytes) {
+	}
+
+	static Snapshot snapshot(ProjectResolver.Resolved r, SortedMap<String, Path> sourceFiles)
+			throws IOException {
 		MessageDigest md = sha256();
+		Map<String, String> files = new java.util.TreeMap<>();
 		String state = r.name() + ".rep/" + PROJECT_STATE;
+		long bytes = 0;
+		int count = 0;
+		long shareable = 0;
 		for (Map.Entry<String, Path> f : sourceFiles.entrySet()) {
-			if (f.getKey().equals(state)) {
-				continue;
-			}
 			BasicFileAttributes a;
 			try {
 				a = Files.readAttributes(f.getValue(), BasicFileAttributes.class);
@@ -72,6 +88,15 @@ final class Revision {
 			catch (NoSuchFileException e) {
 				continue; // removed while we walked: the next check sees the new state
 			}
+			bytes += a.size();
+			count++;
+			if (UpgradeCache.shareable(f.getValue(), r.name(), a.size())) {
+				shareable += a.size();
+			}
+			if (f.getKey().equals(state)) {
+				continue;
+			}
+			files.put(f.getKey(), a.size() + "|" + a.lastModifiedTime().toMillis());
 			update(md, "|" + f.getKey() + "|" + a.size() + "|" + a.lastModifiedTime().toMillis());
 			if (a.size() <= UpgradeCache.HASH_LIMIT) {
 				try {
@@ -82,7 +107,8 @@ final class Revision {
 				}
 			}
 		}
-		return HexFormat.of().formatHex(md.digest()).substring(0, 16);
+		return new Snapshot(HexFormat.of().formatHex(md.digest()).substring(0, 16), files, bytes,
+			count, shareable);
 	}
 
 	/**
@@ -96,21 +122,7 @@ final class Revision {
 	/** {@link #files(ProjectResolver.Resolved)} over a listing already made (see {@link #of}). */
 	static Map<String, String> files(ProjectResolver.Resolved r,
 			SortedMap<String, Path> sourceFiles) throws IOException {
-		Map<String, String> out = new java.util.TreeMap<>();
-		String state = r.name() + ".rep/" + PROJECT_STATE;
-		for (Map.Entry<String, Path> f : sourceFiles.entrySet()) {
-			if (f.getKey().equals(state)) {
-				continue;
-			}
-			try {
-				BasicFileAttributes a = Files.readAttributes(f.getValue(), BasicFileAttributes.class);
-				out.put(f.getKey(), a.size() + "|" + a.lastModifiedTime().toMillis());
-			}
-			catch (NoSuchFileException e) {
-				// gone
-			}
-		}
-		return out;
+		return snapshot(r, sourceFiles).files();
 	}
 
 	/** The paths that differ between two {@link #files} maps (added, removed or changed). */

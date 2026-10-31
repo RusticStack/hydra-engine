@@ -146,6 +146,18 @@ final class ForkSweeper {
 		}
 	}
 
+	/**
+	 * {@link #admit(File, String, String, String)} of a destination whose canonical path the caller
+	 * already resolved (a fork resolves it once for its own "not the source" check; resolving it
+	 * again per request is a file-system call on a directory that may not exist yet).
+	 */
+	static Admission admit(File destDir, String canonicalDir, String name, String id, String rk) {
+		String key = canonicalDir + File.separator + name;
+		synchronized (gate(key)) {
+			return admit(key, destDir, name, id, rk);
+		}
+	}
+
 	private static Admission admit(String key, File destDir, String name, String id, String rk) {
 		Claim other = CLAIMS.get(key);
 		if (other != null) {
@@ -284,7 +296,14 @@ final class ForkSweeper {
 		catch (IOException e) {
 			parent = destDir.getAbsolutePath();
 		}
-		boolean first = SWEPT.add(parent);
+		return sweepFor(destDir, parent, name);
+	}
+
+	/**
+	 * {@link #sweepFor(File, String)} of a parent whose canonical path the caller already resolved.
+	 */
+	static Report sweepFor(File destDir, String canonicalDir, String name) {
+		boolean first = SWEPT.add(canonicalDir);
 		return sweep(destDir, first ? null : name);
 	}
 
@@ -306,7 +325,21 @@ final class ForkSweeper {
 			return;
 		}
 		try {
-			String canon = destDir.getCanonicalPath();
+			registerParent(destDir, destDir.getCanonicalPath());
+		}
+		catch (IOException | RuntimeException e) {
+			Msg.warn(ForkSweeper.class, "fork_project: could not record " + destDir +
+				" for the start-up sweep: " + e);
+		}
+	}
+
+	/** {@link #registerParent(File)} of a directory whose canonical path the caller resolved. */
+	static void registerParent(File destDir, String canon) {
+		Path dir = parentsDir();
+		if (dir == null) {
+			return;
+		}
+		try {
 			Path f = dir.resolve(key(canon));
 			if (!Files.exists(f)) {
 				Files.createDirectories(dir);

@@ -36,6 +36,9 @@ import utilities.util.FileUtilities;
  * {@link Files#copy}, which uses the platform's copy. On Windows that is {@code CopyFileEx},
  * which block-clones on ReFS (a Dev Drive) on Windows 11 24H2 and later: the copy shares the
  * source's blocks and costs only metadata until either side writes. Elsewhere it is a full copy.
+ * Files that Ghidra never writes into (the stored database versions, the index files it replaces
+ * by name) are hard links to the source's instead of copies, on any file system that has links
+ * ({@link UpgradeCache#shareable}), so a fork on NTFS costs no copy of its databases either.
  */
 final class ProjectFork {
 
@@ -65,18 +68,67 @@ final class ProjectFork {
 		return new File(r.dir(), r.name() + SIDECAR_SUFFIX);
 	}
 
+	/**
+	 * A parsed sidecar, with the file identity it was read at: a sidecar is rewritten only by
+	 * {@link #writeSidecar} (a new file renamed over the old one), so its size and modification
+	 * time change with every write, and a read that matches both is the same record.
+	 */
+	private record CachedSidecar(long size, long modified, JsonObject json) {
+	}
+
+	/**
+	 * The sidecars read in this process, bounded. A sidecar is read by every writable open (the
+	 * seal check), by every project {@code info}/{@code status} and by the fork's own open right
+	 * after it wrote it: the first read of a freshly renamed file costs several milliseconds on
+	 * this platform (measured 5-8 ms against 0.1-0.3 ms warm), so the parse and the read are kept.
+	 * The entry is only used while the file's size and time are the ones it was read at.
+	 */
+	private static final Map<String, CachedSidecar> SIDECARS =
+		new java.util.concurrent.ConcurrentHashMap<>();
+
 	/** The project's sidecar, or null when it is not a fork (or the sidecar is unreadable). */
 	static JsonObject readSidecar(ProjectResolver.Resolved r) {
 		File f = sidecar(r);
-		if (!f.isFile()) {
-			return null;
+		java.nio.file.attribute.BasicFileAttributes a;
+		try {
+			a = Files.readAttributes(f.toPath(), java.nio.file.attribute.BasicFileAttributes.class);
+		}
+		catch (IOException e) {
+			return null; // not there (or not readable): not a fork
+		}
+		String key = f.getPath();
+		CachedSidecar hit = SIDECARS.get(key);
+		if (hit != null && hit.size() == a.size() &&
+			hit.modified() == a.lastModifiedTime().toMillis()) {
+			return hit.json().deepCopy();
 		}
 		try {
 			JsonElement e = JsonParser.parseString(Files.readString(f.toPath()));
-			return e.isJsonObject() ? e.getAsJsonObject() : null;
+			JsonObject o = e.isJsonObject() ? e.getAsJsonObject() : null;
+			if (o != null) {
+				rememberSidecar(f, o);
+			}
+			return o;
 		}
 		catch (IOException | JsonParseException e) {
+			SIDECARS.remove(key);
 			return null;
+		}
+	}
+
+	/** Puts the record just written (or read) in the cache, with the identity it now has. */
+	private static void rememberSidecar(File f, JsonObject o) {
+		try {
+			java.nio.file.attribute.BasicFileAttributes a =
+				Files.readAttributes(f.toPath(), java.nio.file.attribute.BasicFileAttributes.class);
+			if (SIDECARS.size() > 512) {
+				SIDECARS.clear();
+			}
+			SIDECARS.put(f.getPath(), new CachedSidecar(a.size(), a.lastModifiedTime().toMillis(),
+				o.deepCopy()));
+		}
+		catch (IOException e) {
+			SIDECARS.remove(f.getPath());
 		}
 	}
 
@@ -263,6 +315,7 @@ final class ProjectFork {
 			}
 			throw e;
 		}
+		rememberSidecar(f, o); // the next read (the fork's own open, the seal check) is this record
 	}
 
 	/**
@@ -366,6 +419,16 @@ final class ProjectFork {
 				// removed while we looked; the revision check catches a change
 			}
 		}
+		return cost(r, destDir, bytes, files);
+	}
+
+	/**
+	 * {@link #cost(ProjectResolver.Resolved, File)} of a size and a count a caller already read
+	 * ({@link Revision#snapshot}: a fork stats its source once for the cost, the revision and the
+	 * hard-link plan).
+	 */
+	static Cost cost(ProjectResolver.Resolved r, File destDir, long bytes, int files)
+			throws IOException {
 		FileStore src = Files.getFileStore(r.gpr().toPath());
 		FileStore dst = Files.getFileStore(existingAncestor(destDir).toPath());
 		boolean same = src.equals(dst);
@@ -460,9 +523,9 @@ final class ProjectFork {
 		Files.createDirectory(tmp.toPath());
 		ForkIntent intent = ForkIntent.create(id, rk, name);
 		intent.write(tmp.toPath());
-		// the stored database versions are hard-linked, not copied, where the file system can (a
-		// version file is never written once named; see UpgradeCache.linkable); a backup is
-		// always a real copy
+		// the files Ghidra never writes into are hard-linked, not copied, where the file system can
+		// (the stored database versions, the index files it replaces by name, the .gpr marker; see
+		// UpgradeCache.shareable); a backup is always a real copy
 		Map<Path, Path> linked = new java.util.concurrent.ConcurrentHashMap<>();
 		UpgradeCache.copyProject(r.dir().toPath(), r.name(), tmp.toPath(), m, sourceFiles,
 			link ? linked : null);
@@ -664,7 +727,10 @@ final class ProjectFork {
 
 	/**
 	 * Forces {@code link}, a hard link to {@code source}, unless this process already forced that
-	 * source (same size and time): the bytes are the source's, and they do not change.
+	 * source (same size and time): the bytes are the source's, and they do not change. The check is
+	 * a fast path, not a single flight: two forks that start together may both force the same
+	 * inode, which is harmless (two flushes of the same bytes) and keeps every fork's E12 rule
+	 * ("nothing is moved before its own flush ended") true without waiting for another request.
 	 */
 	static void forceLinkedFile(Path link, Path source) throws IOException {
 		java.nio.file.attribute.BasicFileAttributes a =
@@ -740,10 +806,7 @@ final class ProjectFork {
 				return FileVisitResult.CONTINUE;
 			}
 		});
-		forceFiles(files);
-		for (Path f : linkedFiles) {
-			forceLinked(f);
-		}
+		forceFiles(files, new java.util.HashSet<>(linkedFiles));
 		for (String key : keys) {
 			FORCED_LINKS.put(key, Boolean.TRUE);
 		}
@@ -776,20 +839,46 @@ final class ProjectFork {
 	 * another fork: at worst it forces its own files on its own thread, as before the pool.
 	 */
 	static void forceFiles(List<Path> files) throws IOException {
-		if (files.size() <= 1 || FLUSH_THREADS == 1) {
+		forceFiles(files, java.util.Set.of());
+	}
+
+	/**
+	 * {@link #forceFiles(List)} over the copied files and the hard-linked ones (forced with
+	 * {@link #forceLinked}: attributes shared with the source are never touched) side by side: a
+	 * flush waits on the device, not on a CPU, so a fork's links are not flushed one after the
+	 * other while the pool is idle.
+	 */
+	private static void forceFiles(List<Path> files, java.util.Set<Path> linked) throws IOException {
+		int total = files.size() + linked.size();
+		if (total == 0) {
+			return;
+		}
+		if (total == 1 || FLUSH_THREADS == 1) {
 			for (Path f : files) {
 				forceFile(f);
 			}
+			for (Path f : linked) {
+				forceLinked(f);
+			}
 			return;
 		}
+		List<Path> all = new ArrayList<>(total);
+		all.addAll(files);
+		all.addAll(linked);
 		java.util.concurrent.atomic.AtomicInteger next =
 			new java.util.concurrent.atomic.AtomicInteger();
 		java.util.Queue<IOException> failures =
 			new java.util.concurrent.ConcurrentLinkedQueue<>();
 		Runnable drain = () -> {
-			for (int i; (i = next.getAndIncrement()) < files.size();) {
+			for (int i; (i = next.getAndIncrement()) < all.size();) {
+				Path f = all.get(i);
 				try {
-					forceFile(files.get(i));
+					if (linked.contains(f)) {
+						forceLinked(f);
+					}
+					else {
+						forceFile(f);
+					}
 				}
 				catch (IOException e) {
 					failures.add(e);
@@ -801,7 +890,7 @@ final class ProjectFork {
 		};
 		// each helper is claimed once: by the pool thread that runs it (1) or, if the list is done
 		// before it started, by this thread (2), which then does not wait for it
-		int helpers = Math.min(FLUSH_THREADS, files.size()) - 1;
+		int helpers = Math.min(FLUSH_THREADS, all.size()) - 1;
 		List<java.util.concurrent.atomic.AtomicInteger> claims = new ArrayList<>(helpers);
 		java.util.concurrent.CountDownLatch ended = new java.util.concurrent.CountDownLatch(helpers);
 		for (int h = 0; h < helpers; h++) {
