@@ -16,7 +16,6 @@
 package db;
 
 import java.io.IOException;
-import java.util.HashMap;
 
 import db.buffers.BufferMgr;
 import db.buffers.DataBuffer;
@@ -124,7 +123,138 @@ class NodeMgr {
 
 	private int leafRecordCnt = 0;
 
-	private HashMap<Integer, BTreeNode> nodeTable = new HashMap<>();
+	private final NodeTable nodeTable = new NodeTable();
+
+	/**
+	 * Hydra: the nodes held between a table operation and the next {@link #releaseNodes} (usually
+	 * one to three). A {@code HashMap<Integer, BTreeNode>} here allocated a map, a 16-slot table,
+	 * an entry and an {@code Integer} per node and a new map per release, for every database read
+	 * (a quarter of the daemon's allocation); this open-addressing int table is allocated on the
+	 * first node and cleared in place, and a table that grew large is dropped on release.
+	 */
+	private static final class NodeTable {
+		private static final int INITIAL = 8;
+		private static final int KEEP = 64;
+		private int[] ids;
+		private BTreeNode[] nodes;
+		private int size;
+
+		private static int slot(int id, int mask) {
+			int h = id * 0x9E3779B1;
+			return (h ^ (h >>> 15)) & mask;
+		}
+
+		BTreeNode get(int id) {
+			BTreeNode[] ns = nodes;
+			if (size == 0) {
+				return null;
+			}
+			int mask = ns.length - 1;
+			for (int i = slot(id, mask);; i = (i + 1) & mask) {
+				BTreeNode n = ns[i];
+				if (n == null) {
+					return null;
+				}
+				if (ids[i] == id) {
+					return n;
+				}
+			}
+		}
+
+		void put(int id, BTreeNode node) {
+			if (nodes == null) {
+				ids = new int[INITIAL];
+				nodes = new BTreeNode[INITIAL];
+			}
+			else if ((size + 1) * 2 > nodes.length) {
+				grow();
+			}
+			int mask = nodes.length - 1;
+			for (int i = slot(id, mask);; i = (i + 1) & mask) {
+				BTreeNode n = nodes[i];
+				if (n == null) {
+					ids[i] = id;
+					nodes[i] = node;
+					size++;
+					return;
+				}
+				if (ids[i] == id) {
+					nodes[i] = node;
+					return;
+				}
+			}
+		}
+
+		private void grow() {
+			int[] oldIds = ids;
+			BTreeNode[] oldNodes = nodes;
+			ids = new int[oldIds.length * 2];
+			nodes = new BTreeNode[oldIds.length * 2];
+			size = 0;
+			for (int i = 0; i < oldNodes.length; i++) {
+				if (oldNodes[i] != null) {
+					put(oldIds[i], oldNodes[i]);
+				}
+			}
+		}
+
+		void remove(int id) {
+			if (size == 0) {
+				return;
+			}
+			int mask = nodes.length - 1;
+			int i = slot(id, mask);
+			for (;; i = (i + 1) & mask) {
+				if (nodes[i] == null) {
+					return;
+				}
+				if (ids[i] == id) {
+					break;
+				}
+			}
+			// backward-shift deletion keeps probe sequences intact
+			nodes[i] = null;
+			size--;
+			int j = i;
+			for (;;) {
+				j = (j + 1) & mask;
+				if (nodes[j] == null) {
+					return;
+				}
+				int k = slot(ids[j], mask);
+				if ((j > i && (k <= i || k > j)) || (j < i && (k <= i && k > j))) {
+					ids[i] = ids[j];
+					nodes[i] = nodes[j];
+					nodes[j] = null;
+					i = j;
+				}
+			}
+		}
+
+		void releaseAll(NodeMgr mgr) throws IOException {
+			BTreeNode[] ns = nodes;
+			if (size == 0) {
+				return;
+			}
+			for (int i = 0; i < ns.length; i++) {
+				BTreeNode node = ns[i];
+				if (node != null) {
+					if (node instanceof RecordNode) {
+						mgr.leafRecordCnt -= node.getKeyCount();
+					}
+					mgr.bufferMgr.releaseBuffer(node.getBuffer());
+				}
+			}
+			if (ns.length > KEEP) {
+				ids = null;
+				nodes = null;
+			}
+			else {
+				java.util.Arrays.fill(ns, null);
+			}
+			size = 0;
+		}
+	}
 
 	/**
 	 * Construct a node manager for a specific table.
@@ -168,13 +298,7 @@ class NodeMgr {
 	 * @throws IOException if IO error occurs on database
 	 */
 	int releaseNodes() throws IOException {
-		for (BTreeNode node : nodeTable.values()) {
-			if (node instanceof RecordNode) {
-				leafRecordCnt -= node.getKeyCount();
-			}
-			bufferMgr.releaseBuffer(node.getBuffer());
-		}
-		nodeTable = new HashMap<>();
+		nodeTable.releaseAll(this);
 		int result = -leafRecordCnt;
 		leafRecordCnt = 0;
 		return result;
