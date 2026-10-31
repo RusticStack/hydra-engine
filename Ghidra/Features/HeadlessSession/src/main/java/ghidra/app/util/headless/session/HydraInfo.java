@@ -68,37 +68,57 @@ final class HydraInfo {
 		return o == null || o.isBlank() ? MIN_CLIENT : o.trim();
 	}
 
-	/** {@code 12.3-hydra.1} for a release, {@code 12.3-hydra.dev} for a build from the tree. */
+	/**
+	 * {@code 12.3-hydra.1} for a release, {@code 12.3-hydra.dev} for a build from the tree.
+	 * Hydra: the answer cannot change for the life of the JVM (it is a resource of this module),
+	 * and {@code info} asks for it on every call: a {@code getResourceAsStream} here walks the
+	 * class loader's 139-entry class path and reads the jar directory (measured in the 16-agent
+	 * profile: {@code JarFile.getJarEntry} under {@code Session.info}). Computed once.
+	 */
 	static String hydraVersion() {
-		String v = null;
-		try (InputStream in = HydraInfo.class.getResourceAsStream("/hydra.properties")) {
-			if (in != null) {
-				Properties p = new Properties();
-				p.load(in);
-				v = p.getProperty("hydra.version");
+		String v = version;
+		if (v == null) {
+			try (InputStream in = HydraInfo.class.getResourceAsStream("/hydra.properties")) {
+				if (in != null) {
+					Properties p = new Properties();
+					p.load(in);
+					v = p.getProperty("hydra.version");
+				}
 			}
+			catch (IOException e) {
+				// fall through to the default
+			}
+			v = v == null || v.isBlank() ? Application.getApplicationVersion() + "-hydra.dev"
+					: v.trim();
+			version = v;
 		}
-		catch (IOException e) {
-			// fall through to the default
-		}
-		return v == null || v.isBlank() ? Application.getApplicationVersion() + "-hydra.dev"
-				: v.trim();
+		return v;
 	}
+
+	private static volatile String version;
 
 	/**
 	 * A stable id of this installation: the same for every daemon started from it, different for
-	 * another directory, Ghidra build or Hydra release.
+	 * another directory, Ghidra build or Hydra release. Cached with the version for the same
+	 * reason: it hashes a string of facts that do not change while the JVM runs.
 	 */
 	static String installId() {
-		try {
-			MessageDigest d = MessageDigest.getInstance("SHA-256");
-			String s = Application.getInstallationDirectory().getAbsolutePath() + "|" +
-				Application.getApplicationVersion() + "|" + Application.getApplicationReleaseName() +
-				"|" + hydraVersion();
-			return HexFormat.of().formatHex(d.digest(s.getBytes(StandardCharsets.UTF_8)), 0, 8);
+		String id = install;
+		if (id == null) {
+			try {
+				MessageDigest d = MessageDigest.getInstance("SHA-256");
+				String s = Application.getInstallationDirectory().getAbsolutePath() + "|" +
+					Application.getApplicationVersion() + "|" +
+					Application.getApplicationReleaseName() + "|" + hydraVersion();
+				id = HexFormat.of().formatHex(d.digest(s.getBytes(StandardCharsets.UTF_8)), 0, 8);
+			}
+			catch (java.security.NoSuchAlgorithmException e) {
+				throw new IllegalStateException(e);
+			}
+			install = id;
 		}
-		catch (java.security.NoSuchAlgorithmException e) {
-			throw new IllegalStateException(e);
-		}
+		return id;
 	}
+
+	private static volatile String install;
 }
