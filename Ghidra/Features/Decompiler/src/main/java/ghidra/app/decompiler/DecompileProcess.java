@@ -79,6 +79,66 @@ public class DecompileProcess {
 	private volatile OutputStream nativeOut; // Output to decompiler
 	private volatile boolean statusGood;     // true if decompiler process is running
 
+	/**
+	 * The decompiler's output stream, buffered without a lock. The protocol is read byte by byte
+	 * ({@link #readToBurst()}, {@link LinkedByteBuffer#ingestStreamToNextTerminator} and the
+	 * reads in {@link #readToBuffer}): {@code Process.getInputStream()} is a
+	 * {@code BufferedInputStream} whose {@code read()} is {@code synchronized}, so every byte of
+	 * every decompiler reply took the monitor twice (the outer stream and the file stream under
+	 * it). This reads blocks of the pipe and hands the bytes out of its own array. Same bytes,
+	 * same blocking: only {@code read()} of the underlying stream reads from the pipe.
+	 */
+	static final class Pipe extends InputStream {
+		private static final int BUFFER = 32 << 10;
+		private final InputStream in;
+		private final byte[] buf = new byte[BUFFER];
+		private int pos;
+		private int lim;
+
+		Pipe(InputStream in) {
+			this.in = in;
+		}
+
+		/** Reads the next block from the pipe; false at the end of the stream. */
+		private boolean fill() throws IOException {
+			pos = 0;
+			lim = in.read(buf, 0, buf.length);
+			return lim > 0;
+		}
+
+		@Override
+		public int read() throws IOException {
+			if (pos >= lim && !fill()) {
+				return -1;
+			}
+			return buf[pos++] & 0xFF;
+		}
+
+		@Override
+		public int read(byte[] b, int off, int len) throws IOException {
+			if (len == 0) {
+				return 0;
+			}
+			if (pos >= lim && !fill()) {
+				return -1;
+			}
+			int n = Math.min(len, lim - pos);
+			System.arraycopy(buf, pos, b, off, n);
+			pos += n;
+			return n;
+		}
+
+		@Override
+		public int available() {
+			return lim - pos;
+		}
+
+		@Override
+		public void close() throws IOException {
+			in.close();
+		}
+	}
+
 	private int archId = -1;              // architecture id for decomp process
 	private DecompileCallback callback;   // Callback interface for decompiler
 	private String programSource;		// String describing program for error reports
@@ -158,7 +218,7 @@ public class DecompileProcess {
 
 			// No wait for the process to load: an executable that cannot run on this system
 			// exits without answering, which the registerProgram handshake detects
-			nativeIn = nativeProcess.getInputStream();
+			nativeIn = new Pipe(nativeProcess.getInputStream());
 			nativeOut = nativeProcess.getOutputStream();
 			
 			statusGood = nativeProcess.isAlive();
