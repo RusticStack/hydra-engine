@@ -51,6 +51,7 @@ import os
 import pathlib
 import subprocess
 import threading
+import uuid
 
 import daemon_tests as dt
 import dt_e8 as e8
@@ -58,6 +59,15 @@ import dt_e8 as e8
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parents[3]
 LOADERS = 8
+
+# These tests are about the OSGi build's lock (OSGiParallelLock): a script load must wait for it.
+# The engine can also serve a script whose source directory was already compiled by an earlier
+# load, from the persistent build store, without an OSGi load at all (ScriptBuildStore), and a
+# bundle's first load compiles every script of the directory, so after the priming load below
+# the measured loads would never take the lock. The daemons of these tests therefore pin the
+# OSGi path with the store off; that path is unchanged and stays the fallback for every script
+# the store does not hold.
+NO_BUILD_STORE = "-Dhydra.script.buildCache=false"
 
 LOCK_REL = "Ghidra/Features/Base/src/main/java/ghidra/app/plugin/core/osgi/OSGiParallelLock.java"
 #: the fix, each as (the fixed text, the text that undoes it)
@@ -168,8 +178,14 @@ def scenario(c, d, instance):
     scripts meanwhile; the hold ends. Returns what happened."""
     gpr = c.copy_fixture("osgi" + instance)
     exe = pathlib.Path(c.a.exe).name
+    # Unique content per run: the engine keeps the compiled classes of a script by the content of
+    # its source directory (ScriptBuildStore), so a second run of this test in the same machine (or
+    # the "alone" re-run after a load-induced failure) would otherwise load these scripts without
+    # an OSGi build, and this test is about the build's lock. A comment changes the content and
+    # nothing else.
+    nonce = uuid.uuid4().hex
     for i in range(LOADERS):
-        (c.scripts / f"OsgiLoad{i}.java").write_text(LOAD % (i, i))
+        (c.scripts / f"OsgiLoad{i}.java").write_text(LOAD % (i, i) + "// %s\n" % nonce)
     O = d.connect("osgi-owner", "osgi")
     loaders = [d.connect(f"osgi-load{i}", "osgi") for i in range(LOADERS)]
     hold = None
@@ -177,8 +193,11 @@ def scenario(c, d, instance):
     try:
         O.call("open_project", path=str(gpr), writable=True)
         O.call("open_program", path=exe, writable=True)
-        # the OSGi framework is up and the lock file exists (a load takes the lock)
-        loaders[0].call("script", script=c.script("TestSleep.java"), program=None, args=["10"],
+        # the OSGi framework is up and the lock file exists (a load takes the lock); a unique
+        # sleeper, so that it really is loaded here (see the loader scripts above)
+        sleeper = f"OsgiSleep{nonce}.java"
+        (c.scripts / sleeper).write_text(dt.SLEEP.replace("class TestSleep", f"class OsgiSleep{nonce}"))
+        loaders[0].call("script", script=c.script(sleeper), program=None, args=["10"],
                         wait=120000)
         pid = d.read_endpoint()["pid"]
         hold = OsLock(lock_file(c, instance))
@@ -234,7 +253,7 @@ def dt_log(d):
 
 def t_lock_analysis(c):
     """Script loads during an analysis's script load wait for it instead of failing."""
-    d = c.daemon("osgi-a")
+    d = c.daemon("osgi-a", vmargs=[NO_BUILD_STORE])
     try:
         r = scenario(c, d, "osgi-a")
     finally:
@@ -260,7 +279,7 @@ def t_control_unfixed(c):
     """Without the in-JVM lock a script load during the analysis's script load must fail with
     OverlappingFileLockException (the soak's finding)."""
     inst = unfixed_install(c, "osgiU")
-    d = e8.install_daemon(c, inst, "osgi-u")
+    d = e8.install_daemon(c, inst, "osgi-u", vmargs=[NO_BUILD_STORE])
     try:
         r = scenario(c, d, "osgi-u")
     finally:
