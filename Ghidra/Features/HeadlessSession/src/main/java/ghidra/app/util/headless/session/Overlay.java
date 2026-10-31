@@ -59,6 +59,15 @@ final class Overlay implements Decompilers, DecompilerGate.Pool {
 
 	// guarded by lock.writeLock() for writes
 	Program program;
+	/**
+	 * The shared read-only program this overlay reads through until it needs a program of its own
+	 * (an <b>empty</b> overlay over a read-only program is exactly that program: its log is empty,
+	 * so applying it changes nothing, and the base cannot be written). The overlay is a consumer
+	 * of it, so the entry may let go of it (a read-only program opened writable, a refresh) while
+	 * the overlay keeps its snapshot. Null once {@link #program} is opened, and when the base is
+	 * not shareable (a program open writable with unsaved changes) from the start.
+	 */
+	Program shared;
 	/** When the program came from the upgrade cache: the view of the copy and its locks. */
 	SessionProject view;
 	UpgradeCache.Lease lease;
@@ -93,6 +102,16 @@ final class Overlay implements Decompilers, DecompilerGate.Pool {
 		return c.id + "|" + programKey + "|" + name;
 	}
 
+	/**
+	 * The program this overlay shows: its own object when it has been opened, else the shared
+	 * read-only program it reads through (an empty overlay). Null when the overlay is unusable
+	 * (a failed open or a refresh that could not reapply it). Held: the read or write lock.
+	 */
+	Program readProgram() {
+		Program p = program;
+		return p != null ? p : shared;
+	}
+
 	/** A decompiler for the overlay's program, after a permit of the decompiler gate (E9). */
 	@Override
 	public DecompInterface borrowDecompiler() {
@@ -102,11 +121,19 @@ final class Overlay implements Decompilers, DecompilerGate.Pool {
 			synchronized (decompilers) {
 				Pooled p = decompilers.poll();
 				if (p != null) {
-					d = p.d();
+					if (p.d().getProgram() == readProgram()) {
+						d = p.d();
+					}
+					else {
+						// built on the shared program before this overlay got one of its own
+						// (the shared program was then given up: a decompiler on it would fail
+						// with "File is closed")
+						DecompilerGate.dispose(p.d());
+					}
 				}
 			}
 			if (d == null) {
-				d = ProgramEntry.newDecompiler(program, base.path);
+				d = ProgramEntry.newDecompiler(readProgram(), base.path);
 			}
 			DecompilerGate.attach(d, permit);
 			return d;
@@ -120,7 +147,7 @@ final class Overlay implements Decompilers, DecompilerGate.Pool {
 	@Override
 	public void returnDecompiler(DecompInterface d, boolean healthy) {
 		try {
-			if (!healthy || d.getProgram() != program) {
+			if (!healthy || d.getProgram() != readProgram()) {
 				DecompilerGate.dispose(d);
 				return;
 			}
@@ -156,6 +183,18 @@ final class Overlay implements Decompilers, DecompilerGate.Pool {
 		}
 	}
 
+	/**
+	 * Disposes the pooled decompilers. Used when the overlay gives up the program they were built
+	 * on (the shared program, before it opens its own): a decompiler on a closed program fails
+	 * with "File is closed".
+	 */
+	void dropDecompilers() {
+		synchronized (decompilers) {
+			decompilers.forEach(p -> DecompilerGate.dispose(p.d()));
+			decompilers.clear();
+		}
+	}
+
 	/** Releases the program object and what holds it. Held: the write lock. */
 	void dispose() {
 		synchronized (decompilers) {
@@ -169,6 +208,12 @@ final class Overlay implements Decompilers, DecompilerGate.Pool {
 		}
 		finally {
 			program = null;
+			Program s = shared;
+			shared = null;
+			if (s != null) {
+				// one consumer more while the overlay read through it (see OverlayCommands)
+				s.release(this);
+			}
 			if (view != null) {
 				try {
 					view.close();

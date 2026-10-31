@@ -66,7 +66,10 @@ final class ProjectFormat {
 	/** The {@code format} object of a project, cached per revision. */
 	static JsonObject of(ProjectEntry p) {
 		String rev = p.revision();
-		String key = p.canonical + "|" + rev;
+		// the revision names the project's files (size, time and the small files' bytes), not
+		// where they are: a fork has the revision of its source until one of them changes, and
+		// its format is the source's, so it is not read again (a header read per program)
+		String key = rev;
 		if (rev != null) {
 			JsonObject hit = CACHE.get(key);
 			if (hit != null) {

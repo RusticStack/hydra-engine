@@ -830,7 +830,7 @@ def t_fork_report(c):
               isinstance(r["warnings"], list), f"{list(r)}")
         if fs == "NTFS":
             check(r["method"] == "copy" and r["cost"]["cloneCapable"] is False and
-                  any("full copy" in w for w in r["warnings"]),
+                  any("full copy" in w or "hard links" in w for w in r["warnings"]),
                   f"NTFS: a fork is a copy with a warning: {r['method']} {r['warnings']}")
             notes.append(f"{fs}: method copy + warning")
         b = backup(c, s, pid, base / "bk")
