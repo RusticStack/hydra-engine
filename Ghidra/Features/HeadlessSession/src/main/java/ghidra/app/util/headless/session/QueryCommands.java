@@ -325,7 +325,9 @@ final class QueryCommands {
 		}
 		// Hydra: the optional host backend (hydra.decomp.backend=host); null = the process path
 		// (a hosted result is a completed one; it then takes the same reply path as a process result)
-		DecompileResults hosted = HostDecompileBackend.tryDecompile(prog, e, f, timeout);
+		// Protocol 2 keeps the hydra.3 process path (its client may kill the decompiler by pid);
+		// a protocol 3 client gets the host backend when it is enabled (the round 2 default).
+		DecompileResults hosted = v3 ? HostDecompileBackend.tryDecompile(prog, e, f, timeout) : null;
 		DecompInterface d = hosted != null ? null : e.borrowDecompiler();
 		boolean healthy = false;
 		try {

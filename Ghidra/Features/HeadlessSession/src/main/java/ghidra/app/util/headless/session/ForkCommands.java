@@ -614,11 +614,11 @@ final class ForkCommands {
 			clonedBy, "bytes", cost.bytes(), "files", cost.files(), "copyMs", copied.ms(),
 			"freeSpaceUsedBytes", consumed, "depth", depth, "sidecar",
 			ProjectFork.sidecar(fr).getPath(), "ms", (System.nanoTime() - t0) / 1_000_000);
-		if (!copied.linked().isEmpty()) {
-			out.addProperty("linked", copied.linked().size());
-			out.addProperty("linkedBytes", linkedBytes);
-		}
 		if (c.v3()) { // the fork report (conditional C7, 3.4): additive keys for a v3 client
+			if (!copied.linked().isEmpty()) {
+				out.addProperty("linked", copied.linked().size());
+				out.addProperty("linkedBytes", linkedBytes);
+			}
 			out.addProperty("purpose", spec.purpose());
 			out.add("cost", cost.json());
 			out.add("warnings", warnings(spec, cost, copied));
