@@ -198,6 +198,9 @@ public class HeadlessSession implements GhidraLaunchable {
 		// E5: the watchdog before anything can block (a project opened at start-up, a client);
 		// testHooks is read from the JVM property only.
 		Health.announce();
+		// every script's output goes to its client; the log keeps the start of each message, not a
+		// second copy of the reply
+		ghidra.app.script.GhidraScript.setLogLimit(1000);
 		session.startWatchdog();
 		// E9: the governor after the watchdog (admission, the decompiler gate, the guarded sampler)
 		Health.contribute("processJob", ProcessJob::describe); // after E3c's waits (the order is pinned)
