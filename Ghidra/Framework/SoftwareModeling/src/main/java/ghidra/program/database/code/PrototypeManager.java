@@ -19,6 +19,7 @@ import java.io.IOException;
 import java.math.BigInteger;
 import java.util.List;
 import java.util.StringTokenizer;
+import java.util.concurrent.atomic.AtomicReferenceArray;
 
 import db.*;
 import ghidra.framework.data.OpenMode;
@@ -32,7 +33,6 @@ import ghidra.program.model.mem.ByteMemBufferImpl;
 import ghidra.program.model.mem.MemBuffer;
 import ghidra.util.MD5Utilities;
 import ghidra.util.Msg;
-import ghidra.util.datastruct.ObjectArray;
 import ghidra.util.datastruct.ObjectIntHashtable;
 import ghidra.util.exception.*;
 import ghidra.util.task.TaskMonitor;
@@ -44,11 +44,15 @@ import ghidra.util.task.TaskMonitor;
  */
 class PrototypeManager {
 
-	private ObjectIntHashtable<InstructionPrototype> protoHt; // key=ProtoType,
-	//   value=protoID
+	// key=ProtoType, value=protoID. Filled only by populateAll(), which every user of it calls
+	// first (Hydra: prototypes are created on demand, see getPrototype)
+	private ObjectIntHashtable<InstructionPrototype> protoHt;
+	private boolean allPopulated;
 
-	// protoID is an index into the prototype arrays
-	private ObjectArray protoArray;
+	// protoID is an index into the prototype array; an entry is created from its database record
+	// the first time it is asked for (Hydra), by any reader, so the array is published through a
+	// volatile reference and its entries have volatile semantics
+	private volatile AtomicReferenceArray<InstructionPrototype> protoArray;
 	private int nextKey;
 
 	private Language language;
@@ -230,11 +234,27 @@ class PrototypeManager {
 	}
 
 	private void init() {
-		protoHt = new ObjectIntHashtable<InstructionPrototype>();
-		protoArray = new ObjectArray();
 		programContext = program.getProgramContext();
 		baseContextRegister = programContext.getBaseContextRegister();
-		populatePrototypes();
+		resetPrototypes();
+	}
+
+	/**
+	 * Hydra: a program open used to parse every stored instruction prototype with Sleigh up front
+	 * ({@code populatePrototypes}), whether or not the session ever looked at an instruction (most
+	 * opens only read or rename). Prototypes are now created on first use; the by-prototype table
+	 * (needed to add instructions) is built by {@link #populateAll()} before its first use.
+	 */
+	private void resetPrototypes() {
+		protoHt = new ObjectIntHashtable<InstructionPrototype>();
+		allPopulated = false;
+		try {
+			nextKey = (int) protoAdapter.getKey();
+		}
+		catch (IOException e) {
+			program.dbError(e);
+		}
+		protoArray = new AtomicReferenceArray<>(Math.max(nextKey, 4));
 	}
 
 	void setProgram(ProgramDB program) {
@@ -251,8 +271,10 @@ class PrototypeManager {
 	 * relies on the assumption that the Language module provides a
 	 * good equals() method.
 	 */
-	int getID(InstructionPrototype prototype, MemBuffer memBuf, ProcessorContextView context) {
+	synchronized int getID(InstructionPrototype prototype, MemBuffer memBuf,
+			ProcessorContextView context) {
 
+		populateAll();
 		try {
 			return protoHt.get(prototype);
 		}
@@ -264,7 +286,16 @@ class PrototypeManager {
 			protoID = (int) protoAdapter.getKey();
 			nextKey = protoID + 1;
 			int protoArrayIndex = protoID;
-			protoArray.put(protoArrayIndex, prototype);
+			AtomicReferenceArray<InstructionPrototype> a = protoArray;
+			if (protoArrayIndex >= a.length()) {
+				AtomicReferenceArray<InstructionPrototype> bigger =
+					new AtomicReferenceArray<>(Math.max(protoArrayIndex + 1, a.length() * 2));
+				for (int i = 0; i < a.length(); i++) {
+					bigger.set(i, a.get(i));
+				}
+				protoArray = a = bigger;
+			}
+			a.set(protoArrayIndex, prototype);
 			protoHt.put(prototype, protoID);
 
 			byte[] b = new byte[prototype.getLength()];
@@ -301,44 +332,77 @@ class PrototypeManager {
 		if (protoID < 0) {
 			return null;
 		}
-		return (InstructionPrototype) protoArray.get(protoID);
+		AtomicReferenceArray<InstructionPrototype> a = protoArray;
+		InstructionPrototype p = protoID < a.length() ? a.get(protoID) : null;
+		return p != null ? p : createOnDemand(protoID);
+	}
+
+	/** The prototype of a stored record, created (once) from the database on first use. */
+	private synchronized InstructionPrototype createOnDemand(int protoID) {
+		AtomicReferenceArray<InstructionPrototype> a = protoArray;
+		if (protoID >= a.length()) {
+			return null;
+		}
+		InstructionPrototype proto = a.get(protoID);
+		if (proto != null) {
+			return proto;
+		}
+		try {
+			DBRecord record = protoAdapter.getRecord(protoID);
+			if (record == null) {
+				return null;
+			}
+			proto = program.isLanguageUpgradePending() ? new InvalidPrototype(language)
+					: createPrototype(protoID, record);
+			a.set(protoID, proto);
+			return proto;
+		}
+		catch (IOException e) {
+			program.dbError(e);
+		}
+		return null;
 	}
 
 	///////////////////////////////////////////////////////
 
-	private void populatePrototypes() {
+	/**
+	 * Creates every stored prototype that is not yet created and fills the by-prototype table,
+	 * in record order (a later record wins an equal prototype, as the up-front population did).
+	 */
+	private synchronized void populateAll() {
+		if (allPopulated) {
+			return;
+		}
 		try {
-			// Prior to language upgrade force use of invalid prototypes
-			boolean forceInvalidPrototypes = program.isLanguageUpgradePending();
-
 			RecordIterator iter = protoAdapter.getRecords();
+			AtomicReferenceArray<InstructionPrototype> a = protoArray;
 			while (iter.hasNext()) {
 				DBRecord record = iter.next();
-
 				int protoID = (int) record.getKey();
-
-				if (protoArray.get(protoID) == null) {
-					InstructionPrototype proto =
-						forceInvalidPrototypes ? new InvalidPrototype(language)
-								: createPrototype(protoID, record);
-					protoArray.put(protoID, proto);
-					protoHt.put(proto, protoID);
+				if (protoID >= a.length()) {
+					continue;
 				}
+				InstructionPrototype proto = a.get(protoID);
+				if (proto == null) {
+					proto = program.isLanguageUpgradePending() ? new InvalidPrototype(language)
+							: createPrototype(protoID, record);
+					a.set(protoID, proto);
+				}
+				protoHt.put(proto, protoID);
 			}
 			nextKey = (int) protoAdapter.getKey();
+			allPopulated = true;
 		}
 		catch (IOException e) {
 			program.dbError(e);
 		}
 	}
 
-	void clearCache() {
+	synchronized void clearCache() {
 
 		try {
 			if (nextKey != (int) protoAdapter.getKey()) {
-				protoArray = new ObjectArray(protoAdapter.getNumRecords());
-				protoHt.removeAll();
-				populatePrototypes();
+				resetPrototypes();
 			}
 
 		}
@@ -363,6 +427,7 @@ class PrototypeManager {
 
 	RegisterValue getOriginalPrototypeContext(InstructionPrototype prototype,
 			Register baseContextReg) throws NoValueException {
+		populateAll();
 		try {
 			DBRecord record = contextTable.getRecord(protoHt.get(prototype));
 			if (record != null) {
