@@ -582,8 +582,14 @@ final class Session {
 							: access.withProgram(c, req, cmd, false, false,
 								e -> queries.functions(e, e.program, req, true)); // sent as is
 				}
-				case "decompile" -> access.withProgram(c, req, cmd, false, false,
-					e -> queries.decompile(e.program, e, req, m));
+				case "decompile" -> {
+					// a completed decompile of the same function and state answers before any lock
+					JsonElement sealed = req.has("overlay") ? null
+							: queries.decompileSealed(access.selected(c, req), req);
+					yield sealed != null ? sealed
+							: access.withProgram(c, req, cmd, false, false,
+								e -> queries.decompile(e.program, e, req, m));
+				}
 				case "rename" -> access.withProgram(c, req, cmd, true, true,
 					e -> edits.single(c, e, cmd, req));
 				case "edit" -> access.withProgram(c, req, cmd, true, true,

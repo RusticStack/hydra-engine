@@ -25,12 +25,24 @@
 """
 import re
 import sys
+import time
 
 import daemon_tests as dt
 
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+
+SLEEP = """// @category HeadlessSession.Test
+import ghidra.app.script.GhidraScript;
+public class RpSleep extends GhidraScript {
+    @Override protected void run() throws Exception { Thread.sleep(Long.parseLong(getScriptArgs()[0])); }
+}
+"""
+
+
+def _dc(s):
+    return s.call("health").get("decompileCache") or {}
 
 
 def _mod(name):
@@ -125,6 +137,54 @@ def t_bytes(c):
         e9.stop(db)
 
 
+def t_decompile(c):
+    exe = e9.fixture_args(c)
+    g = c.copy_fixture("rpDec")
+    d = c.daemon("rp-dec")
+    w = r = None
+    try:
+        w = c.connect(d, "w", "rp", 3)
+        e9.open_view(c, w, g, exe, writable=True)
+        r = c.connect(d, "r", "rp", 3)
+        r.call("open_project", path=str(g), writable=False)
+        r.call("open_program", path=exe, writable=False)
+        fns = r.call("functions", offset=10, limit=2)["functions"]
+        fn0, fn1 = fns[0]["address"], fns[1]["address"]
+        a = r.call("decompile", address=fn0, timeout=120, maxChars=10000)
+        h0 = _dc(r)
+        b = r.call("decompile", address=fn0, timeout=120, maxChars=10000)
+        h1 = _dc(r)
+        dt.check(a.get("completed") is True, f"the first decompile did not complete: {a}")
+        dt.check({k: v for k, v in a.items() if k != "ms"} == {k: v for k, v in b.items() if k != "ms"},
+                 "a stored decompile differs from a run's")
+        dt.check(h1.get("hits", 0) == h0.get("hits", 0) + 1, f"the repeat was not a cache hit: {h0} -> {h1}")
+        clipped = r.call("decompile", address=fn0, timeout=120, maxChars=100)
+        dt.check(clipped.get("truncated") is True and len(clipped["c"]) == 100 and
+                 clipped["chars"] == a["chars"], f"maxChars was not applied to a hit: {clipped}")
+        h2 = _dc(r)
+        dt.check(h2.get("hits", 0) == h1.get("hits", 0) + 1,
+                 f"the clipped repeat was not a hit: {h1} -> {h2}")
+        # a hit takes no program lock: while an exclusive script holds the program, the stored
+        # function answers at once and a function never decompiled is refused as busy
+        path = Path(c.script("RpSleep.java"))
+        path.write_text(SLEEP)
+        w.send("script", script=str(path), args=["4000"], isolation="exclusive", parallel=True, wait=120000)
+        dt.wait_for(lambda: any(p["path"] == "/" + exe and p.get("busy") for p in r.call("status")["programs"]),
+                    "the exclusive script to hold the program", 30)
+        t = time.perf_counter()
+        hit = r.call("decompile", address=fn0, timeout=120, maxChars=10000, wait=300)
+        ms = (time.perf_counter() - t) * 1000
+        dt.check(hit.get("completed") is True and ms < 500, f"a stored decompile waited for the writer: {hit} after {ms:.0f} ms")
+        dt.expect_error("busy", r.call, "decompile", address=fn1, timeout=120, maxChars=10000, wait=300)
+        dt.check(_dc(r).get("hits", 0) == h2.get("hits", 0) + 1, "the hit behind the writer was not counted")
+        return f"stored decompile identical to a run, served without the program lock behind a writer ({ms:.0f} ms); {_dc(r)}"
+    finally:
+        e9.close_all(w, r)
+        e9.stop(d)
+        with __import__("contextlib").suppress(OSError):
+            (c.scripts / "RpSleep.java").unlink()
+
+
 def t_invalidate(c):
     exe = e9.fixture_args(c)
     ga, gb = c.copy_fixture("rpInvA"), c.copy_fixture("rpInvB")
@@ -167,6 +227,7 @@ def t_invalidate(c):
 
 TESTS = {
     "rp_bytes": t_bytes,
+    "rp_decompile": t_decompile,
     "rp_invalidate": t_invalidate,
 }
 

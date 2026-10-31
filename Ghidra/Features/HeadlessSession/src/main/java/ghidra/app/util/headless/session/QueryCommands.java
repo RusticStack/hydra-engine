@@ -145,6 +145,44 @@ final class QueryCommands {
 	/** The code of a decompile that failed in the native process (E9, 3.11): retryable. */
 	static final String DECOMPILER_FAILED = "decompiler_failed";
 
+	/**
+	 * The reply of a decompile of an address in the program's current state from
+	 * {@link DecompileCache}, answered before any program or project lock is taken and reading
+	 * nothing from the database but the modification number; null when there is no stored result
+	 * for this exact address and state (the request then takes the locked path unchanged, with the
+	 * same validation and errors).
+	 * <p>
+	 * Only a request that names an {@code address} can be answered so: a {@code name} needs the
+	 * symbol table. The stored result is the one an earlier completed decompile of that function
+	 * entry produced, rendered exactly as {@link #reply} renders a fresh one, with this request's
+	 * {@code maxChars}.
+	 */
+	JsonElement decompileSealed(ProgramEntry e, JsonObject req) {
+		DecompileCache cache = DecompileCache.get();
+		Program p = e.program;
+		if (cache == null || p == null || e.analysis != null || Json.has(req, "name") ||
+			!Json.has(req, "address")) {
+			return null;
+		}
+		int cap;
+		Address a;
+		try {
+			// the locked path's own validation of these fields, so a bad value errors the same way
+			Json.num(req, "timeout", 60, 1, 3600);
+			cap = (int) Json.num(req, "maxChars", DEFAULT_TEXT_CAP, 1, MAX_TEXT_CAP);
+			a = address(p, Json.str(req, "address"));
+		}
+		catch (SessionException bad) {
+			return null;
+		}
+		DecompileCache.Result r = cache.decompile(p, a);
+		if (r == null) {
+			return null;
+		}
+		e.project.lastUsed = System.currentTimeMillis();
+		return reply(r.name(), hex(a), r, cap);
+	}
+
 	JsonElement decompile(Program prog, Decompilers e, JsonObject req,
 			RequestMonitor m) {
 		Function f = function(prog, req);
@@ -249,7 +287,12 @@ final class QueryCommands {
 
 	/** The reply of a completed decompile, fresh or cached (one shape for both). */
 	private static JsonObject reply(Function f, DecompileCache.Result res, int cap) {
-		JsonObject r = Json.of("name", f.getName(true), "entry", hex(f.getEntryPoint()));
+		return reply(f.getName(true), hex(f.getEntryPoint()), res, cap);
+	}
+
+	/** The reply of a completed decompile of the function called {@code name} at {@code entry}. */
+	private static JsonObject reply(String name, String entry, DecompileCache.Result res, int cap) {
+		JsonObject r = Json.of("name", name, "entry", entry);
 		Json.put(r, "completed", true);
 		String c = res.c();
 		Json.put(r, "signature", res.signature());
@@ -319,7 +362,8 @@ final class QueryCommands {
 			healthy = true;
 			DecompilerGate.Breaker.succeeded(prog, f);
 			DecompiledFunction df = res.getDecompiledFunction();
-			DecompileCache.Result done = new DecompileCache.Result(df.getSignature(), df.getC());
+			DecompileCache.Result done =
+				new DecompileCache.Result(df.getSignature(), df.getC(), f.getName(true));
 			if (out != null) {
 				out[0] = done;
 			}

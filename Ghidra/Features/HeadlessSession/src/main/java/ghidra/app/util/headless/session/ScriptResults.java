@@ -109,7 +109,15 @@ final class ScriptResults {
 		return true;
 	}
 
-	/** The key of this request on {@code p} as it stands now. */
+	/**
+	 * The key of this request on {@code p} as it stands now.
+	 * <p>
+	 * An argument that is a JSON object has its {@code id} field left out: it is the request's
+	 * label, echoed by the script but naming nothing, and every client mints a new one per call
+	 * (Hydralysis sends a fresh uuid), so a key over the raw text would never repeat. The output
+	 * is stored with the id it answered ({@link #result}) and a hit writes the caller's id in its
+	 * place ({@link #output}); the rest of the request is hashed as it arrives.
+	 */
 	DecompileCache.Key key(Program p, String scriptSha, JsonObject req) {
 		MessageDigest md;
 		try {
@@ -121,7 +129,7 @@ final class ScriptResults {
 		md.update(scriptSha.getBytes(StandardCharsets.US_ASCII));
 		for (String a : Json.strings(req, "args")) {
 			md.update((byte) 0);
-			md.update(a.getBytes(StandardCharsets.UTF_8));
+			md.update(withoutId(a).getBytes(StandardCharsets.UTF_8));
 		}
 		md.update((byte) 1);
 		md.update(Json.str(req, "address", "").getBytes(StandardCharsets.UTF_8));
@@ -133,11 +141,123 @@ final class ScriptResults {
 		return cache.key(p, b.getLong(), b.getInt(), b.getInt());
 	}
 
-	/** What a stored run printed: the (clipped) output and whether it was cut. */
-	static DecompileCache.Result result(JsonObject reply) {
+	/** What a stored run printed: the (clipped) output, whether it was cut, and its request id. */
+	static DecompileCache.Result result(JsonObject reply, String id) {
 		String out = Json.str(reply, "output", "");
 		long chars = Json.num(reply, "chars", out.length(), 0, Long.MAX_VALUE);
-		return new DecompileCache.Result(chars + "|" + Json.bool(reply, "truncated", false), out);
+		String written = id == null || !plain(id) ? "" : id;
+		return new DecompileCache.Result(
+			chars + "|" + Json.bool(reply, "truncated", false) + "|" + written, out);
+	}
+
+	/**
+	 * The stored output of a run as the answer to a request whose id is {@code id} (null or empty:
+	 * no id): a script that echoed the request's id (a JSON object starting {@code {"id":"..."}})
+	 * gets this request's id where the stored run's was, so the output is the one a run of this
+	 * exact request gives. Anything unusual -- an id that needs JSON escaping, an id written
+	 * anywhere else than the start, the stored id appearing again -- means the stored output
+	 * cannot be reused and null is returned, which runs the script.
+	 */
+	static String output(DecompileCache.Result stored, String id) {
+		String want = id == null ? "" : id;
+		String out = stored.c();
+		String from = stored.signature().substring(stored.signature().lastIndexOf('|') + 1);
+		if (!plain(from) || !plain(want)) {
+			return null;
+		}
+		int at = 0;
+		while (at < out.length() && Character.isWhitespace(out.charAt(at))) {
+			at++;
+		}
+		if (!out.startsWith("{\"id\":\"", at)) {
+			// no id at the start: the same output for every request, unless the stored id is
+			// written elsewhere, which a hit would leave stale
+			return from.isEmpty() || !out.contains(from) ? out : null;
+		}
+		int value = at + 7;
+		int end = out.indexOf('"', value);
+		if (end < 0 || !out.substring(value, end).equals(from)) {
+			return null; // an id this run did not write: not a shape a hit may edit
+		}
+		if (!from.isEmpty() && out.indexOf(from, end + 1) >= 0) {
+			return null; // the id is written more than once: a hit cannot rewrite them all
+		}
+		return out.substring(0, value) + want + out.substring(end);
+	}
+
+	/** True when {@code s} is written by Gson as itself inside a JSON string. */
+	private static boolean plain(String s) {
+		for (int i = 0; i < s.length(); i++) {
+			char c = s.charAt(i);
+			if (c < 0x20 || c == '"' || c == '\\' || c == '|' || c > 0x7e) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/**
+	 * The request id a script echoes: the {@code id} of the one JSON-object argument that has one
+	 * (Hydralysis sends its request, a fresh uuid among its fields, as the only argument), null
+	 * when no argument has one or they disagree.
+	 */
+	static String id(JsonObject req) {
+		String found = null;
+		for (String a : Json.strings(req, "args")) {
+			String id = idOf(a);
+			if (id == null) {
+				continue;
+			}
+			if (found != null && !found.equals(id)) {
+				return null;
+			}
+			found = id;
+		}
+		return found;
+	}
+
+	/** The top-level {@code id} of {@code arg} when it is a JSON object with a string id. */
+	private static String idOf(String arg) {
+		if (!arg.stripLeading().startsWith("{")) {
+			return null;
+		}
+		try {
+			JsonElement e = JsonParser.parseString(arg);
+			if (!e.isJsonObject()) {
+				return null;
+			}
+			JsonElement id = e.getAsJsonObject().get("id");
+			if (id == null || !id.isJsonPrimitive() || !id.getAsJsonPrimitive().isString()) {
+				return null;
+			}
+			return id.getAsString();
+		}
+		catch (RuntimeException ex) {
+			return null; // not JSON after all
+		}
+	}
+
+	/** {@code arg} with its top-level {@code id} left out when it is a JSON object; else itself. */
+	static String withoutId(String arg) {
+		String text = arg.stripLeading();
+		if (!text.startsWith("{")) {
+			return arg;
+		}
+		try {
+			JsonElement e = com.google.gson.JsonParser.parseString(arg);
+			if (!e.isJsonObject()) {
+				return arg;
+			}
+			JsonObject o = e.getAsJsonObject();
+			if (!o.has("id")) {
+				return arg;
+			}
+			o.remove("id");
+			return Json.GSON.toJson(o);
+		}
+		catch (RuntimeException ex) {
+			return arg; // not JSON after all: hash it as it is
+		}
 	}
 
 	/** True when a finished run of {@code reply} may be stored. */
@@ -157,6 +277,7 @@ final class ScriptResults {
 
 	/** The {@code truncated} of a stored run. */
 	static boolean truncated(DecompileCache.Result stored) {
-		return Boolean.parseBoolean(stored.signature().substring(stored.signature().indexOf('|') + 1));
+		String sig = stored.signature();
+		return Boolean.parseBoolean(sig.substring(sig.indexOf('|') + 1, sig.lastIndexOf('|')));
 	}
 }

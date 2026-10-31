@@ -263,11 +263,13 @@ public class HeadlessSession implements GhidraLaunchable {
 		if (stdio != null) {
 			stdio.send(ready);
 			DeferredInit.start();
-				stdio.run(); // returns at end of stdin: the launcher is gone
+			WarmHints.start(o.stateDir);
+			stdio.run(); // returns at end of stdin: the launcher is gone
 			exit();
 			return;
 		}
 		DeferredInit.start();
+		WarmHints.start(o.stateDir);
 		idleLoop(o.idleTimeoutSeconds);
 	}
 

@@ -259,7 +259,7 @@ final class ScriptCommands {
 					own[0] = r;
 					if (r instanceof JsonObject ro && ro.has("seconds") &&
 						ScriptResults.storable(ro, req, ro.get("seconds").getAsDouble())) {
-						return ScriptResults.result(ro);
+						return ScriptResults.result(ro, ScriptResults.id(req));
 					}
 					return new DecompileCache.Failure(null);
 				}
@@ -278,15 +278,19 @@ final class ScriptCommands {
 			throw failed[0];
 		}
 		if (o instanceof DecompileCache.Result stored) {
-			JsonObject r = Json.of("script", src.getAbsolutePath(), "mode", "contained", "program",
-				e.key, "seconds", (System.nanoTime() - t0) / 1e9, "chars", ScriptResults.chars(stored),
-				"truncated", ScriptResults.truncated(stored), "output", stored.c(), "changed", false,
-				"unsaved", p.isChanged());
-			Json.put(r, "artifact", Json.str(req, "artifact", null));
-			if (v3) {
-				addV3Reply(r, m, "shared", p, e, null, 0, !p.isChanged(), null);
+			String id = ScriptResults.id(req);
+			String out = ScriptResults.output(stored, id);
+			if (out != null) {
+				JsonObject r = Json.of("script", src.getAbsolutePath(), "mode", "contained", "program",
+					e.key, "seconds", (System.nanoTime() - t0) / 1e9, "chars", out.length(),
+					"truncated", false, "output", out, "changed", false, "unsaved", p.isChanged());
+				Json.put(r, "artifact", Json.str(req, "artifact", null));
+				if (v3) {
+					addV3Reply(r, m, "shared", p, e, null, 0, !p.isChanged(), null);
+				}
+				return r;
 			}
-			return r;
+			// the stored output cannot carry this request's id: run it as if nothing was stored
 		}
 		if (o == null) {
 			throw new SessionException(SessionException.CANCELLED, "script cancelled");

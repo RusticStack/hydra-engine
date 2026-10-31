@@ -65,11 +65,19 @@ final class DecompileCache {
 	static final Failure WAIT_EXPIRED =
 		new Failure("the wait for another caller's decompile expired");
 
-	/** What one decompile answered: the signature and the full C text. */
-	record Result(String signature, String c) implements Outcome {
+	/**
+	 * What one decompile answered: the signature and the full C text, and the function's name (full,
+	 * as {@code getName(true)} gives it) so a cache hit can be answered without the database; null
+	 * for a stored script output ({@link ScriptResults}).
+	 */
+	record Result(String signature, String c, String name) implements Outcome {
+		Result(String signature, String c) {
+			this(signature, c, null);
+		}
+
 		long weight() {
 			// two object headers, two strings (Latin-1 or UTF-16), the key and the map entry
-			return 160 + 2L * (signature.length() + c.length());
+			return 160 + 2L * (signature.length() + c.length() + (name == null ? 0 : name.length()));
 		}
 	}
 
@@ -148,6 +156,37 @@ final class DecompileCache {
 		Address a = f.getEntryPoint();
 		return new Key(t, p.getModificationNumber(), a.getAddressSpace().getSpaceID(),
 			a.getOffset(), ProgramEntry.DECOMPILER_SETUP);
+	}
+
+	/**
+	 * The key of a decompile request that names an address: a hit is possible only when the
+	 * address is the entry of the function that was decompiled (the key of a stored result), so an
+	 * address inside a function, or one this cache never answered, misses and the request takes
+	 * the locked path.
+	 */
+	Key key(Program p, Address a) {
+		long t;
+		synchronized (tokens) {
+			t = tokens.computeIfAbsent(p, x -> nextToken.getAndIncrement());
+		}
+		return new Key(t, p.getModificationNumber(), a.getAddressSpace().getSpaceID(),
+			a.getOffset(), ProgramEntry.DECOMPILER_SETUP);
+	}
+
+	/**
+	 * The stored result of a decompile of the function at {@code a} in {@code p}'s current state,
+	 * or null: read under this cache's lock only, never the program's (the read plane's sealed
+	 * decompile). A result that is not a decompile ({@link #name} null, a stored script output) or
+	 * whose program has moved on since it was stored is null.
+	 */
+	Result decompile(Program p, Address a) {
+		Key k = key(p, a);
+		Result r = cached(k);
+		if (r != null && r.name() != null) {
+			hits.incrementAndGet();
+			return r;
+		}
+		return null;
 	}
 
 	/**

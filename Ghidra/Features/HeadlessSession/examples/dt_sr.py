@@ -15,7 +15,7 @@
 ##
 """Sealed results of pure read scripts (``ScriptResults.java``).
 
-    python daemon_tests.py --ghidra <install> --work <dir> --exe A.exe --dll B.dll --only sr_results,sr_invalidate
+    python daemon_tests.py --ghidra <install> --work <dir> --exe A.exe --dll B.dll --only sr_results,sr_ids,sr_rollback,sr_invalidate
 
 The probe script counts its runs in a system property and prints the count with the first function's name, so a
 repeat answered from the stored output shows the old count and a run shows a new one.
@@ -24,10 +24,16 @@ repeat answered from the stored output shows the old count and a run shows a new
   its stored output (same count, same reply fields as a run, ``health.scriptResults.hits``); without ``pure``,
   for other arguments, with an argument naming a file (``@...``) and for the program's writer it runs every time;
   8 clients asking the same new request at once run it once.
+* ``sr_ids``: a repeat whose only difference is the request id is a hit, and the caller's id is echoed in the
+  stored output (Hydralysis mints a new id per call); ``chars`` is the length of the output it returns.
+* ``sr_rollback``: a contained script that changes the program (a rename, an option) is still rolled back, one
+  that changes nothing leaves the modification number where it was (a rollback would move it by one and end every
+  stored result at each script).
 * ``sr_invalidate``: after the writer renames the first function the same request runs again and shows the new
   name (never the stored one), and is stored again for the new state.
 """
 import concurrent.futures
+import json
 import sys
 import time
 
@@ -67,6 +73,26 @@ public class SrProbe extends GhidraScript {
 """
 
 
+WRITE = """// @category HeadlessSession.Test
+import ghidra.app.script.GhidraScript;
+import ghidra.program.model.listing.*;
+public class SrWrite extends GhidraScript {
+    @Override protected void run() throws Exception {
+        String[] a = getScriptArgs();
+        FunctionManager fm = currentProgram.getFunctionManager();
+        Function f = fm.getFunctions(true).next();
+        long m0 = currentProgram.getModificationNumber();
+        if (a.length > 0 && a[0].equals("write")) {
+            f.setName("sr_tmp_name", ghidra.program.model.symbol.SourceType.USER_DEFINED);
+            currentProgram.getOptions("Program Information").setString("SrOpt", "written");
+        }
+        println("name=" + f.getName() + " opt=" + currentProgram.getOptions("Program Information").getString("SrOpt", "absent")
+            + " mod=" + currentProgram.getModificationNumber() + " moved=" + (currentProgram.getModificationNumber() != m0));
+    }
+}
+"""
+
+
 def _sr(s):
     return s.call("health").get("scriptResults") or {}
 
@@ -74,6 +100,56 @@ def _sr(s):
 def _run(s, path, *args, pure=True):
     extra = {"pure": True} if pure else {}
     return s.call("script", script=str(path), args=list(args), timeout=60, wait=120000, **extra)
+
+
+ECHO = """// @category HeadlessSession.Test
+import com.google.gson.*;
+import ghidra.app.script.GhidraScript;
+public class SrEcho extends GhidraScript {
+    @Override protected void run() throws Exception {
+        // one JSON request argument, as Hydralysis sends to RusticQuery; its id is echoed back
+        JsonObject req = JsonParser.parseString(getScriptArgs()[0]).getAsJsonObject();
+        int n = Integer.getInteger("sr.echo.runs", 0) + 1;
+        System.setProperty("sr.echo.runs", Integer.toString(n));
+        println("{\\"id\\":\\"" + req.get("id").getAsString() + "\\",\\"run\\":" + n
+            + ",\\"text\\":\\"" + req.get("text").getAsString() + "\\"}");
+    }
+}
+"""
+
+
+def t_ids(c):
+    exe = e9.fixture_args(c)
+    g = c.copy_fixture("srIds")
+    path = c.scripts / "SrEcho.java"
+    path.write_text(ECHO)
+    d = c.daemon("sr-ids")
+    r = None
+    try:
+        r = _open_reader(c, d, "r", g, exe)
+        st0 = _sr(r)
+        a = _run(r, path, json.dumps({"id": "aaa", "text": "x"}))
+        b = _run(r, path, json.dumps({"id": "bbbbbb", "text": "x"}))
+        st1 = _sr(r)
+        dt.check('"id":"aaa"' in a["output"] and '"run":1' in a["output"],
+                 f"the first run did not echo its id: {a['output']!r}")
+        dt.check('"id":"bbbbbb"' in b["output"] and '"run":1' in b["output"],
+                 f"a repeat with another id was run again or kept the other id: {b['output']!r}")
+        dt.check(st1.get("hits", 0) == st0.get("hits", 0) + 1, f"the repeat was not a hit: {st0} -> {st1}")
+        dt.check(b["chars"] == len(b["output"]), f"chars is not the length of the output: {b['chars']} vs {len(b['output'])}")
+        dt.check(b.get("truncated") is False and b.get("mode") == "contained", f"unexpected fields: {b}")
+        # the id is not part of the key: same text, different id, one run
+        e1 = _run(r, path, json.dumps({"id": "id-one", "text": "same"}))
+        e2 = _run(r, path, json.dumps({"id": "id-two", "text": "same"}))
+        dt.check('"id":"id-two"' in e2["output"] and
+                 e2["output"].replace("id-two", "id-one") == e1["output"],
+                 f"another id of the same request ran the script: {e1['output']!r} / {e2['output']!r}")
+        return f"an id-only difference hits ({st1}), the caller's id is echoed, chars is the new length"
+    finally:
+        e9.close_all(r)
+        e9.stop(d)
+        with __import__("contextlib").suppress(OSError):
+            path.unlink()
 
 
 def _runs(r):
@@ -137,6 +213,35 @@ def t_results(c):
             path.unlink()
 
 
+def t_rollback(c):
+    exe = e9.fixture_args(c)
+    g = c.copy_fixture("srRb")
+    path = c.scripts / "SrWrite.java"
+    path.write_text(WRITE)
+    d = c.daemon("sr-rb")
+    r = None
+    try:
+        r = _open_reader(c, d, "r", g, exe)
+        mods = []
+        for _ in range(3):
+            out = _run(r, path, "read", pure=False)["output"]
+            mods.append(int(out.split("mod=")[1].split()[0]))
+            dt.check("moved=false" in out and "opt=absent" in out, f"a read script saw a change: {out!r}")
+        dt.check(mods[0] == mods[1] == mods[2], f"three read scripts moved the modification number: {mods}")
+        w = _run(r, path, "write", pure=False)
+        dt.check("sr_tmp_name" in w["output"] and "opt=written" in w["output"] and "moved=true" in w["output"]
+                 and w["attemptedChanges"] is True, f"the writing script did not see its own changes: {w}")
+        after = _run(r, path, "read", pure=False)["output"]
+        dt.check("sr_tmp_name" not in after and "opt=absent" in after,
+                 f"a contained script's changes were kept (not rolled back): {after!r}")
+        return f"3 read scripts kept modification number {mods[0]}; a rename + option written by a contained script were rolled back"
+    finally:
+        e9.close_all(r)
+        e9.stop(d)
+        with __import__("contextlib").suppress(OSError):
+            path.unlink()
+
+
 def t_invalidate(c):
     exe = e9.fixture_args(c)
     g = c.copy_fixture("srInv")
@@ -175,6 +280,8 @@ def t_invalidate(c):
 
 TESTS = {
     "sr_results": t_results,
+    "sr_ids": t_ids,
+    "sr_rollback": t_rollback,
     "sr_invalidate": t_invalidate,
 }
 

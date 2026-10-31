@@ -1543,6 +1543,7 @@ final class UpgradeCache {
 		Language lang;
 		try {
 			lang = DefaultLanguageService.getLanguageService().getLanguage(new LanguageID(langId));
+			WarmHints.loaded(langId);
 		}
 		catch (LanguageNotFoundException e) {
 			return null; // a language translation; the normal open reports what it can do
