@@ -215,11 +215,14 @@ public class PackedDecode implements Decoder, Closeable {
 	private void keepPage() {
 		if (inStream != null) {
 			sparePage = inStream.firstPage();
+			// Hydra: the rest of the pages go back to this thread's pool (see LinkedByteBuffer)
+			inStream.recyclePages(sparePage);
 		}
 	}
 
 	@Override
 	public void open(long max, String desc) {
+		keepPage(); // Hydra: an open without a clear still retires the previous stream first
 		byte[] page = sparePage;
 		sparePage = null;
 		inStream = new LinkedByteBuffer(max, desc, page);
