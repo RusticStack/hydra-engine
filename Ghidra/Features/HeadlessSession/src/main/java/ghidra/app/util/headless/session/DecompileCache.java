@@ -151,6 +151,18 @@ final class DecompileCache {
 	}
 
 	/**
+	 * A key for a result that is not a function's decompile ({@link ScriptResults}): the program
+	 * as it stands now and 128 bits that name the request ({@code h0}, {@code h1}, {@code h2}).
+	 */
+	Key key(Program p, long h0, int h1, int h2) {
+		long t;
+		synchronized (tokens) {
+			t = tokens.computeIfAbsent(p, x -> nextToken.getAndIncrement());
+		}
+		return new Key(t, p.getModificationNumber(), h1, h0, h2);
+	}
+
+	/**
 	 * The outcome of {@code k}: from the cache, from the flight of a concurrent leader, or from
 	 * {@code work} run by this caller as the leader.
 	 * <p>
