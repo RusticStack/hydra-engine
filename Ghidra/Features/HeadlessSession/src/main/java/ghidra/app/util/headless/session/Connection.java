@@ -683,7 +683,7 @@ final class Connection {
 	 */
 	static byte[][] encodeParts(JsonObject o) {
 		LineBuffer buf = new LineBuffer();
-		try (Writer w = new OutputStreamWriter(buf, StandardCharsets.UTF_8)) {
+		try (Writer w = new Utf8Writer(buf)) {
 			com.google.gson.stream.JsonWriter jw = Json.GSON.newJsonWriter(w);
 			jw.setStrictness(Strictness.LENIENT); // as Gson.toJson(JsonElement, JsonWriter)
 			write(jw, o, buf);
@@ -758,7 +758,22 @@ final class Connection {
 		private java.util.List<byte[]> parts;
 
 		LineBuffer() {
-			super(256);
+			super(1024);
+		}
+
+		/** Room for {@code n} more bytes. */
+		void ensure(int n) {
+			if (count + n > buf.length) {
+				buf = java.util.Arrays.copyOf(buf, Math.max(buf.length * 2, count + n));
+			}
+		}
+
+		/** Appends one byte (the room is there or made). */
+		void put(int b) {
+			if (count == buf.length) {
+				ensure(1);
+			}
+			buf[count++] = (byte) b;
 		}
 
 		private byte[] bytes() {
@@ -784,6 +799,90 @@ final class Connection {
 				parts.add(java.util.Arrays.copyOf(buf, count));
 			}
 			return parts.toArray(new byte[0][]);
+		}
+	}
+
+	/**
+	 * UTF-8 straight into a {@link LineBuffer}. {@code OutputStreamWriter} copies every string
+	 * Gson writes into a {@code char[]}, wraps that in a {@code CharBuffer} and encodes it through
+	 * an 8 KiB staging buffer (about 4 % of the daemon's allocation, per reply); this writes the
+	 * bytes where they belong. A lone surrogate becomes '?', as the charset encoder's replacement
+	 * does, so the bytes are the ones the old writer gave.
+	 */
+	private static final class Utf8Writer extends Writer {
+		private final LineBuffer out;
+		private char high; // a high surrogate waiting for its low half, or 0
+
+		Utf8Writer(LineBuffer out) {
+			this.out = out;
+		}
+
+		@Override
+		public void write(int c) {
+			emit((char) c);
+		}
+
+		@Override
+		public void write(char[] c, int off, int len) {
+			out.ensure(len);
+			for (int i = off, end = off + len; i < end; i++) {
+				emit(c[i]);
+			}
+		}
+
+		@Override
+		public void write(String str, int off, int len) {
+			out.ensure(len);
+			for (int i = off, end = off + len; i < end; i++) {
+				emit(str.charAt(i));
+			}
+		}
+
+		private void emit(char c) {
+			if (high != 0) {
+				char h = high;
+				high = 0;
+				if (Character.isLowSurrogate(c)) {
+					int cp = Character.toCodePoint(h, c);
+					out.put((0xF0 | (cp >> 18)));
+					out.put((0x80 | ((cp >> 12) & 0x3F)));
+					out.put((0x80 | ((cp >> 6) & 0x3F)));
+					out.put((0x80 | (cp & 0x3F)));
+					return;
+				}
+				out.put('?'); // the lone high surrogate
+			}
+			if (c < 0x80) {
+				out.put(c);
+			}
+			else if (c < 0x800) {
+				out.put((0xC0 | (c >> 6)));
+				out.put((0x80 | (c & 0x3F)));
+			}
+			else if (Character.isHighSurrogate(c)) {
+				high = c;
+			}
+			else if (Character.isLowSurrogate(c)) {
+				out.put('?'); // a lone low surrogate
+			}
+			else {
+				out.put((0xE0 | (c >> 12)));
+				out.put((0x80 | ((c >> 6) & 0x3F)));
+				out.put((0x80 | (c & 0x3F)));
+			}
+		}
+
+		@Override
+		public void flush() {
+			// nothing is staged except a high surrogate, which only the next char can settle
+		}
+
+		@Override
+		public void close() {
+			if (high != 0) {
+				high = 0;
+				out.put('?');
+			}
 		}
 	}
 
