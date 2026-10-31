@@ -93,16 +93,40 @@ public class NonThreadedXmlPullParserImpl extends AbstractXmlPullParser {
 			reallyCreateNoncompliantDeprecated);
 	}
 
+	/**
+	 * Hydra: a thread's configured secure parser, per {@code validate}, reset for each parse. Making
+	 * the factory, setting its features and making the parser took ~10 % of a writable project
+	 * open (Xerces' configuration is rebuilt each time), and every property file of every project
+	 * and program open is parsed here. A parser is used by this thread only, and the parse is over
+	 * when {@code fillQueue} returns (the handler only queues), so it is not re-entered.
+	 */
+	private static final ThreadLocal<SAXParser[]> PARSERS = ThreadLocal.withInitial(
+		() -> new SAXParser[2]);
+
+	private static SAXParser parser(boolean validate)
+			throws ParserConfigurationException, SAXException {
+		SAXParser[] cache = PARSERS.get();
+		int i = validate ? 1 : 0;
+		SAXParser p = cache[i];
+		if (p != null) {
+			p.reset();
+			return p;
+		}
+		SAXParserFactory saxParserFactory = XmlUtilities.createSecureSAXParserFactory(false);
+		saxParserFactory.setFeature("http://xml.org/sax/features/namespaces", false);
+		saxParserFactory.setFeature("http://xml.org/sax/features/validation", validate);
+		p = saxParserFactory.newSAXParser();
+		cache[i] = p;
+		return p;
+	}
+
 	private void fillQueue(String filepath, String inputName, InputStream input,
 			ErrorHandler errHandler, boolean closeStream, boolean validate,
 			boolean reallyCreateNoncompliantDeprecated) throws SAXException, IOException {
 		DefaultContentHandlerWrapper contentHandler =
 			new DefaultContentHandlerWrapper(errHandler, reallyCreateNoncompliantDeprecated);
 		try {
-			SAXParserFactory saxParserFactory = XmlUtilities.createSecureSAXParserFactory(false);
-			saxParserFactory.setFeature("http://xml.org/sax/features/namespaces", false);
-			saxParserFactory.setFeature("http://xml.org/sax/features/validation", validate);
-			SAXParser saxParser = saxParserFactory.newSAXParser();
+			SAXParser saxParser = parser(validate);
 			InputSource inputSource = new InputSource(input);
 
 			// Java needs this path in order to resolve external dtd
