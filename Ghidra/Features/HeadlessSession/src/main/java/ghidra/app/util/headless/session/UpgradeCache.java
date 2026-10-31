@@ -1343,8 +1343,9 @@ final class UpgradeCache {
 	/**
 	 * Version files of a Ghidra database ({@code db.<n>.gbf}) of at least this size are hard-linked
 	 * into a fork instead of copied ({@link #copyProject(Path, String, Path, RequestMonitor,
-	 * SortedMap, Map)}). Smaller files (properties, indexes: Ghidra rewrites them) are always
-	 * copied.
+	 * SortedMap, Map)}), and so are the few files Ghidra only ever replaces by name
+	 * ({@link #shareable}). Everything else (the property files and {@code projectState}, which
+	 * Ghidra writes in place) is copied.
 	 */
 	static final long LINK_MIN = 1 << 20;
 	private static final java.util.regex.Pattern VERSION_FILE =
@@ -1359,6 +1360,37 @@ final class UpgradeCache {
 	 */
 	static boolean linkable(Path file, long size) {
 		return size >= LINK_MIN && VERSION_FILE.matcher(file.getFileName().toString()).matches();
+	}
+
+	/**
+	 * Whether a fork may share {@code file} with its source by a hard link: a {@link #linkable}
+	 * version file, or one of the few files Ghidra only ever <b>replaces by name</b> and never
+	 * writes into:
+	 * <ul>
+	 * <li>{@code ~index.dat} and {@code ~index.bak}: {@code IndexedLocalFileSystem.writeIndex}
+	 * writes {@code ~index.tmp} and renames it over {@code ~index.dat}, after renaming the old
+	 * index to {@code ~index.bak}; every write to these names is a rename or a delete.</li>
+	 * <li>{@code ~journal.bak}: only ever produced by renaming {@code ~journal.dat}, and only ever
+	 * deleted by name. The live journal, {@code ~journal.dat}, is appended in place and is never
+	 * shared.</li>
+	 * <li>the project's {@code .gpr} marker: created empty, read for its existence and deleted by
+	 * name; nothing writes content into it.</li>
+	 * </ul>
+	 * Never shared: {@code projectState} (rewritten in place by {@code DefaultProject.save} when a
+	 * writable project closes), the property files ({@code *.prp}, written in place by
+	 * {@code PropertyFile.writeState}), the journal, and every name not listed above.
+	 * <p>
+	 * So the sharing does not depend on a copy-on-write file system: it is a hard link on NTFS,
+	 * exFAT does not have them ({@link #tryLink} answers false and the file is copied), and a
+	 * different volume is refused by the caller's same-volume check.
+	 */
+	static boolean shareable(Path file, String name, long size) {
+		if (linkable(file, size)) {
+			return true;
+		}
+		String n = file.getFileName().toString();
+		return n.equals("~index.dat") || n.equals("~index.bak") || n.equals("~journal.bak") ||
+			n.equals(name + ProjectLocator.getProjectExtension());
 	}
 
 	/**
@@ -1380,7 +1412,7 @@ final class UpgradeCache {
 
 	/**
 	 * {@link #copyProject(Path, String, Path, RequestMonitor, SortedMap)} that hard-links the
-	 * {@link #linkable} files instead of copying them when {@code linked} is not null (any file
+	 * {@link #shareable} files instead of copying them when {@code linked} is not null (any file
 	 * that cannot be linked is copied, so the result is the same project either way). Each linked
 	 * file is put in {@code linked}, by its path in {@code dest}, with the source it shares an
 	 * inode with.
@@ -1395,10 +1427,15 @@ final class UpgradeCache {
 			SortedMap<String, Path> files, boolean skipGone, Map<Path, Path> linked)
 			throws IOException, CancelledException {
 		Files.createDirectories(dest);
+		// one size read per file: it decides the link, the progress and the cost, so the copy does
+		// not stat every file three times (the copy of a fork is a few hundred dirents at most)
+		java.util.LinkedHashMap<Path, Long> sizes = new java.util.LinkedHashMap<>();
 		long total = 0;
 		for (Path p : files.values()) {
 			try {
-				total += Files.size(p);
+				long size = Files.size(p);
+				sizes.put(p, size);
+				total += size;
 			}
 			catch (NoSuchFileException e) {
 				if (!skipGone) {
@@ -1408,25 +1445,30 @@ final class UpgradeCache {
 		}
 		m.initialize(total);
 		m.setMessage("copying " + files.size() + " files");
-		for (Path src : files.values()) {
+		java.util.Set<Path> made = new java.util.HashSet<>();
+		for (Map.Entry<Path, Long> e : sizes.entrySet()) {
+			Path src = e.getKey();
 			m.checkCancelled();
 			Path to = dest.resolve(base.relativize(src).toString());
-			Files.createDirectories(to.getParent());
+			if (made.add(to.getParent())) {
+				// one create per folder, not one per file: a project has many files per folder
+				Files.createDirectories(to.getParent());
+			}
 			try {
-				if (linked != null && linkable(src, Files.size(src)) && tryLink(src, to)) {
+				if (linked != null && shareable(src, name, e.getValue()) && tryLink(src, to)) {
 					linked.put(to, src);
 				}
 				else {
 					Files.copy(src, to, StandardCopyOption.COPY_ATTRIBUTES);
 				}
 			}
-			catch (NoSuchFileException e) {
+			catch (NoSuchFileException ex) {
 				if (!skipGone || Files.exists(src, LinkOption.NOFOLLOW_LINKS)) {
-					throw e;
+					throw ex;
 				}
 				continue;
 			}
-			m.incrementProgress(Files.size(to));
+			m.incrementProgress(e.getValue());
 		}
 		// empty folders of the .rep matter to the file system's layout
 		Path rep = base.resolve(name + ProjectLocator.getProjectDirExtension());
@@ -1435,7 +1477,10 @@ final class UpgradeCache {
 				@Override
 				public FileVisitResult preVisitDirectory(Path d, BasicFileAttributes attrs)
 						throws IOException {
-					Files.createDirectories(dest.resolve(base.relativize(d).toString()));
+					Path to = dest.resolve(base.relativize(d).toString());
+					if (made.add(to)) {
+						Files.createDirectories(to);
+					}
 					return FileVisitResult.CONTINUE;
 				}
 			});

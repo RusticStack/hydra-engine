@@ -184,11 +184,13 @@ final class ForkCommands {
 			throw new SessionException(SessionException.BAD_REQUEST, "bad project name: " + name);
 		}
 		File destGpr = new File(destDir, name + ProjectLocator.getProjectExtension());
+		String canonicalDest;
 		try {
 			String srcDir = r.dir().getCanonicalPath();
 			String rep = new File(r.dir(), r.name() + ProjectLocator.getProjectDirExtension())
 					.getCanonicalPath();
 			String dd = destDir.getCanonicalPath();
+			canonicalDest = dd;
 			if (dd.equals(srcDir) && name.equals(r.name()) ||
 				(dd + File.separator).startsWith(rep + File.separator)) {
 				throw new SessionException(SessionException.BAD_REQUEST,
@@ -200,22 +202,19 @@ final class ForkCommands {
 		}
 		String rk = c.v3() ? EditCommands.rkOf(req) : null;
 		// the lazy sweep: what a dead publisher of this engine left here is removed first, so that
-		// its half fork never answers a retry with a bare conflict (D41)
-		ForkSweeper.sweepFor(destDir, name);
+		// its half fork never answers a retry with a bare conflict (D41); a destination folder
+		// that does not exist yet holds nothing to sweep (the common case: a fresh fork directory)
+		if (destDir.isDirectory()) {
+			ForkSweeper.sweepFor(destDir, canonicalDest, name);
+		}
 		// 8.13: recorded before anything is staged, so a daemon start sweeps it after a kill
-		ForkSweeper.registerParent(destDir);
+		ForkSweeper.registerParent(destDir, canonicalDest);
 		steps.mark("sweep");
 		String id = ProjectFork.newId();
 		ForkSweeper.Claim claim;
 		long giveUpAt = System.nanoTime() + waitMs(req) * 1_000_000L;
 		while (true) {
-			ForkSweeper.Admission a;
-			try {
-				a = ForkSweeper.admit(destDir, name, id, rk);
-			}
-			catch (IOException e) {
-				throw new SessionException(SessionException.BAD_REQUEST, e.getMessage());
-			}
+			ForkSweeper.Admission a = ForkSweeper.admit(destDir, canonicalDest, name, id, rk);
 			if (a.kind() == ForkSweeper.Kind.CLAIMED) {
 				claim = a.claim();
 				steps.mark("admit");
@@ -403,9 +402,12 @@ final class ForkCommands {
 			// one walk of the source gives the cost, the revision and the copy; the check after
 			// the copy walks it again, so a file added or changed meanwhile is still seen
 			SortedMap<String, java.nio.file.Path> listing;
+			Revision.Snapshot snapshot;
 			try {
 				listing = UpgradeCache.sourceFiles(r.gpr().toPath(), r.name());
-				cost = ProjectFork.cost(r, destDir, listing);
+				// one read pass: size, before-map, revision and the bytes a hard link can share
+				snapshot = Revision.snapshot(r, listing);
+				cost = ProjectFork.cost(r, destDir, snapshot.bytes(), snapshot.count());
 				steps.mark("cost");
 			}
 			catch (IOException e) {
@@ -426,18 +428,7 @@ final class ForkCommands {
 			// copies (ProjectFork.stage): they cost no space and no copy time
 			boolean link = !spec.backup() && cost.sameVolume() &&
 				Settings.bool("forkHardLinks", true);
-			long linkBytes = 0;
-			if (link) {
-				for (java.nio.file.Path p : listing.values()) {
-					try {
-						long size = Files.size(p);
-						linkBytes += UpgradeCache.linkable(p, size) ? size : 0;
-					}
-					catch (IOException e) {
-						// gone meanwhile: the copy and the revision check see it
-					}
-				}
-			}
+			long linkBytes = link ? snapshot.shareableBytes() : 0;
 			long copyBytes = cost.bytes() - linkBytes;
 			if (mode.equals("auto") && !cost.cloneCapable() && copyBytes > limit) {
 				Json.put(costJson, "reason", "too_large");
@@ -454,8 +445,8 @@ final class ForkCommands {
 					costJson);
 			}
 			try {
-				Map<String, String> filesBefore = Revision.files(r, listing);
-				baseRevision = Revision.of(r, listing);
+				Map<String, String> filesBefore = snapshot.files();
+				baseRevision = snapshot.revision();
 				steps.mark("revision");
 				m.setMessage("forking " + r.name() + " (" + cost.files() + " files)");
 				copied = ProjectFork.stage(r, destDir, name, id, rk, m, listing, steps, link);
@@ -648,8 +639,8 @@ final class ForkCommands {
 		JsonArray w = new JsonArray();
 		if (!cost.cloneCapable() && !copied.linked().isEmpty()) {
 			w.add(copied.linked().size() + " of " + cost.files() + " files (the stored database " +
-				"versions) are hard links to the source's, which are never written in place; " +
-				"the others are copies");
+				"versions and the index files Ghidra only ever replaces by name) are hard links " +
+				"to the source's, which are never written in place; the others are copies");
 		}
 		else if (!cost.cloneCapable()) {
 			w.add("this is a full copy of " + cost.bytes() + " bytes in " + cost.files() +
