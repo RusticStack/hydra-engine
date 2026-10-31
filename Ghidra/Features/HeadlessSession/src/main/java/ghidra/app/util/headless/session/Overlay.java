@@ -69,8 +69,8 @@ final class Overlay implements Decompilers, DecompilerGate.Pool {
 	 * not shareable (a program open writable with unsaved changes) from the start.
 	 */
 	Program shared;
-	/** When the program came from the upgrade cache: the reference on the copy's view, its locks. */
-	UpgradeCache.ViewRef view;
+	/** When the program came from the upgrade cache: the view of the copy and its locks. */
+	SessionProject view;
 	UpgradeCache.Lease lease;
 	/** The operations applied so far, in order (each with its {@code op} name). */
 	final JsonArray log = new JsonArray();
@@ -221,7 +221,7 @@ final class Overlay implements Decompilers, DecompilerGate.Pool {
 		}
 		Program p = program;
 		Program s = shared;
-		UpgradeCache.ViewRef v = view;
+		SessionProject v = view;
 		UpgradeCache.Lease l = lease;
 		program = null;
 		shared = null;
@@ -252,7 +252,7 @@ final class Overlay implements Decompilers, DecompilerGate.Pool {
 				return t;
 			});
 
-		void reclaim(Overlay o, List<DecompInterface> gone, Program p, UpgradeCache.ViewRef v,
+		void reclaim(Overlay o, List<DecompInterface> gone, Program p, SessionProject v,
 				UpgradeCache.Lease l) {
 			if (gone.isEmpty() && p == null && v == null && l == null) {
 				return;
@@ -272,7 +272,12 @@ final class Overlay implements Decompilers, DecompilerGate.Pool {
 				finally {
 					long t2 = System.nanoTime();
 					if (v != null) {
-						v.close(); // the last reference closes the copy's project view
+						try {
+							v.close();
+						}
+						catch (RuntimeException ex) {
+							Msg.warn(o, "overlay " + o.name + ": could not close its view", ex);
+						}
 					}
 					if (l != null) {
 						l.release();

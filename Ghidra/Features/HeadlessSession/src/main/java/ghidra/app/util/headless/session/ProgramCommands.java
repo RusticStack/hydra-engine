@@ -985,7 +985,7 @@ final class ProgramCommands {
 				UpgradeCache.rollBack(adopted);
 			}
 			e.program = null;
-			UpgradeCache.ViewRef view = e.cacheView;
+			SessionProject view = e.cacheView;
 			UpgradeCache.Lease lease = e.cacheLease;
 			e.cacheView = null;
 			e.cacheLease = null;
@@ -993,8 +993,12 @@ final class ProgramCommands {
 			e.cachePlan = null;
 			e.cacheBuildStarted = false;
 			if (view != null) {
-				// the last reference closes the copy's project view
-				view.close();
+				try {
+					view.close();
+				}
+				catch (RuntimeException ex) {
+					Msg.warn(s, "could not close the upgrade cache view of " + e.key, ex);
+				}
 			}
 			if (lease != null) {
 				lease.release();
