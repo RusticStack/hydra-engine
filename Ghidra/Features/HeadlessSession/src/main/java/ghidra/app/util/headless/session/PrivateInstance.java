@@ -238,12 +238,7 @@ final class PrivateInstance implements AutoCloseable {
 		}
 		finally {
 			if (l.view() != null) {
-				try {
-					l.view().close();
-				}
-				catch (RuntimeException e) {
-					// closing anyway
-				}
+				l.view().close();
 			}
 			if (l.lease() != null) {
 				l.lease().release();

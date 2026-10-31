@@ -314,7 +314,10 @@ final class UpgradeCache {
 	private Opened openCopy(Plan plan, File copyDir, String gen, Object consumer, Lease lease,
 			RequestMonitor m) throws IOException, CancelledException, VersionException {
 		long t0 = System.nanoTime();
+		String viewId = plan.key() + "/" + gen;
 		ProjectLocator copy = new ProjectLocator(copyDir.getPath(), plan.resolved().name());
+		// one view per open: a view shared by the opens of 16 clients serialises them (the file's
+		// open is one at a time), measured 14-123 ms per materialisation against 10-20 parallel
 		SessionProject view = openProject(copy, false);
 		long t1 = System.nanoTime();
 		long t2 = t1;
@@ -328,7 +331,7 @@ final class UpgradeCache {
 			// the format of a published generation does not change (it is written once and its
 			// build checked it): read the stored database version on the first open of each
 			// (key, generation, program), not on every open (it opens the database file once more)
-			String verified = plan.key() + "/" + gen + plan.path();
+			String verified = viewId + plan.path();
 			if (!VERIFIED.containsKey(verified)) {
 				String still = olderFormat(view.getProjectData(), cdf);
 				if (still != null) {
@@ -349,6 +352,9 @@ final class UpgradeCache {
 			"generation", gen, "dir", copyDir.getParent(), "openMs", (t3 - t0) / 1_000_000,
 			"projectUs", (t1 - t0) / 1_000, "checkUs", (t2 - t1) / 1_000, "programUs",
 			(t3 - t2) / 1_000);
+		if (Settings.bool("overlayTiming", false)) {
+			Msg.info(this, "copy open " + info);
+		}
 		return new Opened(program, view, lease, info);
 	}
 

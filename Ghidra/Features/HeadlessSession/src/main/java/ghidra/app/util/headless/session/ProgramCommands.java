@@ -534,6 +534,7 @@ final class ProgramCommands {
 					throw ex;
 				}
 				e.adopted = adopted;
+				warmFirstChange(program);
 				Msg.info(s, "opened " + e.key + " of a fork from the upgrade cache's upgraded " +
 					"version " + adopted.info());
 			}
@@ -552,6 +553,28 @@ final class ProgramCommands {
 		}
 		catch (IOException ex) {
 			throw new SessionException(SessionException.FAILED, ex.getMessage(), null, ex);
+		}
+	}
+
+	/**
+	 * Builds the program's name-sorted data type list ({@link DataTypeManager#getAllDataTypes}) at
+	 * the open of a fork adopted from the upgrade cache. The in-memory upgrade that adoption
+	 * replaces walks every table and so leaves the list built; without it the first change pays it
+	 * - a {@code signature} parse asks {@code findDataTypes} for each type name, and the first
+	 * call builds the list over every data type of the program (measured: ~4 ms of the ~7 ms a
+	 * first {@code edit} costs on KotOR, 0 after this; the open, 320 ms, is where the upgrade this
+	 * replaces paid it). A fork that is not adopted is unchanged.
+	 */
+	private static void warmFirstChange(Program program) {
+		try {
+			java.util.Iterator<ghidra.program.model.data.DataType> types =
+				program.getDataTypeManager().getAllDataTypes();
+			while (types.hasNext()) {
+				types.next();
+			}
+		}
+		catch (RuntimeException ex) {
+			Msg.warn(ProgramCommands.class, "could not warm the data type list: " + ex);
 		}
 	}
 
