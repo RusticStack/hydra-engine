@@ -11,7 +11,6 @@ pub mod limits;
 pub mod os;
 pub mod profile;
 pub mod readplane;
-pub mod reply;
 pub mod topology;
 
 use cpuid::CpuId;

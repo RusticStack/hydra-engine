@@ -101,23 +101,4 @@ int64_t hydra_rp_ft_page(const HydraRpFunctionTable *t, const uint8_t *contains,
 
 void hydra_rp_ft_free(HydraRpFunctionTable *t);
 
-/*
- * Reply encoding (crates/hydra-native/src/reply.rs): JSON byte-identical to the HeadlessSession
- * daemon's Gson output. Return the bytes written, or -1 (out too small), -2 (bad arguments) or
- * -3 (an index outside 0..n). Added without an ABI version change: callers look the symbols up.
- */
-
-/*
- * The JSON array of function listing rows idx[0..nidx] (or from..to when idx is NULL):
- * names/addrs are UTF-8 arenas with string i at off[i]..off[i+1] (n+1 offsets each); sizes and
- * flags (bit 0 thunk, bit 1 external) have n values.
- */
-int64_t hydra_reply_function_rows(const uint8_t *names, const int32_t *name_off,
-	const uint8_t *addrs, const int32_t *addr_off, const int64_t *sizes, const uint8_t *flags,
-	int64_t n, const int32_t *idx, int64_t nidx, int64_t from, int64_t to, uint8_t *out,
-	int64_t cap);
-
-/* src (len bytes of UTF-8) as a quoted, escaped JSON string; cap >= 6 * len + 2 always fits. */
-int64_t hydra_reply_json_string(const uint8_t *src, int64_t len, uint8_t *out, int64_t cap);
-
 #endif

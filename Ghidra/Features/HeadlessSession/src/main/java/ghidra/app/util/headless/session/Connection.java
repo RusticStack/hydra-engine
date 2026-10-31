@@ -655,9 +655,9 @@ final class Connection {
 	}
 
 	/**
-	 * The line for {@code o}: Gson's JSON and a newline, with already encoded values (reply-encode
-	 * {@link RawJson}, the read plane's {@link ReadPlane.RawJson}) written where Gson would have
-	 * written them, byte for byte the line a tree result gives.
+	 * The line for {@code o}: Gson's JSON and a newline, with already encoded values (the read
+	 * plane's {@link ReadPlane.RawJson}) written where Gson would have written them, byte for byte
+	 * the line a tree result gives.
 	 */
 	static byte[] encode(JsonObject o) {
 		byte[][] parts = encodeParts(o);
@@ -674,9 +674,9 @@ final class Connection {
 	}
 
 	/**
-	 * {@link #encode} as the parts the writer sends one after the other (Hydra reply-encode): a
-	 * value already encoded ({@link RawJson}, such as a {@code functions} page written by the
-	 * native encoder) is a part of its own, sent from its array as it is. The JSON around it is
+	 * {@link #encode} as the parts the writer sends one after the other: a value already encoded
+	 * ({@link ReadPlane.RawJson}, such as a {@code functions} page written by the read plane) is a
+	 * part of its own, sent from its array as it is. The JSON around it is
 	 * written by a {@code JsonWriter} set up as {@code GSON.toJson(JsonElement, Appendable)} sets
 	 * up its own (HTML escaping off, nulls written, lenient), element by element as Gson's
 	 * {@code JsonElement} adapter writes them, so the bytes are the same.
@@ -709,13 +709,7 @@ final class Connection {
 		}
 		else if (value.isJsonPrimitive()) {
 			JsonPrimitive p = value.getAsJsonPrimitive();
-			byte[] raw = RawJson.bytes(p);
-			if (raw != null) {
-				out.jsonValue(""); // the separator and the writer's state of a value, no text
-				out.flush();
-				buf.raw(raw);
-			}
-			else if (p.isNumber()) {
+			if (p.isNumber()) {
 				out.value(p.getAsNumber());
 			}
 			else if (p.isBoolean()) {

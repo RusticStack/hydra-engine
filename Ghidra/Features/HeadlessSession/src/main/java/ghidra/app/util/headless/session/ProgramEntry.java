@@ -301,6 +301,11 @@ final class ProgramEntry implements Decompilers, DecompilerGate.Pool {
 	 * for it is told {@code busy{reason:"analyzing"}} at once, with the job's progress (BP5, 3.13).
 	 */
 	volatile Analysis analysis;
+	/**
+	 * The read plane's function table holder for the program object this entry holds (see
+	 * {@link FunctionTable.Cache#sealed}); a request finds it with one volatile read.
+	 */
+	volatile FunctionTable.Tag tableTag;
 	/** The analyses that hold or wait for this lock, oldest first. Guarded by itself. */
 	private final ArrayDeque<Analysis> analyses = new ArrayDeque<>();
 
