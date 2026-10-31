@@ -17,6 +17,8 @@ package ghidra.app.util.headless.session;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.List;
@@ -33,6 +35,7 @@ import com.google.gson.JsonObject;
 import generic.jar.ResourceFile;
 import ghidra.app.plugin.core.osgi.GhidraSourceBundle;
 import ghidra.app.script.*;
+import ghidra.util.Msg;
 
 /**
  * The loaded classes of Java scripts whose source bundle did not change (Hydra, daemon-async).
@@ -193,8 +196,50 @@ final class ScriptClasses {
 		}
 	}
 
-	private static GhidraScript instantiate(Entry e, long fp, ResourceFile src) {
-		if (e.fingerprint() != fp || e.osgi().getState() != Bundle.ACTIVE) {
+	/**
+	 * Loads and keeps the class of {@code file}, a script this state directory ran before, the way
+	 * a run would (through the provider, under the class caches), so its next run finds it; false
+	 * when it could not be loaded. Never throws: a script that no longer loads is skipped, and a
+	 * run of it would report the error itself.
+	 */
+	static boolean warm(Path file) {
+		try {
+			ResourceFile src = new ResourceFile(file.toFile());
+			if (!src.exists()) {
+				return false;
+			}
+			Lookup look = lookup(src);
+			if (look.instance() != null) {
+				return true;
+			}
+			GhidraScript s = ScriptClassCache.instance(src);
+			GhidraScriptProvider provider = GhidraScriptUtil.getProvider(src);
+			if (provider == null) {
+				return false;
+			}
+			if (s == null) {
+				StringWriter sw = new StringWriter();
+				PrintWriter pw = new PrintWriter(sw, true);
+				ScriptClassCache.Before before = ScriptClassCache.before(src, provider);
+				s = provider.getScriptInstance(src, pw);
+				pw.flush();
+				if (s == null) {
+					return false;
+				}
+				if (sw.getBuffer().length() == 0) {
+					ScriptClassCache.remember(src, provider, before, s);
+				}
+			}
+			look.remember(provider, s);
+			return true;
+		}
+		catch (Exception | LinkageError e) {
+			Msg.debug(ScriptClasses.class, "script " + file + " not warmed: " + e);
+			return false;
+		}
+	}
+
+	private static GhidraScript instantiate(Entry e, long fp, ResourceFile src) {		if (e.fingerprint() != fp || e.osgi().getState() != Bundle.ACTIVE) {
 			return null;
 		}
 		try {

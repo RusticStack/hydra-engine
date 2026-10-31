@@ -648,6 +648,7 @@ final class ScriptCommands {
 				}
 			}
 		}
+		WarmHints.script(src.getAbsolutePath()); // the next daemon of this state dir loads it early
 		s.setScriptArgs(Json.strings(req, "args").toArray(new String[0]));
 		bindHeadless(s);
 		ProgramLocation loc = null;

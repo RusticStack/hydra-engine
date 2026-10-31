@@ -29,6 +29,8 @@ repeat answered from the stored output shows the old count and a run shows a new
 * ``sr_rollback``: a contained script that changes the program (a rename, an option) is still rolled back, one
   that changes nothing leaves the modification number where it was (a rollback would move it by one and end every
   stored result at each script).
+* ``sr_warm``: a daemon remembers the Java scripts it ran in the state dir; the next daemon of that state dir
+  loads their classes before any request, so the first run of one takes milliseconds instead of 3.6 s.
 * ``sr_invalidate``: after the writer renames the first function the same request runs again and shows the new
   name (never the stored one), and is stored again for the new state.
 """
@@ -69,6 +71,14 @@ public class SrProbe extends GhidraScript {
         println("probe " + String.join(",", getScriptArgs()) + " run=" + n + " first=" + f.getName()
             + " count=" + fm.getFunctionCount());
     }
+}
+"""
+
+
+WARM = """// @category HeadlessSession.Test
+import ghidra.app.script.GhidraScript;
+public class SrWarm extends GhidraScript {
+    @Override protected void run() throws Exception { println("warm ok " + getScriptArgs()[0]); }
 }
 """
 
@@ -242,6 +252,44 @@ def t_rollback(c):
             path.unlink()
 
 
+def t_warm(c):
+    exe = e9.fixture_args(c)
+    g = c.copy_fixture("srWarm")
+    path = c.scripts / "SrWarm.java"
+    path.write_text(WARM)
+    d1 = c.daemon("sr-warm1")
+    r = None
+    try:
+        r = _open_reader(c, d1, "r", g, exe)
+        out = _run(r, path, "one", pure=False)
+        dt.check("warm ok one" in out["output"], f"the script did not run: {out}")
+        hints = c.state / "warm-scripts.txt"
+        dt.check(hints.is_file() and str(path) in hints.read_text(encoding="utf-8").splitlines(),
+                 f"the script that ran was not remembered for the next daemon: {hints}")
+    finally:
+        e9.close_all(r)
+        e9.stop(d1)
+    d2 = c.daemon("sr-warm2")
+    r = None
+    try:
+        r = _open_reader(c, d2, "r2", g, exe)
+        # no script request yet: the warm thread loads the remembered class in the background
+        dt.wait_for(lambda: (r.call("health").get("scriptClasses") or {}).get("classes", 0) >= 1,
+                    "the remembered script's class to be loaded before any run", 30)
+        t = time.perf_counter()
+        out = _run(r, path, "two", pure=False)
+        ms = (time.perf_counter() - t) * 1000
+        dt.check("warm ok two" in out["output"], f"the warmed script did not run: {out}")
+        dt.check(ms < 1000, f"the first run of a warmed script took {ms:.0f} ms")
+        return (f"the next daemon of the state dir loaded the script's class before any request "
+                f"({r.call('health').get('scriptClasses')}); first run {ms:.0f} ms")
+    finally:
+        e9.close_all(r)
+        e9.stop(d2)
+        with __import__("contextlib").suppress(OSError):
+            path.unlink()
+
+
 def t_invalidate(c):
     exe = e9.fixture_args(c)
     g = c.copy_fixture("srInv")
@@ -282,6 +330,7 @@ TESTS = {
     "sr_results": t_results,
     "sr_ids": t_ids,
     "sr_rollback": t_rollback,
+    "sr_warm": t_warm,
     "sr_invalidate": t_invalidate,
 }
 
