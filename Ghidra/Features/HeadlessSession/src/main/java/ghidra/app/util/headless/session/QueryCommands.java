@@ -76,7 +76,7 @@ final class QueryCommands {
 	}
 
 	JsonElement functions(Program prog, JsonObject req) {
-		return functions(prog, req, false);
+		return functions(null, prog, req, false);
 	}
 
 	/**
@@ -85,137 +85,103 @@ final class QueryCommands {
 	 * ({@link ReadPlane.RawJson}).
 	 */
 	JsonElement functions(Program prog, JsonObject req, boolean raw) {
-		Pattern pat = null;
-		if (Json.has(req, "regex")) {
-			try {
-				pat = Pattern.compile(Json.str(req, "regex"));
-			}
-			catch (PatternSyntaxException ex) {
-				throw new SessionException(SessionException.BAD_REQUEST,
-					"bad regex: " + ex.getMessage());
-			}
+		return functions(null, prog, req, raw);
+	}
+
+	/**
+	 * The {@code functions} page of {@code e} from a sealed table of the program's current state,
+	 * answered before any lock is taken (a program state's listing is immutable once built, so
+	 * reads need no lock and wait for no writer or analysis); null when there is none and the
+	 * request takes the locked path. The request is validated first, so a bad argument gives the
+	 * same error either way.
+	 */
+	JsonElement functionsSealed(ProgramEntry e, JsonObject req) {
+		FunctionTable.Cache tables = FunctionTable.cache();
+		if (tables == null || e.program == null || e.analysis != null) {
+			return null;
 		}
+		JsonElement r;
+		try {
+			r = tables.sealed(e, regex(req), Json.str(req, "contains", null),
+				(int) Json.num(req, "offset", 0, 0, Integer.MAX_VALUE),
+				(int) Json.num(req, "limit", 200, 1, 10_000));
+		}
+		catch (SessionException bad) {
+			return null; // the locked path gives the error, decorated as every command's
+		}
+		if (r != null) {
+			e.project.lastUsed = System.currentTimeMillis();
+		}
+		return r;
+	}
+
+	private static Pattern regex(JsonObject req) {
+		if (!Json.has(req, "regex")) {
+			return null;
+		}
+		try {
+			return Pattern.compile(Json.str(req, "regex"));
+		}
+		catch (PatternSyntaxException ex) {
+			throw new SessionException(SessionException.BAD_REQUEST,
+				"bad regex: " + ex.getMessage());
+		}
+	}
+
+	JsonElement functions(ProgramEntry e, Program prog, JsonObject req, boolean raw) {
+		Pattern pat = regex(req);
 		String sub = Json.str(req, "contains", null);
 		int limit = (int) Json.num(req, "limit", 200, 1, 10_000);
 		int offset = (int) Json.num(req, "offset", 0, 0, Integer.MAX_VALUE);
 		// H1: one table per program state, shared by every request and view (FunctionTable)
 		FunctionTable.Cache tables = FunctionTable.cache();
 		if (tables == null) {
-			// functionTable off: daemon-async's shared index (functionIndex), else a walk
-			JsonArray a = new JsonArray();
-			int seen = 0;
-			boolean truncated = false;
-			// Hydra (daemon-async): pages are slices of the program state's one shared listing; the
-			// first unfiltered page of a state with no listing yet is read from the database (it stops
-			// after limit rows), so an edit-then-look loop does not build a whole listing each time
-			FunctionIndex.Snapshot ix = !FunctionIndex.enabled() ? null
-					: pat == null && sub == null && offset == 0 ? FunctionIndex.fresh(prog)
-					: FunctionIndex.of(prog);
-			if (ix != null) {
-				int n = ix.size();
-				if (raw && ReplyEncoder.enabled()) {
-					// Hydra reply-encode: the rows are written by the native encoder, not as a tree
-					// (only for a caller that sends the result as it is: Connection.encodeParts)
-					JsonElement rows = nativeRows(ix, pat, sub, offset, limit);
-					if (rows != null) {
-						return rows;
-					}
-				}
-				if (pat == null && sub == null) {
-					int from = (int) Math.min(n, (long) offset);
-					int to = (int) Math.min(n, (long) from + limit);
-					for (int i = from; i < to; i++) {
-						a.add(ix.row(i));
-					}
-					truncated = to < n;
-				}
-				else {
-					for (int i = 0; i < n; i++) {
-						String nm = ix.names[i];
-						if (pat != null && !pat.matcher(nm).find()) {
-							continue;
-						}
-						if (sub != null && !nm.contains(sub)) {
-							continue;
-						}
-						if (seen++ < offset) {
-							continue;
-						}
-						if (a.size() >= limit) {
-							truncated = true;
-							break;
-						}
-						a.add(ix.row(i));
-					}
-				}
-				return Json.of("functions", a, "offset", offset, "returned", a.size(), "truncated",
-					truncated);
-			}
+			// functionTable off: walk the database
 			return FunctionTable.walk(prog, pat, sub, offset, limit);
 		}
-		return tables.functions(prog, pat, sub, offset, limit, Requests.waitMs(req), raw);
-	}
-
-	/**
-	 * The {@code functions} reply with its rows encoded by {@link ReplyEncoder}: the same rows, in
-	 * the same order and with the same {@code returned}/{@code truncated}, as the tree path above;
-	 * null when the native encoder failed.
-	 * <p>
-	 * The result is for {@link Connection#encodeParts} only: its {@code functions} value is a
-	 * {@link RawJson}, which Gson refuses to write and whose {@code JsonPrimitive} cannot be hashed
-	 * or compared. Code that keeps, forwards, journals or compares a {@code functions} result must
-	 * call this command with {@code -set nativeReplies=false} semantics (the tree path above).
-	 */
-	private static JsonElement nativeRows(FunctionIndex.Snapshot ix, Pattern pat, String sub,
-			int offset, int limit) {
-		int n = ix.size();
-		byte[] rows;
-		int returned;
-		boolean truncated;
-		if (pat == null && sub == null) {
-			int from = (int) Math.min(n, (long) offset);
-			int to = (int) Math.min(n, (long) from + limit);
-			rows = ix.page(from, to);
-			returned = to - from;
-			truncated = to < n;
-		}
-		else {
-			int[] idx = new int[Math.min(limit, 1024)];
-			int k = 0;
-			int seen = 0;
-			truncated = false;
-			for (int i = 0; i < n; i++) {
-				String nm = ix.names[i];
-				if (pat != null && !pat.matcher(nm).find()) {
-					continue;
-				}
-				if (sub != null && !nm.contains(sub)) {
-					continue;
-				}
-				if (seen++ < offset) {
-					continue;
-				}
-				if (k >= limit) {
-					truncated = true;
-					break;
-				}
-				if (k == idx.length) {
-					idx = java.util.Arrays.copyOf(idx, Math.min(limit, idx.length * 2));
-				}
-				idx[k++] = i;
-			}
-			rows = ReplyEncoder.functionRows(ix, idx, k, 0, 0);
-			returned = k;
-		}
-		if (rows == null) {
-			return null;
-		}
-		return Json.of("functions", RawJson.of(rows), "offset", offset, "returned", returned,
-			"truncated", truncated);
+		return tables.functions(e, prog, pat, sub, offset, limit, Requests.waitMs(req), raw);
 	}
 
 	/** The code of a decompile that failed in the native process (E9, 3.11): retryable. */
 	static final String DECOMPILER_FAILED = "decompiler_failed";
+
+	/**
+	 * The reply of a decompile of an address in the program's current state from
+	 * {@link DecompileCache}, answered before any program or project lock is taken and reading
+	 * nothing from the database but the modification number; null when there is no stored result
+	 * for this exact address and state (the request then takes the locked path unchanged, with the
+	 * same validation and errors).
+	 * <p>
+	 * Only a request that names an {@code address} can be answered so: a {@code name} needs the
+	 * symbol table. The stored result is the one an earlier completed decompile of that function
+	 * entry produced, rendered exactly as {@link #reply} renders a fresh one, with this request's
+	 * {@code maxChars}.
+	 */
+	JsonElement decompileSealed(ProgramEntry e, JsonObject req) {
+		DecompileCache cache = DecompileCache.get();
+		Program p = e.program;
+		if (cache == null || p == null || e.analysis != null || Json.has(req, "name") ||
+			!Json.has(req, "address")) {
+			return null;
+		}
+		int cap;
+		Address a;
+		try {
+			// the locked path's own validation of these fields, so a bad value errors the same way
+			Json.num(req, "timeout", 60, 1, 3600);
+			cap = (int) Json.num(req, "maxChars", DEFAULT_TEXT_CAP, 1, MAX_TEXT_CAP);
+			a = address(p, Json.str(req, "address"));
+		}
+		catch (SessionException bad) {
+			return null;
+		}
+		DecompileCache.Result r = cache.decompile(p, a);
+		if (r == null) {
+			return null;
+		}
+		e.project.lastUsed = System.currentTimeMillis();
+		return reply(r.name(), hex(a), r, cap);
+	}
 
 	JsonElement decompile(Program prog, Decompilers e, JsonObject req,
 			RequestMonitor m) {
@@ -321,7 +287,12 @@ final class QueryCommands {
 
 	/** The reply of a completed decompile, fresh or cached (one shape for both). */
 	private static JsonObject reply(Function f, DecompileCache.Result res, int cap) {
-		JsonObject r = Json.of("name", f.getName(true), "entry", hex(f.getEntryPoint()));
+		return reply(f.getName(true), hex(f.getEntryPoint()), res, cap);
+	}
+
+	/** The reply of a completed decompile of the function called {@code name} at {@code entry}. */
+	private static JsonObject reply(String name, String entry, DecompileCache.Result res, int cap) {
+		JsonObject r = Json.of("name", name, "entry", entry);
 		Json.put(r, "completed", true);
 		String c = res.c();
 		Json.put(r, "signature", res.signature());
@@ -391,7 +362,8 @@ final class QueryCommands {
 			healthy = true;
 			DecompilerGate.Breaker.succeeded(prog, f);
 			DecompiledFunction df = res.getDecompiledFunction();
-			DecompileCache.Result done = new DecompileCache.Result(df.getSignature(), df.getC());
+			DecompileCache.Result done =
+				new DecompileCache.Result(df.getSignature(), df.getC(), f.getName(true));
 			if (out != null) {
 				out[0] = done;
 			}
