@@ -257,6 +257,25 @@ public final class IoTrace {
                 if (out != null) { String r = rel(f); if (r != null) log("T\t" + r + "\t" + n); }
             }
         }
+        /**
+         * Replaces the positional channel write of H3's chunked pre-save
+         * ({@code raf.getChannel().write(src, pos)}): a write through the channel does not pass
+         * through {@link #write}, so the trace would not see it. Writes the remaining bytes of
+         * {@code src} at {@code pos} and logs them as the same {@code W} record a {@code write} gives.
+         */
+        public void writeAt(java.nio.ByteBuffer src, long pos) throws IOException {
+            synchronized (LOCK) {
+                java.nio.ByteBuffer seen = src.duplicate();
+                java.nio.channels.FileChannel ch = getChannel();
+                long p = pos;
+                while (src.hasRemaining()) { p += ch.write(src, p); }
+                if (out != null && seen.hasRemaining()) {
+                    byte[] b = new byte[seen.remaining()];
+                    seen.get(b);
+                    w(pos, b, 0, b.length);
+                }
+            }
+        }
         /** Replaces {@code raf.getFD().sync()}. */
         public void syncTraced() throws IOException {
             synchronized (LOCK) {
@@ -678,6 +697,13 @@ def instrumented(variant):
     T = "hydra.e12.IoTrace"
     lbf = sub_n(lbf, r"private RandomAccessFile raf;", f"private {T}.Raf raf;", 1, "LocalBufferFile raf")
     lbf = sub_n(lbf, r"new RandomAccessFile\(", f"new {T}.Raf(", 5, "LocalBufferFile open")
+    # H3's chunked pre-save writes whole chunks through the channel of the raf, which bypasses Raf.write;
+    # route it through Raf.writeAt so the trace sees it, and fail if any other channel write is left
+    lbf = sub_n(lbf, r"java\.nio\.channels\.FileChannel ch = raf\.getChannel\(\);\s*while \(chunk\.hasRemaining\(\)\) \{\s*"
+                r"ch\.write\(chunk, pos \+ chunk\.position\(\)\);\s*\}",
+                "raf.writeAt(chunk, pos);", 1, "LocalBufferFile chunk write")
+    dt.check(not re.search(r"ch\.write\(|\.getChannel\(\)\s*\.write\(|\.transferFrom\(|\.map\(", lbf),
+             "LocalBufferFile writes through a channel the trace does not see")
     lbf = sub_n(lbf, r"raf\.getFD\(\)\.sync\(\);",
                 "raf.getFD();" if variant == "no_data_sync" else "raf.syncTraced();", 1,
                 "LocalBufferFile sync")
