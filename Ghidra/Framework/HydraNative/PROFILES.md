@@ -13,14 +13,17 @@ performance knobs for a CPU family whose behaviour we have measured.
   fast everywhere; it is never made slower to benefit a profile.
 * A profile ships with before/after numbers measured on its CPU (a quiet machine, several runs each).
   The numbers go in the pull request that adds or changes it.
-* `raptorlake-hybrid` is in place so selection can be tested and seen; its pool split is provisional
-  until the pool-sizing package measures it, and nothing reads it before then.
+* `raptorlake-hybrid` ships with the round-3 measurements on the i7-13700KF
+  (`docs/cpu-profiles.md` in the workspace has the before/after numbers). The engine's wired profile
+  is `ghidra.util.cpu.HydraCpu` (module Utility), which takes the detection facts from this library
+  and keeps the profile list below as the C ABI's mirror; the two select the same profile.
 
 ## Selection
 
 At start-up `hydra_cpu_query` identifies the CPU (CPUID vendor, family, model, hybrid flag) and the
 topology (OS efficiency classes), then takes the first profile in `PROFILES` (`crates/hydra-native/src/profile.rs`)
-whose `matches` describes the CPU, else `generic`.
+whose `matches` describes the CPU, else `generic`. The Java engine's profile (`docs/cpu-profiles.md`)
+selects the same `raptorlake-hybrid` for this CPU; this list is the C ABI's mirror for other callers.
 
 The override, `HYDRA_CPU_PROFILE` (or the Java system property `hydra.cpu.profile`, which wins):
 

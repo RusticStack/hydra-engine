@@ -133,11 +133,14 @@ final class Budgets {
 	}
 
 	/**
-	 * The permits of the decompiler gate: {@code min(CPUs, nativeBudget / 200 MB)}, at least 1;
-	 * CPUs are the ones the OS grants the process ({@link HydraCpu#grantedCpus()}).
+	 * The permits of the decompiler gate: {@code min(CPUs, nativeBudget / 200 MB)}, at least 1.
+	 * CPUs are the ones the OS grants the process ({@link HydraCpu#grantedCpus()}), or the active
+	 * tuning profile's decompiler concurrency when it sets one (a profile may keep native
+	 * decompilers on the faster core class); the memory budget still lowers it.
 	 */
 	static int gatePermits() {
-		int cpus = HydraCpu.grantedCpus();
+		int profile = HydraCpu.profile().decompilerThreads(HydraCpu.cpu());
+		int cpus = profile > 0 ? profile : HydraCpu.grantedCpus();
 		return (int) Math.max(1, Math.min(cpus, nativeBudgetMb() / DECOMPILER_MB));
 	}
 

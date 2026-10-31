@@ -20,8 +20,10 @@ The first part answers what the process may use and what it runs on:
   with `HYDRA_CPU_PROFILE`. A profile sets performance knobs only. See [PROFILES.md](PROFILES.md).
 
 Java reads it through `ghidra.util.HydraCpu` (module Utility), which falls back to
-`Runtime.availableProcessors()` and the `generic` profile when the library is missing. Nothing sizes
-its pools from it yet; that is a later, measured change.
+`Runtime.availableProcessors()` and the `generic` profile when the library is missing. The daemon's
+wired profile (`ghidra.util.cpu.HydraCpu`, `docs/cpu-profiles.md`) takes the CPUID identity, the
+SIMD level, the cache groups and the memory limit from this report; its profiles size the analysis
+pool, the decompiler gate and thread placement from the measured numbers.
 
 ## Layout
 
