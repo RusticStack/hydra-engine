@@ -1697,9 +1697,15 @@ def t_upgrade_cache(c: Ctx):
     stop_s = time.perf_counter() - t
     entry, gens, tmps = key_dir_state(cache, key3)
     check(stop_s < 10, f"stop took {stop_s:.1f} s during a build")
-    check(stopped_in == "ready" or (entry is None and not gens and not tmps),
+    # The build can finish between the status poll above and the shutdown reaching the daemon: a
+    # complete entry (the program and one generation, no temporary folder: the shape the rebuild
+    # check asserts) is then the build having published, not a leak. A partial one is still a failure.
+    finished = entry == [prog] and gens == ["g1"] and not tmps
+    check(stopped_in == "ready" or finished or (entry is None and not gens and not tmps),
           f"a cancelled build left files: {entry} {gens} {tmps}")
-    notes.append(f"stopped in {stopped_in} in {stop_s:.1f} s, temporary folder removed")
+    notes.append(f"stopped in {stopped_in} in {stop_s:.1f} s, "
+                 + ("the build published before the stop" if finished and stopped_in != "ready"
+                    else "temporary folder removed"))
 
     # 5. a queued build yields to clients' long work; a source change fails it; cancel; prune
     legacy4 = legacy_copy("legacy4")
