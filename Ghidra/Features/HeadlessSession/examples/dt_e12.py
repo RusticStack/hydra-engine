@@ -1195,7 +1195,7 @@ def t_source_guards(c):
     dt.check(pub.rindex("writeSidecar(sc, sidecar)") > order[2], "ProjectFork.publish: final sidecar after the gpr")
     dt.check("ch.force(true)" in pf, "writeSidecar forces its temporary file")
     # E12b: what fork_model("current") assumes of publish
-    i_force = pub.index("forceTree(st.dir().toPath());")
+    i_force = pub.index("forceTree(st.dir().toPath()")  # (root) or (root, linked): hard-linked version files are forced once per process
     i_moving = pub.index("withPhase(ForkIntent.MOVING")
     dt.check(i_force < i_moving < order[0], "ProjectFork.publish: forceTree(staging) before the intent and the .rep move")
     pre = pub[order[1]:order[2]]

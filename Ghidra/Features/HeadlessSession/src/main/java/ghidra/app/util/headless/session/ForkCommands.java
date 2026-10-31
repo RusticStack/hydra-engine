@@ -304,7 +304,7 @@ final class ForkCommands {
 			destDir.getPath(), "gpr", destGpr.getPath(), "name", name, "writable",
 			register && writable);
 		for (String k : List.of("source", "baseRevision", "mode", "method", "cloned", "clonedBy",
-			"bytes", "files", "copyMs", "freeSpaceUsedBytes", "depth")) {
+			"bytes", "files", "copyMs", "freeSpaceUsedBytes", "depth", "linked", "linkedBytes")) {
 			if (sc.has(k)) {
 				out.add(k, sc.get(k));
 			}
@@ -422,7 +422,24 @@ final class ForkCommands {
 						"full copy of " + cost.bytes() + " bytes. Pass \"mode\":\"full\" to copy",
 					costJson);
 			}
-			if (mode.equals("auto") && !cost.cloneCapable() && cost.bytes() > limit) {
+			// the stored database versions of a fork on the source's volume are hard links, not
+			// copies (ProjectFork.stage): they cost no space and no copy time
+			boolean link = !spec.backup() && cost.sameVolume() &&
+				Settings.bool("forkHardLinks", true);
+			long linkBytes = 0;
+			if (link) {
+				for (java.nio.file.Path p : listing.values()) {
+					try {
+						long size = Files.size(p);
+						linkBytes += UpgradeCache.linkable(p, size) ? size : 0;
+					}
+					catch (IOException e) {
+						// gone meanwhile: the copy and the revision check see it
+					}
+				}
+			}
+			long copyBytes = cost.bytes() - linkBytes;
+			if (mode.equals("auto") && !cost.cloneCapable() && copyBytes > limit) {
 				Json.put(costJson, "reason", "too_large");
 				Json.put(costJson, "suggest", "mode full");
 				throw new SessionException(SessionException.CONFLICT,
@@ -431,7 +448,7 @@ final class ForkCommands {
 						"onto the source's volume where it can be block-cloned",
 					costJson);
 			}
-			if (!cost.cloneCapable() && cost.bytes() > cost.destFreeBytes()) {
+			if (!cost.cloneCapable() && copyBytes > cost.destFreeBytes()) {
 				throw new SessionException(SessionException.FAILED,
 					"not enough free space for a full copy of " + cost.bytes() + " bytes",
 					costJson);
@@ -441,7 +458,7 @@ final class ForkCommands {
 				baseRevision = Revision.of(r, listing);
 				steps.mark("revision");
 				m.setMessage("forking " + r.name() + " (" + cost.files() + " files)");
-				copied = ProjectFork.stage(r, destDir, name, id, rk, m, listing, steps);
+				copied = ProjectFork.stage(r, destDir, name, id, rk, m, listing, steps, link);
 				staging.set(copied);
 				if (spec.backup()) {
 					// a backup is compared with its source after the copy (hash: every file of both
@@ -510,6 +527,20 @@ final class ForkCommands {
 			"cloned", cloned, "clonedBy", clonedBy, "bytes", cost.bytes(), "files",
 			cost.files(), "copyMs", copied.ms(), "freeSpaceUsedBytes", consumed, "depth", depth,
 			"parent", parent);
+		long linkedBytes = 0;
+		for (java.nio.file.Path p : copied.linked().keySet()) {
+			try {
+				linkedBytes += Files.size(p);
+			}
+			catch (IOException e) {
+				// removed with the fork meanwhile: only a figure for the report
+			}
+		}
+		if (!copied.linked().isEmpty()) {
+			// additive: the stored database versions are hard links to the source's, not copies
+			sidecar.addProperty("linked", copied.linked().size());
+			sidecar.addProperty("linkedBytes", linkedBytes);
+		}
 		if (rk != null) {
 			sidecar.addProperty("rk", rk);
 		}
@@ -583,6 +614,10 @@ final class ForkCommands {
 			clonedBy, "bytes", cost.bytes(), "files", cost.files(), "copyMs", copied.ms(),
 			"freeSpaceUsedBytes", consumed, "depth", depth, "sidecar",
 			ProjectFork.sidecar(fr).getPath(), "ms", (System.nanoTime() - t0) / 1_000_000);
+		if (!copied.linked().isEmpty()) {
+			out.addProperty("linked", copied.linked().size());
+			out.addProperty("linkedBytes", linkedBytes);
+		}
 		if (c.v3()) { // the fork report (conditional C7, 3.4): additive keys for a v3 client
 			out.addProperty("purpose", spec.purpose());
 			out.add("cost", cost.json());
@@ -611,7 +646,12 @@ final class ForkCommands {
 	 */
 	private static JsonArray warnings(Spec spec, ProjectFork.Cost cost, ProjectFork.Staged copied) {
 		JsonArray w = new JsonArray();
-		if (!cost.cloneCapable()) {
+		if (!cost.cloneCapable() && !copied.linked().isEmpty()) {
+			w.add(copied.linked().size() + " of " + cost.files() + " files (the stored database " +
+				"versions) are hard links to the source's, which are never written in place; " +
+				"the others are copies");
+		}
+		else if (!cost.cloneCapable()) {
 			w.add("this is a full copy of " + cost.bytes() + " bytes in " + cost.files() +
 				" files, not a block clone (source file system " + cost.sourceFs() +
 				", destination " + cost.destFs() + (cost.sameVolume() ? ", one volume"
