@@ -1094,6 +1094,9 @@ public class DataTypeUtilities {
 	 * @return name with optional category path included
 	 */
 	public static String getNameWithoutConflict(String dataTypeName) {
+		if (!dataTypeName.contains(DataType.CONFLICT_SUFFIX)) {
+			return dataTypeName; // no conflict suffix present: nothing to remove
+		}
 		String decorations = getPointerArrayDecorations(dataTypeName);
 		String baseDataTypeName = dataTypeName;
 		if (decorations != null) {
@@ -1141,6 +1144,9 @@ public class DataTypeUtilities {
 	}
 
 	private static int getBaseConflictValue(String baseDataTypeName) {
+		if (!baseDataTypeName.contains(DataType.CONFLICT_SUFFIX)) {
+			return -1;
+		}
 		Matcher matcher = BASE_DATATYPE_CONFLICT_PATTERN.matcher(baseDataTypeName);
 		if (matcher.find()) {
 			MatchResult matchResult = matcher.toMatchResult();

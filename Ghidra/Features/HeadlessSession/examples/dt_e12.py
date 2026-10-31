@@ -696,7 +696,9 @@ def instrumented(variant):
     dbs = src_text(DBDB_REL)
     T = "hydra.e12.IoTrace"
     lbf = sub_n(lbf, r"private RandomAccessFile raf;", f"private {T}.Raf raf;", 1, "LocalBufferFile raf")
-    lbf = sub_n(lbf, r"new RandomAccessFile\(", f"new {T}.Raf(", 5, "LocalBufferFile open")
+    # Hydra (round 2): the read-only transition no longer closes the handle and opens the file
+    # again, which removed one of the five RandomAccessFile constructions in this class.
+    lbf = sub_n(lbf, r"new RandomAccessFile\(", f"new {T}.Raf(", 4, "LocalBufferFile open")
     # H3's chunked pre-save writes whole chunks through the channel of the raf, which bypasses Raf.write;
     # route it through Raf.writeAt so the trace sees it, and fail if any other channel write is left
     lbf = sub_n(lbf, r"java\.nio\.channels\.FileChannel ch = raf\.getChannel\(\);\s*while \(chunk\.hasRemaining\(\)\) \{\s*"

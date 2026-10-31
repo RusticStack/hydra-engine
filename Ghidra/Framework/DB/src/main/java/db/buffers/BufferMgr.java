@@ -1235,6 +1235,9 @@ public class BufferMgr {
 				}
 
 				currentCheckpointHead = null;
+				if (sourceFile instanceof LocalManagedBufferFile lf) {
+					lf.changeCommitted(); // Hydra: a save is likely soon (flush-ahead of the pre-save)
+				}
 				return true;
 			}
 		}
