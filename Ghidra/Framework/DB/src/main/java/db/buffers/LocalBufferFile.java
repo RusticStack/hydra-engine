@@ -850,6 +850,27 @@ public class LocalBufferFile implements BufferFile {
 	}
 
 	/**
+	 * Hydra (round 2): ask the operating system to write the data already written to this file
+	 * back to disk, without touching the file position or the header, so that it may run beside
+	 * another thread's reads and writes of the same file (it is not a {@link #flush}, which
+	 * writes the header and is the commit step). Used on a pre-save copy before the save needs
+	 * it. Best effort: a file closed meanwhile, or a failure, is ignored, because the save's own
+	 * flush writes whatever is still dirty.
+	 */
+	void flushAhead() {
+		RandomAccessFile r = raf;
+		if (r == null || readOnly) {
+			return;
+		}
+		try {
+			r.getChannel().force(false);
+		}
+		catch (IOException | RuntimeException e) {
+			// closed or failed: the save's flush decides
+		}
+	}
+
+	/**
 	 * Write all unwritten data to the file prior to closing.
 	 * @return true if flush was performed, false if not required.
 	 * @throws IOException thrown if flush failed
@@ -914,8 +935,10 @@ public class LocalBufferFile implements BufferFile {
 			return false;
 		}
 
-		raf.close();
-		raf = new RandomAccessFile(file, "r");
+		// Hydra (round 2): the handle stays as it is. Closing it and opening the file again
+		// read-only cost 5 to 14 ms per save of a large database (the first open of a file just
+		// written is held up by the operating system's scan of it), and bought nothing: every
+		// write path of this class refuses a file whose readOnly flag is set.
 		readOnly = true;
 
 		return true;
