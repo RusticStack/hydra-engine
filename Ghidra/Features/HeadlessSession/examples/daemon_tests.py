@@ -1080,11 +1080,28 @@ def t_import_speed(c: Ctx):
 def t_parallel_imports(c: Ctx):
     """Imports run at once: into two projects, two files into one project (one new folder), the
     same file twice into one project (imported once), and a cancel that leaves the other one
-    running."""
+    running.
+
+    "At once" is observed, not raced: a load of the test's raw files now takes about as long as
+    the SHA-256 of a file a few times larger, so a test that waited for two loads to overlap by
+    chance failed on a fast or a loaded machine. The daemon runs with the test hook
+    ``testImportHoldFile``: while that file exists, an import that holds its gate permit, its slot
+    and the project lock waits before the loader starts. The test creates the file, waits until
+    the gate lists the imports as running (nothing can finish meanwhile), checks them, and deletes
+    the file; the loads then run in parallel as before."""
     mb = c.a.raw_mb
     f1, f2, f3 = (raw_file(c, f"par{i}.bin", mb) for i in range(3))
-    d = c.daemon("par", maxImports=3, maxLong=4)
+    hold = c.work / "par-import-hold.gate"
+    d = c.daemon("par", maxImports=3, maxLong=4,
+                 vmargs=["-Dghidra.session.testHooks=true",
+                         f"-Dghidra.session.testImportHoldFile={hold}"])
     notes = []
+
+    def hold_imports():
+        hold.write_text("held while this file exists")
+
+    def release_imports():
+        hold.unlink(missing_ok=True)
     with d.connect("A", "agent-a") as A, d.connect("B", "agent-b") as B:
         ga = c.make_project(A, c.work / "projParA", "ParA")
         gb = c.make_project(A, c.work / "projParB", "ParB")
@@ -1095,12 +1112,14 @@ def t_parallel_imports(c: Ctx):
             return A.call("status")["imports"]
 
         # 1. Two projects at once.
+        hold_imports()
         ia = A.send("import", file=f1, name="a1", parallel=True, **RAW_LANG)
         ib = B.send("import", file=f2, name="b1", parallel=True, **RAW_LANG)
         st = wait_for(lambda: (imports() if len(imports()["running"]) == 2 else None),
                       "both imports to run at once", 60)
         check(not st["queue"] and st["maxImports"] == 3, f"import gate: {st}")
         check({r["project"] for r in st["running"]} == {pa, pb}, f"running: {st['running']}")
+        release_imports()
         ra, rb = A.wait(ia), B.wait(ib)
         check(ra["imported"] and rb["imported"], f"answers: {ra} {rb}")
         check(ra["queue"]["behind"] is None and rb["queue"]["behind"] is None,
@@ -1111,10 +1130,14 @@ def t_parallel_imports(c: Ctx):
 
         # 2. Two files into one project, into the same new folder, at once.
         B.call("open_project", path=str(ga), writable=True)
+        hold_imports()
         ia = A.send("import", file=f2, folder="/new/sub", name="x", parallel=True, **RAW_LANG)
         ib = B.send("import", file=f3, folder="/new/sub", name="x", parallel=True, project=pa,
                     **RAW_LANG)
-        wait_for(lambda: len(imports()["running"]) == 2, "two imports into one project", 60)
+        st = wait_for(lambda: (imports() if len(imports()["running"]) == 2 else None),
+                      "two imports into one project", 60)
+        check({r["project"] for r in st["running"]} == {pa}, f"running: {st['running']}")
+        release_imports()
         ra, rb = A.wait(ia), B.wait(ib)
         paths = program_paths(A, pa)
         check(ra["imported"] and rb["imported"] and ra["path"] != rb["path"],
@@ -1132,9 +1155,15 @@ def t_parallel_imports(c: Ctx):
         check(all(r["imported"] is False for r in both), f"the same file again: {both}")
         # with a fresh file: one imports, the other waits for it and answers existing
         f4 = raw_file(c, "par3.bin", mb)
+        hold_imports()
         ia = A.send("import", file=f4, name="once", parallel=True, **RAW_LANG)
         wait_for(lambda: imports()["running"], "the first import to run", 60)
         ib = B.send("import", file=f4, name="twice", parallel=True, project=pa, **RAW_LANG)
+        # the first import is held, so the second must be seen waiting for it before it is let go
+        wait_for(lambda: any(r["waiting"] == "same file import"
+                             for cl in A.call("status")["clients"] for r in cl["requests"]),
+                 "the second import to wait for the first", 60)
+        release_imports()
         ra, rb = A.wait(ia), B.wait(ib)
         check(ra["imported"] is True and rb["imported"] is False and
               rb["existing"] == [ra["path"]], f"same file at once: {ra} / {rb}")
@@ -1144,17 +1173,19 @@ def t_parallel_imports(c: Ctx):
         notes.append(f"same file at once: one import, the other waited "
                      f"{rb['sameFileImport']['waitedMs']} ms and answered existing")
 
-        # 4. Cancel one of two running imports; the other completes. The cancel must land
-        # during the load: once the import writes its program into the project it is no longer
-        # cancellable (a fast machine loaded a 128 MB file in about 1.5 s), so the files are
-        # larger and the cancel is sent soon after both run.
-        f5, f6 = raw_file(c, "par4.bin", mb * 4), raw_file(c, "par5.bin", mb)
+        # 4. Cancel one of two running imports; the other completes. The cancel must land before
+        # the import writes its program into the project (after that it is no longer
+        # cancellable), and a fast machine loads a 128 MB file in about 1.5 s: both imports are
+        # held before their loads, so the cancel cannot be late, and the other is let go after it.
+        f5, f6 = raw_file(c, "par4.bin", mb), raw_file(c, "par5.bin", mb)
+        hold_imports()
         ia = A.send("import", file=f5, name="cancelme", parallel=True, **RAW_LANG)
         ib = B.send("import", file=f6, name="keep", parallel=True, project=pa, **RAW_LANG)
         wait_for(lambda: len(imports()["running"]) == 2, "two imports running", 60)
-        time.sleep(0.3)
         check(A.call("cancel", target=ia)["cancelled"] is True, "cancel")
         expect_error("cancelled", A.wait, ia)
+        check(len(imports()["running"]) == 1, f"the cancelled import still holds the gate: {imports()}")
+        release_imports()
         rb = B.wait(ib)
         check(rb["imported"] is True, f"the other import: {rb}")
         paths = program_paths(A, pa)

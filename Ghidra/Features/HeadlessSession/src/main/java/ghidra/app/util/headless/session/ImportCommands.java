@@ -151,6 +151,7 @@ final class ImportCommands {
 						b.compiler(Json.str(req, "compiler"));
 					}
 					m.setMessage("importing " + file.getName());
+					holdForTest(m);
 					try (LoadResults<Program> results = b.load()) {
 						saved = results.getPrimary().save(m).getPathname();
 						p.invalidateRevision();
@@ -214,6 +215,39 @@ final class ImportCommands {
 			if (slot != null) {
 				slot.close();
 			}
+		}
+	}
+
+	/**
+	 * Test hook only (launch property {@code ghidra.session.testHooks}): while the file named by
+	 * {@code ghidra.session.testImportHoldFile} exists, an import that holds its gate permit, its
+	 * slot and the project lock waits here, before the loader starts, so a test can hold imports
+	 * "running" for as long as it likes instead of racing the speed of the load (the {@code
+	 * parallel_imports} test). It ends when the test deletes the file, when the request is
+	 * cancelled (as the loader's own monitor checks would end it) or after 120 s. Does nothing
+	 * without the hooks or the property.
+	 */
+	private static void holdForTest(RequestMonitor m) throws CancelledException {
+		if (!Health.testHooks()) {
+			return;
+		}
+		String gate = System.getProperty("ghidra.session.testImportHoldFile");
+		if (gate == null || gate.isEmpty()) {
+			return;
+		}
+		File f = new File(gate);
+		long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(120);
+		try {
+			while (f.exists() && System.nanoTime() - end < 0) {
+				if (m.isCancelled()) {
+					throw new CancelledException();
+				}
+				Thread.sleep(20);
+			}
+		}
+		catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			throw new CancelledException();
 		}
 	}
 
