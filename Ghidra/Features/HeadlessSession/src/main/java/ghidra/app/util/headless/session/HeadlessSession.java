@@ -154,6 +154,21 @@ public class HeadlessSession implements GhidraLaunchable {
 			config.setApplicationLogFile(new File(o.log));
 		}
 		Application.initializeApplication(layout, config);
+		if (o.daemon) {
+			// A daemon has no console: its stdout and stderr are the log file the launcher opened,
+			// so the console appender wrote every message to that same file a second time (two
+			// write syscalls per line, and two handles appending to one file). The application log
+			// appender, given -log by the launcher, writes each line once; it is buffered (see
+			// log4j-appender-rolling-file.xml) so a request line costs a copy, not a write.
+			org.apache.logging.log4j.core.LoggerContext ctx =
+				(org.apache.logging.log4j.core.LoggerContext) org.apache.logging.log4j.LogManager
+					.getContext(false);
+			org.apache.logging.log4j.core.config.LoggerConfig root =
+				ctx.getConfiguration().getLoggerConfig(
+					org.apache.logging.log4j.LogManager.ROOT_LOGGER_NAME);
+			root.removeAppender("console");
+			ctx.updateLoggers();
+		}
 		// The OSGi framework that compiles scripts starts after the session is ready; the
 		// commands that run scripts wait for it (DeferredInit.await).
 		List<ResourceFile> scriptDirs =
