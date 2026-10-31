@@ -56,6 +56,11 @@ mod ffi {
             resp: *const c_char,
             resplen: usize,
         ) -> c_int;
+        pub fn hydra_snapshot_store_put_bulk(
+            h: *mut c_void,
+            blob: *const c_char,
+            len: usize,
+        ) -> c_int;
         pub fn hydra_snapshot_store_stats(h: *mut c_void, count: *mut u64, bytes: *mut u64);
         pub fn hydra_snapshot_store_close(h: *mut c_void);
         pub fn hydra_snapshot_decompile(
@@ -195,6 +200,25 @@ pub unsafe extern "C" fn hydra_dhost_store_put(
             resplen,
         )
     }
+}
+
+/// Adds the answers of one packed block: for each answer a record of a little-endian u32 length
+/// and the bytes, three times (scope, query, response). One call per function instead of one per
+/// answer: the Java exporter builds the block in one buffer. Returns 0, or 1 on failure.
+///
+/// # Safety
+/// `h` must be a live store handle; `blob` must be valid for reads of `len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hydra_dhost_store_put_bulk(
+    h: *mut c_void,
+    blob: *const c_char,
+    len: usize,
+) -> c_int {
+    if h.is_null() {
+        return 1;
+    }
+    // SAFETY: the caller guarantees the handle and the buffer; the C++ side copies the records.
+    unsafe { ffi::hydra_snapshot_store_put_bulk(h, nz(blob, len), len) }
 }
 
 /// Number of answers and their bytes.

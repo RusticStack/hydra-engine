@@ -46,19 +46,21 @@ import ghidra.util.Msg;
 final class HostDecompileBackend {
 
 	/**
-	 * {@code host} turns the backend on; anything else (the default {@code process}) keeps it off.
-	 * rust/t-host measured it as the default (KotOR 8,616 identical) and kept it opt-in: on the
-	 * multi-agent benchmark a cold host decompile (export + native runs) is slower than the process
-	 * path and the in-process Architectures raise peak memory (DESIGN.md, "t-host").
+	 * {@code process} keeps the backend off; anything else (the default {@code host}) uses it.
+	 * rust/t-host measured it as the default (KotOR 8,616 identical) and kept it opt-in for a
+	 * slower cold path; rust/o2-decomp removed that cost (the syntax tree is no longer encoded and
+	 * decoded, answers are exported in bulk and the store is sharded) and made the host the default:
+	 * a hosted decompile no longer starts a native process and is faster than the process path on
+	 * both the first call and the repeats.
 	 */
 	static final String PROPERTY = "hydra.decomp.backend";
 
 	/**
 	 * The host registers a program as {@code DecompInterface} does with its defaults (no setAction):
-	 * only the set-up {@code ProgramEntry.newDecompiler} uses today is offered. The syntax tree
-	 * toggle is not part of the match: the pooled decompilers are text-only since H5 (their one
-	 * consumer reads the C text and signature, printed from the C markup alone), and the host's
-	 * registration (syntax tree on) gives the same C markup plus a tree nobody on this path reads.
+	 * only the set-up {@code ProgramEntry.newDecompiler} uses today is offered. The host sends
+	 * {@code notree} exactly as the pooled decompilers do (they are text-only since H5; their one
+	 * consumer reads the C text and signature, printed from the C markup alone), so the host's
+	 * registration gives the same C markup and the same bytes as the process path.
 	 */
 	static final boolean SETUP_MATCHES = ProgramEntry.DECOMPILER_C_CODE &&
 		"decompile".equals(ProgramEntry.DECOMPILER_STYLE);
@@ -71,7 +73,7 @@ final class HostDecompileBackend {
 	}
 
 	static boolean enabled() {
-		return "host".equals(System.getProperty(PROPERTY, "process"));
+		return !"process".equals(System.getProperty(PROPERTY, "host"));
 	}
 
 	/**

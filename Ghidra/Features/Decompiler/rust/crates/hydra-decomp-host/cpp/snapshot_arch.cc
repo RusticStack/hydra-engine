@@ -20,6 +20,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <list>
 #include <mutex>
 #include <sstream>
@@ -59,6 +60,12 @@ SnapshotStore::SnapshotStore(uint8 i,const string &p,const string &c,const strin
   closed = false;
 }
 
+size_t SnapshotStore::shardOf(const string &key)
+
+{
+  return std::hash<string>()(key) & (SHARDS - 1);
+}
+
 /// An answer that is already present is kept (answers of one generation never change).
 /// \param scope is the packed entry address of the function the answer depends on, or empty
 /// \param query is the packed query payload
@@ -66,57 +73,115 @@ SnapshotStore::SnapshotStore(uint8 i,const string &p,const string &c,const strin
 void SnapshotStore::put(const string &scope,const string &query,const string &response)
 
 {
-  std::unique_lock<std::shared_mutex> guard(lock);
-  bool added;
-  if (scope.empty())
-    added = global.emplace(query,response).second;
+  if (scope.empty()) {
+    Shard &sh(global[shardOf(query)]);
+    std::unique_lock<std::shared_mutex> guard(sh.lock);
+    if (sh.map.emplace(query,response).second)
+      bytes += query.size() + response.size();
+  }
   else {
     string key(scope);
     key += '\0';
     key += query;
-    added = scoped.emplace(key,response).second;
+    Shard &sh(scoped[shardOf(key)]);
+    std::unique_lock<std::shared_mutex> guard(sh.lock);
+    if (sh.map.emplace(std::move(key),response).second)
+      bytes += scope.size() + 1 + query.size() + response.size();
   }
-  if (added)
-    bytes += scope.size() + query.size() + response.size();
+}
+
+/// The bulk form: one call adds every answer the Java side exported for a function, so a function
+/// costs one crossing and a handful of map inserts instead of one crossing per answer.
+/// \param blob is the packed block
+/// \param len is its size in bytes
+void SnapshotStore::putBulk(const char *blob,size_t len)
+
+{
+  size_t i = 0;
+  auto read32 = [&](size_t &at,uint4 &v) -> bool {
+    if (at + 4 > len) return false;
+    v = (uint1)blob[at] | ((uint1)blob[at+1] << 8) | ((uint1)blob[at+2] << 16) | ((uint4)(uint1)blob[at+3] << 24);
+    at += 4;
+    return true;
+  };
+  while (i < len) {
+    uint4 sn,qn,rn;
+    if (!read32(i,sn) || i + sn > len) throw LowlevelError("snapshot store: bad bulk record (scope)");
+    const char *sp = blob + i;
+    i += sn;
+    if (!read32(i,qn) || i + qn > len) throw LowlevelError("snapshot store: bad bulk record (query)");
+    const char *qp = blob + i;
+    i += qn;
+    if (!read32(i,rn) || i + rn > len) throw LowlevelError("snapshot store: bad bulk record (response)");
+    const char *rp = blob + i;
+    i += rn;
+    if (sn == 0) {
+      Shard &sh(global[shardOf(string(qp,qn))]);
+      std::unique_lock<std::shared_mutex> guard(sh.lock);
+      auto res = sh.map.emplace(string(qp,qn),string(rp,rn));
+      if (res.second)
+	bytes += qn + rn;
+    }
+    else {
+      string key(sp,sn);
+      key += '\0';
+      key.append(qp,qn);
+      Shard &sh(scoped[shardOf(key)]);
+      std::unique_lock<std::shared_mutex> guard(sh.lock);
+      if (sh.map.emplace(std::move(key),string(rp,rn)).second)
+	bytes += sn + 1 + qn + rn;
+    }
+  }
 }
 
 /// A scoped answer for the given scope wins over a global one.
 /// \param scope is the scope of the current decompile (may be empty)
 /// \param query is the packed query payload
-/// \param response receives the stored response
-/// \return \b true if the store holds an answer
-bool SnapshotStore::find(const string &scope,const string &query,string &response) const
+/// \param composite is scratch for the scoped key (reused between lookups)
+/// \return the answer, or null when the store does not hold one
+const string *SnapshotStore::find(const string &scope,const string &query,string &composite) const
 
 {
-  std::shared_lock<std::shared_mutex> guard(lock);
-  if (!scope.empty() && !scoped.empty()) {
-    string key(scope);
-    key += '\0';
-    key += query;
-    unordered_map<string,string>::const_iterator iter = scoped.find(key);
-    if (iter != scoped.end()) {
-      response = (*iter).second;
-      return true;
-    }
+  if (!scope.empty()) {
+    composite.assign(scope);
+    composite += '\0';
+    composite += query;
+    const Shard &sh(scoped[shardOf(composite)]);
+    std::shared_lock<std::shared_mutex> guard(sh.lock);
+    unordered_map<string,string>::const_iterator iter = sh.map.find(composite);
+    if (iter != sh.map.end())
+      return &(*iter).second;
   }
-  unordered_map<string,string>::const_iterator iter = global.find(query);
-  if (iter == global.end())
-    return false;
-  response = (*iter).second;
-  return true;
+  const Shard &sh(global[shardOf(query)]);
+  std::shared_lock<std::shared_mutex> guard(sh.lock);
+  unordered_map<string,string>::const_iterator iter = sh.map.find(query);
+  if (iter == sh.map.end())
+    return (const string *)0;
+  return &(*iter).second;
 }
 
 uint8 SnapshotStore::count(void) const
 
 {
-  std::shared_lock<std::shared_mutex> guard(lock);
-  return global.size() + scoped.size();
+  uint8 total = 0;
+  for(size_t i=0;i<SHARDS;++i) {
+    {
+      const Shard &sh(global[i]);
+      std::shared_lock<std::shared_mutex> guard(sh.lock);
+      total += sh.map.size();
+    }
+    {
+      const Shard &sh(scoped[i]);
+      std::shared_lock<std::shared_mutex> guard(sh.lock);
+      total += sh.map.size();
+    }
+  }
+  return total;
 }
 
 uint8 SnapshotStore::size(void) const
 
 {
-  std::shared_lock<std::shared_mutex> guard(lock);
   return bytes;
 }
 
@@ -144,15 +209,15 @@ SnapshotChannel::InBuf::int_type SnapshotChannel::InBuf::underflow(void)
   if (gptr() < egptr())
     return traits_type::to_int_type(*gptr());
   owner->answerNext();
-  char *b = &cur[0];
-  setg(b,b,b + cur.size());
+  if (gptr() >= egptr())
+    return traits_type::eof();
   return traits_type::to_int_type(*gptr());
 }
 
 /// The pending query is the last QUERY_OPEN ... QUERY_CLOSE block of the output (a packed
 /// payload has no zero bytes, so the last QUERY_OPEN is its start). It is cut from the output,
 /// which then holds only what the client would read as the command response. A stored response
-/// is fed back as is; a miss is recorded and answered with an exception, so the decompiler unwinds
+/// is read in place; a miss is recorded and answered with an exception, so the decompiler unwinds
 /// exactly as for an exception thrown by the Java client. Never returns an empty response: the
 /// ArchitectureGhidra readers exit the process at end of input.
 void SnapshotChannel::answerNext(void)
@@ -161,32 +226,35 @@ void SnapshotChannel::answerNext(void)
   string &d(outbuf.data);
   size_t pos = d.rfind(QUERY_OPEN);
   bool ok = false;
-  string payload;
   if (pos != string::npos && d.size() >= pos + 16 &&
       d.compare(pos + 4,4,STRING_OPEN) == 0 &&
       d.compare(d.size() - 8,4,STRING_CLOSE) == 0 &&
       d.compare(d.size() - 4,4,QUERY_CLOSE) == 0) {
-    payload = d.substr(pos + 8,d.size() - pos - 16);
+    payload.assign(d,pos + 8,d.size() - pos - 16);
     d.resize(pos);
     ok = true;
   }
   if (!ok) {
     protocolError = true;
-    inbuf.cur = exceptionResponse("alignment","snapshot channel: read with no pending query");
+    inbuf.set(exceptionResponse("alignment","snapshot channel: read with no pending query"));
     return;
   }
-  if (store->find(scope,payload,inbuf.cur)) {
+  const string *resp = store->find(scope,payload,keybuf);
+  if (resp != (const string *)0) {
     answered += 1;
-    if (!inbuf.cur.empty())
+    if (!resp->empty()) {
+      inbuf.set(resp->data(),resp->size());
       return;
+    }
   }
   misses.push_back(payload);
-  if (misses.size() <= MAX_SPECULATED && speculate(payload,inbuf.cur)) {
-    fed.push_back(inbuf.cur);
+  if (misses.size() <= MAX_SPECULATED && speculate(payload,inbuf.owned)) {
+    fed.push_back(inbuf.owned);
+    inbuf.set(inbuf.owned.data(),inbuf.owned.size());
     return;
   }
   fed.push_back(string());
-  inbuf.cur = exceptionResponse(MISS_TYPE,"query not in the program snapshot");
+  inbuf.set(exceptionResponse(MISS_TYPE,"query not in the program snapshot"));
 }
 
 /// The command element id of a packed query payload (PackedEncode::writeHeader), or -1
@@ -350,6 +418,11 @@ string SnapshotArchitecture::registerHost(void)
   }
   if (!channel.getMisses().empty())
     return "missed queries";
+  // DecompInterface.toggleSyntaxTree(false): the session's pooled decompilers are text-only
+  // (ProgramEntry.DECOMPILER_SYNTAX_TREE = false), so the command that would send a syntax tree
+  // and high variables is off here too. Sending it would encode, copy through the store and decode
+  // in Java a tree that this path never reads, only to throw it away; the C markup is identical.
+  setSendSyntaxTree(false);
   registered = true;
   channel.setSpaces(this);
   return "";
@@ -702,6 +775,19 @@ extern "C" int hydra_snapshot_store_put(void *h,const char *scope,size_t scopele
   try {
     std::shared_ptr<SnapshotStore> &st(*(std::shared_ptr<SnapshotStore> *)h);
     st->put(string(scope,scopelen),string(query,querylen),string(resp,resplen));
+    return 0;
+  }
+  catch(...) {
+    return 1;
+  }
+}
+
+extern "C" int hydra_snapshot_store_put_bulk(void *h,const char *blob,size_t len)
+
+{
+  try {
+    std::shared_ptr<SnapshotStore> &st(*(std::shared_ptr<SnapshotStore> *)h);
+    st->putBulk(blob,len);
     return 0;
   }
   catch(...) {
