@@ -26,6 +26,7 @@ import java.util.regex.Pattern;
 
 import com.google.gson.*;
 
+import ghidra.util.Msg;
 import ghidra.util.exception.*;
 
 /**
@@ -254,7 +255,11 @@ final class Access {
 			boolean needOwner, ProgramWork work) {
 		ProgramEntry e = selected(c, req);
 		ProjectEntry p = e.project;
+		boolean timing = Settings.bool("editTiming", false) &&
+			(cmd.equals("edit") || cmd.equals("rename") || cmd.equals("comment"));
+		long t0 = timing ? System.nanoTime() : 0;
 		Lock pl = lockProject(p, false, waitMs(req), cmd);
+		long t1 = timing ? System.nanoTime() : 0;
 		// while an analysis runs, and already while it queues for the program (the fair lock makes a
 		// reader that arrives behind it wait for all of it), a protocol 3 reader is told "analyzing" at
 		// once (BP5, 3.13). Marked only for a caller that may analyse (an unlocked look; the check
@@ -268,6 +273,7 @@ final class Access {
 		}
 		try {
 			Lock l = e.acquire(exclusive, waitMs(req), c, cmd);
+			long t2 = timing ? System.nanoTime() : 0;
 			try {
 				if (e.program == null) {
 					throw new SessionException(SessionException.NO_PROGRAM, e.key + " was closed");
@@ -288,6 +294,10 @@ final class Access {
 					ex.getClass().getSimpleName() + ": " + ex.getMessage(), null, ex);
 			}
 			finally {
+				if (timing) {
+					Msg.info(this, cmd + " locks us: project " + (t1 - t0) / 1000 + ", program " +
+						(t2 - t1) / 1000 + ", work " + (System.nanoTime() - t2) / 1000);
+				}
 				if (mark != null) {
 					e.analysisEnds(mark); // before the lock is free: no reader is told after it ended
 				}
