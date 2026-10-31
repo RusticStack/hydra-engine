@@ -178,15 +178,36 @@ public class LinkedByteBuffer {
 	private String description;		// Describes source of bytes for use in error messages
 
 	public LinkedByteBuffer(long max, String desc) {
+		this(max, desc, null);
+	}
+
+	/**
+	 * @param max is the maximum number of bytes that can be cached
+	 * @param desc describes the source of the bytes
+	 * @param firstPage is a page of {@link #BUFFER_SIZE} bytes to use as the first page (its
+	 *            contents are not read before they are written), or null for a new one. Hydra:
+	 *            the decompiler bridge decodes a few hundred streams per decompile, each of which
+	 *            allocated a kilobyte page; {@link PackedDecode} hands the last one's page on.
+	 */
+	public LinkedByteBuffer(long max, String desc, byte[] firstPage) {
 		initialBuffer = new ArrayIter();
 		currentBuffer = initialBuffer;
 		byteCount = 0;
 		currentPos = 0;
 		maxCount = max;
-		initialBuffer.array = new byte[BUFFER_SIZE];
+		initialBuffer.array =
+			firstPage != null && firstPage.length == BUFFER_SIZE ? firstPage : new byte[BUFFER_SIZE];
 		initialBuffer.length = BUFFER_SIZE;
 		initialBuffer.next = null;
 		description = desc;
+	}
+
+	/**
+	 * @return the first page, which a later buffer may be given to reuse once this one is no
+	 *         longer read
+	 */
+	byte[] firstPage() {
+		return initialBuffer.array;
 	}
 
 	/**

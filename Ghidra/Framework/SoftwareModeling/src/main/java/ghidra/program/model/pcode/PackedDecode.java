@@ -79,6 +79,7 @@ public class PackedDecode implements Decoder, Closeable {
 	private AddressFactory addrFactory;
 	protected AddressSpace[] spaces;
 	private LinkedByteBuffer inStream;
+	private byte[] sparePage;	// the first page of the last stream, kept for the next one
 	private Position startPos;
 	private Position curPos;
 	private Position endPos;
@@ -207,12 +208,21 @@ public class PackedDecode implements Decoder, Closeable {
 
 	@Override
 	public void clear() {
+		keepPage();
 		inStream = null;
+	}
+
+	private void keepPage() {
+		if (inStream != null) {
+			sparePage = inStream.firstPage();
+		}
 	}
 
 	@Override
 	public void open(long max, String desc) {
-		inStream = new LinkedByteBuffer(max, desc);
+		byte[] page = sparePage;
+		sparePage = null;
+		inStream = new LinkedByteBuffer(max, desc, page);
 		startPos = inStream.allocatePosition();
 		curPos = inStream.allocatePosition();
 		endPos = inStream.allocatePosition();
@@ -225,6 +235,7 @@ public class PackedDecode implements Decoder, Closeable {
 	@Override
 	public void close() throws IOException {
 		inStream.close();
+		keepPage();
 		inStream = null;
 	}
 
