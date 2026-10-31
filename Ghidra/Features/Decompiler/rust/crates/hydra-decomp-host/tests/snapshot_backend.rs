@@ -26,6 +26,8 @@ fn store(pspec: &str) -> *mut std::ffi::c_void {
             0,
             std::ptr::null(),
             0,
+            std::ptr::null(),
+            0,
         )
     }
 }

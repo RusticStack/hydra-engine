@@ -179,6 +179,7 @@ public:
   Sleigh(LoadImage *ld,ContextDatabase *c_db);		///< Constructor
   virtual ~Sleigh(void);				///< Destructor
   void reset(LoadImage *ld,ContextDatabase *c_db);	///< Reset the engine for a new program
+  void buildCaches(void);				///< Build the parse caches for the current loader and context
   virtual void initialize(DocumentStorage &store);
   virtual void registerContext(const string &name,int4 sbit,int4 ebit);
   virtual void setContextDefault(const string &nm,uintm val);

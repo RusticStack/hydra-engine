@@ -545,6 +545,16 @@ void Sleigh::initialize(DocumentStorage &store)
   }
   else
     reregisterContext();
+  buildCaches();
+}
+
+/// Prepare the caches a parse needs. Called by initialize() (after the .sla is decoded or its
+/// context variables re-registered) and by a client that reset() the engine to another program
+/// whose context database already holds the variables: the parse caches must not outlive the
+/// loader and context they were built for.
+void Sleigh::buildCaches(void)
+
+{
   uint4 parser_cachesize = 2;
   uint4 parser_windowsize = 32;
   if ((maxdelayslotbytes > 1)||(unique_allocatemask != 0)) {

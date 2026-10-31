@@ -19,14 +19,19 @@ import static ghidra.program.model.pcode.AttributeId.*;
 import static ghidra.program.model.pcode.ElementId.*;
 
 import java.io.*;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
 
 import generic.jar.ResourceFile;
+import ghidra.app.plugin.processors.sleigh.SleighInstructionPrototype;
 import ghidra.app.plugin.processors.sleigh.SleighLanguage;
 import ghidra.app.plugin.processors.sleigh.SleighLanguageDescription;
+import ghidra.app.plugin.processors.sleigh.SleighLanguageFile;
 import ghidra.app.plugin.processors.sleigh.UniqueLayout;
 import ghidra.program.model.address.Address;
+import ghidra.program.model.address.AddressRange;
+import ghidra.program.model.address.AddressRangeIterator;
 import ghidra.program.model.lang.*;
 import ghidra.program.model.listing.*;
 import ghidra.program.model.pcode.*;
@@ -129,8 +134,161 @@ public class DecompileSnapshot {
 		this.callback = new DecompileCallback(program, language, spec, dtmanage);
 	}
 
+	/** {@code -Dhydra.decomp.host.native=false}: no native instruction translation (diagnostics). */
+	private static final boolean NATIVE_OFF =
+		"false".equalsIgnoreCase(System.getProperty("hydra.decomp.host.native", "true"));
+
 	public Program getProgram() {
 		return program;
+	}
+
+	/**
+	 * The file of the language's compiled SLEIGH tables: the native decompile host parses it to
+	 * translate instructions itself instead of asking for their p-code.
+	 * @return the .sla file, or null when the language has none (no native translation)
+	 */
+	public String slaFile() {
+		if (NATIVE_OFF) {
+			return null;		// diagnostics: the Java p-code answers serve every instruction
+		}
+		SleighLanguageDescription description = language.getLanguageDescription();
+		SleighLanguageFile file = description.getLanguageFile();
+		if (file == null) {
+			return null;
+		}
+		ResourceFile sla = file.getSlaFile();
+		if (sla == null || !sla.isFile()) {
+			return null;
+		}
+		return sla.getAbsolutePath();
+	}
+
+	/**
+	 * The program context register of the generation, as the native translator needs it: the
+	 * register's default value and the address ranges where it changes. The host decodes every
+	 * instruction with the context the program has at its address, so one export serves the
+	 * whole generation (and not one blob per instruction).
+	 * @return the packed export, or null when the language has no context register
+	 */
+	public byte[] contextExport() {
+		Register register = language.getContextBaseRegister();
+		if (register == null) {
+			return null;
+		}
+		int words = (register.getMinimumByteSize() + 3) / 4;
+		ProgramContext pc = program.getProgramContext();
+		try {
+			java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream(64 + words * 4);
+			writeInt(out, words);
+			int[] def = contextWords(pc.getDefaultValue(register, program.getMinAddress()), words);
+			for (int w : def) {
+				writeInt(out, w);
+			}
+			List<AddressRange> ranges = new ArrayList<>();
+			for (AddressRangeIterator it = pc.getRegisterValueAddressRanges(register); it
+					.hasNext();) {
+				ranges.add(it.next());
+			}
+			writeInt(out, ranges.size());
+			for (AddressRange range : ranges) {
+				byte[] name = range.getMinAddress().getAddressSpace().getName().getBytes();
+				writeInt(out, name.length);
+				out.write(name);
+				writeLong(out, range.getMinAddress().getOffset());
+				writeLong(out, range.getMaxAddress().getOffset());
+				int[] value =
+					contextWords(pc.getRegisterValue(register, range.getMinAddress()), words);
+				for (int w : value) {
+					writeInt(out, w);
+				}
+			}
+			return out.toByteArray();
+		}
+		catch (IOException e) {
+			return null;
+		}
+	}
+
+	/**
+	 * True when the native host may decode {@code in} itself: its p-code is then the Java
+	 * translator's p-code for the same bytes and context, and the Java side adds nothing. A p-code
+	 * or flow override, a delay slot, a non-SLEIGH prototype or a call reference away from the
+	 * instruction's own flow make the Java p-code differ, so those instructions are answered here.
+	 * @param in the instruction
+	 * @param overriding true when the instruction has a reference whose type is an override
+	 * @param callRefs the primary call reference targets of the instruction (null when none)
+	 * @param flows the instruction's own flow targets
+	 * @return true when the host decodes the instruction
+	 */
+	public boolean nativeDecodable(Instruction in, boolean overriding, List<Address> callRefs,
+			Address[] flows) {
+		if (overriding || !(in.getPrototype() instanceof SleighInstructionPrototype p) ||
+			p.getDelaySlotByteCount() > 0) {
+			return false;
+		}
+		if (in.getFlowOverride() != FlowOverride.NONE || in.isLengthOverridden()) {
+			return false;
+		}
+		Address fallThrough = in.getFallThrough();
+		if (fallThrough != null && !fallThrough.equals(in.getDefaultFallThrough())) {
+			return false;
+		}
+		if (callRefs != null && flows != null) {
+			// PcodeEmitPacked rewrites a CALL's destination from the instruction's primary call
+			// reference; it changes nothing when that reference is the instruction's own flow.
+			for (Address ref : callRefs) {
+				boolean own = false;
+				for (Address flow : flows) {
+					if (ref.equals(flow)) {
+						own = true;
+						break;
+					}
+				}
+				if (!own) {
+					return false;
+				}
+			}
+		}
+		return true;
+	}
+
+	private static void writeInt(java.io.ByteArrayOutputStream out, int v) {
+		out.write(v);
+		out.write(v >>> 8);
+		out.write(v >>> 16);
+		out.write(v >>> 24);
+	}
+
+	private static void writeLong(java.io.ByteArrayOutputStream out, long v) {
+		writeInt(out, (int) v);
+		writeInt(out, (int) (v >>> 32));
+	}
+
+	/**
+	 * The SLEIGH context words of a context register value, laid out as
+	 * {@code ContextCache.getWords} lays them out.
+	 * @param registerValue the register value (null for none)
+	 * @param words the number of words
+	 * @return the big-endian words
+	 */
+	private static int[] contextWords(RegisterValue registerValue, int words) {
+		if (registerValue == null) {
+			return new int[words];
+		}
+		BigInteger value = registerValue.getUnsignedValueIgnoreMask();
+		int[] res = new int[words];
+		byte[] bytes = value.toByteArray();
+		int diff = words * 4 - bytes.length;
+		for (int i = 0; i < words; i++) {
+			int at = 4 * i - diff;
+			int word = at < 0 || at >= bytes.length ? 0 : bytes[at] & 0xff;
+			for (int j = 1; j < 4; j++) {
+				int k = at + j;
+				word = (word << 8) | (k < 0 || k >= bytes.length ? 0 : bytes[k] & 0xff);
+			}
+			res[i] = word;
+		}
+		return res;
 	}
 
 	/**
@@ -363,6 +521,23 @@ public class DecompileSnapshot {
 	}
 
 	/**
+	 * The query for data type {@code name} with decompiler id {@code id}
+	 * ({@code ArchitectureGhidra::getDataType}).
+	 * @param name the type name the decompiler knows it by
+	 * @param id the id that names it in a {@code <typeref>} element
+	 * @return the packed query payload
+	 * @throws IOException for encoding errors
+	 */
+	public static byte[] queryDataType(String name, long id) throws IOException {
+		PatchPackedEncode enc = newEncoder();
+		enc.openElement(ELEM_COMMAND_GETDATATYPE);
+		enc.writeString(ATTRIB_NAME, name);
+		enc.writeSignedInteger(ATTRIB_ID, id);
+		enc.closeElement(ELEM_COMMAND_GETDATATYPE);
+		return bytes(enc);
+	}
+
+	/**
 	 * The query for the comments of the function at {@code addr} ({@code ArchitectureGhidra::getComments};
 	 * {@code flags} is the comment filter of the options, the same for every function).
 	 * @param addr the function entry
@@ -427,8 +602,12 @@ public class DecompileSnapshot {
 					b.append(" cu ").append(cu == null ? "-" : cu.getMinAddress() + " " + cu);
 					break;
 				}
-				case COMMAND_GETDATATYPE, COMMAND_GETREGISTER, COMMAND_GETCALLFIXUP,
-						COMMAND_GETCALLOTHERFIXUP, COMMAND_GETCALLMECH:
+				case COMMAND_GETDATATYPE:
+					b.append(" name ").append(dec.readString(ATTRIB_NAME));
+					b.append(" id 0x").append(Long.toHexString(dec.readSignedInteger(ATTRIB_ID)));
+					break;
+				case COMMAND_GETREGISTER, COMMAND_GETCALLFIXUP, COMMAND_GETCALLOTHERFIXUP,
+						COMMAND_GETCALLMECH:
 					b.append(" name ").append(dec.readString(ATTRIB_NAME));
 					break;
 				default:
