@@ -9,6 +9,7 @@
 Module.manifest||GHIDRA||||END|
 README.md||GHIDRA||||END|
 data/decompiler.theme.properties||GHIDRA||||END|
+pgo/build_decompile.py||GHIDRA||||END|
 rust/.cargo/config.toml||GHIDRA||||END|
 rust/Cargo.lock||GHIDRA||||END|
 rust/Cargo.toml||GHIDRA||||END|
