@@ -1463,6 +1463,27 @@ class Labelled:
 HELLO_DEADLINE_S = 5.0
 
 
+def _dial(host: str, port: int, timeout: float | None):
+    """A connected TCP socket to a session. A literal address (what a daemon's endpoint file
+    holds) is connected on a blocking socket: on Windows CPython's timeout path connects
+    non-blocking and polls for writability, and about a fifth of loopback connects then wait for
+    the next system timer tick (~15.5 ms, measured); a blocking connect returns at once. The
+    socket handed back is the same either way (the caller clears the timeout right after), and a
+    host name keeps ``create_connection``, which bounds every attempt by ``timeout``."""
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    try:
+        socket.inet_pton(family, host)
+    except (OSError, ValueError):
+        return socket.create_connection((host, port), timeout=timeout)
+    s = socket.socket(family, socket.SOCK_STREAM)
+    try:
+        s.connect((host, port))
+    except OSError:
+        s.close()
+        raise
+    return s
+
+
 def _hello_left(end: float) -> float:
     """The deadline for one ``hello``: at most HELLO_DEADLINE_S, at least 0.5 s, and no more
     than what is left until the monotonic time ``end``. The 0.5 s floor is deliberate (a hello
@@ -1490,8 +1511,7 @@ class SocketSession(_Base):
         if not isinstance(endpoint, dict):
             endpoint = json.loads(Path(endpoint).read_text(encoding="utf-8"))
         self.endpoint = endpoint
-        self.sock = socket.create_connection((endpoint["host"], endpoint["port"]),
-                                             timeout=timeout)
+        self.sock = _dial(endpoint["host"], endpoint["port"], timeout)
         self.sock.settimeout(None)
         self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         # The library owns its reader: lines are cut from a byte buffer here, and a wait can be
