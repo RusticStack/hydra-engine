@@ -70,8 +70,16 @@ import ghidra.app.script.*;
  */
 final class ScriptClassCache {
 
-	static final boolean ENABLED =
+	private static final boolean PROPERTY =
 		!"false".equalsIgnoreCase(System.getProperty("hydra.script.classCache", "true"));
+
+	/**
+	 * {@code -Dhydra.script.classCache=false} or {@code -set scriptClassCache=false} (the setting
+	 * of daemon-async's former second cache, which this class replaced) turns it off.
+	 */
+	static boolean enabled() {
+		return PROPERTY && Settings.bool("scriptClassCache", true);
+	}
 
 	private static final int MAX_ENTRIES = 256;
 	/** A source directory larger than this is not fingerprinted (its walk would cost too much). */
@@ -81,6 +89,7 @@ final class ScriptClassCache {
 	private static final Map<String, Entry> CACHE = new ConcurrentHashMap<>();
 	private static final LongAdder HITS = new LongAdder();
 	private static final LongAdder MISSES = new LongAdder();
+	private static final LongAdder STALE = new LongAdder();
 	private static volatile BundleHost listening;
 
 	private ScriptClassCache() {
@@ -161,7 +170,7 @@ final class ScriptClassCache {
 
 	/** {@code health.scriptCache}: on, hits, misses and entries since start, and the run bound. */
 	static com.google.gson.JsonElement describe() {
-		return Json.of("enabled", ENABLED, "hits", HITS.sum(), "misses", MISSES.sum(), "entries",
+		return Json.of("enabled", enabled(), "hits", HITS.sum(), "misses", MISSES.sum(), "stale", STALE.sum(), "entries",
 			CACHE.size(), "runPermits", RUN_PERMITS, "runWaited", RUN_WAITED.sum(), "runOverflow",
 			RUN_OVERFLOW.sum());
 	}
@@ -171,7 +180,7 @@ final class ScriptClassCache {
 	 * (the caller then loads it the usual way). Never throws: anything unexpected is a miss.
 	 */
 	static GhidraScript instance(ResourceFile src) {
-		if (!ENABLED) {
+		if (!enabled()) {
 			return null;
 		}
 		String key = src.getAbsolutePath();
@@ -186,6 +195,7 @@ final class ScriptClassCache {
 				!valid(host, e) || !e.binStat.equals(statOf(e.binManifest)) ||
 				!e.stats.equals(stats(e.sourceDir))) {
 				CACHE.remove(key, e);
+				STALE.increment();
 				MISSES.increment();
 				return null;
 			}
@@ -216,7 +226,7 @@ final class ScriptClassCache {
 	 * null when it cannot be. Call it before the load.
 	 */
 	static Before before(ResourceFile src, GhidraScriptProvider provider) {
-		if (!ENABLED || !(provider instanceof JavaScriptProvider)) {
+		if (!enabled() || !(provider instanceof JavaScriptProvider)) {
 			return null;
 		}
 		try {

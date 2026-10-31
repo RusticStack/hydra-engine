@@ -74,6 +74,8 @@ final class ScriptCommands {
 				Preflight.register("script", ScriptCommands::validate);
 				// H4: the resolved-script cache's figures (an added member of health only)
 				Health.contribute("scriptCache", ScriptClassCache::describe);
+				// the same figures under the name of the cache this one replaced (one cache now)
+				Health.contribute("scriptClasses", ScriptClassCache::describe);
 			}
 		}
 	}
@@ -535,6 +537,31 @@ final class ScriptCommands {
 		return src;
 	}
 
+	/** The full way to load a script (bundle activation); the caller holds SCRIPT_COMPILE. */
+	private static GhidraScript loadScript(ResourceFile src, PrintWriter pw, StringWriter sw) {
+		GhidraScriptProvider provider = GhidraScriptUtil.getProvider(src);
+		if (provider == null) {
+			throw new SessionException(SessionException.BAD_REQUEST,
+				"no script provider for " + src.getName());
+		}
+		ScriptClassCache.Before before = ScriptClassCache.before(src, provider);
+		GhidraScript s;
+		try {
+			s = provider.getScriptInstance(src, pw);
+		}
+		catch (Exception ex) {
+			pw.flush();
+			throw new SessionException(SessionException.FAILED,
+				"script did not load: " + ex.getMessage(), Json.of("output", sw.toString()), ex);
+		}
+		pw.flush();
+		if (sw.getBuffer().length() == 0) {
+			// a load that printed nothing (no build messages): the same on a hit
+			ScriptClassCache.remember(src, provider, before, s);
+		}
+		return s;
+	}
+
 	/**
 	 * Runs the script. {@code mode} is {@code owner}, {@code contained}, {@code private} or
 	 * {@code none} (the reply's {@code mode}); {@code isolation} is what a protocol 3 reply says
@@ -547,35 +574,17 @@ final class ScriptCommands {
 		int cap = (int) Json.num(req, "maxChars", DEFAULT_TEXT_CAP, 1, MAX_TEXT_CAP);
 		StringWriter sw = new StringWriter();
 		PrintWriter pw = new PrintWriter(sw, true);
-		ScriptClasses.Lookup look = ScriptClasses.lookup(src);
-		GhidraScript s = look.instance();
-		if (s == null) {
-			// H4: an unchanged script that loaded cleanly before needs no bundle activation; the
-			// hit takes no lock (ScriptClassCache says when an entry is valid)
-			s = ScriptClassCache.instance(src);
-		}
+		// H4: an unchanged script that loaded cleanly before needs no bundle activation; the hit
+		// takes no lock (ScriptClassCache says when an entry is valid)
+		GhidraScript s = ScriptClassCache.instance(src);
 		if (s == null) {
 			synchronized (SCRIPT_COMPILE) {
-				GhidraScriptProvider provider = GhidraScriptUtil.getProvider(src);
-				if (provider == null) {
-					throw new SessionException(SessionException.BAD_REQUEST,
-						"no script provider for " + src.getName());
-				}
-				ScriptClassCache.Before before = ScriptClassCache.before(src, provider);
-				try {
-					s = provider.getScriptInstance(src, pw);
-				}
-				catch (Exception ex) {
-					pw.flush();
-					throw new SessionException(SessionException.FAILED,
-						"script did not load: " + ex.getMessage(), Json.of("output", sw.toString()),
-						ex);
-				}
-				look.remember(provider, s);
-				pw.flush();
-				if (sw.getBuffer().length() == 0) {
-					// a load that printed nothing (no build messages): the same on a hit
-					ScriptClassCache.remember(src, provider, before, s);
+				// Hydra: callers that queued here while another one loaded the same script find it
+				// now; each of them used to repeat the whole bundle activation in turn (a burst of
+				// agents' first calls)
+				s = ScriptClassCache.instance(src);
+				if (s == null) {
+					s = loadScript(src, pw, sw);
 				}
 			}
 		}

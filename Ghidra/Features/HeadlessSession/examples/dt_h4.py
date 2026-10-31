@@ -60,9 +60,9 @@ BROKEN = """public class H4Broken$SFX {
 """
 
 
-#: daemon-async's ScriptClasses (scriptClassCache) answers a repeat run first; off here so H4's
-#: ScriptClassCache (-Dhydra.script.classCache) is what these tests measure
-H4 = {"scriptClassCache": "false"}
+#: there is one script class cache now (daemon-async's ScriptClasses was folded into
+#: ScriptClassCache); the default engine settings are what these tests measure
+H4 = {}
 
 def _write(path, text):
     """Writes ``text`` and makes sure the modification time moves (a coarse clock could leave an
