@@ -28,6 +28,7 @@ import com.google.gson.JsonElement;
 
 import ghidra.framework.Application;
 import ghidra.util.Msg;
+import ghidra.util.cpu.HydraCpu;
 
 /**
  * The Rust read plane ({@code hydra_rp_*} in {@code hydra_native}, module HydraNative): immutable
@@ -325,8 +326,11 @@ final class ReadPlane {
 				MemorySegment.copy(cb, 0, needle, ValueLayout.JAVA_BYTE, 0, cb.length);
 				needleLen = cb.length;
 			}
-			// a first guess that fits most pages: about 110 bytes a row
-			long cap = Math.min(16L << 20, 256 + 112L * Math.min(limit, 20_000));
+			// a first guess that fits most pages: about 110 bytes a row. A CPU tuning profile
+			// may raise it for a data path whose pages are larger (0 there keeps this guess).
+			long cap = Math.min(16L << 20,
+				HydraCpu.profile().readBufferBytes((int) Math.min(16L << 20,
+					256 + 112L * Math.min(limit, 20_000))));
 			MemorySegment out = a.allocate(cap);
 			long len = (long) ftPage.invokeExact(t.handle, needle, needleLen, (long) offset,
 				(long) limit, out, cap);

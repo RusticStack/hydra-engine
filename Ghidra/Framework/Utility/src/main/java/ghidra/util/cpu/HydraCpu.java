@@ -35,8 +35,9 @@ import java.util.function.Predicate;
  * {@code hydra.cpu.profile}) is {@code generic}, {@code auto} (the default) or a profile name.
  * {@code auto} picks the first entry of {@link #AUTO_PROFILES} whose matcher accepts the detected
  * CPU, else {@code generic}. A profile joins {@link #AUTO_PROFILES} only with measured before/after
- * numbers; until then it is selectable by name only ({@link #PROFILES}). A profile changes performance knobs only (pool size per core class and
- * thread placement), never results. The generic profile places no thread.
+ * numbers; until then it is selectable by name only ({@link #PROFILES}). A profile changes
+ * performance knobs only (thread placement, pool sizes, batch and buffer sizes), never results. The
+ * generic profile places no thread and keeps the generic pool sizing.
  * <p>
  * <b>Placement</b> ({@link #place(Role)}): on a hybrid CPU (more than one efficiency class) under
  * a profile that asks for it, a {@link Role#LATENCY} thread (daemon request handling) selects
@@ -49,12 +50,18 @@ import java.util.function.Predicate;
  * core class. Machines with more than one processor group are never treated as hybrid. Elsewhere (other OS, non-hybrid CPU, no native access, virtual thread) it is a
  * no-op.
  * <p>
- * The native layer is {@code java.lang.foreign} against kernel32 and is used only when this
- * module has native access ({@code --enable-native-access}; every Ghidra launch sets it through
- * {@code support/launch.properties}, so the GUI and analyzeHeadless detect granted CPUs too;
- * {@code -Dhydra.cpu.noNative=true} turns it off); without it every answer comes from the JVM ({@code availableProcessors}, no placement). When
- * the Rust {@code hydra-native} library (rust/p1-native-core) ships a loadable FFM entry point
- * it can replace {@link Native} behind the same methods.
+ * <b>Facts</b> ({@link Cpu#facts()}): CPUID identity (vendor, family, model, stepping), the SIMD
+ * level, the cache groups and the memory limit come from the native library
+ * ({@code ghidra.util.HydraCpu}, module HydraNative, through the foreign function API). A profile
+ * may use them (the first, {@code raptorlake-hybrid}, matches the CPUID model and the hybrid
+ * classes). Without the library the identity falls back to the OS' {@code PROCESSOR_IDENTIFIER}
+ * and the facts stay unknown.
+ * <p>
+ * The Windows CPU-set layer is {@code java.lang.foreign} against kernel32 and is used only when
+ * this module has native access ({@code --enable-native-access}; every Ghidra launch sets it
+ * through {@code support/launch.properties}, so the GUI and analyzeHeadless detect granted CPUs
+ * too; {@code -Dhydra.cpu.noNative=true} turns it off); without it every answer comes from the JVM
+ * ({@code availableProcessors}, no placement).
  * <p>
  * Adding a profile: see {@code docs/cpu-profiles.md} (a {@link Profile} entry, a matcher, and
  * before/after numbers from {@code Ghidra/Features/HeadlessSession/examples/cpu_bench.py}).
@@ -74,6 +81,49 @@ public final class HydraCpu {
 		BACKGROUND
 	}
 
+	/** The widest SIMD level the CPU and the OS both support (CPUID, from the native library). */
+	public enum Simd {
+		/** SSE2, or not an x86-64 CPU (also the value without the native library). */
+		BASELINE,
+		/** SSE4.2 and POPCNT. */
+		SSE4_2,
+		/** AVX2, FMA, BMI1 and BMI2 (x86-64-v3). */
+		AVX2,
+		/** AVX-512 F, CD, BW, DQ and VL (x86-64-v4). */
+		AVX512
+	}
+
+	/**
+	 * The facts about the CPU that do not affect its core classes: what CPUID reports, the cache
+	 * topology and the memory the process may use. They come from the native library
+	 * ({@code ghidra.util.HydraCpu}); a profile may use them, and {@link #report()} shows them.
+	 *
+	 * @param stepping the CPUID stepping
+	 * @param simd the SIMD level the CPU and the OS both support
+	 * @param llcGroups the last-level cache groups with a granted CPU
+	 * @param l2Groups the L2 cache groups with a granted CPU (0 when unknown)
+	 * @param memoryLimit the bytes the process may use: a job object or cgroup memory limit, else
+	 *            the machine's memory (0 when unknown)
+	 */
+	public record Facts(int stepping, Simd simd, int llcGroups, int l2Groups, long memoryLimit) {
+
+		/** The values without CPUID: a synthetic CPU, or the JVM's fallback. */
+		public static final Facts UNKNOWN = new Facts(0, Simd.BASELINE, 1, 0, 0);
+
+		/** The facts of the native library's report. */
+		public static Facts of(ghidra.util.HydraCpu nativeCpu) {
+			Simd simd = switch (nativeCpu.getSimdLevel()) {
+				case SSE4_2 -> Simd.SSE4_2;
+				case AVX2 -> Simd.AVX2;
+				case AVX512 -> Simd.AVX512;
+				default -> Simd.BASELINE;
+			};
+			return new Facts(nativeCpu.getStepping(), simd,
+				Math.max(1, nativeCpu.getLastLevelCacheGroups()), Math.max(0, nativeCpu.getL2Groups()),
+				Math.max(0, nativeCpu.getMemoryLimit()));
+		}
+	}
+
 	/**
 	 * The detected CPU: identity from CPUID as the OS reports it, and its core classes.
 	 *
@@ -87,13 +137,84 @@ public final class HydraCpu {
 	 * @param efficiencyIds the CPU set ids of the lower efficiency classes the process may use
 	 *            (empty when not hybrid)
 	 * @param source where the facts came from ("windows-cpusets" or "jvm")
+	 * @param facts CPUID, cache and memory facts
 	 */
 	public record Cpu(String vendor, int family, int model, int systemCpus, int grantedCpus,
-			int[] performanceIds, int[] efficiencyIds, String source) {
+			int[] performanceIds, int[] efficiencyIds, String source, Facts facts) {
+
+		/**
+		 * A CPU without the CPUID/cache/memory facts (a synthetic CPU in tests, or a machine where
+		 * the native library is not available).
+		 */
+		public Cpu(String vendor, int family, int model, int systemCpus, int grantedCpus,
+				int[] performanceIds, int[] efficiencyIds, String source) {
+			this(vendor, family, model, systemCpus, grantedCpus, performanceIds, efficiencyIds,
+				source, Facts.UNKNOWN);
+		}
 
 		/** @return true when the process may use cores of more than one efficiency class */
 		public boolean hybrid() {
 			return performanceIds.length > 0 && efficiencyIds.length > 0;
+		}
+
+		/** @return the CPUID stepping. */
+		public int stepping() {
+			return facts.stepping();
+		}
+
+		/** @return the SIMD level the CPU and the OS both support. */
+		public Simd simd() {
+			return facts.simd();
+		}
+
+		/** @return the last-level cache groups with a granted CPU. */
+		public int llcGroups() {
+			return facts.llcGroups();
+		}
+
+		/** @return the L2 cache groups with a granted CPU (0 when unknown). */
+		public int l2Groups() {
+			return facts.l2Groups();
+		}
+
+		/** @return the bytes the process may use (0 when unknown). */
+		public long memoryLimit() {
+			return facts.memoryLimit();
+		}
+	}
+
+	/**
+	 * The pool, batch and buffer sizes of a profile.
+	 * <p>
+	 * A zero means "the generic sizing": the analysis pool keeps the JVM-derived default (with the
+	 * pool cap), the decompiler gate takes every granted CPU (lowered by the native memory budget),
+	 * the decompiler pipeline keeps its built-in window, and a reply buffer keeps the size its call
+	 * computes. A positive value is the profile's own; it can only remove work or move it to the
+	 * right cores, never change a result.
+	 *
+	 * @param analysisShare the share (0..1] of the granted CPUs the analysis pool uses, or 0
+	 * @param decompilerShare the share (0..1] of the granted CPUs native decompilers run at once
+	 *            on, or 0 for every granted CPU
+	 * @param batchWindow functions the decompiler pipeline may hold per worker, or 0
+	 * @param readBufferBytes first size of a reply page buffer, or 0
+	 */
+	public record Pools(double analysisShare, double decompilerShare, int batchWindow,
+			int readBufferBytes) {
+
+		/** Every knob at the generic sizing. */
+		public static final Pools DEFAULT = new Pools(0, 0, 0, 0);
+
+		private static int share(Cpu cpu, double share) {
+			return Math.max(1, Math.min(cpu.grantedCpus(),
+				(int) Math.ceil(cpu.grantedCpus() * Math.min(1.0, Math.max(0.0, share)))));
+		}
+
+		int analysisThreads(Cpu cpu) {
+			return analysisShare <= 0 ? 0 : share(cpu, analysisShare);
+		}
+
+		int decompilerThreads(Cpu cpu) {
+			return decompilerShare <= 0 ? 0 : share(cpu, decompilerShare);
 		}
 	}
 
@@ -106,10 +227,18 @@ public final class HydraCpu {
 	 * @param latencyShare the share (0..1] of the performance-class CPUs that latency threads may
 	 *            be placed on at once (the budget); the rest of the latency threads run unplaced
 	 * @param backgroundShare the same for background threads on the efficiency-class CPUs
+	 * @param pools the pool, batch and buffer sizes (see {@link Pools})
 	 * @param description one line for reports
 	 */
 	public record Profile(String name, Predicate<Cpu> matches, boolean placeThreads,
-			double latencyShare, double backgroundShare, String description) {
+			double latencyShare, double backgroundShare, Pools pools, String description) {
+
+		/** A profile that changes placement only; every pool keeps the generic sizing. */
+		public Profile(String name, Predicate<Cpu> matches, boolean placeThreads,
+				double latencyShare, double backgroundShare, String description) {
+			this(name, matches, placeThreads, latencyShare, backgroundShare, Pools.DEFAULT,
+				description);
+		}
 
 		/**
 		 * The default CPU-bound pool size: granted CPUs + 1 (Java Concurrency in Practice). The
@@ -134,6 +263,47 @@ public final class HydraCpu {
 		}
 
 		/**
+		 * The analysis pool size ({@code AutoAnalysisManager}'s shared pool).
+		 *
+		 * @param cpu the CPU
+		 * @return the size, or 0 for the generic default (the JVM's count with the pool cap)
+		 */
+		public int analysisThreads(Cpu cpu) {
+			return pools.analysisThreads(cpu);
+		}
+
+		/**
+		 * The concurrency of native decompilers ({@code DecompilerGate} permits), before the memory
+		 * budget lowers it.
+		 *
+		 * @param cpu the CPU
+		 * @return the concurrency, or 0 for the generic rule (every granted CPU)
+		 */
+		public int decompilerThreads(Cpu cpu) {
+			return pools.decompilerThreads(cpu);
+		}
+
+		/**
+		 * The number of functions the decompiler pipeline may hold per worker.
+		 *
+		 * @param genericDefault the generic default for the call
+		 * @return the batch size
+		 */
+		public int batchWindow(int genericDefault) {
+			return pools.batchWindow() > 0 ? pools.batchWindow() : genericDefault;
+		}
+
+		/**
+		 * The first size of a reply page buffer, for a data path that grows one.
+		 *
+		 * @param genericDefault the generic default for the call
+		 * @return the buffer size in bytes
+		 */
+		public int readBufferBytes(int genericDefault) {
+			return pools.readBufferBytes() > 0 ? pools.readBufferBytes() : genericDefault;
+		}
+
+		/**
 		 * @param cpu the CPU
 		 * @return how many background threads may be placed on efficiency cores at once
 		 */
@@ -153,6 +323,7 @@ public final class HydraCpu {
 		cpu -> "GenuineIntel".equals(cpu.vendor()) && cpu.family() == 6 &&
 			(cpu.model() == 0xB7 || cpu.model() == 0xBA || cpu.model() == 0xBF) && cpu.hybrid(),
 		true, 1.0, 1.0,
+		new Pools(1.0, 1.0, 0, 0),
 		"Intel Raptor Lake hybrid: request threads on P-cores, background work on E-cores");
 
 	/**
@@ -164,10 +335,10 @@ public final class HydraCpu {
 	/**
 	 * The profiles {@code auto} tries in order (the generic profile is the fallback, not listed).
 	 * A profile is added here only with before/after numbers from {@code cpu_bench.py} on a process
-	 * granted every core class of the CPU (docs/cpu-profiles.md). {@code raptorlake-hybrid} has none
-	 * yet, so it is selectable by name only and {@code auto} is generic everywhere.
+	 * granted every core class of the CPU (docs/cpu-profiles.md). {@code raptorlake-hybrid} ships
+	 * with the round-3 measurements in that document.
 	 */
-	public static final List<Profile> AUTO_PROFILES = List.of();
+	public static final List<Profile> AUTO_PROFILES = List.of(RAPTORLAKE_HYBRID);
 
 	/**
 	 * The selected profile and why.
@@ -388,6 +559,11 @@ public final class HydraCpu {
 		m.put("vendor", c.vendor());
 		m.put("family", c.family());
 		m.put("model", c.model());
+		m.put("stepping", c.stepping());
+		m.put("simd", c.simd().name().toLowerCase(Locale.ROOT));
+		m.put("llcGroups", c.llcGroups());
+		m.put("l2Groups", c.l2Groups());
+		m.put("memoryLimitMb", c.memoryLimit() >> 20);
 		m.put("systemCpus", c.systemCpus());
 		m.put("grantedCpus", c.grantedCpus());
 		m.put("performanceCpus", c.performanceIds().length);
@@ -398,6 +574,10 @@ public final class HydraCpu {
 		m.put("requested", s.requested());
 		m.put("reason", s.reason());
 		m.put("poolSize", s.profile().poolSize(c));
+		m.put("analysisThreads", s.profile().analysisThreads(c));
+		m.put("decompilerThreads", s.profile().decompilerThreads(c));
+		m.put("batchWindow", s.profile().batchWindow(0));
+		m.put("readBufferBytes", s.profile().readBufferBytes(0));
 		m.put("latencyBudget", s.profile().latencyBudget(c));
 		m.put("backgroundBudget", s.profile().backgroundBudget(c));
 		m.put("placedLatency", PLACED_LATENCY.get());
@@ -444,14 +624,19 @@ public final class HydraCpu {
 		int[] p16 = new int[16], e8 = new int[8];
 		Arrays.setAll(p16, i -> 256 + i);
 		Arrays.setAll(e8, i -> 272 + i);
-		Cpu rpl = new Cpu("GenuineIntel", 6, 0xB7, 24, 24, p16, e8, "test");
+		Facts rplFacts = new Facts(1, Simd.AVX2, 1, 8, 64L << 30);
+		Cpu rpl = new Cpu("GenuineIntel", 6, 0xB7, 24, 24, p16, e8, "test", rplFacts);
 		Cpu rplP = new Cpu("GenuineIntel", 6, 0xB7, 24, 16, p16, new int[0], "test");
 		Cpu amd = new Cpu("AuthenticAMD", 0x19, 0x61, 32, 32, new int[0], new int[0], "test");
 		Cpu quota = new Cpu("AuthenticAMD", 0x19, 0x61, 32, 4, new int[0], new int[0], "test");
 		chk(f, "the raptorlake-hybrid matcher accepts a hybrid Raptor Lake",
 			RAPTORLAKE_HYBRID.matches().test(rpl));
-		chk(f, "auto stays generic on a hybrid Raptor Lake until the profile is measured",
-			select("auto", rpl).profile() == GENERIC && !AUTO_PROFILES.contains(RAPTORLAKE_HYBRID));
+		chk(f, "auto selects raptorlake-hybrid on a hybrid Raptor Lake",
+			select("auto", rpl).profile() == RAPTORLAKE_HYBRID &&
+				AUTO_PROFILES.contains(RAPTORLAKE_HYBRID));
+		chk(f, "the detected facts are kept on the CPU",
+			rpl.simd() == Simd.AVX2 && rpl.llcGroups() == 1 && rpl.l2Groups() == 8 &&
+				rpl.memoryLimit() == (64L << 30));
 		chk(f, "the reason names the property when it chose",
 			select("generic", "-D" + PROPERTY, rpl).reason().startsWith("-D" + PROPERTY));
 		chk(f, "background threads up to the P-core count run unplaced",
@@ -467,6 +652,14 @@ public final class HydraCpu {
 			GENERIC.poolSize(rpl) == 25 && RAPTORLAKE_HYBRID.poolSize(rpl) == 25 &&
 				GENERIC.poolSize(quota) == 5);
 		chk(f, "generic places nothing", GENERIC.latencyBudget(rpl) == 0 && GENERIC.backgroundBudget(rpl) == 0);
+		chk(f, "generic keeps the pool sizing to the caller",
+			GENERIC.analysisThreads(rpl) == 0 && GENERIC.decompilerThreads(rpl) == 0 &&
+				GENERIC.batchWindow(4) == 4);
+		chk(f, "raptorlake sizes every granted CPU for analysis and decompilers",
+			RAPTORLAKE_HYBRID.analysisThreads(rpl) == 24 &&
+				RAPTORLAKE_HYBRID.decompilerThreads(rpl) == 24 &&
+				RAPTORLAKE_HYBRID.analysisThreads(quota) == 4 &&
+				RAPTORLAKE_HYBRID.decompilerThreads(quota) == 4);
 		chk(f, "raptorlake budgets are the class sizes",
 			RAPTORLAKE_HYBRID.latencyBudget(rpl) == 16 && RAPTORLAKE_HYBRID.backgroundBudget(rpl) == 8);
 		chk(f, "a forced profile places nothing on a non-hybrid CPU",
@@ -500,10 +693,20 @@ public final class HydraCpu {
 		String vendor = id[0];
 		int family = parseInt(id[1]);
 		int model = parseInt(id[2]);
+		Facts facts = Facts.UNKNOWN;
+		// CPUID, cache topology, memory limit and the SIMD level come from the native library
+		// (ghidra.util.HydraCpu); the OS' PROCESSOR_IDENTIFIER is the fallback for the identity.
+		ghidra.util.HydraCpu nativeCpu = ghidra.util.HydraCpu.get();
+		if (nativeCpu.isNative()) {
+			vendor = nativeCpu.getVendor();
+			family = nativeCpu.getFamily();
+			model = nativeCpu.getModel();
+			facts = Facts.of(nativeCpu);
+		}
 		int jvm = Math.max(1, Runtime.getRuntime().availableProcessors());
 		if (Native.available()) {
 			try {
-				Cpu c = Native.detect(vendor, family, model, jvm);
+				Cpu c = Native.detect(vendor, family, model, facts, jvm);
 				if (c != null) {
 					return c;
 				}
@@ -512,7 +715,7 @@ public final class HydraCpu {
 				// fall through to the JVM's answer
 			}
 		}
-		return new Cpu(vendor, family, model, jvm, jvm, new int[0], new int[0], "jvm");
+		return new Cpu(vendor, family, model, jvm, jvm, new int[0], new int[0], "jvm", facts);
 	}
 
 	/** vendor, family, model from the OS (Windows PROCESSOR_IDENTIFIER, Linux /proc/cpuinfo). */
@@ -639,7 +842,8 @@ public final class HydraCpu {
 		}
 
 		/** The machine's CPU sets, the process affinity and job CPU cap; null on failure. */
-		static Cpu detect(String vendor, int family, int model, int jvm) throws Throwable {
+		static Cpu detect(String vendor, int family, int model, Facts facts, int jvm)
+			throws Throwable {
 			Handles h = handles();
 			if (h == null) {
 				return null;
@@ -698,7 +902,7 @@ public final class HydraCpu {
 					int granted = Math.max(1, Math.min(jvm, jobCap(h, a, system)));
 					return new Cpu(vendor, family, model, system, granted,
 						allIds.stream().mapToInt(Integer::intValue).toArray(), new int[0],
-						"windows-cpusets-multigroup");
+						"windows-cpusets-multigroup", facts);
 				}
 				if (sets.isEmpty()) {
 					return null;
@@ -716,7 +920,7 @@ public final class HydraCpu {
 					effi = sets.stream().filter(s -> s[1] != top).mapToInt(s -> s[0]).toArray();
 				}
 				return new Cpu(vendor, family, model, system, granted, perf, effi,
-					"windows-cpusets");
+					"windows-cpusets", facts);
 			}
 		}
 

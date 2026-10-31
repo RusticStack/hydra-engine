@@ -22,7 +22,7 @@
   class, granted CPUs within 1..system and never above the JVM's count, and SetThreadSelectedCpuSets
   set + clear on this machine's granted CPU sets.
 * ``cpu_profile_override``: ``HYDRA_CPU_PROFILE`` is respected (generic, a named profile, an unknown name
-  -> generic, unset -> auto, which is generic everywhere until a profile is measured) and the system property
+  -> generic, unset -> auto, which selects the measured profile for the CPU and generic elsewhere) and the system property
   ``hydra.cpu.profile`` wins over it (and is named in the reason); the daemon logs the profile it runs with.
 * ``cpu_granted_limits`` (Windows): the probe started with affinity 0x3 is granted 2 CPUs (pool 3); started in
   a job object with a 25 % hard CPU rate cap it is granted ceil(0.25 * system) (at most its affinity count);
@@ -82,6 +82,14 @@ def _machine_hybrid(c):
     return _probe_ctl(c, affinity=cpu_bench.affinity_masks()[1])["hybrid"] == "true"
 
 
+def _auto_profile(kv):
+    """The profile ``auto`` must select for the CPU in ``kv`` (the shipped profiles)."""
+    if (kv.get("vendor") == "GenuineIntel" and kv.get("family") == "6"
+            and kv.get("model") in ("183", "186", "191") and kv.get("hybrid") == "true"):
+        return "raptorlake-hybrid"
+    return "generic"
+
+
 def t_cpu_selftest(c):
     rc, out, _ = _probe(c, "--selftest")
     dt.check(rc == 0 and "selftest: ok" in out, "HydraCpu --selftest failed:\n" + out[-2000:])
@@ -108,10 +116,10 @@ def t_cpu_profile_override(c):
         got[val] = kv["profile"]
     rc, out, kv = _probe(c)
     dt.check(kv.get("requested") == "auto" and kv["reason"].startswith("auto"), f"unset is not auto: {kv}")
-    dt.check(kv["profile"] == "generic", f"auto must be generic until a profile is measured: {kv}")
+    dt.check(kv["profile"] == _auto_profile(kv), f"auto selected {kv['profile']}: {kv}")
     if os.name == "nt":
         kvf = _probe_ctl(c, affinity=cpu_bench.affinity_masks()[1])
-        dt.check(kvf["profile"] == "generic", f"auto with every CPU granted must be generic: {kvf}")
+        dt.check(kvf["profile"] == _auto_profile(kvf), f"auto with every CPU granted: {kvf}")
     rc, out, kv = _probe(c, env={"HYDRA_CPU_PROFILE": "raptorlake-hybrid"}, props=["-Dhydra.cpu.profile=generic"])
     dt.check(kv.get("profile") == "generic", f"the system property does not win over the environment: {kv}")
     dt.check(kv["reason"].startswith("-Dhydra.cpu.profile"), f"the reason does not name the property: {kv}")
@@ -155,7 +163,8 @@ def t_cpu_profile_identical(c):
     forced = runs["raptorlake-hybrid"]
     dt.check(forced["cpu"]["profile"] == "raptorlake-hybrid", "forced profile not active")
     dt.check(runs["generic"]["cpu"]["profile"] == "generic", "generic not active")
-    dt.check(runs["auto"]["cpu"]["profile"] == "generic", f"auto must be generic: {runs['auto']['cpu']}")
+    dt.check(runs["auto"]["cpu"]["profile"] == _auto_profile(runs["auto"]["cpu"]),
+             f"auto selected {runs['auto']['cpu']['profile']}: {runs['auto']['cpu']}")
     placed = "n/a (not a hybrid CPU)"
     if hybrid:
         end = forced["cpu_end"] or {}
@@ -169,8 +178,8 @@ def t_cpu_profile_identical(c):
     dt.check(n > 0, "no functions decompiled")
     ds = {p: r["digest"] for p, r in runs.items()}
     dt.check(len(set(ds.values())) == 1, f"outputs differ between profiles: {ds}")
-    return (f"{n} functions identical on generic/raptorlake-hybrid/auto(generic), digest {ds['generic'][:12]}; "
-            f"granted {forced['cpu']['grantedCpus']}, forced: {placed}")
+    return (f"{n} functions identical on generic/raptorlake-hybrid/auto({runs['auto']['cpu']['profile']}), "
+            f"digest {ds['generic'][:12]}; granted {forced['cpu']['grantedCpus']}, forced: {placed}")
 
 
 TESTS = {
