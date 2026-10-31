@@ -53,10 +53,17 @@ namespace ghidra {
 /// Java side writes it (query response markers included). Entries are only ever added; readers
 /// on any worker thread and the exporting thread may run concurrently.
 class SnapshotStore {
-  mutable std::shared_mutex lock;			///< Guards the two maps
-  std::unordered_map<string,string> global;		///< Query payload -> response
-  std::unordered_map<string,string> scoped;		///< scope + '\\0' + query payload -> response
-  uint8 bytes;						///< Total key + value bytes held
+  /// One part of an answer table. A lookup takes a shared lock of one shard only, so the sixteen
+  /// decompiles of a generation that share a store do not serialise on one lock.
+  struct Shard {
+    mutable std::shared_mutex lock;
+    std::unordered_map<string,string> map;
+  };
+  static const size_t SHARDS = 64;			///< Power of two: shard of a key is hash & (SHARDS-1)
+  Shard global[SHARDS];					///< Query payload -> response
+  Shard scoped[SHARDS];					///< scope + '\\0' + query payload -> response
+  std::atomic<uint8> bytes;				///< Total key + value bytes held
+  static size_t shardOf(const string &key);		///< Shard index of a map key
 public:
   const uint8 id;					///< Unique id of this store (one per generation)
   const string pspec;					///< registerProgram: the processor spec
@@ -69,7 +76,13 @@ public:
   SnapshotStore(uint8 i,const string &p,const string &c,const string &t,const string &core,
 		const string &opt,const string &snap);
   void put(const string &scope,const string &query,const string &response);	///< Add one answer
-  bool find(const string &scope,const string &query,string &response) const;	///< Look an answer up
+  /// Add the answers of one packed block: for each, u32 scope length + scope, u32 query length +
+  /// query, u32 response length + response (little endian). One crossing for a whole function.
+  void putBulk(const char *blob,size_t len);
+  /// Look an answer up; null when absent. The returned string stays valid while the store lives
+  /// (entries are only added, and a rehash keeps the nodes). \b composite is scratch for the
+  /// scoped key, reused so a lookup allocates nothing.
+  const string *find(const string &scope,const string &query,string &composite) const;
   uint8 count(void) const;				///< Number of answers held
   uint8 size(void) const;				///< Bytes held by the answers
 };
@@ -85,11 +98,16 @@ class SnapshotChannel {
     virtual std::streamsize xsputn(const char *s,std::streamsize n);
   };
   /// \brief The client's input: the response to the last query
+  ///
+  /// A response answered from the store is read in place (the store keeps its strings); only a
+  /// speculative or exception response, made by the channel itself, is copied into \b owned.
   class InBuf : public std::streambuf {
   public:
     SnapshotChannel *owner;				///< The channel answering queries
-    string cur;						///< The response being read
-    void reset(void) { cur.clear(); setg((char *)0,(char *)0,(char *)0); }	///< Drop any unread response
+    string owned;					///< The response when the channel made it
+    void set(const char *p,size_t n) { setg((char *)p,(char *)p,(char *)p + n); }	///< Read from here
+    void set(const string &s) { owned = s; set(owned.data(),owned.size()); }	///< Read a copy
+    void reset(void) { owned.clear(); setg((char *)0,(char *)0,(char *)0); }	///< Drop any unread response
   protected:
     virtual int_type underflow(void);
   };
@@ -97,6 +115,8 @@ class SnapshotChannel {
   InBuf inbuf;						///< Backing store of \b sin
   std::shared_ptr<SnapshotStore> store;			///< The answers
   string scope;						///< Scope of the current decompile (packed entry), or empty
+  string keybuf;					///< Scratch key of a scoped lookup
+  string payload;					///< Scratch: the pending query cut from the output
   vector<string> misses;				///< Query payloads the store did not hold
   vector<string> fed;					///< For each miss, the neutral answer fed (empty: an exception ended the run)
   const AddrSpaceManager *spaces;			///< Address spaces for decoding a missed query (null before registration)
@@ -163,6 +183,8 @@ void *hydra_snapshot_store_new(const char *pspec,size_t pspeclen,const char *csp
 /// Add one answer (scope may be empty for a global answer); returns 0, or 1 on failure
 int hydra_snapshot_store_put(void *h,const char *scope,size_t scopelen,const char *query,size_t querylen,
 			     const char *resp,size_t resplen);
+/// Add the answers of one packed block (see SnapshotStore::putBulk); returns 0, or 1 on failure
+int hydra_snapshot_store_put_bulk(void *h,const char *blob,size_t len);
 /// Number of answers and bytes held
 void hydra_snapshot_store_stats(void *h,uint64_t *count,uint64_t *bytes);
 /// Drop the client's handle: workers release their Architectures for it at their next job
