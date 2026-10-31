@@ -468,8 +468,13 @@ final class OverlayCommands {
 		o.projectRevision = e.project.revision();
 		o.generation = e.project.generation;
 		o.error = null;
+		long ta = System.nanoTime();
 		if (!o.log.isEmpty()) {
 			s.operations.applyOps(prog, o.log);
+		}
+		if (o.timing) {
+			Msg.info(s, "overlay " + o.name + " materialised in " + o.openMs + " ms (replay " +
+				(System.nanoTime() - ta) / 1000 + " us)");
 		}
 	}
 
@@ -526,6 +531,7 @@ final class OverlayCommands {
 	 * batch is its first change and {@link OverlayDelta} answers it from the log alone.
 	 */
 	private JsonObject applyOverlay(Overlay o, JsonArray ops) {
+		long t0 = o.timing ? System.nanoTime() : 0;
 		if (o.program == null && o.shared != null && OverlayDelta.canApply(ops)) {
 			// its first rename, label or comment: the log's shadow answers it, and the overlay's
 			// program is opened by the first read that needs it (OverlayDelta); a batch that fails
@@ -537,6 +543,10 @@ final class OverlayCommands {
 				o.log.add(op.deepCopy());
 			}
 			o.version++;
+			if (o.timing) {
+				Msg.info(s, "overlay " + o.name + " log-only apply " +
+					(System.nanoTime() - t0) / 1000 + " us, " + ops.size() + " ops");
+			}
 			return Json.of("overlay", o.describe(), "applied", ops.size(), "results", results);
 		}
 		if (o.program == null) {
@@ -544,10 +554,15 @@ final class OverlayCommands {
 				"overlay " + o.name + " has no program and its change needs one");
 		}
 		JsonArray results = s.operations.applyOps(o.program, ops);
+		long t1 = o.timing ? System.nanoTime() : 0;
 		for (JsonElement op : ops) {
 			o.log.add(op.deepCopy());
 		}
 		o.version++;
+		if (o.timing) {
+			Msg.info(s, "overlay " + o.name + " apply " + (t1 - t0) / 1000 + " us, describe " +
+				(System.nanoTime() - t1) / 1000 + " us, " + ops.size() + " ops");
+		}
 		return Json.of("overlay", o.describe(), "applied", ops.size(), "results", results);
 	}
 

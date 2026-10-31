@@ -84,7 +84,8 @@ final class PrivateInstance implements AutoCloseable {
 	}
 
 	/** What was opened: the program object and what keeps its upgrade cache copy in place. */
-	record Loaded(Program program, SessionProject view, UpgradeCache.Lease lease, long openMs) {
+	record Loaded(Program program, UpgradeCache.ViewRef view, UpgradeCache.Lease lease,
+			long openMs) {
 	}
 
 	private Loaded loaded;
@@ -120,7 +121,7 @@ final class PrivateInstance implements AutoCloseable {
 	static Loaded load(UpgradeCache cache, ProgramEntry e, Object consumer, RequestMonitor m) {
 		long t0 = System.nanoTime();
 		Program prog = null;
-		SessionProject view = null;
+		UpgradeCache.ViewRef view = null;
 		UpgradeCache.Lease lease = null;
 		DomainFile file = e.file;
 		try {
@@ -238,12 +239,7 @@ final class PrivateInstance implements AutoCloseable {
 		}
 		finally {
 			if (l.view() != null) {
-				try {
-					l.view().close();
-				}
-				catch (RuntimeException e) {
-					// closing anyway
-				}
+				l.view().close(); // the last reference closes the copy's project view
 			}
 			if (l.lease() != null) {
 				l.lease().release();

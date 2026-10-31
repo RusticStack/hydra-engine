@@ -243,8 +243,72 @@ final class UpgradeCache {
 		}
 	}
 
-	/** A program opened from the cache, with the read-only view of the copy that holds it. */
-	record Opened(Program program, SessionProject view, Lease lease, JsonObject info) {}
+	/** A program opened from the cache, with the reference on the view of the copy that holds it. */
+	record Opened(Program program, ViewRef view, Lease lease, JsonObject info) {}
+
+	/** One published copy generation's read-only project view, shared by the opens from it. */
+	private static final class CopyView {
+		final SessionProject view;
+		int users;
+
+		CopyView(SessionProject view) {
+			this.view = view;
+		}
+	}
+
+	/** The shared views of published generations, by key and generation. Guarded by {@code this}. */
+	private final Map<String, CopyView> copyViews = new HashMap<>();
+
+	/**
+	 * A reference on the read-only project view of one published generation; the last one to close
+	 * closes the view. A program opened from the copy needs the project (its file's version
+	 * history, the format check), and opening one for every private instance was ~4 ms of the
+	 * ~20 ms a materialised overlay cost (measured, cacheInfo.projectUs).
+	 */
+	final class ViewRef implements AutoCloseable {
+		private final String id;
+		private boolean closed;
+
+		private ViewRef(String id) {
+			this.id = id;
+		}
+
+		@Override
+		public void close() {
+			synchronized (UpgradeCache.this) {
+				if (closed) {
+					return;
+				}
+				closed = true;
+				CopyView c = copyViews.get(id);
+				if (c != null && --c.users <= 0) {
+					copyViews.remove(id);
+					closeView(c.view);
+				}
+			}
+		}
+	}
+
+	/** The view of the plan's generation {@code gen}, opened on first use; one reference more. */
+	private synchronized CopyView useView(String id, File copyDir, Plan plan) throws IOException {
+		CopyView c = copyViews.get(id);
+		if (c == null) {
+			ProjectLocator copy = new ProjectLocator(copyDir.getPath(), plan.resolved().name());
+			c = new CopyView(openProject(copy, false));
+			copyViews.put(id, c);
+		}
+		c.users++;
+		return c;
+	}
+
+	private static void closeView(SessionProject view) {
+		try {
+			view.close();
+		}
+		catch (RuntimeException e) {
+			// closing anyway
+		}
+	}
 
 	/**
 	 * True when the cache holds an upgraded copy of the plan's program (built by this daemon or
@@ -314,8 +378,10 @@ final class UpgradeCache {
 	private Opened openCopy(Plan plan, File copyDir, String gen, Object consumer, Lease lease,
 			RequestMonitor m) throws IOException, CancelledException, VersionException {
 		long t0 = System.nanoTime();
-		ProjectLocator copy = new ProjectLocator(copyDir.getPath(), plan.resolved().name());
-		SessionProject view = openProject(copy, false);
+		String viewId = plan.key() + "/" + gen;
+		CopyView shared = useView(viewId, copyDir, plan);
+		ViewRef viewRef = new ViewRef(viewId);
+		SessionProject view = shared.view;
 		long t1 = System.nanoTime();
 		long t2 = t1;
 		Program program;
@@ -328,7 +394,7 @@ final class UpgradeCache {
 			// the format of a published generation does not change (it is written once and its
 			// build checked it): read the stored database version on the first open of each
 			// (key, generation, program), not on every open (it opens the database file once more)
-			String verified = plan.key() + "/" + gen + plan.path();
+			String verified = viewId + plan.path();
 			if (!VERIFIED.containsKey(verified)) {
 				String still = olderFormat(view.getProjectData(), cdf);
 				if (still != null) {
@@ -341,7 +407,7 @@ final class UpgradeCache {
 			program = (Program) cdf.getReadOnlyDomainObject(consumer, DomainFile.DEFAULT_VERSION, m);
 		}
 		catch (IOException | CancelledException | VersionException | RuntimeException e) {
-			view.close();
+			viewRef.close();
 			throw e;
 		}
 		long t3 = System.nanoTime();
@@ -349,7 +415,10 @@ final class UpgradeCache {
 			"generation", gen, "dir", copyDir.getParent(), "openMs", (t3 - t0) / 1_000_000,
 			"projectUs", (t1 - t0) / 1_000, "checkUs", (t2 - t1) / 1_000, "programUs",
 			(t3 - t2) / 1_000);
-		return new Opened(program, view, lease, info);
+		if (Settings.bool("overlayTiming", false)) {
+			Msg.info(this, "copy open " + info);
+		}
+		return new Opened(program, viewRef, lease, info);
 	}
 
 	/**

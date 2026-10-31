@@ -27,6 +27,7 @@ import com.google.gson.JsonObject;
 import ghidra.app.decompiler.DecompInterface;
 import ghidra.program.database.ProgramDB;
 import ghidra.program.model.listing.Program;
+import ghidra.util.Msg;
 
 /**
  * A client's private annotation view of a shared program: names, labels, comments, function
@@ -68,8 +69,8 @@ final class Overlay implements Decompilers, DecompilerGate.Pool {
 	 * not shareable (a program open writable with unsaved changes) from the start.
 	 */
 	Program shared;
-	/** When the program came from the upgrade cache: the view of the copy and its locks. */
-	SessionProject view;
+	/** When the program came from the upgrade cache: the reference on the copy's view, its locks. */
+	UpgradeCache.ViewRef view;
 	UpgradeCache.Lease lease;
 	/** The operations applied so far, in order (each with its {@code op} name). */
 	final JsonArray log = new JsonArray();
@@ -89,6 +90,8 @@ final class Overlay implements Decompilers, DecompilerGate.Pool {
 	volatile int generation;
 	/** Set when a rebuild (after a refresh) could not reapply the log; the overlay is unusable. */
 	volatile String error;
+	/** {@code -set overlayTiming=true}: log what opening, applying and disposing cost (a diagnostic). */
+	final boolean timing;
 
 	/** A pooled decompiler and when it was put back (E9: idle ones are disposed). */
 	private record Pooled(DecompInterface d, long atNanos) {
@@ -101,6 +104,7 @@ final class Overlay implements Decompilers, DecompilerGate.Pool {
 		this.name = name;
 		this.base = base;
 		this.id = id(client, base.key, name);
+		this.timing = Settings.bool("overlayTiming", false);
 		DecompilerGate.track(this);
 	}
 
@@ -201,39 +205,85 @@ final class Overlay implements Decompilers, DecompilerGate.Pool {
 		}
 	}
 
-	/** Releases the program object and what holds it. Held: the write lock. */
+	/**
+	 * Releases the overlay and what holds its program. Held: the write lock. The overlay is
+	 * unusable at once (its program and view are already given up); closing its program object
+	 * (the measured 1.5-2 ms of a close: the buffer manager and its scratch file) and its pooled
+	 * decompilers happens on {@link #RECLAIM}, so a {@code drop_overlay} does not wait for them:
+	 * nothing it answers with depends on them, and the next overlay of the same base opens its own
+	 * program object any case.
+	 */
 	void dispose() {
+		List<DecompInterface> gone = new ArrayList<>();
 		synchronized (decompilers) {
-			decompilers.forEach(p -> DecompilerGate.dispose(p.d()));
+			decompilers.forEach(pooled -> gone.add(pooled.d()));
 			decompilers.clear();
 		}
-		try {
-			if (program != null) {
-				program.release(this);
-			}
+		Program p = program;
+		Program s = shared;
+		UpgradeCache.ViewRef v = view;
+		UpgradeCache.Lease l = lease;
+		program = null;
+		shared = null;
+		view = null;
+		lease = null;
+		delta = new OverlayDelta();
+		if (s != null) {
+			// one consumer more while the overlay read through it (see OverlayCommands); the
+			// entry keeps it open, so this is a counter
+			s.release(this);
 		}
-		finally {
-			program = null;
-			delta = new OverlayDelta();
-			Program s = shared;
-			shared = null;
-			if (s != null) {
-				// one consumer more while the overlay read through it (see OverlayCommands)
-				s.release(this);
+		if (timing) {
+			Msg.info(this, "overlay " + name + " dispose handed over: " + gone.size() +
+				" decompiler(s), program " + (p == null ? "none" : "open") + ", view " +
+				(v == null ? "none" : "held") + ", lease " + (l == null ? "none" : "held"));
+		}
+		RECLAIM.reclaim(this, gone, p, v, l);
+	}
+
+	/** The one thread that finishes a disposed overlay: decompilers, program, view, lease. */
+	private static final Reclaim RECLAIM = new Reclaim();
+
+	private static final class Reclaim {
+		private final java.util.concurrent.ExecutorService one =
+			java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+				Thread t = new Thread(r, "session-overlay-reclaim");
+				t.setDaemon(true);
+				return t;
+			});
+
+		void reclaim(Overlay o, List<DecompInterface> gone, Program p, UpgradeCache.ViewRef v,
+				UpgradeCache.Lease l) {
+			if (gone.isEmpty() && p == null && v == null && l == null) {
+				return;
 			}
-			if (view != null) {
+			one.execute(() -> {
+				long t0 = System.nanoTime();
+				gone.forEach(DecompilerGate::dispose);
+				long t1 = System.nanoTime();
 				try {
-					view.close();
+					if (p != null) {
+						p.release(o);
+					}
 				}
-				catch (RuntimeException e) {
-					// closing anyway
+				catch (RuntimeException ex) {
+					Msg.warn(o, "overlay " + o.name + ": could not release its program", ex);
 				}
-				view = null;
-			}
-			if (lease != null) {
-				lease.release();
-				lease = null;
-			}
+				finally {
+					long t2 = System.nanoTime();
+					if (v != null) {
+						v.close(); // the last reference closes the copy's project view
+					}
+					if (l != null) {
+						l.release();
+					}
+					if (o.timing) {
+						Msg.info(o, "overlay " + o.name + " reclaim us: decompilers " +
+							(t1 - t0) / 1000 + ", program " + (t2 - t1) / 1000 +
+							", view+lease " + (System.nanoTime() - t2) / 1000);
+					}
+				}
+			});
 		}
 	}
 

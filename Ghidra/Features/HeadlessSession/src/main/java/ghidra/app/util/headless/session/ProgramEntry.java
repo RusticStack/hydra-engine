@@ -130,11 +130,11 @@ final class ProgramEntry implements Decompilers, DecompilerGate.Pool {
 	 */
 	volatile String revision;
 	/**
-	 * When {@link #program} was opened from the upgrade cache: the read-only view of the copy
-	 * that holds it (closed with the program), the shared locks that keep the copy in place, and
-	 * what the cache did.
+	 * When {@link #program} was opened from the upgrade cache: the reference on the read-only view
+	 * of the copy that holds it (released with the program; the view closes with its last
+	 * reference), the shared locks that keep the copy in place, and what the cache did.
 	 */
-	SessionProject cacheView;
+	UpgradeCache.ViewRef cacheView;
 	UpgradeCache.Lease cacheLease;
 	JsonObject cacheInfo;
 	/**
