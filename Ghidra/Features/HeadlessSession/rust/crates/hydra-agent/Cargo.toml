@@ -1,0 +1,19 @@
+[package]
+name = "hydra-agent"
+description = "Read-only agent host for the Hydra Engine protocol: the benchmark's read/query workload without CPython"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "hydra-agent"
+path = "src/main.rs"
+
+[dependencies]
+hydra-client = { path = "../hydra-client" }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
