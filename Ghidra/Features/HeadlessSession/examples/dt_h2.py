@@ -103,22 +103,30 @@ def t_fork_upgrade_from_cache(c):
         s.call("close_project", project=_pid(f0), discard=True)
         notes.append("no copy: in memory, build of the source started from its second fork")
 
-        # 1a. an adopted version closed without a save goes, as an unsaved in-memory upgrade does
+        # 1a. a disposable fork is made with the upgraded version (the cache's copy is linked into
+        # it before the fork is published), so its open confirms it and writes nothing, and a
+        # discarded open leaves the fork exactly as it was made
         fc_dir = c.work / "h2-fork-c"
         fc = s.call("fork_project", project=o["id"], path=str(fc_dir), writable=True, timeout=600)
-        fc_before = {p: sorted(x.name for x in p.iterdir()) for p in _db_dirs(fc_dir)}
+        fc_before = {p: sorted(x.name for x in p.glob("db.*.gbf")) for p in _db_dirs(fc_dir)}
+        dt.check(sum(len(v) for v in fc_before.values()) == 2,
+                 f"the fork was not made with the upgraded version: {fc_before}")
         pc = s.call("open_program", path=prog, project=_pid(fc), writable=True, upgrade=True, wait=1800000)
-        dt.check(pc["changed"] is True, f"the adopted fork's program is not changed after the open: {pc}")
-        fc_open = {p: sorted(x.name for x in p.iterdir()) for p in fc_before}
-        dt.check(fc_open != fc_before, f"fork C did not adopt the upgraded version: {fc_open}")
+        dt.check(pc["changed"] is True, f"the fork's program is not changed after the open: {pc}")
+        fc_open = {p: sorted(x.name for x in p.glob("db.*.gbf")) for p in fc_before}
+        dt.check(fc_open == fc_before, f"the fork's open wrote to it: {fc_before} -> {fc_open}")
         s.call("close_program", program=pc["key"], discard=True)
-        fc_after = {p: sorted(x.name for x in p.iterdir()) for p in fc_before}
-        dt.check(fc_after == fc_before, f"a discarded adoption left the fork changed: {fc_before} -> {fc_after}")
-        dt.expect_error("conflict", s.call, "open_program", path=prog, project=_pid(fc), writable=True)
+        fc_after = {p: sorted(x.name for x in p.glob("db.*.gbf")) for p in fc_before}
+        dt.check(fc_after == fc_before, f"a discarded open left the fork changed: {fc_before} -> {fc_after}")
+        # made in the current format: a plain writable open needs no upgrade and changes nothing
+        pc1 = s.call("open_program", path=prog, project=_pid(fc), writable=True)
+        dt.check(pc1["mode"] == "writable" and pc1["changed"] is False,
+                 f"a fork made in the current format does not open plain: {pc1}")
+        s.call("close_program", program=pc1["key"], discard=True)
         pc2 = s.call("open_program", path=prog, project=_pid(fc), writable=True, upgrade=True, wait=1800000)
-        dt.check(pc2["changed"] is True, f"a reopen after a discarded adoption is not changed: {pc2}")
+        dt.check(pc2["changed"] is True, f"an upgrade:true open of the fork is not changed: {pc2}")
         s.call("close_project", project=_pid(fc), discard=True)
-        notes.append("discarded adoption: the fork is back in its older format")
+        notes.append("a disposable fork is made with the upgraded version; its open writes nothing")
 
         # 1. copy ready: fork A adopts the upgraded version
         fa_dir = c.work / "h2-fork-a"
@@ -126,15 +134,16 @@ def t_fork_upgrade_from_cache(c):
         dbs = _db_dirs(fa_dir)
         vers_before = {p: sorted(x.name for x in p.glob("db.*.gbf")) for p in dbs}
         pa = s.call("open_program", path=prog, project=_pid(fa), writable=True, upgrade=True, wait=1800000)
-        # as after an in-memory upgrade: changed, nothing to undo
-        dt.check(pa["changed"] is True, f"the adopted fork's program is not changed after the open: {pa}")
-        after = {p: sorted(x.name for x in p.iterdir()) for p in dbs}
-        grown = [p for p in dbs if after[p] != vers_before[p]]
-        dt.check(len(grown) == 1, f"expected one database folder with an adopted version: {vers_before} -> {after}")
-        g = grown[0]
+        # as after an in-memory upgrade: changed, nothing to undo; the version was placed with
+        # the fork, so the open writes nothing
+        dt.check(pa["changed"] is True, f"the fork's program is not changed after the open: {pa}")
+        after = {p: sorted(x.name for x in p.glob("db.*.gbf")) for p in dbs}
+        dt.check(after == vers_before, f"the fork's open wrote to it: {vers_before} -> {after}")
+        g = dbs[0]
         nums = sorted(int(n.split(".")[1]) for n in after[g] if n.startswith("db.") and n.endswith(".gbf"))
-        old = max(int(n.split(".")[1]) for n in vers_before[g])
-        dt.check(nums == [old, old + 1], f"the fork's versions are not the source's and the next one: {after[g]}")
+        dt.check(len(nums) == 2 and nums[1] == nums[0] + 1,
+                 f"the fork's versions are not the source's and the next one: {after[g]}")
+        old = nums[0]
         dt.check(not [n for n in after[g] if n.endswith(".tmp")], f"a temporary file was left: {after[g]}")
         key_a = pa["key"]
 

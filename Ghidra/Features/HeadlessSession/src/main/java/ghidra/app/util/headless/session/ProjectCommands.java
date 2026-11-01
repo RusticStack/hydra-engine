@@ -53,21 +53,40 @@ final class ProjectCommands {
 	 * a writable request on a writable project, and a read-only request on one, join it.
 	 */
 	JsonElement openProject(Client c, JsonObject req) {
+		return openProject(c, req, null, null);
+	}
+
+	/**
+	 * {@link #openProject(Client, JsonObject)} of a project whose resolution the caller already
+	 * has ({@code known}, with its {@code canonical} path): {@code fork_project} opens the fork it
+	 * has just published, so the sweep (nothing can be half-published in a folder whose only
+	 * publisher held the claim until a moment ago) and the resolution (an existence check, two
+	 * attribute reads and {@code getCanonicalPath}) are not repeated: they cost 10-30 ms together
+	 * on this machine while the fork's files are cold in the file system cache.
+	 */
+	JsonElement openProject(Client c, JsonObject req, ProjectResolver.Resolved resolved,
+			String canonicalOfResolved) {
 		String path = Json.str(req, "path");
-		// 8.13: a half fork a dead publisher left in this directory is swept before every open,
-		// joins included (a writer can have died after the project opened, A62)
-		ForkSweeper.sweepForOpen(path);
 		ProjectResolver.Resolved r;
 		String canonical;
-		try {
-			// the resolution and the canonical path are kept: a join is the common case, and the
-			// walk and getCanonicalPath were 1.4 ms of it
-			ProjectResolver.Open open = ProjectResolver.resolveOpen(path);
-			r = open.resolved();
-			canonical = open.canonical();
+		if (resolved != null) {
+			r = resolved;
+			canonical = canonicalOfResolved;
 		}
-		catch (IOException e) {
-			throw new SessionException(SessionException.NOT_FOUND, e.getMessage());
+		else {
+			// 8.13: a half fork a dead publisher left in this directory is swept before every open,
+			// joins included (a writer can have died after the project opened, A62)
+			ForkSweeper.sweepForOpen(path);
+			try {
+				// the resolution and the canonical path are kept: a join is the common case, and
+				// the walk and getCanonicalPath were 1.4 ms of it
+				ProjectResolver.Open open = ProjectResolver.resolveOpen(path);
+				r = open.resolved();
+				canonical = open.canonical();
+			}
+			catch (IOException e) {
+				throw new SessionException(SessionException.NOT_FOUND, e.getMessage());
+			}
 		}
 		boolean writable = Json.bool(req, "writable", false);
 		boolean discard = Json.bool(req, "discard", false);

@@ -386,6 +386,151 @@ final class UpgradeCache {
 	private static final int ADOPT_HEAD = 64 * 1024;
 
 	/**
+	 * H2, at fork time: the upgraded version this cache holds for {@code src} is linked into the
+	 * staged fork {@code stagedDir} (which holds {@code name.rep}), before the fork is published.
+	 * The fork's first writable open then finds the current format and upgrades nothing
+	 * ({@link #adoptForFork} only confirms it), where the same version added after the fork's
+	 * project was opened cost the open a project refresh (1-2 ms) and the link, the flush and the
+	 * version bookkeeping (10-25 ms at 16 agents).
+	 * <p>
+	 * The cache's copy is a copy of the same source, so the staged tree has the same layout: each
+	 * database folder of the copy that holds a stored version the staged copy also holds, plus the
+	 * cache's next (upgraded) version, gets that version as a hard link (or a copy where the file
+	 * system cannot link). Placement is best effort and changes nothing when it cannot be proven:
+	 * a source that changed since the cache's build fails {@link #sameVersion}, and the open then
+	 * upgrades in memory or adopts as before.
+	 *
+	 * @param placed receives the placed version files, by the path in the cache they share
+	 *            (the publish flushes them as shared files, not as copies)
+	 */
+	void placeUpgraded(ProjectResolver.Resolved src, Path stagedDir, String name,
+			Map<Path, Path> placed) throws IOException {
+		if (!enabled() || !Settings.bool("forkUpgradeFromCache", true)) {
+			return;
+		}
+		File dir;
+		JsonObject entry;
+		String gen;
+		try {
+			dir = new File(root, key(src));
+			entry = readEntry(dir);
+			if (entry == null || upgraded(entry).isEmpty()) {
+				return;
+			}
+			gen = entry.get("generation").getAsString();
+		}
+		catch (IOException | RuntimeException e) {
+			Msg.debug(UpgradeCache.class, "upgrade cache: no fork-time adoption for " + name +
+				": " + e);
+			return;
+		}
+		Lease lease = new Lease(dir.getName(), gen);
+		boolean held = false;
+		try {
+			held = lease.tryAcquire();
+			if (!held) {
+				return; // busy or being removed: the open adopts as before
+			}
+			Path copyRoot = new File(new File(dir, gen), "project").toPath();
+			Path stagedRep = stagedDir.resolve(name + ProjectLocator.getProjectDirExtension());
+			if (!Files.isDirectory(copyRoot) || !Files.isDirectory(stagedRep)) {
+				return;
+			}
+			placeInto(copyRoot, stagedDir, placed);
+		}
+		catch (IOException | RuntimeException e) {
+			Msg.warn(UpgradeCache.class, "upgrade cache: could not give the fork " + name +
+				" its upgraded version; its open upgrades as before: " + e);
+		}
+		finally {
+			if (held) {
+				lease.release();
+			}
+		}
+	}
+
+	/** {@link #placeUpgraded} of a cache copy root, for each database folder of it. */
+	private static void placeInto(Path copyRoot, Path stagedDir, Map<Path, Path> placed)
+			throws IOException {
+		List<Path> dbDirs = new ArrayList<>();
+		Files.walkFileTree(copyRoot, new SimpleFileVisitor<>() {
+			@Override
+			public FileVisitResult preVisitDirectory(Path d, BasicFileAttributes a) {
+				if (d.getFileName() != null && d.getFileName().toString().endsWith(".db")) {
+					dbDirs.add(d);
+					return FileVisitResult.SKIP_SUBTREE;
+				}
+				return FileVisitResult.CONTINUE;
+			}
+		});
+		for (Path copyDb : dbDirs) {
+			Path stagedDb = stagedDir.resolve(copyRoot.relativize(copyDb));
+			if (!Files.isDirectory(stagedDb)) {
+				continue;
+			}
+			int cur = newest(stagedDb);
+			if (cur <= 0) {
+				continue;
+			}
+			Path base = stagedDb.resolve("db." + cur + ".gbf");
+			Path upgradedVersion = copyDb.resolve("db." + (cur + 1) + ".gbf");
+			Path target = stagedDb.resolve("db." + (cur + 1) + ".gbf");
+			if (!Files.isRegularFile(upgradedVersion) || Files.exists(target) ||
+				Files.exists(stagedDb.resolve("db." + (cur + 2) + ".gbf")) ||
+				!sameVersion(base, copyDb.resolve("db." + cur + ".gbf"))) {
+				continue;
+			}
+			Path tmp = stagedDb.resolve("tmp" + System.nanoTime() + TMP_SUFFIX);
+			boolean ok = false;
+			boolean linked = false;
+			try {
+				// a version file is never written once named (see linkable): the fork shares the
+				// cache's file by a hard link where it can, and copies it where it cannot
+				if (Settings.bool("forkHardLinks", true) && tryLink(upgradedVersion, tmp)) {
+					// E12: the content is durable before the name is (once per file)
+					ProjectFork.forceLinkedFile(tmp, upgradedVersion);
+					linked = true;
+				}
+				else {
+					Files.copy(upgradedVersion, tmp, StandardCopyOption.COPY_ATTRIBUTES);
+					ProjectFork.forceFile(tmp); // E12: the content is durable before the name is
+				}
+				Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE);
+				if (linked) {
+					// the file the publish flushes as a shared version file (not as a copy:
+					// its attributes belong to the cache's inode too), by its published name
+					placed.put(target, upgradedVersion);
+				}
+				ok = true;
+			}
+			finally {
+				if (!ok) {
+					Files.deleteIfExists(tmp);
+				}
+			}
+		}
+	}
+
+	/** The highest {@code n} of the {@code db.<n>.gbf} files of a database folder, 0 for none. */
+	private static int newest(Path dbDir) {
+		int max = 0;
+		File[] files = dbDir.toFile().listFiles();
+		if (files == null) {
+			return 0;
+		}
+		for (File f : files) {
+			java.util.regex.Matcher m = DB_VERSION.matcher(f.getName());
+			if (m.matches() && Files.isRegularFile(f.toPath())) {
+				max = Math.max(max, Integer.parseInt(m.group(1)));
+			}
+		}
+		return max;
+	}
+
+	private static final java.util.regex.Pattern DB_VERSION =
+		java.util.regex.Pattern.compile("db\\.(\\d+)\\.gbf");
+
+	/**
 	 * H2: before an {@code upgrade:true} writable open of an older-format program of a disposable
 	 * fork, gives the fork the upgraded version this cache holds for the fork's source, so that
 	 * the open finds the current format and upgrades nothing.
@@ -426,10 +571,6 @@ final class UpgradeCache {
 		if (!ProjectFork.disposable(sc) || !sc.has("source") || !sc.get("source").isJsonObject()) {
 			return null;
 		}
-		String why = olderFormat(dpd, df);
-		if (why == null) {
-			return null;
-		}
 		long t0 = System.nanoTime();
 		Plan plan;
 		try {
@@ -444,14 +585,27 @@ final class UpgradeCache {
 			if (!sr.gpr().isFile()) {
 				return null;
 			}
-			plan = new Plan(sr, sr.gpr().getCanonicalPath(), df.getPathname(), key(sr), why);
+			plan = new Plan(sr, sr.gpr().getCanonicalPath(), df.getPathname(), keyOf(sr), null);
 		}
 		catch (IOException | RuntimeException e) {
 			Msg.debug(this, "upgrade cache: no fork adoption for " + df.getPathname() + ": " + e);
 			return null;
 		}
 		try {
-			Adopted done = adopt(plan, dpd, fs, p, df, m);
+			// a current-format program can still have been given this version when its fork was
+			// made (placeUpgraded): adopt() then only confirms it, and the open marks it changed.
+			// The format is read only when nothing was placed (reading it opens the version file)
+			Adopted done = adopt(plan, dpd, fs, p, df, m, false);
+			if (done != null) {
+				Json.put(done.info(), "ms", (System.nanoTime() - t0) / 1_000_000);
+				return done;
+			}
+			String whyNow = olderFormat(dpd, df);
+			if (whyNow == null) {
+				return null; // current format and nothing placed: nothing to do
+			}
+			plan = new Plan(plan.resolved(), plan.canonical(), plan.path(), plan.key(), whyNow);
+			done = adopt(plan, dpd, fs, p, df, m, true);
 			if (done != null) {
 				Json.put(done.info(), "ms", (System.nanoTime() - t0) / 1_000_000);
 				return done;
@@ -505,7 +659,7 @@ final class UpgradeCache {
 	 * returns the fork to {@code base}.
 	 */
 	record Adopted(JsonObject info, ProjectEntry project, DefaultProjectData data, Path base,
-			Path target) {}
+			Path target, boolean withFork) {}
 
 	/**
 	 * Puts a fork back as it was before {@link #adoptForFork} when nothing was saved since (the
@@ -559,7 +713,8 @@ final class UpgradeCache {
 	}
 
 	private Adopted adopt(Plan plan, DefaultProjectData dpd, LocalFileSystem fs, ProjectEntry p,
-			DomainFile df, RequestMonitor m) throws IOException, CancelledException {
+			DomainFile df, RequestMonitor m, boolean allowWrite)
+			throws IOException, CancelledException {
 		File dir = new File(root, plan.key());
 		JsonObject entry = readEntry(dir);
 		if (entry == null || !upgraded(entry).contains(plan.path())) {
@@ -604,6 +759,19 @@ final class UpgradeCache {
 			Path copyBase = copyDb.resolve("db." + cur + ".gbf");
 			Path upgradedVersion = copyDb.resolve("db." + (cur + 1) + ".gbf");
 			Path target = forkDb.toPath().resolve("db." + (cur + 1) + ".gbf");
+			Path previous = forkDb.toPath().resolve("db." + (cur - 1) + ".gbf");
+			if (cur > 1 && Files.isRegularFile(previous) && Files.isRegularFile(copyBase) &&
+				sameVersion(base, copyBase)) {
+				// the fork was given this very version when it was made (placeUpgraded): its
+				// project read it on open, so there is nothing to write and nothing to refresh.
+				// The version goes back with the discard, as an adopted one does
+				// nothing to put back with a discard: the fork was made with this version
+				return new Adopted(Json.of("used", true, "reason", "with the fork", "key",
+					plan.key(), "generation", gen, "version", cur), p, dpd, previous, base, true);
+			}
+			if (!allowWrite || plan.why() == null) {
+				return null; // current format, or only asked whether it was placed
+			}
 			if (!Files.isRegularFile(upgradedVersion) ||
 				Files.exists(copyDb.resolve("db." + (cur + 2) + ".gbf")) || Files.exists(target) ||
 				!sameVersion(base, copyBase)) {
@@ -658,11 +826,38 @@ final class UpgradeCache {
 				}
 			}
 			return new Adopted(Json.of("used", true, "reason", plan.why(), "key", plan.key(),
-				"generation", gen, "version", cur + 1), p, dpd, base, target);
+				"generation", gen, "version", cur + 1), p, dpd, base, target, false);
 		}
 		finally {
 			lease.release();
 		}
+	}
+
+	/** How long a source key is reused: a burst of forks and their opens ({@link #keyOf}). */
+	private static final long KEY_TTL_MS = 3000;
+
+	private final Map<String, Object[]> keyMemo = new java.util.concurrent.ConcurrentHashMap<>();
+
+	/**
+	 * {@link #key(ProjectResolver.Resolved)} remembered for {@value #KEY_TTL_MS} per source path:
+	 * the forks of one source in a burst and their writable opens compute the same key, and each
+	 * computation walks and hashes the source (2-5 ms at 16 agents). Every use of the key verifies
+	 * the version files it names before anything is written or served ({@link #sameVersion},
+	 * {@link #adopt}), so a key from before a change of the source only misses the cache.
+	 */
+	String keyOf(ProjectResolver.Resolved r) throws IOException {
+		String path = r.gpr().getPath();
+		long now = System.currentTimeMillis();
+		Object[] hit = keyMemo.get(path);
+		if (hit != null && now - (Long) hit[1] < KEY_TTL_MS) {
+			return (String) hit[0];
+		}
+		String key = key(r);
+		if (keyMemo.size() > 256) {
+			keyMemo.clear();
+		}
+		keyMemo.put(path, new Object[] { key, now });
+		return key;
 	}
 
 	/**

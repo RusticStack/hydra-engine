@@ -404,6 +404,15 @@ final class ForkSweeper {
 	 * The sweep at {@code open_project} (8.13): the directory that holds the project named by
 	 * {@code path} (a {@code .gpr}, a {@code .rep} or a directory) is swept whole. Never throws: an
 	 * open never fails because of the sweep.
+	 * <p>
+	 * A directory whose whole listing was swept clean is remembered by its canonical path and its
+	 * modification time: nothing of this engine can appear in it or disappear from it without
+	 * changing that time (a staging folder, a dead writer's temporary file, an intent are all
+	 * created and removed in this directory, and a publish renames the {@code .rep} and the
+	 * {@code .gpr} into it), so an open that finds the same time skips the listing and the per-file
+	 * checks. The open path is the hot one (a join sweeps too), and on this machine the listing and
+	 * the attribute reads cost 2-4 ms at 16 agents. A sweep that did anything is not remembered:
+	 * the next open looks again.
 	 */
 	static void sweepForOpen(String path) {
 		if (path == null) {
@@ -414,14 +423,46 @@ final class ForkSweeper {
 			String n = f.getName();
 			File dir = n.endsWith(ProjectLocator.getProjectExtension()) ||
 				n.endsWith(ProjectLocator.getProjectDirExtension()) ? f.getParentFile() : f;
-			if (dir != null && dir.isDirectory()) {
-				sweep(dir, null);
+			if (dir == null) {
+				return;
+			}
+			BasicFileAttributes a;
+			try {
+				a = Files.readAttributes(dir.toPath(), BasicFileAttributes.class);
+			}
+			catch (IOException e) {
+				return; // no such directory: nothing to sweep (the open reports it)
+			}
+			if (!a.isDirectory()) {
+				return;
+			}
+			String key = dir.getAbsolutePath();
+			long mt = a.lastModifiedTime().toMillis();
+			Long swept = SWEPT_AT.get(key);
+			if (swept != null && swept == mt) {
+				return;
+			}
+			Report r = sweep(dir, null);
+			if (r.empty()) {
+				if (SWEPT_AT.size() > 1024) {
+					SWEPT_AT.clear();
+				}
+				SWEPT_AT.put(key, mt);
+			}
+			else {
+				SWEPT_AT.remove(key);
 			}
 		}
 		catch (RuntimeException e) {
 			Msg.warn(ForkSweeper.class, "open_project: fork sweep of " + path + ": " + e);
 		}
 	}
+
+	/**
+	 * Directories swept clean at {@code open_project}, by absolute path, with the modification time
+	 * of the listing that was swept ({@link #sweepForOpen}).
+	 */
+	private static final Map<String, Long> SWEPT_AT = new ConcurrentHashMap<>();
 
 	private static Path parentsDir() {
 		String state = Json.str(Identity.paths(), "stateDir", null);
