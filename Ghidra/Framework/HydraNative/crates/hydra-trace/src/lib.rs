@@ -2,8 +2,11 @@
 //! synthetic generator and the verifier. The store, query, diff, explain and check modules build
 //! on these (see `Ghidra/Features/HeadlessSession/TRACE-1.md`).
 
+pub mod artifact;
 pub mod canon;
+pub mod corrid;
 pub mod explain;
+pub mod interp;
 pub mod lifetime;
 pub mod model;
 pub mod query;
