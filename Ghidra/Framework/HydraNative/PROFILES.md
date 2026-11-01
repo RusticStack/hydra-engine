@@ -13,10 +13,11 @@ performance knobs for a CPU family whose behaviour we have measured.
   fast everywhere; it is never made slower to benefit a profile.
 * A profile ships with before/after numbers measured on its CPU (a quiet machine, several runs each).
   The numbers go in the pull request that adds or changes it.
-* `raptorlake-hybrid` ships with the round-3 measurements on the i7-13700KF
-  (`docs/cpu-profiles.md` in the workspace has the before/after numbers). The engine's wired profile
-  is `ghidra.util.cpu.HydraCpu` (module Utility), which takes the detection facts from this library
-  and keeps the profile list below as the C ABI's mirror; the two select the same profile.
+* `raptorlake-hybrid` ships with the round-4 measurements on the i7-13700KF
+  (`docs/cpu-profiles.md` has the before/after numbers). The engine's wired profile is
+  `ghidra.util.cpu.HydraCpu` (module Utility), which takes the detection facts from this library
+  and keeps the profile list below as the C ABI's mirror; the two select the same profile, and the
+  engine's `HydraCpu.selfTest()` fails when they drift apart.
 
 ## Selection
 

@@ -100,11 +100,19 @@ def t_cpu_selftest(c):
     if os.name == "nt":
         dt.check(kv["source"] == "windows-cpusets" and kv["nativeAccess"] == "true",
                  f"native CPU sets not read on Windows: {kv}")
+        # CPUID/simd/cache/memory facts come from the native library when it may be called
+        dt.check(kv["simd"] in ("baseline", "sse4_2", "avx2", "avx512"), f"no SIMD level: {kv}")
+        dt.check(int(kv["performanceCores"]) >= 1 or not kv.get("hybrid") == "true",
+                 f"no P-core count on a hybrid CPU: {kv}")
+        dt.check(int(kv["memoryLimitMb"]) > 0 and int(kv["llcGroups"]) >= 1, f"no memory/cache facts: {kv}")
     rc3, out3, kv3 = _probe(c, native=False)
     dt.check(rc3 == 0 and kv3["source"] == "jvm" and "WARNING" not in out3,
              f"without native access the probe must fall back to the JVM silently: {out3[-800:]}")
-    return (f"selftest ok; {kv['vendor']} family {kv['family']} model {kv['model']}, {kv['systemCpus']} logical, "
-            f"{kv['grantedCpus']} granted, hybrid {kv['hybrid']}, auto -> {kv['profile']}")
+    dt.check(kv3["simd"] == "baseline" and kv3["memoryLimitMb"] == "0" and int(kv3["l2Groups"]) == 0,
+             f"without native access the facts must be unknown: {kv3}")
+    return (f"selftest ok; {kv['vendor']} family {kv['family']} model {kv['model']} {kv['simd']}, "
+            f"{kv['systemCpus']} logical, {kv['grantedCpus']} granted, hybrid {kv['hybrid']}, "
+            f"memory {kv['memoryLimitMb']} MB, auto -> {kv['profile']}")
 
 
 def t_cpu_profile_override(c):
@@ -128,6 +136,8 @@ def t_cpu_profile_override(c):
     cpu = r["cpu"]
     dt.check(cpu is not None, "the daemon log has no 'cpu: {...}' line")
     dt.check(cpu["profile"] == "generic" and cpu["requested"] == "generic", f"daemon profile: {cpu}")
+    dt.check(cpu["analysisThreads"] == "0" and cpu["decompilerThreads"] == "0",
+             f"the generic profile must leave the pools to the engine: {cpu}")
     return f"env -> {got}; property wins; daemon: {cpu['profile']} ({cpu['reason']}), granted {cpu['grantedCpus']}"
 
 
@@ -140,7 +150,12 @@ def t_cpu_granted_limits(c):
     kj = _probe_ctl(c, cpu_rate=2500)
     want = min(math.ceil(int(kj["systemCpus"]) * 0.25), int(base["grantedCpus"]))
     dt.check(int(kj["grantedCpus"]) == want, f"25 % job hard cap: granted {kj['grantedCpus']}, want {want}: {kj}")
-    msg = f"affinity 0x3 -> 2 granted; 25 % job cap -> {kj['grantedCpus']} of {kj['systemCpus']}"
+    # a job object memory limit is what the process may use; the budgets follow it, not the RAM
+    km = _probe_ctl(c, commit_mb=4096)
+    dt.check(abs(int(km["memoryLimitMb"]) - 4096) <= 8,
+             f"4 GB job memory limit: reported {km['memoryLimitMb']} MB: {km}")
+    msg = (f"affinity 0x3 -> 2 granted; 25 % job cap -> {kj['grantedCpus']} of {kj['systemCpus']}; "
+           f"4 GB job memory limit -> {km['memoryLimitMb']} MB")
     full = cpu_bench.affinity_masks()[1]
     kf = _probe_ctl(c, affinity=full)
     if kf["hybrid"] == "true":
@@ -170,6 +185,8 @@ def t_cpu_profile_identical(c):
         end = forced["cpu_end"] or {}
         dt.check(forced["cpu"]["hybrid"] == "true" and int(forced["cpu"]["backgroundBudget"]) > 0,
                  f"the forced daemon was not granted both core classes: {forced['cpu']}")
+        dt.check(int(forced["cpu"]["analysisThreads"]) == int(forced["cpu"]["grantedCpus"]),
+                 f"the profile's analysis pool is not every granted CPU: {forced['cpu']}")
         dt.check(int(end.get("placedLatencyTotal", 0)) > 0 or int(end.get("placedBackgroundTotal", 0)) > 0,
                  f"the forced daemon placed no thread: {end}")
         dt.check(end.get("placeFailures") == "0", f"placement failures: {end}")

@@ -73,6 +73,38 @@ CPU_LINE = re.compile(r"cpu: \{(.*)\}")
 _CREATE_SUSPENDED = 0x4
 _JOB_CPU_RATE = 15  # JobObjectCpuRateControlInformation
 _RATE_ENABLE, _RATE_HARD_CAP = 0x1, 0x4
+_JOB_EXTENDED_LIMIT = 9  # JobObjectExtendedLimitInformation
+_LIMIT_PROCESS_MEMORY = 0x00000100
+
+
+class _IoCounters(ctypes.Structure):
+    _fields_ = [("ReadOperationCount", ctypes.c_ulonglong),
+                ("WriteOperationCount", ctypes.c_ulonglong),
+                ("OtherOperationCount", ctypes.c_ulonglong),
+                ("ReadTransferCount", ctypes.c_ulonglong),
+                ("WriteTransferCount", ctypes.c_ulonglong),
+                ("OtherTransferCount", ctypes.c_ulonglong)]
+
+
+class _BasicLimit(ctypes.Structure):
+    _fields_ = [("PerProcessUserTimeLimit", ctypes.c_longlong),
+                ("PerJobUserTimeLimit", ctypes.c_longlong),
+                ("LimitFlags", ctypes.c_uint32),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", ctypes.c_uint32),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", ctypes.c_uint32),
+                ("SchedulingClass", ctypes.c_uint32)]
+
+
+class _ExtendedLimit(ctypes.Structure):
+    _fields_ = [("BasicLimitInformation", _BasicLimit),
+                ("IoInfo", _IoCounters),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t)]
 
 
 def _k32():
@@ -117,10 +149,11 @@ def full_affinity(enabled=True):
         k.SetProcessAffinityMask(k.GetCurrentProcess(), old)
 
 
-def run_controlled(argv, affinity=None, cpu_rate=None, env=None, timeout=120):
-    """Runs ``argv`` to completion (Windows), started suspended and then given ``affinity`` (a mask) and/or
-    put in a fresh job object with a hard CPU rate cap of ``cpu_rate`` (hundredths of a percent of the
-    machine, e.g. 2500 = 25 %) before it runs any code. Returns (returncode, stdout+stderr)."""
+def run_controlled(argv, affinity=None, cpu_rate=None, commit_mb=None, env=None, timeout=120):
+    """Runs ``argv`` to completion (Windows), started suspended and then given ``affinity`` (a mask), put in
+    a fresh job object with a hard CPU rate cap of ``cpu_rate`` (hundredths of a percent of the machine,
+    e.g. 2500 = 25 %) and/or a job object process memory limit of ``commit_mb`` MB, before it runs any
+    code. Returns (returncode, stdout+stderr)."""
     k = _k32()
     ntdll = ctypes.WinDLL("ntdll")
     ntdll.NtResumeProcess.argtypes = [ctypes.c_void_p]
@@ -131,11 +164,22 @@ def run_controlled(argv, affinity=None, cpu_rate=None, env=None, timeout=120):
         h = int(p._handle)  # the process handle Popen holds (Windows)
         if affinity is not None and not k.SetProcessAffinityMask(h, affinity):
             raise ctypes.WinError(ctypes.get_last_error())
-        if cpu_rate is not None:
+        if cpu_rate is not None or commit_mb is not None:
             job = k.CreateJobObjectW(None, None)
-            info = (ctypes.c_uint32 * 2)(_RATE_ENABLE | _RATE_HARD_CAP, cpu_rate)
-            if not job or not k.SetInformationJobObject(job, _JOB_CPU_RATE, info, 8) \
-                    or not k.AssignProcessToJobObject(job, h):
+            if not job:
+                raise ctypes.WinError(ctypes.get_last_error())
+            if cpu_rate is not None:
+                info = (ctypes.c_uint32 * 2)(_RATE_ENABLE | _RATE_HARD_CAP, cpu_rate)
+                if not k.SetInformationJobObject(job, _JOB_CPU_RATE, info, 8):
+                    raise ctypes.WinError(ctypes.get_last_error())
+            if commit_mb is not None:
+                limit = _ExtendedLimit()
+                limit.BasicLimitInformation.LimitFlags = _LIMIT_PROCESS_MEMORY
+                limit.ProcessMemoryLimit = int(commit_mb) << 20
+                if not k.SetInformationJobObject(job, _JOB_EXTENDED_LIMIT, ctypes.byref(limit),
+                                                 ctypes.sizeof(limit)):
+                    raise ctypes.WinError(ctypes.get_last_error())
+            if not k.AssignProcessToJobObject(job, h):
                 raise ctypes.WinError(ctypes.get_last_error())
         ntdll.NtResumeProcess(h)
         out, _ = p.communicate(timeout=timeout)
