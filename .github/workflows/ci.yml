@@ -1,21 +1,23 @@
 name: CI
 
 # The default build is headless (gradle buildHeadless): no window modules, help or javadoc.
-# The full Ghidra build with the window (gradle buildGhidra) runs weekly and on demand.
+# The full Ghidra build with the window (gradle buildGhidra) runs on demand (`workflow_dispatch` with
+# full: true); it matters when upstream is merged, not weekly.
 
 # Pushes to main and pull requests only: a pushed work branch is tested by its pull request, not twice.
+# Document-only changes skip the build.
 on:
   push:
     branches: [main]
+    paths-ignore: ['**.md', '.github/local-test-record.json']
   pull_request:
+    paths-ignore: ['**.md']
   workflow_dispatch:
     inputs:
       full:
         description: 'Also run the full Ghidra build (buildGhidra)'
         type: boolean
         default: false
-  schedule:
-    - cron: '17 4 * * 1'   # Mondays: the full build too
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -75,6 +77,25 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
+
+      # The runner image's rustup toolchain is not the pinned 1.99.1 and its partial install
+      # conflicts with the toolchain rust-toolchain.toml asks for (bin\cargo.exe, bin\rust-gdb);
+      # the two parallel cargo tasks then race it. Install the pinned toolchain into a fresh
+      # RUSTUP_HOME and put its real cargo on PATH, so no rustup work happens during the build.
+      - name: Rust toolchain 1.99.1
+        shell: pwsh
+        run: |
+          $rustupHome = Join-Path $env:RUNNER_TEMP 'rustup'
+          $cargoHome = Join-Path $env:RUNNER_TEMP 'cargo'
+          $env:RUSTUP_HOME = $rustupHome
+          $env:CARGO_HOME = $cargoHome
+          rustup toolchain install 1.99.1 --profile minimal --no-self-update
+          $tc = Join-Path $rustupHome 'toolchains\1.99.1-x86_64-pc-windows-msvc\bin'
+          if (-not (Test-Path (Join-Path $tc 'cargo.exe'))) { throw "cargo not installed at $tc" }
+          "RUSTUP_HOME=$rustupHome" >> $env:GITHUB_ENV
+          "CARGO_HOME=$cargoHome" >> $env:GITHUB_ENV
+          $tc >> $env:GITHUB_PATH
+          & (Join-Path $tc 'cargo.exe') --version
 
       - name: Cache fetched dependencies
         uses: actions/cache@v5
@@ -142,7 +163,7 @@ jobs:
 
   full:
     name: full Ghidra build (buildGhidra)
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full)
+    if: github.event_name == 'workflow_dispatch' && inputs.full
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -155,6 +176,19 @@ jobs:
         with:
           distribution: temurin
           java-version: ${{ env.JDK_VER }}
+
+      # Same partial-toolchain hazard as the Windows job: pin the toolchain into a fresh
+      # RUSTUP_HOME so the parallel cargo tasks never race rustup.
+      - name: Rust toolchain 1.99.1
+        run: |
+          export RUSTUP_HOME="$RUNNER_TEMP/rustup" CARGO_HOME="$RUNNER_TEMP/cargo"
+          rustup toolchain install 1.99.1 --profile minimal --no-self-update
+          tc="$RUSTUP_HOME/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin"
+          [ -x "$tc/cargo" ] || { echo "cargo not installed at $tc"; exit 1; }
+          echo "RUSTUP_HOME=$RUSTUP_HOME" >> "$GITHUB_ENV"
+          echo "CARGO_HOME=$CARGO_HOME" >> "$GITHUB_ENV"
+          echo "$tc" >> "$GITHUB_PATH"
+          "$tc/cargo" --version
 
       - name: Fetch dependencies
         run: ./gradlew -I gradle/support/fetchDependencies.gradle -DhideDownloadProgress -DnoEclipse
