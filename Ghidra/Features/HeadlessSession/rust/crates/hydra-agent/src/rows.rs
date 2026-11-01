@@ -6,13 +6,17 @@ use std::path::Path;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use hydra_client::Result;
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 
 /// Writes rows; `op`/`op_hashed` time the closure and record `ok`, `ms`, and the digest.
+///
+/// With `BENCH_SAVE_REPLIES=1` (the benchmark's `--save-replies`, for diagnosis) a hashed
+/// operation also writes its hashed projection as `reply`, exactly as `multiagent_bench.Rows` does.
 #[derive(Debug)]
 pub(crate) struct Rows {
     agent: String,
     out: BufWriter<File>,
+    save_replies: bool,
 }
 
 impl Rows {
@@ -25,6 +29,7 @@ impl Rows {
         Ok(Self {
             agent: agent.to_owned(),
             out: BufWriter::new(file),
+            save_replies: std::env::var_os("BENCH_SAVE_REPLIES").is_some_and(|v| v != "0"),
         })
     }
 
@@ -33,7 +38,7 @@ impl Rows {
         let row = self.row(name);
         let started = Instant::now();
         let result = run();
-        self.finish(row, &result, None, started);
+        self.finish(row, &result, None, None, started);
         result.ok()
     }
 
@@ -49,11 +54,17 @@ impl Rows {
         let row = self.row(name);
         let started = Instant::now();
         let result = run();
+        let mut reply = None;
         let hash = match &result {
-            Ok(value) => Some((key, hydra_client::digest(&project(value)))),
+            Ok(value) => {
+                let projected = project(value);
+                let sha = hydra_client::digest(&projected);
+                reply = Some(projected);
+                Some((key, sha))
+            }
             Err(e) => Some((key, format!("ERR:{}", e.code()))),
         };
-        self.finish(row, &result, hash, started);
+        self.finish(row, &result, hash, reply, started);
         result.ok()
     }
 
@@ -70,6 +81,7 @@ impl Rows {
         mut row: Map<String, Value>,
         result: &Result<T>,
         hash: Option<(&str, String)>,
+        reply: Option<Value>,
         started: Instant,
     ) {
         match result {
@@ -89,6 +101,11 @@ impl Rows {
             row.insert("key".to_owned(), Value::String(key.to_owned()));
             row.insert("sha".to_owned(), Value::String(sha));
         }
+        if self.save_replies
+            && let Some(reply) = reply
+        {
+            row.insert("reply".to_owned(), reply);
+        }
         let millis = started.elapsed().as_secs_f64() * 1000.0;
         row.insert("ms".to_owned(), Value::from(round2(millis)));
         let _ = writeln!(self.out, "{}", Value::Object(row));
@@ -106,14 +123,4 @@ fn unix_time() -> Value {
 /// Python's `round(x, 2)` for the millisecond field (the exact float text is not hashed).
 fn round2(x: f64) -> f64 {
     (x * 100.0).round() / 100.0
-}
-
-/// A row written outside `op` (the agent total), as the benchmark's subagents do.
-pub(crate) fn write_extra(path: &Path, agent: &str, op: &str, millis: f64) {
-    let Ok(mut file) = File::options().create(true).append(true).open(path) else {
-        return;
-    };
-    let row = json!({"agent": agent, "op": op, "ok": true, "t": unix_time(),
-                     "ms": round2(millis)});
-    let _ = writeln!(file, "{row}");
 }

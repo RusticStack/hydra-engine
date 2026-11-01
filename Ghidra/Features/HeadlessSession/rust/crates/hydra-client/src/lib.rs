@@ -31,7 +31,7 @@ pub mod json;
 pub mod session;
 pub mod version;
 
-pub use client::{Access, Discard};
+pub use client::{Access, CommentKind, Discard, EditOp};
 pub use error::{Error, Result, SessionError};
 pub use json::{decompile_projection, digest, python_dumps, sha256_hex};
 pub use session::{ConnectOptions, Endpoint, Labelled, Reply, Session, fields};

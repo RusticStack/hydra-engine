@@ -12,7 +12,9 @@ use std::time::{Duration, Instant};
 
 use hydra_client::error::code;
 use hydra_client::session::fields;
-use hydra_client::{ConnectOptions, Endpoint, Session, SessionError};
+use hydra_client::{
+    Access, CommentKind, ConnectOptions, Discard, EditOp, Endpoint, Session, SessionError,
+};
 use serde_json::{Map, Value, json};
 
 type Handler = Box<dyn FnMut(&Value, &mut ReplyWriter) + Send>;
@@ -364,6 +366,96 @@ fn a_deadline_cancels_the_request_and_the_connection_stays_usable() {
     assert_eq!(session.call("ping", Map::new(), None).unwrap(), json!({"cmd": "ping"}));
     session.close();
     engine.wait_closed(1);
+}
+
+#[test]
+fn the_write_helpers_send_the_protocols_fields() {
+    let engine = FakeEngine::start(hello_or_cmd(v2_answer));
+    let session = connect(&engine);
+    let ops = [
+        EditOp::Rename {
+            address: "0x401000".to_owned(),
+            name: "renamed".to_owned(),
+        },
+        EditOp::Comment {
+            address: "0x401000".to_owned(),
+            text: "a plate".to_owned(),
+            kind: CommentKind::Plate,
+        },
+    ];
+    session
+        .apply_overlay("prog", "ov-agent", &ops, None)
+        .unwrap();
+    session.drop_overlay("prog", "ov-agent", None).unwrap();
+    session
+        .edit(
+            "prog",
+            &[EditOp::Signature {
+                address: "0x401000".to_owned(),
+                signature: "void f(int)".to_owned(),
+            }],
+            None,
+        )
+        .unwrap();
+    session.save("prog", Some("bench tag"), None).unwrap();
+    session
+        .fork_project("p1", "C:/forks/a", Access::Writable, Some(600), None)
+        .unwrap();
+    session
+        .open_program_upgrading("/swkotor.exe", Some("f1"), None, None)
+        .unwrap();
+    session
+        .close_project(Some("f1"), Some(Discard::Discard), None)
+        .unwrap();
+    session.close_project(Some("p1"), None, None).unwrap();
+    session.close();
+
+    let requests = engine.requests();
+    let request = |cmd: &str| {
+        requests
+            .iter()
+            .find(|r| r["cmd"] == cmd)
+            .unwrap_or_else(|| panic!("no {cmd} request"))
+    };
+    let overlay = request("apply_overlay");
+    assert_eq!(overlay["program"], json!("prog"));
+    assert_eq!(overlay["overlay"], json!("ov-agent"));
+    assert_eq!(
+        overlay["ops"],
+        json!([
+            {"op": "rename", "address": "0x401000", "name": "renamed"},
+            {"op": "comment", "address": "0x401000", "text": "a plate", "type": "plate"}
+        ])
+    );
+    let drop = request("drop_overlay");
+    assert_eq!(drop["program"], json!("prog"));
+    assert_eq!(drop["overlay"], json!("ov-agent"));
+    let edit = request("edit");
+    assert_eq!(
+        edit["ops"],
+        json!([{"op": "signature", "address": "0x401000", "signature": "void f(int)"}])
+    );
+    assert_eq!(request("save")["comment"], json!("bench tag"));
+    let fork = request("fork_project");
+    assert_eq!(fork["project"], json!("p1"));
+    assert_eq!(fork["path"], json!("C:/forks/a"));
+    assert_eq!(fork["writable"], json!(true));
+    assert_eq!(fork["timeout"], json!(600));
+    let upgrade = requests
+        .iter()
+        .find(|r| r["cmd"] == "open_program" && r["upgrade"] == json!(true))
+        .expect("the upgrading open");
+    assert_eq!(upgrade["path"], json!("/swkotor.exe"));
+    assert_eq!(upgrade["project"], json!("f1"));
+    assert_eq!(upgrade["writable"], json!(true));
+    let closes: Vec<&Value> = requests
+        .iter()
+        .filter(|r| r["cmd"] == "close_project")
+        .collect();
+    assert_eq!(closes.len(), 2);
+    assert_eq!(closes[0]["discard"], json!(true));
+    assert!(closes[1].get("discard").is_none(), "an omitted discard");
+    assert_eq!(closes[1]["project"], json!("p1"));
 }
 
 #[test]

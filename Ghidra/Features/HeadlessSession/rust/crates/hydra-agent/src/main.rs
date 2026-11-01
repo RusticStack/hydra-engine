@@ -1,9 +1,10 @@
 //! `hydra-agent`: the benchmark's agent shape on the Rust client.
 //!
 //! Two uses:
-//! - `hydra-agent agent --spec spec.json` runs one read/query agent: open the project view,
-//!   list the functions, decompile a hot set and a fresh set, run `BenchRead.java` over a few
-//!   addresses, ask `info`, close. It writes one JSON line per operation, in the benchmark's
+//! - `hydra-agent agent --spec spec.json` runs one direct agent: open the project view, list the
+//!   functions, decompile a hot set and a fresh set, run `BenchRead.java` over a few addresses,
+//!   ask `info`, apply and drop an overlay edit, and (when the spec asks) fork the project, edit,
+//!   decompile, save and close the fork. It writes one JSON line per operation, in the benchmark's
 //!   row schema, so the same aggregator reads Python and Rust agents.
 //! - `hydra-agent call --endpoint <file>` is the differential harness: one request object per
 //!   stdin line, one answer line per stdout line, exactly the bytes the engine sent.

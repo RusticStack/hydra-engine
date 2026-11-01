@@ -1,12 +1,14 @@
 //! The read path the agents use: project and program opens, `info`, `functions`, `decompile`,
-//! scripts (`BenchRead.java`, the byte/xref/symbol read), and the closes.
+//! scripts (`BenchRead.java`, the byte/xref/symbol read), and the closes; and the write path
+//! the multi-agent benchmark's direct agents exercise: `apply_overlay`, `drop_overlay`, `edit`,
+//! `save` and `fork_project`.
 //!
 //! Every method returns the engine's `result` object unchanged: the protocol's replies are the
 //! contract, and a typed view would silently drop fields the engine may add. The methods exist
 //! to name the fields and keep the addresses as strings (`0x...`, `rva:...`, `space:offset`),
 //! exactly as the Python client passes them.
 
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::error::Result;
 use crate::session::{Session, fields};
@@ -42,6 +44,91 @@ impl Discard {
     fn json(self) -> Value {
         Value::Bool(matches!(self, Self::Discard))
     }
+}
+
+/// The comment kinds `edit` and `apply_overlay` accept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CommentKind {
+    /// A plate comment (the function's header block).
+    Plate,
+    /// The comment above the address.
+    Pre,
+    /// The comment after the instruction on the same line.
+    Eol,
+    /// A repeatable comment.
+    Repeatable,
+    /// The comment below the address.
+    Post,
+}
+
+impl CommentKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Plate => "plate",
+            Self::Pre => "pre",
+            Self::Eol => "eol",
+            Self::Repeatable => "repeatable",
+            Self::Post => "post",
+        }
+    }
+}
+
+/// One entry of `edit`'s or `apply_overlay`'s `ops` array.
+///
+/// The engine has five native write operations (rename, label, comment, signature, data type);
+/// this enum names the three the multi-agent benchmark uses. Every other op is still reachable
+/// through [`Session::call`] with a raw `ops` array, so no protocol surface is lost.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum EditOp {
+    /// `{"op": "rename", "address", "name"}`.
+    Rename {
+        /// The address of the symbol to rename.
+        address: String,
+        /// The new name.
+        name: String,
+    },
+    /// `{"op": "comment", "address", "text", "type"}`.
+    Comment {
+        /// The address to comment.
+        address: String,
+        /// The comment text.
+        text: String,
+        /// Which comment.
+        kind: CommentKind,
+    },
+    /// `{"op": "signature", "address", "signature"}`.
+    Signature {
+        /// The function whose prototype changes.
+        address: String,
+        /// The new prototype, without a trailing semicolon.
+        signature: String,
+    },
+}
+
+impl EditOp {
+    /// The protocol's JSON object for this operation.
+    #[must_use]
+    pub fn to_json(&self) -> Value {
+        match self {
+            Self::Rename { address, name } => {
+                json!({"op": "rename", "address": address, "name": name})
+            }
+            Self::Comment {
+                address,
+                text,
+                kind,
+            } => json!({"op": "comment", "address": address, "text": text, "type": kind.as_str()}),
+            Self::Signature { address, signature } => {
+                json!({"op": "signature", "address": address, "signature": signature})
+            }
+        }
+    }
+}
+
+fn ops_json(ops: &[EditOp]) -> Value {
+    Value::Array(ops.iter().map(EditOp::to_json).collect())
 }
 
 impl Session {
@@ -293,12 +380,15 @@ impl Session {
     pub fn close_project(
         &self,
         project: Option<&str>,
-        discard: Discard,
+        discard: Option<Discard>,
         deadline: Option<f64>,
     ) -> Result<Value> {
-        let mut f = fields([("discard", discard.json())]);
+        let mut f = Map::new();
         if let Some(project) = project {
             f.insert("project".to_owned(), Value::String(project.to_owned()));
+        }
+        if let Some(discard) = discard {
+            f.insert("discard".to_owned(), discard.json());
         }
         self.call("close_project", f, deadline)
     }
@@ -329,5 +419,135 @@ impl Session {
     /// As [`Session::call`].
     pub fn projects(&self) -> Result<Value> {
         self.call("projects", Map::new(), None)
+    }
+
+    /// `open_program` for a fork this client owns: writable, and upgrading the project's
+    /// format when the engine says the fork is in an older one.
+    ///
+    /// # Errors
+    /// As [`Session::call`]; the engine may answer `backup_required` or `sealed` here.
+    pub fn open_program_upgrading(
+        &self,
+        path: &str,
+        project: Option<&str>,
+        overlay: Option<&str>,
+        deadline: Option<f64>,
+    ) -> Result<Value> {
+        let mut f = fields([
+            ("path", Value::String(path.to_owned())),
+            ("writable", Value::Bool(true)),
+            ("upgrade", Value::Bool(true)),
+        ]);
+        if let Some(project) = project {
+            f.insert("project".to_owned(), Value::String(project.to_owned()));
+        }
+        if let Some(overlay) = overlay {
+            f.insert("overlay".to_owned(), Value::String(overlay.to_owned()));
+        }
+        self.call("open_program", f, deadline)
+    }
+
+    /// `apply_overlay`: applies `ops` in one transaction to a view's overlay.
+    ///
+    /// The reply carries the changed subjects and the overlay's new revision; the ops are
+    /// [`EditOp`]s, and an op this enum does not name is still reachable through
+    /// [`Session::call`] with a raw array.
+    ///
+    /// # Errors
+    /// As [`Session::call`]; the engine may answer `conflict` or `not_found` here.
+    pub fn apply_overlay(
+        &self,
+        program: &str,
+        overlay: &str,
+        ops: &[EditOp],
+        deadline: Option<f64>,
+    ) -> Result<Value> {
+        self.call(
+            "apply_overlay",
+            fields([
+                ("program", Value::String(program.to_owned())),
+                ("overlay", Value::String(overlay.to_owned())),
+                ("ops", ops_json(ops)),
+            ]),
+            deadline,
+        )
+    }
+
+    /// `drop_overlay`: discards a view's overlay and everything unsaved in it.
+    ///
+    /// # Errors
+    /// As [`Session::call`].
+    pub fn drop_overlay(
+        &self,
+        program: &str,
+        overlay: &str,
+        deadline: Option<f64>,
+    ) -> Result<Value> {
+        self.call(
+            "drop_overlay",
+            fields([
+                ("program", Value::String(program.to_owned())),
+                ("overlay", Value::String(overlay.to_owned())),
+            ]),
+            deadline,
+        )
+    }
+
+    /// `edit`: applies `ops` to a writable program, changing its in-memory database.
+    ///
+    /// # Errors
+    /// As [`Session::call`]; the engine may answer `read_only`, `conflict` or `sealed` here.
+    pub fn edit(&self, program: &str, ops: &[EditOp], deadline: Option<f64>) -> Result<Value> {
+        self.call(
+            "edit",
+            fields([
+                ("program", Value::String(program.to_owned())),
+                ("ops", ops_json(ops)),
+            ]),
+            deadline,
+        )
+    }
+
+    /// `save`: writes a writable program's changes, with an optional journal comment.
+    ///
+    /// # Errors
+    /// As [`Session::call`].
+    pub fn save(
+        &self,
+        program: &str,
+        comment: Option<&str>,
+        deadline: Option<f64>,
+    ) -> Result<Value> {
+        let mut f = fields([("program", Value::String(program.to_owned()))]);
+        if let Some(comment) = comment {
+            f.insert("comment".to_owned(), Value::String(comment.to_owned()));
+        }
+        self.call("save", f, deadline)
+    }
+
+    /// `fork_project`: copies a project to `path`; the reply names the new project's id.
+    ///
+    /// `timeout_s` is the engine's fork timeout (the protocol's default is 600 s for a fork
+    /// of a large project).
+    ///
+    /// # Errors
+    /// As [`Session::call`]; the engine may answer `conflict`, `not_found` or `failed` here.
+    pub fn fork_project(
+        &self,
+        project: &str,
+        path: &str,
+        access: Access,
+        timeout_s: Option<u64>,
+        deadline: Option<f64>,
+    ) -> Result<Value> {
+        let mut f = fields([
+            ("project", Value::String(project.to_owned())),
+            ("path", Value::String(path.to_owned())),
+            ("writable", access.json()),
+        ]);
+        if let Some(timeout_s) = timeout_s {
+            f.insert("timeout".to_owned(), Value::from(timeout_s));
+        }
+        self.call("fork_project", f, deadline)
     }
 }
