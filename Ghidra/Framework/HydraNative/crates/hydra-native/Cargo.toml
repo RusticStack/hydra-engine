@@ -14,6 +14,11 @@ crate-type = ["cdylib", "rlib"]
 [lints]
 workspace = true
 
+[dependencies]
+hydra-trace = { path = "../hydra-trace" }
+serde_json.workspace = true
+sha2.workspace = true
+
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true
 

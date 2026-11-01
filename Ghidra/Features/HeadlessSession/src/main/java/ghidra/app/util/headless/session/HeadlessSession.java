@@ -123,6 +123,7 @@ public class HeadlessSession implements GhidraLaunchable {
 			o = Options.parse(args);
 			requireExpect = Settings.bool("requireExpect", false); // a bad value is a usage error
 			Scheduler.validateSettings(); // so is a bad lane setting
+			TraceCommands.validateSettings(); // and a bad trace.* setting
 			Health.validateSettings(); // and testHooks as a setting: it is a launch property only
 			Connection.validateSettings(); // and connectionThreads / laneIdleMs (Goal 2)
 			Budgets.validate(); // E9: the budgets, and -Xmx against minXmxMb

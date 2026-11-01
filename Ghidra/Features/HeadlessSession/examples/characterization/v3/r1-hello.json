@@ -59,7 +59,8 @@
       "identity": 1,
       "seal": 1,
       "forkAtomic": 1,
-      "admission": 1
+      "admission": 1,
+      "trace": 1
      },
      "limits": {
       "maxQuick": 4,
@@ -148,7 +149,8 @@
       "identity": 1,
       "seal": 1,
       "forkAtomic": 1,
-      "admission": 1
+      "admission": 1,
+      "trace": 1
      },
      "limits": {
       "maxQuick": 4,

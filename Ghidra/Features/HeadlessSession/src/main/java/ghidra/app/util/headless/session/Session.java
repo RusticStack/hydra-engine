@@ -115,6 +115,7 @@ final class Session {
 	final ProgramCommands programCmds = new ProgramCommands(this);
 	final ProjectCommands projectCmds = new ProjectCommands(this);
 	final ForkCommands forkCmds = new ForkCommands(this);
+	final TraceCommands traceCmds = new TraceCommands(this);
 
 	Session(Scheduler scheduler, long keepWarmSeconds, UpgradeCache upgradeCache) {
 		this.scheduler = scheduler;
@@ -176,6 +177,7 @@ final class Session {
 	 */
 	void disconnect(Client c) {
 		c.running.values().forEach(RequestMonitor::cancel);
+		TraceLeases.clientGone(c); // its writer leases are orphaned; readers hold nothing
 		List<String> joined;
 		synchronized (c.projects) {
 			joined = new ArrayList<>(c.projects);
@@ -560,6 +562,9 @@ final class Session {
 					SessionException.BAD_REQUEST, "missing field: overlay");
 				case "fork_project" -> forkCmds.forkProject(c, req, m);
 				case "seal_project" -> Seals.sealProject(this, c, req);
+				case "trace_open", "trace_append", "trace_mark", "trace_query", "trace_explain",
+						"trace_diff", "trace_check", "trace_export", "trace_close", "trace_list",
+						"trace_info", "trace_resymbolize" -> traceCmds.run(c, cmd, req, m);
 				case "prepare_upgrade" -> projectCmds.prepareUpgrade(c, req, m);
 				case "refresh", "reopen" -> projectCmds.refresh(c, req, m);
 				case "close_project" -> projectCmds.closeProject(c, req);

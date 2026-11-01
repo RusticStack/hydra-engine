@@ -125,4 +125,46 @@ uint64_t hydra_cs_copy(const HydraCsScan *s, uint8_t *out, uint64_t len);
 
 void hydra_cs_free(HydraCsScan *s);
 
+/*
+ * The semantic trace (src/trace_abi.rs, crate hydra-trace; Java: HeadlessSession TraceCommands):
+ * request bytes in, reply bytes out. Its own ABI version. Commands: trace_open, trace_append,
+ * trace_mark, trace_query, trace_explain, trace_diff, trace_check, trace_export, trace_close,
+ * trace_list, trace_info, trace_resymbolize (PROTOCOL-3.md, "Trace commands").
+ */
+#define HYDRA_TRACE_ABI_VERSION 1
+
+typedef struct HydraTraceReply HydraTraceReply;
+
+/*
+ * Resolves a code address at a pinned symbol revision. Writes a JSON object
+ * {"function":"name","entry":"0x...","offset":N} into out and returns its length; 0: no symbol
+ * (reason no-symbol), -1: module unknown, -2: not code, -3: revision unknown. Called on the
+ * ingest thread; it takes no lock and does no I/O.
+ */
+typedef int32_t (*HydraTraceSymbolize)(const uint8_t *session, size_t session_len,
+	uint64_t revision, const uint8_t *module, size_t module_len, uint64_t va, uint8_t *out,
+	size_t out_cap);
+
+uint32_t hydra_trace_abi_version(void);
+
+/* Process-wide; NULL removes it. */
+void hydra_trace_set_symbolizer(HydraTraceSymbolize cb);
+
+/*
+ * cmd: the command name. ctx: JSON the engine adds {root, session, producerGen, lease:{role,...},
+ * leases, symbolRevision, budget}. req: the client's request object. cancel: NULL, or an int the
+ * caller sets non-zero to cancel (polled by long work). Free with hydra_trace_reply_free.
+ */
+HydraTraceReply *hydra_trace_call(const uint8_t *cmd, size_t cmd_len, const uint8_t *ctx,
+	size_t ctx_len, const uint8_t *req, size_t req_len, const int32_t *cancel);
+
+/* 0: the bytes are the result JSON; else they are {"code","message","details"}. */
+int32_t hydra_trace_reply_status(const HydraTraceReply *r);
+
+const uint8_t *hydra_trace_reply_ptr(const HydraTraceReply *r);
+
+size_t hydra_trace_reply_len(const HydraTraceReply *r);
+
+void hydra_trace_reply_free(HydraTraceReply *r);
+
 #endif

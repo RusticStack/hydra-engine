@@ -143,7 +143,10 @@ dependencies = [
 name = "hydra-native"
 version = "0.1.0"
 dependencies = [
+ "hydra-trace",
  "libc",
+ "serde_json",
+ "sha2",
  "windows-sys",
 ]
 

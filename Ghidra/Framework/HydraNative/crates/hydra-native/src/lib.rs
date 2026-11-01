@@ -13,6 +13,7 @@ pub mod os;
 pub mod profile;
 pub mod readplane;
 pub mod topology;
+pub mod trace_abi;
 
 use cpuid::CpuId;
 use limits::Limits;
