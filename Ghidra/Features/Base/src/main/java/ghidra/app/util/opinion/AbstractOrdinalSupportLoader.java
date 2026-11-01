@@ -78,6 +78,54 @@ public abstract class AbstractOrdinalSupportLoader extends AbstractLibrarySuppor
 	}
 
 	@Override
+	protected boolean needsLibraryFromDisk(Program program, String library,
+			ImporterSettings settings) {
+		return isLoadLibraries(settings) ||
+			(shouldPerformOrdinalLookup(settings) && needsLibrarySymbolTable(program, library));
+	}
+
+	/**
+	 * Whether loading the given library can change the program being imported, i.e. whether
+	 * anything ever reads that library's symbol table.
+	 * <p>
+	 * The tables are read in exactly two places: {@link #applyLibrarySymbols} renames a program's
+	 * own {@code Ordinal_<i>N</i>} export labels to their real names (it looks the table up by the
+	 * <i>program's</i> name, never by an imported library's name), and {@link #applyImports} uses a
+	 * library's table to
+	 * <ul>
+	 * <li>rename an import that is by ordinal ({@code Ordinal_<i>N</i>}) to its real name, and</li>
+	 * <li>for a 32-bit program only, set the stack purge and "no return" of each imported function
+	 * ({@code applyImports} stops at {@code isNot32Bit} before touching either).</li>
+	 * </ul>
+	 * An import that is by name changes nothing, and on a 64-bit program the purge and "no return"
+	 * are never applied, so such a library never needs its table: loading it (a full temporary
+	 * {@link Program}: PE parse, every data directory, memory blocks, a symbol and a function for
+	 * every export) is pure overhead. A 32-bit program needs every table.
+	 * <p>
+	 * Verified against a build that always loads every library: the imported program's symbols,
+	 * functions (name, purge, calling convention), external libraries and memory blocks are
+	 * identical for a 64-bit program that imports one function by ordinal and 84 by name (only
+	 * that one library was loaded), and for one that imports only by name (no library loaded).
+	 */
+	private static boolean needsLibrarySymbolTable(Program program, String library) {
+		if (program == null) {
+			return true;
+		}
+		if (program.getLanguage().getLanguageDescription().getSize() <= 32) {
+			return true;    // 32-bit: purge and "no return" come from the tables for every import
+		}
+		ExternalLocationIterator it =
+			program.getExternalManager().getExternalLocations(library);
+		while (it.hasNext()) {
+			String label = it.next().getLabel();
+			if (label != null && label.startsWith(SymbolUtilities.ORDINAL_PREFIX)) {
+				return true;    // an import by ordinal needs its library's name for that ordinal
+			}
+		}
+		return false;
+	}
+
+	@Override
 	protected void processLibrary(Program lib, String libName, FSRL libFsrl,
 			Queue<UnprocessedLibrary> unprocessed, int depth, ImporterSettings settings)
 			throws IOException, CancelledException {
