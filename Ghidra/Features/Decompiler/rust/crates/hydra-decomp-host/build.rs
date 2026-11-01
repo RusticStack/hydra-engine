@@ -96,6 +96,24 @@ fn main() {
         println!("cargo:rerun-if-changed={}", p.display());
         b.file(p);
     }
+    // cc-rs registers only the .cc files it compiles; a header-only edit would leave the previous
+    // library in place (the shared .sla parse added a class member in a header, and a stale library
+    // hides such a change). Rebuild the C++ core when any of its headers changes.
+    fn register_headers(dir: &std::path::Path) {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    register_headers(&p);
+                } else if matches!(p.extension().and_then(|e| e.to_str()), Some("h") | Some("hh") | Some("inc")) {
+                    println!("cargo:rerun-if-changed={}", p.display());
+                }
+            }
+        }
+    }
+    register_headers(&cpp);
+    register_headers(&decompile.join("mimalloc/include"));
+    register_headers(&zlib);
     // The shim includes consolemain.cc (main renamed) so the console commands (restore, load file,
     // save, addpath) are the stock ones.
     b.file(manifest.join("cpp/host_shim.cc"));
