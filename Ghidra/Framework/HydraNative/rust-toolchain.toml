@@ -1,4 +1,7 @@
 [toolchain]
 channel = "1.99.1"
-components = ["clippy", "rustfmt"]
 profile = "minimal"
+# clippy and rustfmt are not build inputs. Do not list them as components: rustup then installs
+# them on every cargo invocation, and two crates built in parallel race in the shared toolchain
+# directory ("detected conflict: bin\rust-gdb", CI release build 2026-11-01). Install them on
+# demand with `rustup component add clippy rustfmt`.
