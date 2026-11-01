@@ -104,18 +104,27 @@ three extra JVMs `LaunchSupport` costs on every start:
   launcher's cwd; when the user has Ghidra extension modules, whose paths lie below each daemon's
   own settings dir, the file name also carries a hash of that dir): measured 6.4 -> 4.2 CPU s per start, 3925 -> 3400 classes,
   20.6 -> 17.0 MB metaspace.
-- **One-shot code without C2** (`jitOneShot`): the RELAX NG validator of the language specs and
-  the Sleigh preprocessor with ANTLR run once per language (its first load), but their hot loops
-  draw optimising-JIT (C2) compiles. A compiler directives file
+- **One-shot code without C2** (`jitOneShot`): the RELAX NG validator of the language specs,
+  the Sleigh preprocessor with ANTLR (its first load), the XML parser over language definitions,
+  project files and options, and log4j's configuration parser run once per language or per start,
+  but their hot loops draw optimising-JIT (C2) compiles. A compiler directives file
   (`<state>/launch/jit-one-shot-*.json`) keeps them on C1; the JIT never changes what a method
-  computes. javac and the class-file API are not listed: a long-lived daemon serving many agents'
+  computes. Measured on the KotOR workload: 158 C2 compiles / 0.66 s of a 14.3 s C2 thread time
+  and ~0.3 MB of code removed, for 0.02 s of execution moved to C1. javac and the class-file API
+  are not listed: a long-lived daemon serving many agents'
   scripts compiles again and again, and on C1 each later compile costs more CPU. Off when `vmargs`
   or a JVM option variable (`JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS`, `_JAVA_OPTIONS`) name a
   `-XX:CompilerDirectivesFile` (the JVM reads only one).
 - **AOT cache** (JDK 25+): `ghidra_session.py aot [--project <a small project>]` runs a training
   session (start-up, a project, a program, a few decompiles) with `-XX:AOTCacheOutput`; fast-mode
-  starts then use it automatically. It is keyed by the JDK, the install and every classpath jar's
-  size and time, so an update or another JDK just runs without it until you rebuild it, and by the
+  starts then use it automatically. With no cache yet, a daemon records its own class data
+  (`-XX:AOTMode=record -XX:-AOTRecordTraining`) and the cache is created from it when the daemon
+  stops (`-XX:AOTMode=create`): the first real session trains the install, with no project to
+  name and no flag, and the second start loads it. Method profiles are recorded off because
+  JDK 25's replay makes C2 compile them earlier, which cost 9 % of the workload's CPU in a 30-40 s
+  daemon; class data alone kept the start-up win (ready 486 -> 231 ms in a 16-agent A/B) without
+  it. The cache is keyed by the JDK, the install and every classpath
+  jar's size and time, so an update or another JDK just runs without it until you rebuild it, and by the
   JVM options a cache must match (the garbage collector, compact object headers, compressed
   pointers, which a heap of 32 GiB or more turns off): the JVM refuses a cache recorded with other
   ones and silently runs without it, so each set gets its own file. The cache is looked for in
@@ -164,7 +173,7 @@ Lowest to highest: defaults, `<state>/config.json`, environment, command-line op
 | `vmargs` | `GHIDRA_SESSION_VMARGS` (space-separated) | `[]` | Extra JVM options, last. |
 | `tmpdir` | `GHIDRA_SESSION_TMPDIR` | the JVM's | `java.io.tmpdir`: where Ghidra keeps unsaved database buffers. Put it on a fast disk with room. |
 | `mode` | `GHIDRA_SESSION_MODE` | `fast` | `fast` or `standard` (above). |
-| `aot` | `GHIDRA_SESSION_AOT` | `auto` | `auto`: use the AOT cache when one exists; `off`. |
+| `aot` | `GHIDRA_SESSION_AOT` | `auto` | `auto`: use the AOT cache when one exists; when none does, the daemon records its class data and the cache is created after it stops (one run, then every later start loads it); `off`. |
 | `aotDir` | `GHIDRA_SESSION_AOT_DIR` | `<per-user state dir>/aot` | The shared AOT store, searched after `<state>/aot`, also for an explicit `--state` or `GHIDRA_SESSION_HOME`; `none`: only `<state>/aot` (the test runners set this, so their fresh state dirs stay isolated). |
 | `classCache` | | `true` | The class search cache. |
 | `classCacheDir` | `GHIDRA_SESSION_CLASS_CACHE_DIR` | `<per-user state root>/classcache` | Where a state dir without its own class search cache finds the shared one; `none`: only the state dir's own. |

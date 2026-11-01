@@ -760,19 +760,24 @@ ENV_MAP = {
 }
 
 
-# Code a daemon runs once per language, whose C2 (optimising) compiles cost more CPU than they
-# save: the RELAX NG validator of the language specs and the Sleigh preprocessor with ANTLR (the
-# .sla staleness scan at the first load of a language). It still runs compiled by C1 (tier 1,
-# after the usual thresholds), never only interpreted; nothing else changes: the JIT never changes
-# what a method computes. The JDK's XML parser is not listed: every project open still parses XML.
-# javac and the class-file API are deliberately NOT listed: a long-lived daemon that serves many
-# agents' ad-hoc scripts runs javac again and again, and kept on C1 every compile after warm-up
-# costs more (measured, 1200 distinct compiles in one JVM: +34..60 % CPU for compiles 401-1200,
-# +8..22 % over all of them), and the JDK 24+ class-file API also generates every lambda, proxy
-# and method-handle class for the whole run.
+# Code a daemon runs once or in one short burst, whose C2 (optimising) compiles cost more CPU
+# than they save: the RELAX NG validator of the language specs and the Sleigh preprocessor with
+# ANTLR (the .sla staleness scan at the first load of a language), the XML parser over language
+# definitions, project files and options, and log4j's configuration parser (start-up only). It
+# still runs compiled by C1 (tier 1, after the usual thresholds), never only interpreted; nothing
+# else changes: the JIT never changes what a method computes. Measured on the KotOR workload (one
+# daemon, 100 decompiles): the two extra groups are 158 C2 compiles / 0.66 s of the 14.31 s C2
+# thread time and ~0.3 MB of code, against 0.02 s of execution in the same run; the excluded
+# packages' methods still get C1. javac and the class-file API are deliberately NOT listed: a
+# long-lived daemon that serves many agents' ad-hoc scripts runs javac again and again, and kept
+# on C1 every compile after warm-up costs more (measured, 1200 distinct compiles in one JVM:
+# +34..60 % CPU for compiles 401-1200, +8..22 % over all of them), and the JDK 24+ class-file API
+# also generates every lambda, proxy and method-handle class for the whole run (0.47 s of C2 in
+# the same workload - left on C2 for that reason).
 JIT_ONE_SHOT = [
     "com/sun/msv/*.*", "org/iso_relax/*.*",
     "ghidra/sleigh/grammar/*.*", "ghidra/pcodeCPort/*.*", "org/antlr/*.*",
+    "com/sun/org/apache/xerces/*.*", "org/apache/logging/log4j/core/config/*.*",
 ]
 
 # The JVM option variables, which the launcher passes on to the daemon (env_to_carry).
@@ -1105,9 +1110,66 @@ class Launch:
                 return f
         return None
 
+    def aot_mode_supported(self) -> bool:
+        """True when this JDK has ``-XX:AOTMode`` (25+): the two-step record/create API with
+        which a daemon records its own training data and the cache is created after it exits."""
+        m = re.match(r"(\d+)", self.jdk_version or "")
+        return bool(m) and int(m.group(1)) >= 25
+
+    def aot_record_file(self, aot_key: str) -> Path | None:
+        """The file a daemon records its training data to when there is no cache for it yet, or
+        None. `Daemon` creates the cache from it once the daemon has stopped, so an install
+        trains itself in the background of its first real session: no project to name, no flag,
+        and the second start finds the cache. Only when the cache can serve more than one state
+        dir (a shared store, ``aotDir``); the test runners' fresh state dirs run with ``none``
+        and record nothing."""
+        if not self.aot_mode_supported() or len(self.aot_dirs()) < 2:
+            return None
+        opts = [*self.props["vmargs"], *(self.cfg.get("vmargs") or [])]
+        if any(a.startswith(("-XX:AOTMode=", "-XX:AOTCache=", "-XX:AOTConfiguration="))
+               for a in opts):
+            return None
+        # An option in a JVM option variable is read before the command line: two AOT modes in
+        # one JVM is an error, so a variable that names one wins and nothing is recorded.
+        if any("-XX:AOT" in (self.env.get(k) or "") for k in JVM_OPTION_VARS):
+            return None
+        f = self.state / "launch" / f"aot-{aot_key}.aotconf"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        return f
+
+    def create_aot(self, conf: Path, out: Path, timeout: float = 900.0) -> bool:
+        """Creates the AOT cache ``out`` from the recording ``conf`` (``-XX:AOTMode=create``) in
+        a JVM that writes it and exits without running a session. The JVM options and the
+        classpath are the ones the recording ran with: both come from `command`, so the cache is
+        accepted by the next daemon. Returns True when ``out`` exists afterwards."""
+        argv, _info = self.command([], use_aot=False)
+        try:
+            main = argv.index(FAST_MAIN_CLASS)
+        except ValueError:
+            return False                       # standard mode: no AOT cache for its classes
+        tmp = out.with_name(f"{out.stem}.{os.getpid()}-{uuid.uuid4().hex[:8]}.building")
+        cmd = [*argv[:main], "-XX:AOTMode=create", f"-XX:AOTConfiguration={conf}",
+               f"-XX:AOTCache={tmp}"]
+        errlog = out.with_suffix(".log")
+        try:
+            with open(errlog, "wb") as ef:
+                proc = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=ef, stderr=ef,
+                                      cwd=str(self.state), timeout=timeout)
+            if proc.returncode != 0 or not tmp.is_file():
+                return False
+            install_aot(tmp, out, log=lambda *_: None)
+            return out.is_file()
+        except (OSError, subprocess.SubprocessError):
+            return False
+        finally:
+            with contextlib.suppress(OSError):
+                tmp.unlink()
+
     def command(self, app_args: list[str], *, aot_output: Path | None = None,
-                use_aot: bool = True) -> tuple[list[str], dict]:
-        """(argv, info). Fast mode passes the classpath through an @argfile in the state dir."""
+                use_aot: bool = True, aot_record: bool = True) -> tuple[list[str], dict]:
+        """(argv, info). Fast mode passes the classpath through an @argfile in the state dir.
+        ``aot_record`` False: never record training data (a private stdio session, whose stdout
+        is the protocol channel and would carry the JVM's "AOTConfiguration recorded" line)."""
         mode = self.cfg["mode"]
         vm = list(self.props["vmargs"])
         info = {"mode": mode, "java": str(self.java), "jdk": self.jdk_version}
@@ -1134,12 +1196,25 @@ class Launch:
             info["aotKey"] = aot_key = f"{key}-{self.aot_flavor(vm)}"
             aot_file = (self.aot_file(aot_key)
                         if aot_output is None and use_aot and self.cfg["aot"] == "auto" else None)
+            record = (self.aot_record_file(aot_key)
+                      if aot_record and aot_file is None and aot_output is None and use_aot
+                      and self.cfg["aot"] == "auto" else None)
             if aot_output is not None:
                 vm.append(f"-XX:AOTCacheOutput={aot_output}")
                 info["aot"] = "training"
             elif aot_file is not None:
                 vm += [f"-XX:AOTCache={aot_file}", f"-Dghidra.session.aot={aot_file}"]
                 info["aot"] = str(aot_file)
+            elif record is not None:
+                # No cache for this install yet: record this session's class data; Daemon creates
+                # the cache from it when it stops. Method profiles are recorded off: JDK 25's
+                # replay makes C2 compile profiled methods earlier, which in a 30-40 s daemon
+                # costs more than it saves (measured: workload +9 % CPU with profiles, -5 %
+                # without, at the same start-up win).
+                vm += ["-XX:+UnlockDiagnosticVMOptions", "-XX:-AOTRecordTraining",
+                       "-XX:AOTMode=record", f"-XX:AOTConfiguration={record}"]
+                info["aot"] = "record"
+                info["aotRecord"] = str(record)
             else:
                 info["aot"] = None
             if self.cfg.get("classCache", True):
@@ -1609,7 +1684,7 @@ class StdioSession(_Base):
         st = state_dir(state)
         ensure_state(st)
         launch = Launch(Install.locate(ghidra), load_config(st, cfg_overrides), st)
-        argv, self.launch_info = launch.command(list(args))
+        argv, self.launch_info = launch.command(list(args), aot_record=False)
         self._stderr = open(stderr_path, "ab") if stderr_path else subprocess.DEVNULL
         t0 = time.perf_counter()
         self.proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -2535,9 +2610,61 @@ class Daemon:
         end = time.monotonic() + timeout
         while time.monotonic() < end:
             if not self.jvm_alive():
+                self._create_recorded_aot()
                 return True
             time.sleep(0.1)
         raise LaunchError(f"daemon pid {pid} did not exit within {timeout:.0f} s")
+
+    def _create_recorded_aot(self) -> bool:
+        """After a clean stop: create the AOT cache from the training data this daemon recorded
+        (see `Launch.aot_record_file`), so the first real session of an install pays for the
+        cache and every later start loads it. One JVM that writes the cache and exits; once per
+        install+classpath key, serialised by a lock in the store; a failed creation is retried
+        only after `AOT_CREATE_RETRY_S`. Returns True when a cache was created."""
+        try:
+            cfg = load_config(self.state, self.cfg_overrides)
+            if cfg.get("aot") != "auto":
+                return False
+            launch = Launch(Install.locate(self.ghidra), cfg, self.state, self.instance)
+            if not launch.aot_mode_supported() or len(launch.aot_dirs()) < 2:
+                return False
+            _argv, info = launch.command([], use_aot=False)
+            conf = launch.aot_record_file(info["aotKey"])
+            if conf is None or not conf.is_file():
+                return False
+            out = launch.aot_dirs()[-1] / f"{info['aotKey']}.aot"
+            if out.is_file():
+                with contextlib.suppress(OSError):
+                    conf.unlink()
+                return False
+            failed = out.with_suffix(".failed")
+            try:
+                if time.time() - failed.stat().st_mtime < AOT_CREATE_RETRY_S:
+                    return False
+            except OSError:
+                pass
+            lock = FileLock(out.with_suffix(".create.lock"))
+            try:
+                if not lock.try_acquire():
+                    return False           # another daemon of the store is creating it now
+                if out.is_file():          # that one finished while this one waited
+                    with contextlib.suppress(OSError):
+                        conf.unlink()
+                    return False
+                if launch.create_aot(conf, out):
+                    with contextlib.suppress(OSError):
+                        conf.unlink()
+                    with contextlib.suppress(OSError):
+                        failed.unlink()
+                    prune_aot_store(out.parent, keep={out.stem})
+                    return True
+                with contextlib.suppress(OSError):
+                    failed.write_text(time.strftime("%Y-%m-%d %H:%M:%S\n"), encoding="utf-8")
+                return False
+            finally:
+                lock.close()
+        except Exception:                  # noqa: BLE001 - a cache is never worth a failed stop
+            return False
 
     def kill(self) -> bool:
         """Kills the daemon's JVM without a shutdown (tests, wedged daemons)."""
@@ -2690,6 +2817,7 @@ def install_aot(tmp: Path, out: Path, log=print):
 AOT_STORE_KEEP = 8                     # newest caches kept in the shared store
 AOT_STORE_MAX_AGE_S = 14 * 24 * 3600   # older unused caches are removed
 AOT_BUILDING_MAX_AGE_S = 24 * 3600     # an abandoned training run's temp file
+AOT_CREATE_RETRY_S = 6 * 3600          # a recording whose cache creation failed is retried after this
 
 
 def prune_aot_store(store: Path, keep: set[str] = frozenset(), log=print,
@@ -2816,7 +2944,11 @@ def main(argv=None) -> int:
             for d in cfg.get("scriptPath") or []:
                 args += ["-scriptPath", d]
             argv_, _ = launch.command(args)
-            return subprocess.call(argv_, env=launch.env, stdin=subprocess.DEVNULL)
+            rc = subprocess.call(argv_, env=launch.env, stdin=subprocess.DEVNULL)
+            if rc is not None:
+                # a foreground daemon trained too: create its cache now, as Daemon.stop does
+                Daemon(a.ghidra, a.state, a.instance, **over)._create_recorded_aot()
+            return rc
         d = Daemon(a.ghidra, a.state, a.instance, **over)
         if a.action == "ensure":
             with d.connect("ghidra_session", "cli") as s:

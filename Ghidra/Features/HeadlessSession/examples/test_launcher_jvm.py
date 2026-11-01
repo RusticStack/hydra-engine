@@ -126,6 +126,72 @@ class SharedAotStore(unittest.TestCase):
         self.assertEqual(cfg["aotDir"], str(self.shared))
 
 
+class AotRecording(unittest.TestCase):
+    """No cache for the install yet: the daemon records its class data (method profiles off) and
+    the cache is created from it after the daemon stops (`Launch.aot_record_file`,
+    `Daemon._create_recorded_aot`). One flag-free training run per install and classpath."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self.tmp.name)
+        self.shared = self.root / "shared-aot"
+        self.shared.mkdir()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_no_cache_records_class_data_only(self):
+        la = make_launch(self.root, aotDir=str(self.shared))
+        argv, info = la.command([])
+        self.assertEqual(info["aot"], "record")
+        self.assertEqual(opt(argv, "-XX:AOTMode="), ["record"])
+        self.assertIn("-XX:-AOTRecordTraining", argv)
+        self.assertIn("-XX:+UnlockDiagnosticVMOptions", argv)
+        self.assertEqual(opt(argv, "-XX:AOTCache="), [])
+        conf = opt(argv, "-XX:AOTConfiguration=")
+        self.assertEqual(len(conf), 1)
+        key = la.command([], use_aot=False)[1]["aotKey"]
+        self.assertEqual(pathlib.Path(conf[0]),
+                         la.state / "launch" / f"aot-{key}.aotconf")
+        self.assertTrue(pathlib.Path(conf[0]).parent.is_dir())
+
+    def test_a_cache_is_used_not_re_recorded(self):
+        la = make_launch(self.root, aotDir=str(self.shared))
+        key = la.command([], use_aot=False)[1]["aotKey"]
+        f = self.shared / f"{key}.aot"
+        f.write_bytes(b"x")
+        argv, info = la.command([])
+        self.assertEqual(info["aot"], str(f))
+        self.assertEqual(opt(argv, "-XX:AOTMode="), [])
+
+    def test_no_recording_without_a_shared_store(self):
+        for cfg in ({"aotDir": "none"}, {"aotDir": str(self.shared), "aot": "off"}):
+            la = make_launch(self.root, **cfg)
+            argv, info = la.command([])
+            self.assertEqual(opt(argv, "-XX:AOTMode="), [], cfg)
+            self.assertIsNone(info["aot"], cfg)
+
+    def test_no_recording_before_jdk_25(self):
+        la = make_launch(self.root, aotDir=str(self.shared))
+        la.jdk_version = "21.0.7"
+        argv, info = la.command([])
+        self.assertEqual(opt(argv, "-XX:AOTMode="), [])
+        self.assertIsNone(info["aot"])
+
+    def test_a_user_aot_option_wins_over_recording(self):
+        for cfg in ({"vmargs": ["-XX:AOTCache=/tmp/x.aot"]},
+                    {"vmargs": ["-XX:AOTMode=record", "-XX:AOTConfiguration=/tmp/x"]}):
+            la = make_launch(self.root, aotDir=str(self.shared), **cfg)
+            _argv, info = la.command([])
+            self.assertIsNone(info["aot"], cfg)
+
+    def test_a_stdio_session_never_records(self):
+        la = make_launch(self.root, aotDir=str(self.shared))
+        argv, info = la.command([], aot_record=False)
+        self.assertEqual(opt(argv, "-XX:AOTMode="), [])
+        self.assertIsNone(info["aot"])
+
+
 class DaemonJvmOptions(unittest.TestCase):
     """The heap, GC and JIT options of the daemon JVM (measured with the multi-agent bench)."""
 
