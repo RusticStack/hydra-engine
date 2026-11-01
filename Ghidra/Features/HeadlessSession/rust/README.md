@@ -1,3 +1,20 @@
+<!--
+# ###
+# IP: GHIDRA
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+-->
+
 # Rust client for the Hydra Engine session protocol
 
 `hydra-client` is a client of the protocol in
@@ -81,9 +98,15 @@ python -I build-install.py --check --install <install>   # verify an installed c
 
 The build is `cargo build --release --locked` with `CARGO_INCREMENTAL=0` and a target directory
 under `build/` (the source tree stays clean for `:HeadlessSession:ip`); `rust/.cargo/config.toml`
-passes `/Brepro`, so two builds of the same tree produce the same SHA-256. The marker
-(`hydra-agent.provenance.json`) records the crate and client versions, the protocol, the commit,
-the cargo/rustc versions, the size and the SHA-256.
+passes `/Brepro`, so two builds of the same tree produce the same SHA-256 (489472 bytes,
+`dc06e22e...`). The marker (`hydra-agent.provenance.json`) records the crate and client versions,
+the protocol, the commit, the cargo/rustc versions, the size and the SHA-256.
+
+Every `.rs` file carries the project's Apache-2.0 block header, and every `.toml`/`.md` file the
+`#` form (`README.md`/`PORTING.md` inside an HTML comment); `gradle/support/ip.gradle` treats
+`.rs` as a C-style source and `.toml`/`.md` as `#`-comment sources, so the `ip` task checks the
+headers. `certification.manifest` lists only the two non-source files (`Cargo.lock`,
+`.gitignore`).
 
 `build.gradle` registers `rustClient`, which runs this script for `assembleDistribution` (the
 full and headless installs). A machine without cargo gets a clear message and the engine build
@@ -101,20 +124,20 @@ Medians:
 
 | metric | Python direct | Rust direct | mixed |
 |---|---|---|---|
-| workload wall s | 7.38 | **5.53** | 5.71 |
-| tree CPU s | 30.87 | **22.83** | 25.90 |
-| of which python processes s | 7.92 | 3.75 | 5.89 |
-| of which rust agents s | - | 0.39 | 0.22 |
-| ops/s | 111.79 | **149.19** | 144.48 |
-| tree peak MB | 1139.1 | **937.4** | 1007.7 |
-| tree mean MB | 793.5 | 766.9 | 807.6 |
-| max python private MB | 324.1 | **150.2** | 206.1 |
-| max rust private MB | - | 20.2 | 10.2 |
+| workload wall s | 5.56 | **5.53** | 5.61 |
+| tree CPU s | 27.55 | **22.34** | 22.07 |
+| of which python processes s | 6.34 | **3.91** | 4.91 |
+| of which rust agents s | - | **0.39** | 0.12 |
+| ops/s | 147.84 | **148.64** | 147.06 |
+| tree peak MB | 1123.3 | **969.4** | 993.1 |
+| tree mean MB | 787.7 | 766.9 | 747.1 |
+| max python private MB | 326.6 | **149.9** | 206.4 |
+| max rust private MB | - | 19.9 | 9.7 |
 
-The 12 Python direct agents account for about 4.2 s of Python-process CPU (7.92 s with them,
-3.75 s for the four Hydralysis agents and the eight subagents alone); the 12 Rust direct agents
-use 0.39 s, 0.033 s each. The tree peak falls 201.7 MB and the Python side's private maximum
-173.9 MB; the JVM is ~847-957 MB of the remaining tree, and this shape (Hydralysis publishes and
+The 12 Python direct agents account for about 2.4 s of Python-process CPU (6.34 s with them,
+3.91 s for the four Hydralysis agents and the eight subagents alone); the 12 Rust direct agents
+use 0.39 s, 0.033 s each. The client's private maximum falls 176.7 MB and the tree peak
+153.9 MB; the JVM is 751-845 MB of the remaining tree, and this shape (Hydralysis publishes and
 six forks) is not the read/query shape the owner's 549 MB target was measured on.
 
 The read/query shape of round 3, on the same engine bytes, measured per agent and tree:
