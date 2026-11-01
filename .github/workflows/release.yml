@@ -131,6 +131,25 @@ jobs:
         with:
           python-version: '3.13'
 
+      # The runner image's rustup toolchain is not the pinned 1.99.1 and its partial install
+      # conflicts with the toolchain rust-toolchain.toml asks for (bin\cargo.exe, bin\rust-gdb).
+      # Install the pinned toolchain into a fresh RUSTUP_HOME and put its real cargo on PATH, so
+      # no rustup component installation happens during the build.
+      - name: Rust toolchain 1.99.1
+        shell: pwsh
+        run: |
+          $rustupHome = Join-Path $env:RUNNER_TEMP 'rustup'
+          $cargoHome = Join-Path $env:RUNNER_TEMP 'cargo'
+          $env:RUSTUP_HOME = $rustupHome
+          $env:CARGO_HOME = $cargoHome
+          rustup toolchain install 1.99.1 --profile minimal --no-self-update
+          $tc = Join-Path $rustupHome 'toolchains\1.99.1-x86_64-pc-windows-msvc\bin'
+          if (-not (Test-Path (Join-Path $tc 'cargo.exe'))) { throw "cargo not installed at $tc" }
+          "RUSTUP_HOME=$rustupHome" >> $env:GITHUB_ENV
+          "CARGO_HOME=$cargoHome" >> $env:GITHUB_ENV
+          $tc >> $env:GITHUB_PATH
+          & (Join-Path $tc 'cargo.exe') --version
+
       - name: Cache fetched dependencies
         uses: actions/cache@v6.1.0
         with:
