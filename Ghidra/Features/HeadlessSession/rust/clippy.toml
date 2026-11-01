@@ -1,0 +1,9 @@
+# BeautifulRust clippy configuration (C:/dev-overflow/tools/BeautifulRust/lints/clippy.toml).
+
+# Flag any function with a bool parameter, not just functions with four or more.
+max-fn-params-bools = 0
+
+# Allow unwrap, expect, and printing in tests, where a panic is the assertion.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-print-in-tests = true
