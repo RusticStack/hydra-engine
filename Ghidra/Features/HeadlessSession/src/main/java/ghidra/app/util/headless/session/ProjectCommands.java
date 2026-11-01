@@ -40,6 +40,14 @@ import ghidra.util.exception.*;
  */
 final class ProjectCommands {
 
+	/**
+	 * {@code -Dhydra.close.trace}: one line per closed project with the close's two phases, the
+	 * release of its programs and the project's own close (measured for the round-4 close lane:
+	 * 1.6-3.4 ms and 0.4-3.6 ms; the index rewrites that used to be 2.4 ms of the latter are gone,
+	 * see {@code IndexedLocalFileSystem.dispose}). Off by default, in the daemon log.
+	 */
+	static final boolean CLOSE_TRACE = System.getProperty("hydra.close.trace") != null;
+
 	private final Session s;
 
 	ProjectCommands(Session s) {
@@ -397,7 +405,12 @@ final class ProjectCommands {
 				s.programCmds.closeEntry(e);
 			}
 			p.closed = true;
-			p.closeViews();
+			if (ProjectFork.disposable(p.resolved)) {
+				p.closeDisposableForkView();
+			}
+			else {
+				p.closeViews();
+			}
 		}
 		finally {
 			unlockProject(p, l);
@@ -432,6 +445,9 @@ final class ProjectCommands {
 	 * is a read-only view. Returns true when the project was closed.
 	 */
 	boolean leaveProject(Client c, ProjectEntry p, boolean discard, long wait) {
+		long t0 = System.nanoTime();
+		long releaseNs = 0;
+		long closeNs = 0;
 		List<String> mine;
 		synchronized (c.programs) {
 			mine = c.programs.stream().filter(k -> k.startsWith(p.id + ":")).toList();
@@ -464,7 +480,9 @@ final class ProjectCommands {
 			try {
 				boolean discarded = false;
 				try {
+					long r0 = System.nanoTime();
 					discarded = s.programCmds.releaseUse(c, e, discard, w);
+					releaseNs += System.nanoTime() - r0;
 				}
 				catch (SessionException ex) {
 					if (dying && SessionException.BUSY.equals(ex.code())) {
@@ -505,7 +523,15 @@ final class ProjectCommands {
 			// the slot's state machine decides (a join in flight keeps the project open); the one
 			// exclusive project lock the close needs is taken under that slot's lock only (BP8)
 			try {
-				if (s.registry.closeIdle(p, x -> closeProjectEntry(x, w, true))) {
+				long c0 = System.nanoTime();
+				boolean did = s.registry.closeIdle(p, x -> closeProjectEntry(x, w, true));
+				closeNs += System.nanoTime() - c0;
+				if (did) {
+					if (CLOSE_TRACE) {
+						System.err.println("CLOSETRACE leave " + p.id + " release=" +
+							releaseNs / 1000 + "us close=" + closeNs / 1000 + "us total=" +
+							(System.nanoTime() - t0) / 1000 + "us");
+					}
 					return true;
 				}
 			}
@@ -517,6 +543,11 @@ final class ProjectCommands {
 				}
 				throw ex;
 			}
+		}
+		if (CLOSE_TRACE) {
+			System.err.println("CLOSETRACE leave " + p.id + " notclosed release=" +
+				releaseNs / 1000 + "us close=" + closeNs / 1000 + "us total=" +
+				(System.nanoTime() - t0) / 1000 + "us");
 		}
 		return false;
 	}
