@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/hydra-native"]
+members = ["crates/hydra-native", "crates/hydra-trace"]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,6 +12,13 @@ publish = false
 [workspace.dependencies]
 libc = "0.2.191"
 windows-sys = "0.61.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+hmac = "0.12"
+crc32fast = "1"
+memmap2 = "0.9"
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
