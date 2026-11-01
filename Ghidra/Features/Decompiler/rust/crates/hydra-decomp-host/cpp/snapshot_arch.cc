@@ -21,6 +21,7 @@
 #include "ghidra_translate.hh"
 
 #include <cstdlib>
+#include <cstdio>
 #include <cstring>
 #include <functional>
 #include <list>
@@ -141,6 +142,22 @@ SnapshotStore::SnapshotStore(uint8 i,const string &p,const string &c,const strin
   nativeErrors = 0;
   validated = 0;
   mismatches = 0;
+  // FNV-1a over the four specification blobs, so two generations share an Architecture only when
+  // every input registerProgram reads is the same.
+  unsigned long long h = 1469598103934665603ULL;
+  const string *parts[4] = { &pspec, &cspec, &tspec, &corespec };
+  for(int4 part=0;part<4;++part) {
+    const string &s(*parts[part]);
+    for(size_t k=0;k<s.size();++k) {
+      h ^= (unsigned char)s[k];
+      h *= 1099511628211ULL;
+    }
+    h ^= 0xff;			// separator
+    h *= 1099511628211ULL;
+  }
+  char buf[20];
+  snprintf(buf,sizeof(buf),"%016llx",h);
+  specsHash = buf;
 }
 
 size_t SnapshotStore::shardOf(const string &key)
@@ -520,6 +537,26 @@ void SnapshotChannel::begin(const string &sc)
   sout.clear();
 }
 
+/// \param st is the answers of the generation this Architecture now serves
+void SnapshotChannel::bind(const std::shared_ptr<SnapshotStore> &st)
+
+{
+  store = st;
+  scope.clear();
+  outbuf.data.clear();
+  inbuf.reset();
+  inbuf.owned.clear();
+  keybuf.clear();
+  payload.clear();
+  misses.clear();
+  fed.clear();
+  protocolError = false;
+  answered = 0;
+  spaces = (const AddrSpaceManager *)0;
+  sin.clear();
+  sout.clear();
+}
+
 // ---- native instruction translation ---------------------------------------------------------
 //
 // The host translates instructions itself with the decompiler's own Sleigh engine instead of
@@ -737,6 +774,48 @@ SnapshotArchitecture::SnapshotArchitecture(const std::shared_ptr<SnapshotStore> 
   nativePrepared = false;
   nativeFailed = false;
   nativeWords = 0;
+  programKey = st->programKey;
+  reuseKey = keyFor(*st);
+}
+
+/// The identity of a reusable Architecture: the program it belongs to, the digest of the
+/// specifications registerProgram was given, and the encoded options.
+/// \param st is the generation
+/// \return the key
+string SnapshotArchitecture::keyFor(const SnapshotStore &st)
+
+{
+  if (st.programKey.empty())
+    return string();
+  string key(st.programKey);
+  key += '\0';
+  key += st.specsHash;
+  key += '\0';
+  key += st.options;
+  return key;
+}
+
+/// \param st is the generation to serve from now on
+void SnapshotArchitecture::rebind(const std::shared_ptr<SnapshotStore> &st)
+
+{
+  // Nothing of the previous generation may survive: its bytes, its answers, and any cache a
+  // decompile left behind (flushNative is what the client sends after every decompile anyway).
+  channel.bind(st);
+  LoadImageGhidra *image = dynamic_cast<LoadImageGhidra *>(loader);
+  if (image != (LoadImageGhidra *)0) {
+    try {
+      image->setSnapshot(st->snapshotPath);
+    }
+    catch(LowlevelError &err) {	// no byte snapshot: byte requests go through the channel
+    }
+  }
+  flushNative();
+  channel.setSpaces(this);
+  // The next run applies this generation's instruction context to the worker's translator.
+  nativePrepared = false;
+  native = (Sleigh *)0;
+  programKey = st->programKey;
 }
 
 SnapshotArchitecture::~SnapshotArchitecture(void)
@@ -1266,11 +1345,14 @@ bool hydraLibraryStart(const char *root,string &err)
 
 /// \brief One Architecture held by a worker for one generation
 struct WorkerArch {
-  std::shared_ptr<SnapshotStore> store;		///< The generation (keeps the answers alive)
+  /// The generation this Architecture currently serves (keeps its answers alive), or null once the
+  /// client released it: the Architecture is then kept for the next generation of the same program.
+  std::shared_ptr<SnapshotStore> store;
   SnapshotArchitecture *arch;			///< Built and used by this worker only
 };
 
-/// Architectures a worker keeps (most recently used first). 4 generations per worker by default.
+/// Architectures a worker keeps (most recently used first): one per program it has served, with
+/// `HYDRA_SNAPSHOT_ARCHS` (default 4) as the bound when many programs share a worker.
 static thread_local std::list<WorkerArch> workerArchs;
 
 static size_t maxArchsPerWorker(void)
@@ -1343,6 +1425,22 @@ static void setMisses(SnapshotJob *job,const SnapshotChannel &ch)
   job->misses = copyOut(res,&job->misseslen);
 }
 
+/// Diagnostics: HYDRA_HOST_TRACE prints each Architecture a worker builds or rebinds (the host's
+/// per-generation set-up is what the memory measurements look at).
+static void hostTrace(const char *what,const SnapshotStore &st)
+
+{
+  static const bool on = []() {
+    const char *v = getenv("HYDRA_HOST_TRACE");
+    return v != (const char *)0 && v[0] != 0 && v[0] != '0';
+  }();
+  if (!on)
+    return;
+  fprintf(stderr,"[hydra-host] %s store=%llu program=%s\n",what,(unsigned long long)st.id,
+	  st.programKey.c_str());
+  fflush(stderr);
+}
+
 /// Runs one job on the calling worker: find or build this worker's Architecture for the store,
 /// decompile, flush. Every C++ exception is caught here.
 static int runJob(SnapshotJob *job)
@@ -1350,18 +1448,28 @@ static int runJob(SnapshotJob *job)
 {
   try {
     std::shared_ptr<SnapshotStore> st(*job->handle);
-    // Drop Architectures of generations the client released
+    // The program and options this job needs: every generation of one program registers the same
+    // specifications, so one Architecture per worker and program serves them all (rebind).
+    const string reuse(SnapshotArchitecture::keyFor(*st));
+    // A generation the client released frees its answers; the Architecture of its program stays
+    // (detached) for that program's next generation, and any other program's is dropped.
     for(std::list<WorkerArch>::iterator iter=workerArchs.begin();iter!=workerArchs.end();) {
-      if ((*iter).store->closed && (*iter).store != st) {
-	dropArch(*iter);
-	iter = workerArchs.erase(iter);
+      if ((*iter).store && (*iter).store->closed && (*iter).store != st) {
+	if (!reuse.empty() && (*iter).arch->getReuseKey() == reuse)
+	  (*iter).store.reset();	// closed generation: keep the Architecture, drop its answers
+	else {
+	  dropArch(*iter);
+	  iter = workerArchs.erase(iter);
+	  continue;
+	}
       }
-      else
-	++iter;
+      ++iter;
     }
     std::list<WorkerArch>::iterator cur = workerArchs.end();
     for(std::list<WorkerArch>::iterator iter=workerArchs.begin();iter!=workerArchs.end();++iter) {
-      if ((*iter).store->id == st->id) {
+      bool match = reuse.empty() ? ((*iter).store && (*iter).store->id == st->id)
+				 : ((*iter).arch->getReuseKey() == reuse);
+      if (match) {
 	cur = iter;
 	break;
       }
@@ -1374,6 +1482,7 @@ static int runJob(SnapshotJob *job)
       WorkerArch w;
       w.store = st;
       w.arch = new SnapshotArchitecture(st);
+      hostTrace("build",*st);
       string err = w.arch->registerHost();
       SnapshotChannel &ch(w.arch->getChannel());
       job->answered += ch.getAnswered();
@@ -1392,6 +1501,22 @@ static int runJob(SnapshotJob *job)
     else if (cur != workerArchs.begin())
       workerArchs.splice(workerArchs.begin(),workerArchs,cur);
     WorkerArch &w(workerArchs.front());
+    if (!w.store || w.store->id != st->id) {
+      // Another generation of the same program: same specifications and options, new bytes and
+      // answers. The Architecture is reused instead of built (its set-up was the host's largest
+      // per-generation allocation episode); only the generation-specific state is replaced.
+      try {
+	w.arch->rebind(st);
+	hostTrace("reuse",*st);
+      }
+      catch(std::exception &e) {
+	dropArch(w);
+	workerArchs.pop_front();
+	job->out = copyOut(string("host: rebinding the generation: ") + e.what(),&job->outlen);
+	return SNAPSHOT_FAILED;
+      }
+      w.store = st;
+    }
     SnapshotChannel &ch(w.arch->getChannel());
     uint8 before = ch.getAnswered();
     w.arch->decompileAt(string(job->addr,job->addrlen));
@@ -1611,6 +1736,19 @@ extern "C" void hydra_snapshot_store_close(void *h)
   std::shared_ptr<SnapshotStore> *st = (std::shared_ptr<SnapshotStore> *)h;
   (*st)->closed = true;
   delete st;
+}
+
+extern "C" int hydra_snapshot_store_program(void *h,const char *key,size_t keylen)
+
+{
+  try {
+    std::shared_ptr<SnapshotStore> &st(*(std::shared_ptr<SnapshotStore> *)h);
+    st->setProgram(key,keylen);
+    return 0;
+  }
+  catch(...) {
+    return 1;
+  }
 }
 
 extern "C" int hydra_snapshot_decompile(void *h,const char *addr,size_t addrlen,char **out,size_t *outlen,

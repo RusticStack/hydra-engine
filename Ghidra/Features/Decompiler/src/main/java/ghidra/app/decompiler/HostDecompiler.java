@@ -161,6 +161,7 @@ public final class HostDecompiler {
 		final MethodHandle storeNative;
 		final MethodHandle storeStats;
 		final MethodHandle storeClose;
+		final MethodHandle storeProgram;
 		final MethodHandle warm;
 		final MethodHandle storeValidate;
 		final MethodHandle decompile;
@@ -186,6 +187,8 @@ public final class HostDecompiler {
 				FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS));
 			storeClose = l.downcallHandle(lookup.findOrThrow("hydra_dhost_store_close"),
 				FunctionDescriptor.ofVoid(ADDRESS));
+			storeProgram = l.downcallHandle(lookup.findOrThrow("hydra_dhost_store_program"),
+				FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_LONG));
 			warm = l.downcallHandle(lookup.findOrThrow("hydra_dhost_warm"),
 				FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG));
 			storeValidate = l.downcallHandle(lookup.findOrThrow("hydra_dhost_store_validate"),
@@ -504,12 +507,7 @@ public final class HostDecompiler {
 		}
 
 		private void close(Lib l) {
-			try {
-				l.storeClose.invokeExact(store);
-			}
-			catch (Throwable t) {
-				Msg.error(HostDecompiler.class, "closing a decompile snapshot store: " + t, t);
-			}
+			closeStore(l, store);
 			ProgramSnapshotFile.release(snapshot);
 		}
 
@@ -525,6 +523,26 @@ public final class HostDecompiler {
 
 	private static final Map<Program, Gen> GENS = new WeakHashMap<>();
 	private static final AtomicLong STORE_ANSWERS = new AtomicLong();
+
+	/**
+	 * The identity of a program for the host's Architecture reuse: its executable, language and
+	 * name. Every client that opens the same program in the same daemon gets the same identity, so
+	 * they share one Architecture per worker (the host also requires the same registerProgram
+	 * specifications and options); a program with another executable, language or name does not.
+	 */
+	private static String programKey(Program program) {
+		return program.getExecutablePath() + "|" + program.getLanguageID() + "|"
+			+ program.getName();
+	}
+
+	private static void closeStore(Lib l, MemorySegment store) {
+		try {
+			l.storeClose.invokeExact(store);
+		}
+		catch (Throwable t) {
+			Msg.error(HostDecompiler.class, "closing a decompile snapshot store: " + t, t);
+		}
+	}
 
 	private static Gen generation(Lib l, Program program, DecompileOptions options)
 			throws IOException {
@@ -651,6 +669,22 @@ public final class HostDecompiler {
 		if (store.equals(MemorySegment.NULL)) {
 			ProgramSnapshotFile.release(snap);
 			throw new IOException("the host could not create a store");
+		}
+		// Name the program: every generation of this program registers the same specifications, so
+		// a worker builds one Architecture for it and rebinds it per generation instead of building
+		// (and later evicting) one per generation.
+		try (Arena a = Arena.ofConfined()) {
+			byte[] key = utf8(programKey(program));
+			MemorySegment seg = segment(a, key);
+			int rc = (int) l.storeProgram.invokeExact(store, seg, (long) key.length);
+			if (rc != 0) {
+				throw new IOException("the host refused the program key");
+			}
+		}
+		catch (Throwable t) {
+			ProgramSnapshotFile.release(snap);
+			closeStore(l, store);
+			throw new IOException("naming the decompile snapshot store's program: " + t, t);
 		}
 		Gen made = new Gen(program, snapshotSource, mod, opts, options, store, snap, sla);
 		if (sla != null) {
