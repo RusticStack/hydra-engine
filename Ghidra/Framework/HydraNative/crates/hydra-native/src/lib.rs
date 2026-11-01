@@ -6,6 +6,7 @@
 //! identification and topology, and the tuning profile chosen for it. The C ABI is
 //! `include/hydra_native.h`; its version is [`ABI_VERSION`].
 
+pub mod classscan;
 pub mod cpuid;
 pub mod limits;
 pub mod os;

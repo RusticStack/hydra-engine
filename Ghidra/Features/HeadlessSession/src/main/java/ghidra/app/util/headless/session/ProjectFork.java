@@ -467,7 +467,7 @@ final class ProjectFork {
 	record Staged(File dir, String id, ForkIntent intent, String sourceName, long ms,
 			long freeBefore, long freeAfter,
 			java.util.concurrent.atomic.AtomicBoolean unfinished, Steps steps,
-			Map<Path, Path> linked) {
+			Map<Path, Path> linked, Map<Path, Path> upgraded) {
 
 		boolean keep() {
 			return unfinished.get();
@@ -504,7 +504,7 @@ final class ProjectFork {
 	static Staged stage(ProjectResolver.Resolved r, File destDir, String name, String id,
 			String rk, RequestMonitor m) throws IOException, CancelledException {
 		return stage(r, destDir, name, id, rk, m,
-			UpgradeCache.sourceFiles(r.gpr().toPath(), r.name()), new Steps(), false);
+			UpgradeCache.sourceFiles(r.gpr().toPath(), r.name()), new Steps(), false, null);
 	}
 
 	/**
@@ -514,7 +514,7 @@ final class ProjectFork {
 	 */
 	static Staged stage(ProjectResolver.Resolved r, File destDir, String name, String id,
 			String rk, RequestMonitor m, SortedMap<String, Path> sourceFiles, Steps steps,
-			boolean link) throws IOException, CancelledException {
+			boolean link, UpgradeCache cache) throws IOException, CancelledException {
 		Files.createDirectories(destDir.toPath());
 		FileStore store = Files.getFileStore(destDir.toPath());
 		long freeBefore = store.getUsableSpace();
@@ -532,8 +532,19 @@ final class ProjectFork {
 		m.checkCancelled();
 		long ms = (System.nanoTime() - t0) / 1_000_000;
 		steps.mark("copy");
+		// the upgraded version the upgrade cache already holds for this source, linked into the
+		// staged copy before it is published: the fork's first writable open then finds the
+		// current format and upgrades nothing (no in-memory upgrade, no version added after the
+		// project opened). A fork that is being published for a backup is a plain copy of the
+		// source: nothing is added to it. Not part of the copy time the report gives
+		Map<Path, Path> upgraded = new java.util.LinkedHashMap<>();
+		if (link && cache != null) {
+			cache.placeUpgraded(r, tmp.toPath(), r.name(), upgraded);
+		}
+		m.checkCancelled();
+		steps.mark("upgrade");
 		return new Staged(tmp, id, intent, r.name(), ms, freeBefore, store.getUsableSpace(),
-			new java.util.concurrent.atomic.AtomicBoolean(), steps, linked);
+			new java.util.concurrent.atomic.AtomicBoolean(), steps, linked, upgraded);
 	}
 
 	/** Removes a staging folder (and warns when it cannot). */
@@ -612,8 +623,15 @@ final class ProjectFork {
 		}
 		List<String> moved = new ArrayList<>();
 		// E12: every staged byte and name is on the disk before anything is moved, so that the
-		// .gpr (the commit point) can never be durable while a file it names is not
-		forceTree(st.dir().toPath(), st.linked());
+		// .gpr (the commit point) can never be durable while a file it names is not. The versions
+		// placed from the upgrade cache are flushes of a file shared with it, like the linked
+		// version files: never written here, so their attributes are left alone
+		Map<Path, Path> forForce = st.linked();
+		if (!st.upgraded().isEmpty()) {
+			forForce = new java.util.HashMap<>(st.linked());
+			forForce.putAll(st.upgraded());
+		}
+		forceTree(st.dir().toPath(), forForce);
 		st.steps().mark("force");
 		// the intent says the .rep may be ours from here on, and which one it is
 		st.intent().withPhase(ForkIntent.MOVING, ForkSweeper.creationMs(stagedRep))

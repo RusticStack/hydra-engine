@@ -250,8 +250,8 @@ final class ForkCommands {
 			throw inProgress(destGpr, a.owner());
 		}
 		try {
-			return forkClaimed(c, req, m, t0, r, src, canonical, mode, writable, limit, destDir,
-				name, destGpr, id, rk, steps);
+			return forkClaimed(c, req, m, t0, r, src, canonical, canonicalDest, mode, writable,
+				limit, destDir, name, destGpr, id, rk, steps);
 		}
 		finally {
 			claim.release();
@@ -331,14 +331,14 @@ final class ForkCommands {
 	 * copy after a successful publish).
 	 */
 	private JsonElement forkClaimed(Client c, JsonObject req, RequestMonitor m, long t0,
-			ProjectResolver.Resolved r, ProjectEntry src, String canonical, String mode,
-			boolean writable, long limit, File destDir, String name, File destGpr, String id,
-			String rk, ProjectFork.Steps steps) {
+			ProjectResolver.Resolved r, ProjectEntry src, String canonical, String canonicalDest,
+			String mode, boolean writable, long limit, File destDir, String name, File destGpr,
+			String id, String rk, ProjectFork.Steps steps) {
 		java.util.concurrent.atomic.AtomicReference<ProjectFork.Staged> staging =
 			new java.util.concurrent.atomic.AtomicReference<>();
 		try {
-			return forkStaged(c, req, m, t0, r, src, canonical, mode, writable, limit, destDir,
-				name, destGpr, id, rk, staging, steps);
+			return forkStaged(c, req, m, t0, r, src, canonical, canonicalDest, mode, writable,
+				limit, destDir, name, destGpr, id, rk, staging, steps);
 		}
 		finally {
 			ProjectFork.Staged st = staging.get();
@@ -350,9 +350,9 @@ final class ForkCommands {
 	}
 
 	private JsonElement forkStaged(Client c, JsonObject req, RequestMonitor m, long t0,
-			ProjectResolver.Resolved r, ProjectEntry src, String canonical, String mode,
-			boolean writable, long limit, File destDir, String name, File destGpr, String id,
-			String rk, java.util.concurrent.atomic.AtomicReference<ProjectFork.Staged> staging,
+			ProjectResolver.Resolved r, ProjectEntry src, String canonical, String canonicalDest,
+			String mode, boolean writable, long limit, File destDir, String name, File destGpr,
+			String id, String rk, java.util.concurrent.atomic.AtomicReference<ProjectFork.Staged> staging,
 			ProjectFork.Steps steps) {
 		Spec spec = specOf(c, req);
 		ProjectLocator locator = new ProjectLocator(r.dir().getPath(), r.name());
@@ -449,7 +449,11 @@ final class ForkCommands {
 				baseRevision = snapshot.revision();
 				steps.mark("revision");
 				m.setMessage("forking " + r.name() + " (" + cost.files() + " files)");
-				copied = ProjectFork.stage(r, destDir, name, id, rk, m, listing, steps, link);
+				// the upgraded version goes into a disposable fork only (a fork or a view): a
+				// generation is a candidate of the source, and the upgrade gate must still see
+				// its older format (a backup opens that way, D12, D66)
+				copied = ProjectFork.stage(r, destDir, name, id, rk, m, listing, steps, link,
+					spec.disposable() ? s.upgradeCache : null);
 				staging.set(copied);
 				if (spec.backup()) {
 					// a backup is compared with its source after the copy (hash: every file of both
@@ -595,7 +599,11 @@ final class ForkCommands {
 			if (req.has("wait")) {
 				open.add("wait", req.get("wait"));
 			}
-			info = (JsonObject) s.projectCmds.openProject(c, open);
+			// the fork was published a moment ago under this request's claim: it is resolved
+			// (the canonical path is the one the request began with) and nothing half-published
+			// can be in its folder, so the open does not sweep and resolve it again
+			info = (JsonObject) s.projectCmds.openProject(c, open, fr,
+				canonicalDest + File.separator + name + ProjectLocator.getProjectExtension());
 			steps.mark("open");
 		}
 		JsonObject out = Json.of("project", info == null ? null : info.get("id"), "path",

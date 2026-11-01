@@ -8,6 +8,8 @@ PROFILES.md||GHIDRA||||END|
 README.md||GHIDRA||||END|
 crates/hydra-native/Cargo.toml||GHIDRA||||END|
 crates/hydra-native/examples/cpu.rs||GHIDRA||||END|
+crates/hydra-native/src/classscan.rs||GHIDRA||||END|
+crates/hydra-native/src/classscan/tests.rs||GHIDRA||||END|
 crates/hydra-native/src/cpuid.rs||GHIDRA||||END|
 crates/hydra-native/src/lib.rs||GHIDRA||||END|
 crates/hydra-native/src/limits.rs||GHIDRA||||END|
