@@ -4,6 +4,7 @@
 
 pub mod artifact;
 pub mod canon;
+pub mod checks;
 pub mod corrid;
 pub mod explain;
 pub mod interp;
