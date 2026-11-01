@@ -128,5 +128,9 @@ cargo clippy --all-targets -- -D warnings   # BeautifulRust lints, clean
 ```
 
 Against the real engine, the lane's differential harness compares every reply with the Python
-client's on the same requests (`D:/Projects/Hydra/_logs/rust-round4/rustclient/diff/`), and the
-16-agent driver compares the benchmark's reply digests (`.../bench/`).
+client's on the same requests (`D:/Projects/Hydra/_logs/rust-round4/rustclient/diff/`): 34/34
+value- and byte-identical (27 with the per-connection client ids in `users` untouched), the same
+digests, the same deadline cancellation and a working reconnect after the daemon restarts. The
+16-agent driver (`.../bench/`) compares the benchmark's reply digests across both clients: 376
+keys, 0 differing in 6 rounds, and measures 2.71 vs 13.90 MB private per agent and 531 vs 698 MB
+tree peak.
