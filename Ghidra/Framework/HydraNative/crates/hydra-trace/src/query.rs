@@ -191,7 +191,7 @@ pub struct Diff {
     pub gaps_b: u64,
 }
 
-fn lossy_gaps(store: &Store) -> Result<u64> {
+pub fn lossy_gap_count(store: &Store) -> Result<u64> {
     let n: i64 = store.conn().query_row(
         "SELECT COUNT(*) FROM gaps WHERE reason IN ('producer-lost','ring-overflow','read-failure','restart','budget')",
         [],
@@ -212,7 +212,7 @@ pub fn diff(a: &Store, b: &Store, by: &str, kinds: &[String]) -> Result<Diff> {
         .into_iter()
         .map(|g| (g.key.clone(), g))
         .collect();
-    let (gaps_a, gaps_b) = (lossy_gaps(a)?, lossy_gaps(b)?);
+    let (gaps_a, gaps_b) = (lossy_gap_count(a)?, lossy_gap_count(b)?);
     let mut keys: Vec<&String> = ga.keys().chain(gb.keys()).collect();
     keys.sort();
     keys.dedup();
@@ -322,7 +322,7 @@ fn id_of(store: &Store, seq: i64) -> String {
 /// `Unknown` (never a reassuring pass); the valid part of the trace stays usable.
 pub fn check(store: &Store, assertion: &Assertion) -> Result<CheckResult> {
     let revision = store.revision()?;
-    let gaps = lossy_gaps(store)?;
+    let gaps = lossy_gap_count(store)?;
     let conn = store.conn();
     let (name, rev) = match assertion {
         Assertion::RequestCompletion { name, rev, .. }
