@@ -92,8 +92,17 @@ public:
   const string snapshotPath;				///< Byte snapshot file (format v1), empty for none
   const string slaPath;					///< The language's .sla file, empty for no native decode
   std::atomic<bool> closed;				///< Set when the client drops the generation
+  /// The program this generation belongs to, as the Java side identifies it: two generations of
+  /// one program register the same specifications and can share a worker's Architecture; two
+  /// generations of different programs cannot (their injection payloads and user ops may differ).
+  string programKey;
+  /// A digest of the four registerProgram specification blobs (see SnapshotArchitecture::keyFor):
+  /// a generation whose specifications differ never shares an Architecture, whatever its program.
+  string specsHash;
   SnapshotStore(uint8 i,const string &p,const string &c,const string &t,const string &core,
 		const string &opt,const string &snap,const string &sla);
+  /// Set the program identity of the generation (see \b programKey).
+  void setProgram(const char *key,size_t len) { programKey.assign(key,len); }
   void put(const string &scope,const string &query,const string &response);	///< Add one answer
   /// Add the answers of one packed block: for each, u32 scope length + scope, u32 query length +
   /// query, u32 response length + response (little endian). One crossing for a whole function.
@@ -184,6 +193,11 @@ public:
   bool hadProtocolError(void) const { return protocolError; }	///< True if a read found no query
   uint8 getAnswered(void) const { return answered; }	///< Queries answered since construction
   const std::shared_ptr<SnapshotStore> &getStore(void) const { return store; }	///< The answers
+  /// \brief Point the channel at another generation's answers (a reused Architecture)
+  ///
+  /// The scratch of the previous generation (unread response, scope, missed and fed queries) is
+  /// dropped: the caller runs a fresh command on the new store.
+  void bind(const std::shared_ptr<SnapshotStore> &st);
   static const char MISS_TYPE[];			///< Exception type fed back for a miss
 };
 
@@ -205,6 +219,8 @@ class SnapshotArchitecture : private SnapshotChannelHolder, public ArchitectureG
   bool nativePrepared;					///< The native translator serves \b this right now
   bool nativeFailed;					///< Native decode was refused for this generation
   int4 nativeWords;					///< Context words the native translator needs
+  string programKey;					///< The program the current generation belongs to
+  string reuseKey;					///< What registerHost was built from (program + options)
   string payload;					///< Scratch: the packed p-code query of one instruction
   /// Ask the worker's native translator for this generation (loader and context set up).
   bool prepareNative(void);
@@ -215,6 +231,17 @@ public:
   SnapshotChannel &getChannel(void) { return channel; }	///< The client streams
   bool isRegistered(void) const { return registered; }	///< True once registerHost() succeeded
   string registerHost(void);				///< registerProgram, setSnapshot and setOptions
+  /// \brief Point this Architecture at another generation of the same program
+  ///
+  /// The specifications and options a \b registerHost builds from are identical for every
+  /// generation of one program, so the Architecture (spec parse, type factory, translator,
+  /// scope, injection library) is built once per worker and program instead of once per
+  /// generation: only the byte snapshot and the answers change. Every per-generation cache is
+  /// emptied (as after every decompile) and the next run applies the new generation's context.
+  void rebind(const std::shared_ptr<SnapshotStore> &st);
+  /// \brief What a reused Architecture is identified by: the program, its specs and the options
+  static string keyFor(const SnapshotStore &st);
+  const string &getReuseKey(void) const { return reuseKey; }	///< The key this was built for
   void decompileAt(const string &addrBytes);		///< The decompileAt command: response into the channel output
   void flushNative(void);				///< The flushNative command, as the client sends after each decompile
   /// The store's p-code answer for the instruction at \b addr, ready on the input stream; the
@@ -267,6 +294,9 @@ int hydra_snapshot_warm(const char *paths,size_t len);
 void hydra_snapshot_store_stats(void *h,uint64_t *count,uint64_t *bytes);
 /// Drop the client's handle: workers release their Architectures for it at their next job
 void hydra_snapshot_store_close(void *h);
+/// Name the program a generation belongs to: an Architecture is reused only for generations of one
+/// program (same specifications, same injection payloads and user ops). 0 on success.
+int hydra_snapshot_store_program(void *h,const char *key,size_t keylen);
 /// Decompile the function at the packed entry address on the calling (worker) thread
 int hydra_snapshot_decompile(void *h,const char *addr,size_t addrlen,char **out,size_t *outlen,
 			     char **misses,size_t *misseslen,uint64_t *answered);

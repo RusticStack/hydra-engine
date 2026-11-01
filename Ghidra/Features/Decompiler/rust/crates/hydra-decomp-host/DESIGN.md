@@ -267,3 +267,48 @@ when a generation is made (data types, strings), and look at the cold-path conte
   cannot be shared read-only as they are. Sharing needs an immutable spec/type core split out of
   `ArchitectureGhidra` (C++ change in the decompiler core); store affinity is the cheaper half:
   it keeps the number of Architectures at the real concurrency.
+
+## rust/o4-hostmem status (2026-11-01): one Architecture per worker per program
+
+The host used to build an Architecture for every (worker, generation) pair: `registerHost` parses
+the four specification blobs, builds the TypeFactory and its core types, the Scope database, the
+injection library and the translator, and the worker kept the result in a 4-entry LRU, evicting
+(and later rebuilding) generations. That build is the host's largest allocation episode per
+generation, and the memory lane measured that cutting it (LRU 4 -> 2) saved 54-70 MB of daemon
+peak at the cost of `decompile_hot` p99 47 -> 98 ms (an evicted generation is rebuilt on its next
+decompile).
+
+Every generation of one program registers the **same** specifications and options. So an
+Architecture is now keyed by what `registerHost` is built from, not by the generation:
+
+- `HostDecompiler` names a generation's program through `hydra_dhost_store_program`
+  (`executablePath|language|name`), shared by every client that opens that program in the daemon.
+- `SnapshotStore` hashes its four specification blobs (`specsHash`) and
+  `SnapshotArchitecture::keyFor` is `program key + specsHash + encoded options`.
+- On a job for another generation with the same key, `SnapshotArchitecture::rebind` swaps the
+  channel's store (`SnapshotChannel::bind`), re-maps the generation's byte snapshot
+  (`LoadImageGhidra::setSnapshot`), calls `flushNative` (the call the client sends after every
+  decompile anyway) and drops `nativePrepared` so the next run applies the new instruction context.
+  Nothing is re-parsed and no component is rebuilt.
+- A closed generation **detaches**: its answers are released (the Architecture holds no reference)
+  and the Architecture waits for the program's next generation; an Architecture whose key is not
+  the current job's is dropped as before. `HYDRA_SNAPSHOT_ARCHS` still bounds the list.
+- `HYDRA_HOST_TRACE=1` prints each build and rebind (`[hydra-host] build|reuse store=... program=...`),
+  which is how the reuse was counted (16-agent benchmark: 25 builds + 3-5 rebinds per run; keying
+  on the Program object instead of its identity reused nothing, because every client opens its own
+  Program).
+
+An overlay generation's inherited answers (o4-latency: `SnapshotStore::parent`, data types and
+register names answered from the base generation) live on the **store**, so a rebind to another
+generation's store carries whatever that store inherits; the rebind also re-applies the new
+generation's instruction context (`nativePrepared` cleared), so base and overlay generations can
+share one Architecture without mixing their bytes or answers.
+
+**Allocator and heap (measured, not shipped).** The host's C++ heap is the process heap; the
+decompiler allocates millions of small objects per function, and the per-thread LFH subsegments
+keep the freed working set of each of the 24 workers committed (~30-35 MB at the peak). Two
+attempts to give it back were measured and rejected: mimalloc (as `decompile.exe` uses) with
+`mi_collect(true)` when a worker goes idle is **+50-70 MB** in a 24-thread process (its 32 MiB
+per-thread segments hold more, and a purge releases only the calling thread's all-free pages, which
+the live Architecture and Sleigh keep from becoming free), and `HeapCompact`/`HeapOptimizeResources`
+on the process heap release nothing. Details in the lane report.

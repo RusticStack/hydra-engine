@@ -88,6 +88,7 @@ mod ffi {
         pub fn hydra_snapshot_store_stats(h: *mut c_void, count: *mut u64, bytes: *mut u64);
         pub fn hydra_snapshot_store_close(h: *mut c_void);
         pub fn hydra_snapshot_store_set_parent(h: *mut c_void, parent: *mut c_void);
+        pub fn hydra_snapshot_store_program(h: *mut c_void, key: *const c_char, keylen: usize) -> c_int;
         pub fn hydra_snapshot_decompile(
             h: *mut c_void,
             addr: *const c_char,
@@ -393,6 +394,26 @@ pub unsafe extern "C" fn hydra_dhost_store_set_parent(h: *mut c_void, parent: *m
         // SAFETY: guaranteed by the caller.
         unsafe { ffi::hydra_snapshot_store_set_parent(h, parent) }
     }
+}
+
+/// Names the program a generation belongs to (`key`, any bytes): a worker's Architecture is
+/// reused for every generation of one program (identical registerProgram specifications), and only
+/// for that program (its injection payloads and user ops may differ from another's). An empty key
+/// keeps the old one-Architecture-per-generation behaviour. Returns 0 on success.
+///
+/// # Safety
+/// `h` must be a live store handle; `key` valid for `keylen` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hydra_dhost_store_program(
+    h: *mut c_void,
+    key: *const c_char,
+    keylen: usize,
+) -> c_int {
+    if h.is_null() {
+        return 1;
+    }
+    // SAFETY: guaranteed by the caller.
+    unsafe { ffi::hydra_snapshot_store_program(h, nz(key, keylen), keylen) }
 }
 
 /// Raw pointers moved into a pool job (the caller blocks until the job is done).
