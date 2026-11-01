@@ -239,9 +239,9 @@ Things that do not conflict but can still break:
   with the previous one. `checkHeadlessModules` catches new dependencies on excluded modules.
 - **Upstream workflows** (`.github/workflows/build-ghidra.yml` and the others) stay as upstream
   has them, so they never conflict. `Build Ghidra` (a full build on every push) is disabled in
-  this repository's Actions settings, not in the file; the full build runs weekly and on demand
-  from `ci.yml`. After a sync, check `gh workflow list` for a new upstream workflow and disable it
-  the same way if it duplicates ours.
+  this repository's Actions settings, not in the file; the full build runs on demand
+  (`build-ghidra-multi-platform-artifact.yml`). After a sync, check `gh workflow list` for a new
+  upstream workflow and disable it the same way if it duplicates ours.
 - **The module** builds against Ghidra's API; a sync that changes an API it uses shows up as a
   compile error in `HeadlessSession` or a failure in the two test suites.
 - **The launcher** (`ghidra_session.py`) rebuilds Ghidra's classpath from the module layout;

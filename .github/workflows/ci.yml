@@ -1,23 +1,16 @@
 name: CI
 
 # The default build is headless (gradle buildHeadless): no window modules, help or javadoc.
-# The full Ghidra build with the window (gradle buildGhidra) runs on demand (`workflow_dispatch` with
-# full: true); it matters when upstream is merged, not weekly.
+# The full Ghidra build with the window is upstream's build-ghidra.yml (disabled in Actions settings)
+# and build-ghidra-multi-platform-artifact.yml (on demand); upstream-sync.yml already builds and tests
+# the merged tree weekly, so this workflow does not run it.
 
-# Pushes to main and pull requests only: a pushed work branch is tested by its pull request, not twice.
-# Document-only changes skip the build.
+# Pull requests and manual runs only (gh workflow run ci.yml): main is tested locally before a push,
+# not on every push. Document-only pull requests skip the build.
 on:
-  push:
-    branches: [main]
-    paths-ignore: ['**.md', '.github/local-test-record.json']
   pull_request:
     paths-ignore: ['**.md']
   workflow_dispatch:
-    inputs:
-      full:
-        description: 'Also run the full Ghidra build (buildGhidra)'
-        type: boolean
-        default: false
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -161,37 +154,4 @@ jobs:
             ${{ runner.temp }}/contract/**/*.log
           if-no-files-found: ignore
 
-  full:
-    name: full Ghidra build (buildGhidra)
-    if: github.event_name == 'workflow_dispatch' && inputs.full
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@v6
 
-      - name: Read the JDK version
-        run: echo "JDK_VER=$(awk -F'=' '$1=="application.java.min" {print $2}' Ghidra/application.properties)" >> "$GITHUB_ENV"
-
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: ${{ env.JDK_VER }}
-
-      # Same partial-toolchain hazard as the Windows job: pin the toolchain into a fresh
-      # RUSTUP_HOME so the parallel cargo tasks never race rustup.
-      - name: Rust toolchain 1.99.1
-        run: |
-          export RUSTUP_HOME="$RUNNER_TEMP/rustup" CARGO_HOME="$RUNNER_TEMP/cargo"
-          rustup toolchain install 1.99.1 --profile minimal --no-self-update
-          tc="$RUSTUP_HOME/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin"
-          [ -x "$tc/cargo" ] || { echo "cargo not installed at $tc"; exit 1; }
-          echo "RUSTUP_HOME=$RUSTUP_HOME" >> "$GITHUB_ENV"
-          echo "CARGO_HOME=$CARGO_HOME" >> "$GITHUB_ENV"
-          echo "$tc" >> "$GITHUB_PATH"
-          "$tc/cargo" --version
-
-      - name: Fetch dependencies
-        run: ./gradlew -I gradle/support/fetchDependencies.gradle -DhideDownloadProgress -DnoEclipse
-
-      - name: Build Ghidra
-        run: ./gradlew buildGhidra --parallel

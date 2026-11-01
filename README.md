@@ -393,7 +393,7 @@ containment is not a sandbox for the machine. See [SECURITY](.github/SECURITY.md
 | | Command | What you get |
 |---|---|---|
 | Headless (default) | `gradle buildHeadless` | an unzipped install in `build/dist/`, or `-PheadlessInstallDir=<dir>`; `zipHeadless` zips it |
-| Whole source tree (built weekly in CI; not released) | `gradle buildGhidra` | Ghidra's usual zip in `build/dist/` |
+| Whole source tree (built on demand; not released) | `gradle buildGhidra` | Ghidra's usual zip in `build/dist/` |
 
 There is no GUI: Hydra Engine is headless only. The headless install leaves out the modules that
 only an interactive tool uses, the help, javadoc and Python stubs, the user docs and `ghidraRun`,
@@ -418,9 +418,12 @@ keeps it honest, are in [CONTRIBUTING](.github/CONTRIBUTING.md#the-headless-buil
 
 CI ([`ci.yml`](.github/workflows/ci.yml)) builds the headless install and runs
 `session_smoke.py`, `daemon_tests.py` and `contract_tests.py` on Windows, the platform that is
-tested and released. The launcher and module have no Windows-only path, but no Linux or macOS
-claim is made: they are not tested. The full build
-runs weekly. Releases are cut by [`release.yml`](.github/workflows/release.yml)
+tested and released. It runs on pull requests and on demand (`gh workflow run ci.yml`); the same
+lane runs weekly on the merged upstream tree in [`upstream-sync.yml`](.github/workflows/upstream-sync.yml).
+The launcher and module have no Windows-only path, but no Linux or macOS
+claim is made: they are not tested. The full build runs on demand
+([`build-ghidra-multi-platform-artifact.yml`](.github/workflows/build-ghidra-multi-platform-artifact.yml)).
+Releases are cut by [`release.yml`](.github/workflows/release.yml)
 ([CONTRIBUTING](.github/CONTRIBUTING.md#releases)).
 
 Ghidra's original README is kept as [README-GHIDRA.md](README-GHIDRA.md); it describes the
