@@ -727,7 +727,8 @@ public final class ScriptWorker implements GhidraLaunchable {
 			JsonObject marks = new JsonObject();
 			JsonObject sm = startMarks;
 			if (sm != null) {
-				for (String k : List.of("initMs", "projectMs", "programMs", "compileMs")) {
+				for (String k : List.of("initMs", "osgiMs", "projectMs", "programMs",
+					"deferredMs", "compileMs")) {
 					if (sm.has(k)) {
 						marks.add(k, sm.get(k));
 					}
@@ -956,6 +957,12 @@ public final class ScriptWorker implements GhidraLaunchable {
 		Application.initializeApplication(layout, config);
 		long initMs = (System.nanoTime() - t0) / 1_000_000;
 		pipe.send(Json.of("ev", "init", "ms", initMs));
+		// On a class-cache hit the configuration leaves the TLS context, the language service and
+		// the old buffer-cache cleanup out of initializeApplication (as the daemon does); run them
+		// on one background thread while the project and the program open, and wait for them
+		// before the script runs (below), exactly as the daemon's script commands do. Without
+		// this a worker skipped them for good, and a script using TLS got the JVM's own store.
+		DeferredInit.start();
 
 		JsonObject req = request.get();
 		return execute(pipe, monitor, req, initMs);
@@ -978,6 +985,7 @@ public final class ScriptWorker implements GhidraLaunchable {
 			ResourceFile src = new ResourceFile(new File(Json.str(req, "script")));
 			long t1 = System.nanoTime();
 			GhidraScriptUtil.acquireBundleHostReference().add(dirs, true, true);
+			long osgiMs = (System.nanoTime() - t1) / 1_000_000;
 			long projectMs = 0;
 			long programMs = 0;
 			JsonObject pj = Json.obj(req, "project");
@@ -998,6 +1006,10 @@ public final class ScriptWorker implements GhidraLaunchable {
 				}
 			}
 			pipe.send(Json.of("ev", "open", "projectMs", projectMs, "programMs", programMs));
+			// the deferred start-up tasks (TLS context, language service): ready before the script
+			long td = System.nanoTime();
+			DeferredInit.await();
+			long deferredMs = (System.nanoTime() - td) / 1_000_000;
 			long t4 = System.nanoTime();
 			GhidraScript script;
 			GhidraScriptProvider provider = GhidraScriptUtil.getProvider(src);
@@ -1025,8 +1037,9 @@ public final class ScriptWorker implements GhidraLaunchable {
 			}
 			GhidraState state = new GhidraState(null, project, program, loc, null, null);
 			long compileMs = (System.nanoTime() - t4) / 1_000_000;
-			pipe.send(Json.of("ev", "start", "initMs", initMs, "projectMs", projectMs, "programMs",
-				programMs, "compileMs", compileMs, "cpuMs", ownProcessCpuMs()));
+			pipe.send(Json.of("ev", "start", "initMs", initMs, "osgiMs", osgiMs, "projectMs",
+				projectMs, "programMs", programMs, "deferredMs", deferredMs, "compileMs",
+				compileMs, "cpuMs", ownProcessCpuMs()));
 			long modBefore = program == null ? 0 : program.getModificationNumber();
 			int outer = -1;
 			if (program != null) {
