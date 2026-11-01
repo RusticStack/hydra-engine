@@ -73,14 +73,17 @@ class SymbolTable {
   vector<SleighSymbol *> symbollist;
   vector<SymbolScope *> table;
   SymbolScope *curscope;
+  bool ownsSymbols;		///< False when the symbols belong to a shared .sla parse (SleighBase::adoptParse)
   SymbolScope *skipScope(int4 i) const;
   SleighSymbol *findSymbolInternal(SymbolScope *scope,const string &nm) const;
   void renumber(void);
   static constexpr int8 MAX_TABLES = 0x100000;
   static constexpr int8 MAX_SYMBOLS = 0x1000000;
 public:
-  SymbolTable(void) { curscope = (SymbolScope *)0; }
+  SymbolTable(void) { curscope = (SymbolScope *)0; ownsSymbols = true; }
   ~SymbolTable(void);
+  /// Whether this table owns (and must free) the symbols and scopes it holds
+  void setOwnsSymbols(bool val) { ownsSymbols = val; }
   SymbolScope *getCurrentScope(void) { return curscope; }
   SymbolScope *getGlobalScope(void) { return table[0]; }
   
