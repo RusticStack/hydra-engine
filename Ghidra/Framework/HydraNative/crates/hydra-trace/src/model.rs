@@ -40,7 +40,11 @@ pub fn kind_is_valid(kind: &str) -> bool {
         return CORE_KINDS.contains(&kind);
     }
     let mut parts = kind.split('.');
-    let ok = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+    let ok = |s: &str| {
+        !s.is_empty()
+            && s.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+    };
     matches!((parts.next(), parts.next(), parts.next()), (Some(a), Some(b), None) if ok(a) && ok(b) && a != "core")
 }
 

@@ -23,3 +23,4 @@ serde_json.workspace = true
 sha2.workspace = true
 hmac.workspace = true
 crc32fast.workspace = true
+rusqlite.workspace = true

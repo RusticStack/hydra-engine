@@ -50,7 +50,10 @@ pub struct Chain {
 
 impl Chain {
     pub fn new(segment: &str) -> Self {
-        Self { head: genesis_hash(segment), n: 0 }
+        Self {
+            head: genesis_hash(segment),
+            n: 0,
+        }
     }
 
     /// Chain `record`: set `n`, `prev`, `hash`, and return the framed line.
@@ -82,7 +85,11 @@ pub enum Damage {
     /// A bad line is followed by more data: the segment is corrupt at `offset`.
     Corrupt { offset: usize, line: usize },
     /// A valid line breaks the chain or the numbering.
-    ChainBreak { offset: usize, n: u64, reason: &'static str },
+    ChainBreak {
+        offset: usize,
+        n: u64,
+        reason: &'static str,
+    },
 }
 
 /// The result of reading a segment.
@@ -120,37 +127,61 @@ fn parse_line(line: &[u8]) -> Option<Map<String, Value>> {
 
 /// Read and verify a whole segment. `segment` is the id its genesis was derived from.
 pub fn scan(data: &[u8], segment: &str) -> Scan {
-    let mut out = Scan { size: data.len(), head: genesis_hash(segment), ..Scan::default() };
+    let mut out = Scan {
+        size: data.len(),
+        head: genesis_hash(segment),
+        ..Scan::default()
+    };
     let mut cursor = 0usize;
     let mut line_no = 0usize;
     while cursor < data.len() {
         let Some(rel) = data[cursor..].iter().position(|&b| b == b'\n') else {
-            out.damage = Some(Damage::TornTail { offset: cursor, bytes: data.len() - cursor });
+            out.damage = Some(Damage::TornTail {
+                offset: cursor,
+                bytes: data.len() - cursor,
+            });
             return out;
         };
         let end = cursor + rel;
         line_no += 1;
         let Some(record) = parse_line(&data[cursor..end]) else {
             out.damage = Some(if end + 1 >= data.len() {
-                Damage::TornTail { offset: cursor, bytes: data.len() - cursor }
+                Damage::TornTail {
+                    offset: cursor,
+                    bytes: data.len() - cursor,
+                }
             } else {
-                Damage::Corrupt { offset: cursor, line: line_no }
+                Damage::Corrupt {
+                    offset: cursor,
+                    line: line_no,
+                }
             });
             return out;
         };
         let n = record.get("n").and_then(Value::as_u64);
         if n != Some(out.records.len() as u64) {
-            out.damage =
-                Some(Damage::ChainBreak { offset: cursor, n: n.unwrap_or(u64::MAX), reason: "numbering" });
+            out.damage = Some(Damage::ChainBreak {
+                offset: cursor,
+                n: n.unwrap_or(u64::MAX),
+                reason: "numbering",
+            });
             return out;
         }
         if record.get("prev").and_then(Value::as_str) != Some(out.head.as_str()) {
-            out.damage = Some(Damage::ChainBreak { offset: cursor, n: n.unwrap_or(0), reason: "prev" });
+            out.damage = Some(Damage::ChainBreak {
+                offset: cursor,
+                n: n.unwrap_or(0),
+                reason: "prev",
+            });
             return out;
         }
         let hash = record_hash(&record).ok();
         if hash.as_deref() != record.get("hash").and_then(Value::as_str) {
-            out.damage = Some(Damage::ChainBreak { offset: cursor, n: n.unwrap_or(0), reason: "hash" });
+            out.damage = Some(Damage::ChainBreak {
+                offset: cursor,
+                n: n.unwrap_or(0),
+                reason: "hash",
+            });
             return out;
         }
         out.head = hash.unwrap_or_default();
@@ -172,7 +203,9 @@ mod tests {
 
     fn segment(count: usize) -> Vec<u8> {
         let mut chain = Chain::new("s1");
-        (0..count).flat_map(|i| chain.push(rec(&format!("k{i}"))).unwrap()).collect()
+        (0..count)
+            .flat_map(|i| chain.push(rec(&format!("k{i}"))).unwrap())
+            .collect()
     }
 
     #[test]
@@ -207,7 +240,10 @@ mod tests {
     fn wrong_segment_id_breaks_the_chain_at_the_start() {
         let data = segment(2);
         let result = scan(&data, "other");
-        assert!(matches!(result.damage, Some(Damage::ChainBreak { reason: "prev", .. })));
+        assert!(matches!(
+            result.damage,
+            Some(Damage::ChainBreak { reason: "prev", .. })
+        ));
     }
 
     #[test]

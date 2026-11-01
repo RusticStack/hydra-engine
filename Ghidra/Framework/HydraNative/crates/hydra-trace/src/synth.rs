@@ -3,7 +3,7 @@
 
 use crate::model::Event;
 use crate::raw::Chain;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 /// A scenario recipe.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,14 +84,28 @@ struct Source {
 
 impl Source {
     fn new(id: &str) -> Self {
-        Self { id: id.into(), chain: Chain::new(id), seq: 0, pgen: 1, out: Vec::new() }
+        Self {
+            id: id.into(),
+            chain: Chain::new(id),
+            seq: 0,
+            pgen: 1,
+            out: Vec::new(),
+        }
     }
 
     fn emit(&mut self, kind: &str, t: u64, pid: u32, tid: u32, payload: Value) {
         self.emit_with(kind, t, pid, tid, payload, |_| {});
     }
 
-    fn emit_with(&mut self, kind: &str, t: u64, pid: u32, tid: u32, payload: Value, tweak: impl FnOnce(&mut Event)) {
+    fn emit_with(
+        &mut self,
+        kind: &str,
+        t: u64,
+        pid: u32,
+        tid: u32,
+        payload: Value,
+        tweak: impl FnOnce(&mut Event),
+    ) {
         let mut event = Event {
             kind: kind.into(),
             source_id: self.id.clone(),
@@ -124,7 +138,10 @@ impl Source {
     }
 
     fn finish(self) -> Segment {
-        Segment { id: self.id, bytes: self.out }
+        Segment {
+            id: self.id,
+            bytes: self.out,
+        }
     }
 }
 
@@ -133,7 +150,13 @@ pub fn generate(recipe: Recipe, seed: u64, events: usize) -> Vec<Segment> {
     let mut rng = Rng(seed ^ 0x9E37_79B9_7F4A_7C15 | 1);
     let mut a = Source::new("src_a");
     let pid = 1000 + rng.below(5000) as u32;
-    a.emit("core.process.start", 1_000, pid, 1, json!({"image": "main.exe", "ppid": 4}));
+    a.emit(
+        "core.process.start",
+        1_000,
+        pid,
+        1,
+        json!({"image": "main.exe", "ppid": 4}),
+    );
     a.emit_with(
         "core.module.load",
         1_100,
@@ -195,20 +218,56 @@ pub fn generate(recipe: Recipe, seed: u64, events: usize) -> Vec<Segment> {
                 let (x, y) = (format!("op-x-{i}"), format!("op-y-{i}"));
                 let t = 2_000 + i * 100;
                 a.emit("app.request", t, pid, 2, json!({"corr": x, "name": "load"}));
-                a.emit("app.request", t + 5, pid, 3, json!({"corr": y, "name": "save"}));
-                a.emit("app.completion", t + 10, pid, 3, json!({"corr": y, "result": 0}));
-                a.emit("app.completion", t + 15, pid, 2, json!({"corr": x, "result": 0}));
+                a.emit(
+                    "app.request",
+                    t + 5,
+                    pid,
+                    3,
+                    json!({"corr": y, "name": "save"}),
+                );
+                a.emit(
+                    "app.completion",
+                    t + 10,
+                    pid,
+                    3,
+                    json!({"corr": y, "result": 0}),
+                );
+                a.emit(
+                    "app.completion",
+                    t + 15,
+                    pid,
+                    2,
+                    json!({"corr": x, "result": 0}),
+                );
             }
         }
         Recipe::Reuse => {
             // PID reuse: the same pid starts again after an exit, a handle number is reused and
             // the module reloads at another base. Each lifetime has its own generation.
-            a.emit_with("core.resource.open", 2_000, pid, 1, json!({"type": "file", "key": "a.dat", "handle": 0x44}), |e| {
-                e.process_gen = Some(1)
-            });
-            a.emit_with("core.resource.close", 2_100, pid, 1, json!({"handle": 0x44}), |e| e.process_gen = Some(1));
+            a.emit_with(
+                "core.resource.open",
+                2_000,
+                pid,
+                1,
+                json!({"type": "file", "key": "a.dat", "handle": 0x44}),
+                |e| e.process_gen = Some(1),
+            );
+            a.emit_with(
+                "core.resource.close",
+                2_100,
+                pid,
+                1,
+                json!({"handle": 0x44}),
+                |e| e.process_gen = Some(1),
+            );
             a.emit("core.process.exit", 2_200, pid, 1, json!({"code": 0}));
-            a.emit("core.process.start", 3_000, pid, 1, json!({"image": "main.exe", "ppid": 4}));
+            a.emit(
+                "core.process.start",
+                3_000,
+                pid,
+                1,
+                json!({"image": "main.exe", "ppid": 4}),
+            );
             a.emit_with(
                 "core.module.load",
                 3_100,
@@ -221,12 +280,35 @@ pub fn generate(recipe: Recipe, seed: u64, events: usize) -> Vec<Segment> {
                     e.process_gen = Some(2);
                 },
             );
-            a.emit_with("core.resource.open", 3_200, pid, 1, json!({"type": "file", "key": "b.dat", "handle": 0x44}), |e| {
-                e.process_gen = Some(2)
-            });
-            a.emit("core.object.create", 3_300, pid, 1, json!({"object": 0x1000, "type": "T", "generation": 1}));
-            a.emit("core.object.destroy", 3_400, pid, 1, json!({"object": 0x1000}));
-            a.emit("core.object.create", 3_500, pid, 1, json!({"object": 0x1000, "type": "U", "generation": 2}));
+            a.emit_with(
+                "core.resource.open",
+                3_200,
+                pid,
+                1,
+                json!({"type": "file", "key": "b.dat", "handle": 0x44}),
+                |e| e.process_gen = Some(2),
+            );
+            a.emit(
+                "core.object.create",
+                3_300,
+                pid,
+                1,
+                json!({"object": 0x1000, "type": "T", "generation": 1}),
+            );
+            a.emit(
+                "core.object.destroy",
+                3_400,
+                pid,
+                1,
+                json!({"object": 0x1000}),
+            );
+            a.emit(
+                "core.object.create",
+                3_500,
+                pid,
+                1,
+                json!({"object": 0x1000, "type": "U", "generation": 2}),
+            );
         }
         Recipe::Delayed => {
             let mut b = Source::new("src_b");
@@ -235,7 +317,13 @@ pub fn generate(recipe: Recipe, seed: u64, events: usize) -> Vec<Segment> {
             }
             // b's events carry earlier timestamps but are appended to its segment later.
             for i in 0..(events as u64 / 2).max(1) {
-                b.emit("app.tick", 2_000 + i * 20 + 7, pid, 9, json!({"i": i, "producer": "b"}));
+                b.emit(
+                    "app.tick",
+                    2_000 + i * 20 + 7,
+                    pid,
+                    9,
+                    json!({"i": i, "producer": "b"}),
+                );
             }
             return vec![a.finish(), b.finish()];
         }
@@ -250,13 +338,16 @@ pub fn generate(recipe: Recipe, seed: u64, events: usize) -> Vec<Segment> {
 
 /// The generated segments as one `name -> bytes` map, for callers that just need the data.
 pub fn as_map(segments: &[Segment]) -> Map<String, Value> {
-    segments.iter().map(|s| (s.id.clone(), Value::from(s.bytes.len() as u64))).collect()
+    segments
+        .iter()
+        .map(|s| (s.id.clone(), Value::from(s.bytes.len() as u64)))
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::raw::{scan, Damage};
+    use crate::raw::{Damage, scan};
 
     #[test]
     fn same_seed_is_byte_identical() {
@@ -272,7 +363,10 @@ mod tests {
 
     #[test]
     fn different_seed_differs() {
-        assert_ne!(generate(Recipe::Baseline, 1, 50)[0].bytes, generate(Recipe::Baseline, 2, 50)[0].bytes);
+        assert_ne!(
+            generate(Recipe::Baseline, 1, 50)[0].bytes,
+            generate(Recipe::Baseline, 2, 50)[0].bytes
+        );
     }
 
     #[test]

@@ -3,9 +3,11 @@
 //! on these (see `Ghidra/Features/HeadlessSession/TRACE-1.md`).
 
 pub mod canon;
-pub mod synth;
 pub mod model;
+pub mod query;
 pub mod raw;
+pub mod store;
+pub mod synth;
 
 /// The contract version these modules implement.
 pub const SCHEMA: &str = "hydra.trace.event/1";

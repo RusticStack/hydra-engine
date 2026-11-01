@@ -5,7 +5,9 @@ use hydra_trace::{raw, synth};
 use std::process::ExitCode;
 
 fn usage() -> ExitCode {
-    eprintln!("usage: hydra-trace gen <recipe> <seed> <events> <outdir>\n       hydra-trace verify <segment-file> <segment-id>");
+    eprintln!(
+        "usage: hydra-trace gen <recipe> <seed> <events> <outdir>\n       hydra-trace verify <segment-file> <segment-id>"
+    );
     ExitCode::from(2)
 }
 
@@ -13,8 +15,11 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("gen") if args.len() == 5 => {
-            let (Some(recipe), Ok(seed), Ok(events)) = (synth::Recipe::parse(&args[1]), args[2].parse(), args[3].parse())
-            else {
+            let (Some(recipe), Ok(seed), Ok(events)) = (
+                synth::Recipe::parse(&args[1]),
+                args[2].parse(),
+                args[3].parse(),
+            ) else {
                 return usage();
             };
             let dir = std::path::Path::new(&args[4]);
@@ -42,7 +47,11 @@ fn main() -> ExitCode {
                     scan.size,
                     scan.damage
                 );
-                if scan.is_clean() { ExitCode::SUCCESS } else { ExitCode::from(1) }
+                if scan.is_clean() {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::from(1)
+                }
             }
             Err(err) => {
                 eprintln!("{}: {err}", args[1]);
