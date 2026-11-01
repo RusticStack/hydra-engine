@@ -42,7 +42,7 @@ The daemon logs the same report at start-up (`cpu: {vendor=..., grantedCpus=...,
 | decompiler gate permits | `min(granted, nativeBudget / 200 MB)` | the profile's `decompilers` rule, lowered by the memory budget in the same way |
 | native memory budget (`nativeBudgetMb`) | half of the **memory the process may use** minus the heap (at least 200 MB): a job/cgroup memory limit lowers it, so a process held to 8 GB on a 64 GB host budgets 4 GB of decompilers, not 28 GB | the same |
 | daemon lanes (`maxQuick`, `maxLong` defaults) | `max(granted, the JVM's processor count)`: never fewer slots than before (lane slots are request concurrency, not CPU work; on a host whose affinity grants 16 of 24 CPUs, 16 slots refused readers `busy` that 24 served) | the same |
-| thread placement | none | on a hybrid CPU: daemon request threads (`Connection` workers) select the performance CPU sets; a `GThreadPool` thread (analysis, parallel decompile) selects the efficiency CPU sets only when it starts while more pool threads are alive than there are performance CPUs (so a small pool is never confined to E-cores while P-cores idle). The daemon's guarded loops (accept, governor sampling, reaper) are never placed: they mostly sleep, and the governor is the memory-safety sampler |
+| thread placement | none | on a hybrid CPU: daemon request threads (`Connection` workers) select the performance CPU sets; a `GThreadPool` thread (analysis, parallel decompile) selects the efficiency CPU sets only when it starts while its own pool has more live threads than there are performance CPUs (so a small pool is never confined to E-cores while P-cores idle). The daemon's guarded loops (accept, governor sampling, reaper) are never placed: they mostly sleep, and the governor is the memory-safety sampler |
 | decompiler pipeline window, reply page buffer | the call's own default | the profile's `batchWindow` / `readBufferBytes` when it sets one (0: the call's default) |
 
 Placement uses `SetThreadSelectedCpuSets`. Each class takes at most as many placed threads as it has granted
@@ -115,23 +115,49 @@ Profiles today:
 | name | matches | knobs | numbers |
 | --- | --- | --- | --- |
 | `generic` | everything (fallback) | no placement; default pools | — |
-| `raptorlake-hybrid` | `GenuineIntel`, family 6, model 0xB7/0xBA/0xBF, hybrid granted CPUs (auto) | request threads on P-cores, pool threads past the P-core count on E-cores; analysis pool over every granted logical CPU (`Rule.ALL`); decompilers over every granted logical CPU | see "Measured numbers" |
+| `raptorlake-hybrid` | `GenuineIntel`, family 6, model 0xB7/0xBA/0xBF, hybrid granted CPUs (auto) | request threads on P-cores, a pool's threads past the P-core count on E-cores; analysis pool over every granted logical CPU (`Rule.ALL`); decompilers over every granted logical CPU | see "Measured numbers" |
 
 ## Measured numbers
 
-Contributor numbers are medians of interleaved rounds on a quiet machine, in the format `cpu_bench.py` prints.
+Contributor numbers are medians of interleaved rounds on the same machine, with the load stated.
+The generic and profile runs alternate, so a shared machine moves both alike.
 
-`raptorlake-hybrid`, i7-13700KF (8 P-cores + SMT = 16 logical, 8 E-cores; AVX2, no AVX-512), 24 logical CPUs
-granted, `swkotor.exe` import + analysis + 500 decompiles, 3 interleaved rounds:
+`raptorlake-hybrid`, i7-13700KF (8 P-cores + SMT = 16 logical, 8 E-cores; AVX2, no AVX-512), 24
+logical CPUs granted, `swkotor.exe` import + analysis + 500 decompiles, 5 interleaved rounds, a
+quiet machine window (another lane held 8 of 24 CPUs):
 
 | profile | analyze_s | decompile_s | total_s |
 | --- | --- | --- | --- |
-| `generic` | 99.55 | 3.23 | 102.78 |
-| `raptorlake-hybrid` | 83.94 | 2.67 | 86.68 |
-| change | −15.7 % | −17.2 % | −15.7 % |
+| `generic` | 71.26 | 2.31 | 73.57 |
+| `raptorlake-hybrid` | 69.09 | 2.39 | 71.48 |
+| change | −3.0 % | +3.8 % | −2.8 % |
 
-Outputs identical (the decompiled C of every function hashed). 16 agents, the shared `multiagent_bench.py`
-workload, 3 interleaved rounds: see the lane report in `_logs/rust-round4/profiles/REPORT.md`.
+Every round: `placed latency 2`, background 8-16 (the analysis pool's cumulative placements; at
+most 8 at once); outputs identical (the decompiled C of every function hashed, digest
+`7f699adf2369`). The per-round pairs are −3.3, −2.2, −3.4, −1.5 and −3.4 s:
+the analysis pool over every granted logical CPU is a consistent 2-5 % win, and 500 single-function
+decompiles are unchanged within noise.
+
+16 agents, the shared `multiagent_bench.py` fixed 825-op workload, 3 rotated interleaved rounds
+(bench-h4 / o2-integration4 / generic / auto), machine shared with three lanes:
+
+| metric (median) | h4 | int4 | `generic` | `raptorlake-hybrid` |
+| --- | --- | --- | --- | --- |
+| workload ops/s | 27.38 | 70.03 | 83.42 | 77.90 |
+| workload tree CPU s | 65.53 | 36.63 | 36.07 | **35.29** |
+| workload CPU ms/op | 79.4 | 44.4 | 43.7 | **42.8** |
+| setup CPU s | 31.22 | 25.42 | 21.45 | **17.31** |
+| total CPU s (setup+workload) | 107.00 | 62.53 | 57.62 | **53.76** |
+| total wall s | 48.24 | 22.00 | 19.04 | **18.72** |
+| peak / mean MB | 1673 / 1094 | 1140 / 781 | 1042 / 801 | 1047 / 815 |
+| 825 ops / total wall s | 17.1 | 37.5 | 43.3 | **44.1** |
+
+All 12 runs have 412/412 reply keys, 0 differing and no error replies. `generic` is 46 % below h4
+and 7.9 % below int4 in total CPU; `raptorlake-hybrid` adds a further 6.7 %. The workload wall of
+this session is load-limited (the first auto round overlapped another lane's heavy job), so CPU,
+not that one wall median, is the stable comparison; the per-op p50/p99 table and the second session
+on the final build (workload CPU −6.6 %, total CPU −2.2 %) are in
+`_logs/rust-round4/profiles/REPORT.md`.
 
 ## Adding a profile (PR checklist)
 
@@ -165,10 +191,12 @@ workload, 3 interleaved rounds: see the lane report in `_logs/rust-round4/profil
    The run exits 1 when the outputs differ. A profile ships only with numbers that show it is faster on its CPU,
    `placed` above zero (otherwise the run measured generic against generic) and `outputs identical`.
 
-5. Run the 16-agent benchmark (the daemon under the concurrent workload), 3 interleaved rounds:
+5. Run the 16-agent benchmark (the daemon under the concurrent workload), 3 rotated interleaved rounds
+   (bench-h4, o2-integration4, generic, the profile; `run_profiles_ab.py` runs the 12 and writes
+   `results/bench16`):
 
-       python _logs/rust-round4/profiles/scripts/run_profiles_ab.py cpu-generic:1 cpu-auto:1 \
-           cpu-auto:2 cpu-generic:2 cpu-generic:3 cpu-auto:3
+       python _logs/rust-round4/profiles/scripts/run_profiles_ab.py \
+           generic:1 auto:1 auto:2 generic:2 generic:3 auto:3
 
-   and paste the `summary` table (ops/s, tree CPU, peak memory, per-op p50/p99) into the PR with the machine's
-   load noted.
+   and paste the `summary` table (ops/s, tree CPU, CPU per op, peak/mean, per-op p50/p99) into the PR
+   with the machine's load noted.

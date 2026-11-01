@@ -397,7 +397,7 @@ public final class HydraCpu {
 	 * The profiles {@code auto} tries in order (the generic profile is the fallback, not listed).
 	 * A profile is added here only with before/after numbers from {@code cpu_bench.py} on a process
 	 * granted every core class of the CPU (docs/cpu-profiles.md). {@code raptorlake-hybrid} ships
-	 * with the round-3 measurements in that document.
+	 * with the round-4 measurements in that document.
 	 */
 	public static final List<Profile> AUTO_PROFILES = List.of(RAPTORLAKE_HYBRID);
 
@@ -575,27 +575,43 @@ public final class HydraCpu {
 
 	/**
 	 * Wraps a thread body so that it runs placed for its role (for thread factories). A
-	 * {@link Role#BACKGROUND} thread is placed only when it starts while more live background
-	 * threads exist than performance-class CPUs (P-cores are oversubscribed); the first ones run
-	 * unplaced.
+	 * {@link Role#BACKGROUND} thread is placed only when it starts while its own pool has more
+	 * live threads than performance-class CPUs (P-cores are oversubscribed); the first ones run
+	 * unplaced, so a small pool (the decompiler pipeline) is never confined to E-cores because
+	 * another pool (the analysis pool) happens to be large.
 	 *
 	 * @param role the role
 	 * @param body the body
 	 * @return the wrapped body
 	 */
 	public static Runnable placed(Role role, Runnable body) {
+		return placed(role, body, null);
+	}
+
+	/**
+	 * Wraps a thread body so that it runs placed for its role, counting the live threads of
+	 * {@code active} when the role is {@link Role#BACKGROUND}. Each thread pool must pass its own
+	 * counter: the placement decision is per pool, never the sum of every pool's threads.
+	 *
+	 * @param role the role
+	 * @param body the body
+	 * @param active the pool's live-thread counter, or null for the process-wide one
+	 * @return the wrapped body
+	 */
+	public static Runnable placed(Role role, Runnable body, AtomicInteger active) {
 		return () -> {
 			boolean bg = role == Role.BACKGROUND;
-			int active = bg ? ACTIVE_BACKGROUND.incrementAndGet() : 0;
+			AtomicInteger counter = bg ? (active != null ? active : ACTIVE_BACKGROUND) : null;
+			int started = counter != null ? counter.incrementAndGet() : 0;
 			boolean placed = false;
 			try {
-				placed = !bg || placeBackgroundAt(active, cpu()) ? place(role) : false;
+				placed = !bg || placeBackgroundAt(started, cpu()) ? place(role) : false;
 				body.run();
 			}
 			finally {
 				release(role, placed);
-				if (bg) {
-					ACTIVE_BACKGROUND.decrementAndGet();
+				if (counter != null) {
+					counter.decrementAndGet();
 				}
 			}
 		};
