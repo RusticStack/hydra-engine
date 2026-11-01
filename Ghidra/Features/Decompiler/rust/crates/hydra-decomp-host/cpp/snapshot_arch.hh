@@ -79,6 +79,9 @@ class SnapshotStore {
   std::atomic<uint8> validated;				///< Instructions the validation compared
   std::atomic<uint8> mismatches;			///< Instructions whose native and Java ops differed
   static std::string nativeReason;			///< Why native decode is off (diagnostics)
+  /// The generation this one may answer inherited kinds from (an overlay over its base program),
+  /// or null. Only query kinds that an annotation-only overlay cannot change are inherited.
+  std::shared_ptr<SnapshotStore> parent;
 public:
   const uint8 id;					///< Unique id of this store (one per generation)
   const string pspec;					///< registerProgram: the processor spec
@@ -118,6 +121,10 @@ public:
   /// (entries are only added, and a rehash keeps the nodes). \b composite is scratch for the
   /// scoped key, reused so a lookup allocates nothing.
   const string *find(const string &scope,const string &query,string &composite) const;
+  /// Answer {@code type} and {@code register-name} queries this store lacks from {@code p} (an
+  /// overlay generation's base): an annotation-only overlay cannot have changed them, and without
+  /// them the first decompile of every overlay repeats its run for each missed answer.
+  void inheritFrom(const std::shared_ptr<SnapshotStore> &p) { parent = p; }
   uint8 count(void) const;				///< Number of answers held
   uint8 size(void) const;				///< Bytes held by the answers
 };

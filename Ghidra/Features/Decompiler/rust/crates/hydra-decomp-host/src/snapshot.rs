@@ -87,6 +87,7 @@ mod ffi {
         pub fn hydra_snapshot_set_validate(on: c_int);
         pub fn hydra_snapshot_store_stats(h: *mut c_void, count: *mut u64, bytes: *mut u64);
         pub fn hydra_snapshot_store_close(h: *mut c_void);
+        pub fn hydra_snapshot_store_set_parent(h: *mut c_void, parent: *mut c_void);
         pub fn hydra_snapshot_decompile(
             h: *mut c_void,
             addr: *const c_char,
@@ -380,6 +381,20 @@ pub unsafe extern "C" fn hydra_dhost_store_close(h: *mut c_void) {
     }
 }
 
+/// Answers the data-type and register-name queries of `h` that it lacks from `parent`, the
+/// generation of the base program an annotation-only overlay was made over (null clears it).
+/// The child keeps the parent alive, so the base generation may be retired first.
+///
+/// # Safety
+/// Both handles must be live store handles (or `parent` null).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hydra_dhost_store_set_parent(h: *mut c_void, parent: *mut c_void) {
+    if !h.is_null() {
+        // SAFETY: guaranteed by the caller.
+        unsafe { ffi::hydra_snapshot_store_set_parent(h, parent) }
+    }
+}
+
 /// Raw pointers moved into a pool job (the caller blocks until the job is done).
 struct Job {
     h: *mut c_void,
@@ -533,6 +548,38 @@ fn post(c: Completion) {
     COMPLETIONS.ready.notify_one();
 }
 
+/// Nanoseconds a job waited for a worker, and the job's own wall time (diagnostics).
+static QUEUE_NANOS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static JOB_NANOS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static MAX_QUEUE_NANOS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static JOBS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// \brief The pool's timings since start: total and longest queue wait, total job wall time and the
+/// number of jobs (ns). A queue wait is the part of a hosted decompile the pool, not the job, sets.
+#[unsafe(no_mangle)]
+pub extern "C" fn hydra_dhost_timings(
+    queue: *mut u64,
+    queue_max: *mut u64,
+    job: *mut u64,
+    jobs: *mut u64,
+) {
+    use std::sync::atomic::Ordering;
+    unsafe {
+        if !queue.is_null() {
+            *queue = QUEUE_NANOS.load(Ordering::Relaxed);
+        }
+        if !queue_max.is_null() {
+            *queue_max = MAX_QUEUE_NANOS.load(Ordering::Relaxed);
+        }
+        if !job.is_null() {
+            *job = JOB_NANOS.load(Ordering::Relaxed);
+        }
+        if !jobs.is_null() {
+            *jobs = JOBS.load(Ordering::Relaxed);
+        }
+    }
+}
+
 /// Store handle moved into a pool job.
 struct StoreRef(*mut c_void);
 // SAFETY: the store is thread-safe for decompiles; the caller keeps it open until the
@@ -578,8 +625,14 @@ pub unsafe extern "C" fn hydra_dhost_submit(
         unsafe { std::slice::from_raw_parts(addr.cast::<u8>(), addrlen) }.to_vec()
     };
     let store = StoreRef(h);
+    let queued_at = std::time::Instant::now();
     pool.spawn_for(h as usize, move || {
         let store = store;
+        let started = std::time::Instant::now();
+        let waited = started.duration_since(queued_at).as_nanos() as u64;
+        use std::sync::atomic::Ordering;
+        QUEUE_NANOS.fetch_add(waited, Ordering::Relaxed);
+        MAX_QUEUE_NANOS.fetch_max(waited, Ordering::Relaxed);
         let mut c = Completion {
             ticket,
             out: std::ptr::null_mut(),
@@ -625,6 +678,8 @@ pub unsafe extern "C" fn hydra_dhost_submit(
             c.misseslen = misslen as u64;
             c.answered = answered.min(u32::MAX as u64) as u32;
         }
+        JOB_NANOS.fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        JOBS.fetch_add(1, Ordering::Relaxed);
         post(c);
     });
     OK
