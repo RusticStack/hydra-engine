@@ -290,3 +290,34 @@ model {
 		}
 	}
 } // end model
+
+/*****************************************************************************************
+ * Hydra: a change to any header of the native sources rebuilds every translation unit.
+ *
+ * Gradle's native dependency scanner can leave a header out of a source's dependency set when
+ * the source reaches it through a longer include chain (round 3: double.cc and ruleaction.cc
+ * -> funcdata.hh -> architecture.hh -> translate.hh).  An incremental compile then keeps their
+ * objects from before a class-layout change and links them with newly compiled ones; the mixed
+ * layouts corrupt the heap at run time (decompile.exe died on FUN_140001888).  The digest of
+ * every header is an input property, so changing one makes the compile task non-incremental
+ * (AbstractNativeCompileTask passes InputChanges.isIncremental() to NativeCompileSpec) and the
+ * native compiler rebuilds all sources with one consistent layout.
+ *****************************************************************************************/
+def hydraNativeHeaders = []
+hydraNativeHeaders.addAll(fileTree(dir: 'src/decompile/cpp', includes: ['**/*.h', '**/*.hh', '**/*.inc']).files)
+hydraNativeHeaders.addAll(fileTree(dir: 'src/decompile/mimalloc/include', includes: ['**/*.h']).files)
+hydraNativeHeaders.addAll(fileTree(dir: 'src/decompile/zlib', includes: ['**/*.h']).files)
+def hydraNativeHeaderDigest = {
+	def md = java.security.MessageDigest.getInstance('SHA-256')
+	hydraNativeHeaders.sort { it.absolutePath }.each { f ->
+		def rel = projectDir.toPath().relativize(f.toPath()).toString().replace('\\', '/')
+		md.update(rel.getBytes('UTF-8'))
+		md.update((byte) 0)
+		md.update(f.bytes)
+		md.update((byte) 0)
+	}
+	md.digest().encodeHex().toString()
+}()
+tasks.withType(org.gradle.language.cpp.tasks.CppCompile).configureEach {
+	inputs.property('hydraNativeHeaderDigest', hydraNativeHeaderDigest)
+}
