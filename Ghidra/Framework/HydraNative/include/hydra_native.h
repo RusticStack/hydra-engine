@@ -101,4 +101,28 @@ int64_t hydra_rp_ft_page(const HydraRpFunctionTable *t, const uint8_t *contains,
 
 void hydra_rp_ft_free(HydraRpFunctionTable *t);
 
+/*
+ * The extension-point class scan (src/classscan.rs; Java: Framework/Generic ClassScan): which
+ * classes in the classpath's jars are extension points, from the jars' central directories. Its
+ * own ABI version, separate from hydra_native_abi_version().
+ */
+typedef struct HydraCsScan HydraCsScan;
+
+uint32_t hydra_cs_abi_version(void);
+
+/* NUL-separated UTF-8 jar paths (classpath order) and suffixes (literal). NULL when an argument
+ * is not UTF-8, a jar cannot be read as a zip, or an entry name is not UTF-8: the caller then
+ * keeps its own scan. Free with hydra_cs_free. */
+HydraCsScan *hydra_cs_scan(const uint8_t *paths, uint64_t paths_len, const uint8_t *suffixes,
+	uint64_t suffixes_len);
+
+/* Bytes of the encoded hits: per hit, u32 jar index, u32 name length, u32 suffix length
+ * (little endian), then the UTF-8 name and suffix. */
+uint64_t hydra_cs_len(const HydraCsScan *s);
+
+/* Copies the encoded hits into out, which must hold len bytes; returns the bytes copied. */
+uint64_t hydra_cs_copy(const HydraCsScan *s, uint8_t *out, uint64_t len);
+
+void hydra_cs_free(HydraCsScan *s);
+
 #endif

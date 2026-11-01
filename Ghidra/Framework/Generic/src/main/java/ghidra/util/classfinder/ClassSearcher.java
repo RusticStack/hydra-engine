@@ -76,6 +76,8 @@ public class ClassSearcher {
 
 	private static List<Class<?>> FILTER_CLASSES = Arrays.asList(ExtensionPoint.class);
 	private static Pattern extensionPointSuffixPattern;
+	/** The suffixes the pattern is built from, trimmed and without empties, in pattern order. */
+	private static List<String> extensionPointSuffixList;
 	private static Map<String, Set<ClassFileInfo>> extensionPointSuffixToInfoMap;
 	private static Map<ClassFileInfo, Class<?>> loadedCache = new HashMap<>();
 	private static Set<ClassFileInfo> falsePositiveCache = new HashSet<>();
@@ -464,7 +466,9 @@ public class ClassSearcher {
 				}
 
 				log.trace("Searching jar file: {}", searchPath);
-				classJars.add(new ClassJar(searchFile, monitor));
+				// the scan is lazy: the native scan (ClassScan) answers for every jar at once,
+				// and the Java scan runs in getClasses only when it cannot
+				classJars.add(new ClassJar(searchFile));
 			}
 			else if (searchFile.isDirectory()) {
 				log.trace("Searching classpath directory: {}", searchPath);
@@ -477,9 +481,17 @@ public class ClassSearcher {
 			monitor.checkCancelled();
 			dir.getClasses(classList, monitor);
 		}
-		for (ClassJar jar : classJars) {
-			monitor.checkCancelled();
-			jar.getClasses(classList, monitor);
+		// The native scan (ClassScan) answers the jars from their central directories with a
+		// suffix test instead of a backtracking regex per class name; null keeps the Java scan.
+		List<ClassFileInfo> scanned = ClassScan.scanJars(classJars, monitor, extensionPointSuffixes());
+		if (scanned != null) {
+			classList.addAll(scanned);
+		}
+		else {
+			for (ClassJar jar : classJars) {
+				monitor.checkCancelled();
+				jar.getClasses(classList, monitor);
+			}
 		}
 
 		// We can't load more than one class with the same name, so de-duplicate them
@@ -588,6 +600,17 @@ public class ClassSearcher {
 		}
 	}
 
+	/**
+	 * The extension-point suffixes of this install, trimmed, without empties, in the order the
+	 * pattern uses them. Empty only when no module declares any.
+	 */
+	static synchronized List<String> extensionPointSuffixes() {
+		if (extensionPointSuffixPattern == null) {
+			extensionPointSuffixPattern = loadExtensionPointSuffixes();
+		}
+		return extensionPointSuffixList;
+	}
+
 	private static Pattern loadExtensionPointSuffixes() {
 		Set<String> extensionPointSuffixes = new HashSet<>();
 
@@ -638,17 +661,20 @@ public class ClassSearcher {
 		// from any class in the group, which filters out the bad associations.
 		StringBuilder buffy = new StringBuilder(".*(");
 		String between = "";
+		List<String> trimmed = new ArrayList<>();
 		for (String suffix : extensionPointSuffixes) {
 			suffix = suffix.trim();
 			if (suffix.isEmpty()) {
 				continue;
 			}
 
+			trimmed.add(suffix);
 			buffy.append(between);
 			buffy.append(suffix);
 			between = "|";
 		}
 		buffy.append(")$");
+		extensionPointSuffixList = List.copyOf(trimmed);
 		log.trace("Using extension point pattern: {}", buffy);
 		return Pattern.compile(buffy.toString());
 	}

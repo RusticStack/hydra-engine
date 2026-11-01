@@ -54,23 +54,44 @@ class ClassJar implements ClassLocation {
 	private Set<ClassFileInfo> classes = new HashSet<>();
 	private File file;
 	private String modulePath = "";
+	/** Set once {@link #scanJar} has run; the scan happens on the first {@link #getClasses}. */
+	private boolean scanned;
 
-	ClassJar(File file, TaskMonitor monitor) throws CancelledException {
+	ClassJar(File file) {
 		this.file = file;
 		ResourceFile module = Application.getModuleContainingResourceFile(new ResourceFile(file));
 		if (module != null) {
 			modulePath = module.getAbsolutePath();
 		}
+	}
+
+	ClassJar(File file, TaskMonitor monitor) throws CancelledException {
+		this(file);
 		scanJar(monitor);
 	}
 
+	/** The module the jar belongs to, or "" outside a module (the {@code ClassFileInfo.module}). */
+	String getModulePath() {
+		return modulePath;
+	}
+
+	/** The jar file. */
+	File getFile() {
+		return file;
+	}
+
 	@Override
-	public void getClasses(List<ClassFileInfo> list, TaskMonitor monitor) {
+	public void getClasses(List<ClassFileInfo> list, TaskMonitor monitor) throws CancelledException {
+		if (!scanned) {
+			// the scan is lazy so that the native scan (ClassScan) can answer for the whole
+			// classpath without a JarFile per jar; the result is the same either way
+			scanJar(monitor);
+		}
 		list.addAll(classes);
 	}
 
 	private void scanJar(TaskMonitor monitor) throws CancelledException {
-
+		scanned = true;
 		try (JarFile jarFile = new JarFile(file)) {
 
 			String pathName = jarFile.getName();
