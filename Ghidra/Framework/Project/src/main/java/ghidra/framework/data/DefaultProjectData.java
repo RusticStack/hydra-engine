@@ -1258,6 +1258,23 @@ public class DefaultProjectData implements ProjectData {
 		return projectDir;
 	}
 
+	/**
+	 * The close of a disposable fork leaves the storage index as it is when no journal entry is
+	 * pending (see {@link LocalFileSystem#skipIndexFlushOnClose()}): the fork is closed to be
+	 * discarded and a reopen replays and compacts the journal.
+	 */
+	public void skipIndexFlushOnClose() {
+		LocalFileSystem fs = fileSystem;
+		if (fs != null) {
+			fs.skipIndexFlushOnClose();
+		}
+		// the versioned store is the fork's too: its index is written by the save (E8/E12), not by
+		// the close
+		if (versionedFileSystem instanceof LocalFileSystem vfs) {
+			vfs.skipIndexFlushOnClose();
+		}
+	}
+
 	public synchronized boolean isClosed() {
 		return closed;
 	}

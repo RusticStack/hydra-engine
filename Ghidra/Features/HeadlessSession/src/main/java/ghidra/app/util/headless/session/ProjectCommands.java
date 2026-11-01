@@ -397,7 +397,12 @@ final class ProjectCommands {
 				s.programCmds.closeEntry(e);
 			}
 			p.closed = true;
-			p.closeViews();
+			if (ProjectFork.disposable(p.resolved)) {
+				p.closeDisposableForkView();
+			}
+			else {
+				p.closeViews();
+			}
 		}
 		finally {
 			unlockProject(p, l);
