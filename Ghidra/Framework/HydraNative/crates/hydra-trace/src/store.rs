@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS events(
   seq INTEGER PRIMARY KEY,
   event_id TEXT NOT NULL,
   source_id TEXT NOT NULL, source_seq INTEGER NOT NULL, producer_gen INTEGER NOT NULL,
-  kind TEXT NOT NULL, clock_domain TEXT NOT NULL, t_mono_ns INTEGER NOT NULL,
+  kind TEXT NOT NULL, clock_domain TEXT NOT NULL, t_mono_ns INTEGER NOT NULL, t_wall_ns INTEGER,
   process_id INTEGER, thread_id INTEGER, process_gen INTEGER, thread_gen INTEGER,
   module TEXT, module_instance INTEGER, va INTEGER, confidence TEXT NOT NULL, acquisition TEXT,
   resource_key TEXT, state_key TEXT, corr TEXT,
@@ -380,7 +380,7 @@ impl Store {
             let mut insert = tx.prepare_cached(
                 "INSERT INTO events(seq,event_id,source_id,source_seq,producer_gen,kind,clock_domain,t_mono_ns,process_id,
                  thread_id,process_gen,thread_gen,module,module_instance,va,confidence,acquisition,resource_key,state_key,
-                 corr,callstack,payload) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
+                 corr,callstack,payload,t_wall_ns) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)",
             )?;
             let mut sym = tx.prepare_cached(
                 "INSERT INTO event_symbols(interp,seq,function,reason) VALUES(?1,?2,?3,?4)",
@@ -785,6 +785,7 @@ fn store_event(
         corr,
         serde_json::to_string(&event.callstack)?,
         serde_json::to_string(&Value::Object(event.payload.clone()))?,
+        event.t_wall_ns.map(|v| v as i64),
     ])?;
     Ok(())
 }
