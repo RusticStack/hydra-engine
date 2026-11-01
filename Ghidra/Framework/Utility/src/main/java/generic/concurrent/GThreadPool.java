@@ -212,12 +212,16 @@ public class GThreadPool {
 	/**
 	 * The pool's threads are background work (analysis, parallel decompiles): on a hybrid CPU the
 	 * active tuning profile may place them on efficiency cores, within its budget
-	 * ({@link HydraCpu#place(HydraCpu.Role)}); elsewhere this is the plain named daemon factory.
+	 * ({@link HydraCpu#place(HydraCpu.Role)}). The decision uses this pool's live-thread count,
+	 * not every pool's, so a small pool is never confined to E-cores because another pool is
+	 * large; elsewhere this is the plain named daemon factory.
 	 */
 	private static ThreadFactory backgroundThreads(String name) {
 		// still a NamedDaemonThreadFactory (not a lambda around one): its shape is what the pool
 		// always had, for code and tests that look into the executor's factory
-		return new NamedDaemonThreadFactory(name, r -> HydraCpu.placed(HydraCpu.Role.BACKGROUND, r));
+		AtomicInteger active = new AtomicInteger();
+		return new NamedDaemonThreadFactory(name,
+			r -> HydraCpu.placed(HydraCpu.Role.BACKGROUND, r, active));
 	}
 
 	private class GThreadPoolExecutor extends ThreadPoolExecutor {

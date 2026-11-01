@@ -47,6 +47,7 @@ import ghidra.program.util.*;
 import ghidra.util.*;
 import ghidra.util.bean.opteditor.OptionsVetoException;
 import ghidra.util.classfinder.ClassSearcher;
+import ghidra.util.cpu.HydraCpu;
 import ghidra.util.datastruct.PriorityQueue;
 import ghidra.util.datastruct.WeakDataStructureFactory;
 import ghidra.util.datastruct.WeakSet;
@@ -80,7 +81,19 @@ public class AutoAnalysisManager {
 	 * runs more than one tool, with different option values, during a Ghidra run (same JVM
 	 * instance).
 	 */
-	private static int analysisSharedThreadPoolSize = SystemUtilities.getDefaultThreadPoolSize();
+	private static int analysisSharedThreadPoolSize = analysisPoolSize();
+
+	/**
+	 * The analysis pool size: the active CPU tuning profile's, when it sets one, else the generic
+	 * default ({@link SystemUtilities#getDefaultThreadPoolSize()}). A profile may size the pool from
+	 * every granted CPU (P- and E-cores) where the generic default keeps Ghidra's fixed pool cap.
+	 *
+	 * @return the number of analysis threads
+	 */
+	private static int analysisPoolSize() {
+		int n = HydraCpu.profile().analysisThreads(HydraCpu.cpu());
+		return n > 0 ? n : SystemUtilities.getDefaultThreadPoolSize();
+	}
 
 	private static Map<Program, AutoAnalysisManager> managerMap = new WeakHashMap<>();
 
