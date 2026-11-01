@@ -127,9 +127,11 @@ Same fixed workload, three interleaved rounds, hydra.5 against 12.3-hydra.4
 - `hy_publish` is 1.1-1.5 s median, not below 1 s: 1105 ms against 1274 ms, with 3 of 6 runs at
   845-994 ms. The rest is eight concurrent publishes over about 1.5 builds plus the harness'
   250 ms poll (`_logs/rust-round4/io/REPORT.md`).
-- The daemon suite is **254 of 255**: `e2a_kill_fork` remains a pre-existing chaos flake, 1 failure
-  in 6 standalone runs on hydra.4 and 1 in 6 on each of the two preceding integration builds; on this
-  tree it passed 2 of 3 standalone reruns after the suite's one failure
+- The daemon suite is **255 of 255 on the release install** (`o4-h5-release`, stamped
+  `12.3-hydra.5`; `_logs/rust-round4/release/suite2.out.log`). An earlier run on the integration7
+  build was 254/255: `e2a_kill_fork` is a pre-existing chaos flake, 1 failure in 6 standalone runs
+  on hydra.4 and 1 in 6 on each of the two preceding integration builds; it passed 2 of 3 standalone
+  reruns after that failure
   (`_logs/rust-round4/integration/e2a-h4.log`, `e2a-int5.log`, `e2a-int6.log`, `e2a-int7.log`).
 - The 16-agent `fork` p50 moved from 214 to 351 ms between sessions while the isolated fork stayed
   at 81 ms; the ratio is window-dependent and no fork speed-up is stated from that row (perop

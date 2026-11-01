@@ -59,7 +59,7 @@ edit2 + close + fresh + analysis + io).
 | Gate | Result | Run and evidence |
 |---|---|---|
 | 9.1 golden decompile diff | **pass** | `o4-integration7` (`8745d167c9`): KotOR 8,616 of 8,616 functions identical on `production` and `explicit`, standard and raw; `copy_rc 0`, `capture_rc 0`, source tree hash `6d8ced78…60df` unchanged, program SHA-256 `0290889e…37e6`, all 8,616 rows `ok`, both diffs rc 0 (`integration/g91-int7.out.log`, `integration/g91-int7/`) |
-| 9.4 daemon suite | **254/255**, the one failure is the pre-existing `e2a_kill_fork` chaos flake | `integration/suite-int7.out.log`: 254 passed, 0 skipped, **1 failed alone** (`e2a_kill_fork`, `retry_blocked: 1`, `not_complete_after: 1`), 0 failed only under load, 0 problems; queue 373 s, wall 426 s, mean 18.6 busy cores. The same test fails 1 in 6 standalone runs on hydra.4 (`integration/e2a-h4.log`), 1 in 6 on integration5 (`e2a-int5.log`) and 1 in 6 on integration6 (`e2a-int6.log`); on this tree it passed 2 of 3 standalone reruns after the suite (`e2a-int7.log`). The runner prints `FAILED ALONE`, so the suite run is not stated as green |
+| 9.4 daemon suite | **255/255** on the release install | `o4-h5-release` (built from this tree, stamped `12.3-hydra.5`) ran the full suite through `run_parallel.py --workers 16 --legacy-project --no-result-cache`: **255 passed, 0 skipped, 0 failed alone, 0 failed only under load, 0 problems**, queue 281 s, wall 327 s (`release/suite2.out.log`). An earlier run on the integration7 build was 254/255: `e2a_kill_fork` failed alone (`retry_blocked: 1`, `not_complete_after: 1`); the same test fails 1 in 6 standalone runs on hydra.4 (`integration/e2a-h4.log`), 1 in 6 on integration5 (`e2a-int5.log`), 1 in 6 on integration6 (`e2a-int6.log`) and passed 2 of 3 reruns on integration7 (`e2a-int7.log`) - a pre-existing probabilistic chaos flake, not a hydra.5 regression, and the release run is green |
 | 9.4 client compatibility | **pass, 54/54** | `integration/cc-int7b.log`, `cc-int7b.json`, exit 0. The first attempt (`cc-int7.log`) ran 32/54 because its work directory lacked the `choice.exe` fixture (`not_found: no file named choice.exe in project p1`); the clean re-run is the gate |
 | 9.4 session smoke and contract tests | **not re-run on this tree** | The release workflow runs `session_smoke.py`, `daemon_tests.py` and `contract_tests.py` on the unzipped release zip; the local round-4 work did not re-run the smoke or contract suites |
 | 9.7 database-version check | **pass by no change** | No file in `Ghidra/Framework/DB`, the `program/database` packages, any processor or the language format changed in round 4; the round-3 constants check (`hydra-rust-round3.md` 12.3-hydra.3, "Database format gate") still applies. `format_gate.py` was not re-run on this tree |
@@ -260,7 +260,7 @@ against both hydra.4 and stock.
 
 | Claim | Status for hydra.5 |
 |---|---|
-| C1 (write collisions) | not flipped: the round-4 suite run is 254/255 and no soak passed; writes are serialized and a collision is detected when the client passes `expect` |
+| C1 (write collisions) | not flipped: the release suite is 255/255 but no soak passed; writes are serialized and a collision is detected when the client passes `expect` |
 | C2 contained-script visibility | unchanged wording |
 | C3 (analysis and questions) | not flipped: no 9.13 run for this release |
 | C4 (programs and their waits) | not flipped: no 9.13 run; the multi-project run measured 0 `foreignBlocked` in one scenario |
@@ -271,7 +271,7 @@ against both hydra.4 and stock.
 | C11 number of modified Ghidra files | `NOTICE-HYDRA` lists every modified core file; the round-4 changes add no modified Ghidra file beyond those already listed (the host, session and Rust client are Hydra files) |
 | U1 scale | not flipped: this release states 16 agents on three projects plus one concurrent import, in one run per shape, not a nightly |
 | U2 per-connection fairness | unchanged from hydra.4 |
-| U3 serialized writes | "no corruption was seen in the tests listed"; the multi-project run's project trees were byte-identical and its 818 replies consistent; the suite is 254/255 |
+| U3 serialized writes | "no corruption was seen in the tests listed"; the multi-project run's project trees were byte-identical and its 818 replies consistent; the release suite is 255/255 |
 | U4 replay from the store | Hydralysis Y1, Y2 tests pass; the publish series had 0 failures in 208 publishes across the two series |
 | U13 stale versions | flips when Hydralysis runs `tools/bump_hydra.py` for this release against the built zip; done in 0.7.0 |
 
