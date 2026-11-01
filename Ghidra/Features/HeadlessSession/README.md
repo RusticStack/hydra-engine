@@ -104,11 +104,15 @@ three extra JVMs `LaunchSupport` costs on every start:
   launcher's cwd; when the user has Ghidra extension modules, whose paths lie below each daemon's
   own settings dir, the file name also carries a hash of that dir): measured 6.4 -> 4.2 CPU s per start, 3925 -> 3400 classes,
   20.6 -> 17.0 MB metaspace.
-- **One-shot code without C2** (`jitOneShot`): the RELAX NG validator of the language specs and
-  the Sleigh preprocessor with ANTLR run once per language (its first load), but their hot loops
-  draw optimising-JIT (C2) compiles. A compiler directives file
+- **One-shot code without C2** (`jitOneShot`): the RELAX NG validator of the language specs,
+  the Sleigh preprocessor with ANTLR (its first load), the XML parser over language definitions,
+  project files and options, and log4j's configuration parser run once per language or per start,
+  but their hot loops draw optimising-JIT (C2) compiles. A compiler directives file
   (`<state>/launch/jit-one-shot-*.json`) keeps them on C1; the JIT never changes what a method
-  computes. javac and the class-file API are not listed: a long-lived daemon serving many agents'
+  computes. Measured on the KotOR workload: 95 C2 compiles / 0.70 s of a 14.3 s C2 thread time
+  and 0.33 MB of code removed (Xerces; log4j's config parser added no C2 in this workload), for
+  0.02 s of execution moved to C1. javac and the class-file API
+  are not listed: a long-lived daemon serving many agents'
   scripts compiles again and again, and on C1 each later compile costs more CPU. Off when `vmargs`
   or a JVM option variable (`JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS`, `_JAVA_OPTIONS`) name a
   `-XX:CompilerDirectivesFile` (the JVM reads only one).
