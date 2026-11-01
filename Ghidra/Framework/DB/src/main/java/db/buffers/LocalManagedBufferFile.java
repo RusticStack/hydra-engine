@@ -18,6 +18,7 @@ package db.buffers;
 import java.io.*;
 import java.nio.channels.FileChannel;
 import java.nio.file.StandardOpenOption;
+import java.util.Locale;
 
 import ghidra.util.Msg;
 import ghidra.util.exception.AssertException;
@@ -794,9 +795,17 @@ public class LocalManagedBufferFile extends LocalBufferFile implements ManagedBu
 	 * ({@code AccessDeniedException}), where the call does nothing and the save relies on the
 	 * file system's own ordering of its directory entries and on the {@code sync} of the renamed
 	 * file in {@code setReadOnly}. Nothing is written, so a failure leaves the save as it was.
+	 * <p>
+	 * On Windows it returns at once: the open always failed there, so the call was a failed open
+	 * plus an exception with its stack trace per save and nothing reached the disk. Skipping it
+	 * removes those syscalls and changes no durability (as in {@code ProjectFork.syncDirectory},
+	 * PROTOCOL-3.md E12 row "syncDirectory() is a no-op on this Windows machine").
 	 * @param dir the directory that received the renamed file
 	 */
 	static void syncDirectory(File dir) {
+		if (WINDOWS) {
+			return;
+		}
 		try (FileChannel ch = FileChannel.open(dir.toPath(), StandardOpenOption.READ)) {
 			ch.force(true);
 		}
@@ -804,6 +813,10 @@ public class LocalManagedBufferFile extends LocalBufferFile implements ManagedBu
 			// not supported here, or not possible: the save is complete either way
 		}
 	}
+
+	/** The platform, read once: {@link #syncDirectory} is a no-op on Windows (see its comment). */
+	private static final boolean WINDOWS =
+		System.getProperty("os.name", "").toLowerCase(Locale.ROOT).startsWith("windows");
 
 	@Override
 	public synchronized boolean canSave() {
