@@ -22,6 +22,8 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <atomic>
+#include <chrono>
 #include <functional>
 #include <list>
 #include <map>
@@ -35,6 +37,43 @@ namespace ghidra {
 ElementId ELEM_DOC = ElementId("doc",229);
 
 const char SnapshotChannel::MISS_TYPE[] = "hydra.SnapshotMiss";
+
+// ---- host timings (diagnostics; the Java side reads them with status.decompileBackend.host) -----
+// Where a hosted decompile's wall time goes, inside the job: building this worker's Architecture
+// for a store (specs parsed, the translator prepared: the first job of every generation on every
+// worker pays it) and the decompile itself. The wait before the job starts is the pool's and is
+// timed on the Rust side.
+static std::atomic<uint8> REGISTER_NANOS(0);
+static std::atomic<uint8> REGISTER_MAX_NANOS(0);
+static std::atomic<uint8> DECOMPILE_NANOS(0);
+static std::atomic<uint8> JOBS(0);
+
+static uint8 nowNanos(void)
+{
+  using namespace std::chrono;
+  return (uint8)duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
+/// Adds \p nanos to \p sum and keeps the largest in \p max (a plain CAS loop: jobs are rare).
+static void addTiming(std::atomic<uint8> &sum,std::atomic<uint8> &max,uint8 nanos)
+{
+  sum.fetch_add(nanos,std::memory_order_relaxed);
+  uint8 seen = max.load(std::memory_order_relaxed);
+  while(nanos > seen && !max.compare_exchange_weak(seen,nanos,std::memory_order_relaxed)) {
+  }
+}
+
+/// \brief The host's job timings: Architecture set-up and decompile wall time in total and in the
+/// longest single job, and the number of jobs (nanoseconds, as the Java side reports them in ms).
+extern "C" __declspec(dllexport) void hydra_snapshot_timings(uint8 *reg,uint8 *regMax,uint8 *dec,
+							    uint8 *jobs)
+{
+  *reg = REGISTER_NANOS.load(std::memory_order_relaxed);
+  *regMax = REGISTER_MAX_NANOS.load(std::memory_order_relaxed);
+  *dec = DECOMPILE_NANOS.load(std::memory_order_relaxed);
+  *jobs = JOBS.load(std::memory_order_relaxed);
+}
+
 
 static const string QUERY_OPEN("\000\000\001\004",4);
 static const string QUERY_CLOSE("\000\000\001\005",4);
@@ -283,6 +322,23 @@ bool SnapshotStore::hasDecode(const string &space,uintb offset) const
   return (*iter).second.find(offset) != (*iter).second.end();
 }
 
+/// The element id of the first record of a packed query payload (the command), 0 when the payload
+/// does not start with an element record. The header format is PackedFormat's (marshal.hh).
+static uint4 firstElementId(const string &query)
+{
+  if (query.empty())
+    return 0;
+  uint1 header = (uint1)query[0];
+  if ((header & PackedFormat::HEADER_MASK) != PackedFormat::ELEMENT_START)
+    return 0;
+  uint4 id = header & PackedFormat::ELEMENTID_MASK;
+  if ((header & PackedFormat::HEADEREXTEND_MASK) != 0 && query.size() > 1) {
+    id <<= PackedFormat::RAWDATA_BITSPERBYTE;
+    id |= ((uint1)query[1] & PackedFormat::RAWDATA_MASK);
+  }
+  return id;
+}
+
 /// A scoped answer for the given scope wins over a global one.
 /// \param scope is the scope of the current decompile (may be empty)
 /// \param query is the packed query payload
@@ -301,12 +357,22 @@ const string *SnapshotStore::find(const string &scope,const string &query,string
     if (iter != sh.map.end())
       return &(*iter).second;
   }
-  const Shard &sh(global[shardOf(query)]);
-  std::shared_lock<std::shared_mutex> guard(sh.lock);
-  unordered_map<string,string>::const_iterator iter = sh.map.find(query);
-  if (iter == sh.map.end())
-    return (const string *)0;
-  return &(*iter).second;
+  {
+    const Shard &sh(global[shardOf(query)]);
+    std::shared_lock<std::shared_mutex> guard(sh.lock);
+    unordered_map<string,string>::const_iterator iter = sh.map.find(query);
+    if (iter != sh.map.end())
+      return &(*iter).second;
+  }
+  // An overlay generation answers the kinds an annotation-only overlay cannot change (its data
+  // types and its register names) from the base generation it was made over: without them the
+  // first decompile of a fresh overlay misses each one and repeats the whole run.
+  if (parent) {
+    uint4 cmd = firstElementId(query);
+    if (cmd == ELEM_COMMAND_GETDATATYPE.getId() || cmd == ELEM_COMMAND_GETREGISTERNAME.getId())
+      return parent->find(scope,query,composite);
+  }
+  return (const string *)0;
 }
 
 uint8 SnapshotStore::count(void) const
@@ -1350,6 +1416,7 @@ static int runJob(SnapshotJob *job)
 {
   try {
     std::shared_ptr<SnapshotStore> st(*job->handle);
+    JOBS.fetch_add(1,std::memory_order_relaxed);
     // Drop Architectures of generations the client released
     for(std::list<WorkerArch>::iterator iter=workerArchs.begin();iter!=workerArchs.end();) {
       if ((*iter).store->closed && (*iter).store != st) {
@@ -1367,6 +1434,7 @@ static int runJob(SnapshotJob *job)
       }
     }
     if (cur == workerArchs.end()) {
+      uint8 t0 = nowNanos();
       while(workerArchs.size() >= maxArchsPerWorker()) {
 	dropArch(workerArchs.back());
 	workerArchs.pop_back();
@@ -1375,6 +1443,7 @@ static int runJob(SnapshotJob *job)
       w.store = st;
       w.arch = new SnapshotArchitecture(st);
       string err = w.arch->registerHost();
+      addTiming(REGISTER_NANOS,REGISTER_MAX_NANOS,nowNanos() - t0);
       SnapshotChannel &ch(w.arch->getChannel());
       job->answered += ch.getAnswered();
       if (!ch.getMisses().empty()) {
@@ -1394,6 +1463,7 @@ static int runJob(SnapshotJob *job)
     WorkerArch &w(workerArchs.front());
     SnapshotChannel &ch(w.arch->getChannel());
     uint8 before = ch.getAnswered();
+    uint8 t1 = nowNanos();
     w.arch->decompileAt(string(job->addr,job->addrlen));
     job->answered += ch.getAnswered() - before;
     bool protocolError = ch.hadProtocolError();
@@ -1409,6 +1479,7 @@ static int runJob(SnapshotJob *job)
       dropArch(w);
       workerArchs.pop_front();
     }
+    DECOMPILE_NANOS.fetch_add(nowNanos() - t1,std::memory_order_relaxed);
     if (missed) {
       // The output goes back too: when every miss got a neutral answer (speculate) and the
       // client's real answers are those same bytes, the run saw what the process path sees
@@ -1611,6 +1682,23 @@ extern "C" void hydra_snapshot_store_close(void *h)
   std::shared_ptr<SnapshotStore> *st = (std::shared_ptr<SnapshotStore> *)h;
   (*st)->closed = true;
   delete st;
+}
+
+/// \brief Answer the data-type and register-name queries of \p h that \p h lacks from \p parent,
+/// the generation of the base program an annotation-only overlay was made over (null to clear).
+/// The child keeps the parent alive, so the base generation may be retired first.
+extern "C" __declspec(dllexport) void hydra_snapshot_store_set_parent(void *h,void *parent)
+
+{
+  if (h == (void *)0)
+    return;
+  std::shared_ptr<SnapshotStore> &child(*((std::shared_ptr<SnapshotStore> *)h));
+  if (parent == (void *)0) {
+    child->inheritFrom(std::shared_ptr<SnapshotStore>());
+    return;
+  }
+  std::shared_ptr<SnapshotStore> &p(*((std::shared_ptr<SnapshotStore> *)parent));
+  child->inheritFrom(p);
 }
 
 extern "C" int hydra_snapshot_decompile(void *h,const char *addr,size_t addrlen,char **out,size_t *outlen,

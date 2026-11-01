@@ -147,6 +147,30 @@ final class Overlay implements Decompilers, DecompilerGate.Pool {
 		return p != null && !p.isClosed() ? p : readProgram();
 	}
 
+	/**
+	 * True while this overlay's answers the base program's would be identical: it only carries
+	 * renaming, labels and comments (the kinds {@link OverlayDelta} applies from its log), so its
+	 * data types and context are the base's. The host backend then answers a decompile's data-type
+	 * and register-name queries from the base generation instead of repeating its run for each
+	 * one; any change of bytes or of a type (a signature may create one) ends it.
+	 * @return true when the overlay's generation may inherit those answers
+	 */
+	boolean inheritAnswers() {
+		if (bytesChanged) {
+			return false;
+		}
+		for (com.google.gson.JsonElement el : log) {
+			if (!el.isJsonObject() || !Json.has(el.getAsJsonObject(), "op")) {
+				return false;
+			}
+			String kind = el.getAsJsonObject().get("op").getAsString();
+			if (!kind.equals("rename") && !kind.equals("label") && !kind.equals("comment")) {
+				return false;
+			}
+		}
+		return true;
+	}
+
 	/** A decompiler for the overlay's program, after a permit of the decompiler gate (E9). */
 	@Override
 	public DecompInterface borrowDecompiler() {

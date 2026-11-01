@@ -107,13 +107,14 @@ final class HostDecompileBackend {
 		String reason = unsupportedReason(prog, e, f);
 		if (reason == null) {
 			Program source = e instanceof Overlay o ? o.snapshotSource() : prog;
-			HostDecompiler.Outcome o =
-				HostDecompiler.decompile(prog, source == null ? prog : source, f, timeoutS);
-			if (o.results() != null) {
+			boolean inherit = e instanceof Overlay ov && ov.inheritAnswers() && source != prog;
+			HostDecompiler.Outcome out =
+				HostDecompiler.decompile(prog, source == null ? prog : source, inherit, f, timeoutS);
+			if (out.results() != null) {
 				HOSTED.incrementAndGet();
-				return o.results();
+				return out.results();
 			}
-			reason = o.fallback();
+			reason = out.fallback();
 		}
 		FALLBACKS.incrementAndGet();
 		String kind = reason.replaceAll("0x[0-9a-fA-F]+|\\b[0-9a-fA-F]{6,}\\b", "#");
