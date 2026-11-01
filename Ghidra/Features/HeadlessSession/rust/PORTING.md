@@ -155,7 +155,7 @@ cargo clippy --all-targets -- -D warnings   # BeautifulRust lints, clean
 ```
 
 Against the real engine, the lane's differential harness compares every reply with the Python
-client's on the same requests (`D:/Projects/Hydra/_logs/rust-round4/rustclient/diff/`): 34/34
+client's on the same requests (`_logs/rust-round4/rustclient/diff/`): 34/34
 value- and byte-identical (27 with the per-connection client ids in `users` untouched), the same
 digests, the same deadline cancellation and a working reconnect after the daemon restarts. The
 full multi-agent benchmark (`.../rustclient2/bench/`) runs the 16-agent shape with the 12 direct

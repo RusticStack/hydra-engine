@@ -180,8 +180,8 @@ Several at once (same machine; the module README has the method):
   script that does not poll for cancellation and runs inside the daemon runs to its own end, bounded
   and quarantined, not stopped. A script run in the script worker (`isolation:"worker"`) is ended at
   its timeout (release gate 9.14, `e7_kill_by_hand`, `e7_edited_view`). This is a documented limit.
-- **Every limit of hydra.4 and protocol 3** (`PROTOCOL-3.md` 6.2) is listed in the module README,
-  [Limits of 12.3-hydra.4 and protocol 3](Ghidra/Features/HeadlessSession/README.md#limits-of-123-hydra4-and-protocol-3).
+- **Every limit of hydra.5 and protocol 3** (`PROTOCOL-3.md` 6.2) is listed in the module README,
+  [Limits of 12.3-hydra.5 and protocol 3](Ghidra/Features/HeadlessSession/README.md#limits-of-123-hydra5-and-protocol-3).
   Among them: nothing about ReFS is tested for this release (there is no ReFS volume on the release
   machine; NTFS is the release file system), there is no power-cut test, and the upgrade gate is a
   guard against accidents, not a security boundary.
@@ -196,10 +196,10 @@ One port serves protocol 2 and protocol 3. A client that asks for nothing newer 
 replies byte-identical to 12.3-hydra.3 except for the changes listed by name in the
 [release notes](docs/release-notes-12.3-hydra.4.md) (V1 to V12; the table is in
 [`PROTOCOL-3.md`](Ghidra/Features/HeadlessSession/PROTOCOL-3.md), section 5.1). `minClient` stays `1.0.0`:
-no existing client is rejected. The legacy window: hydra.4 serves protocol 2; whether a later release
-refuses it is the owner's decision.
+no existing client is rejected. The legacy window: hydra.4 and hydra.5 serve protocol 2; whether a later
+release refuses it is the owner's decision.
 
-| Client | hydra.2 / hydra.3 engine | hydra.4 engine |
+| Client | hydra.2 / hydra.3 engine | hydra.4 / hydra.5 engine |
 |---|---|---|
 | A raw JSON-line client speaking protocol 2 | works | works |
 | `ghidra_session.py` 1.0.0 (protocol 2) | works | works at protocol 2 |
@@ -223,16 +223,16 @@ fetches the pinned Hydra Engine release and a JDK, so setting up Hydralysis sets
 Hydra Engine stays a generic Ghidra front end that any client can use directly; Hydralysis is the
 quickest way to put it to work.
 
-> **Status.** Hydralysis is the new name of RusticRE (0.5.0.dev0, twenty tools). The
-> `RusticStack/Hydralysis` repository is renamed but still private and has no release yet, so the
-> links and commands below work only with access to it. Until it is public Hydra Engine works on
-> its own, as described above and in the module README.
+> **Status.** Hydralysis is the new name of RusticRE (twenty tools). The
+> `RusticStack/Hydralysis` repository is renamed and release 0.7.0 pins 12.3-hydra.5. While the
+> repository is private the links and commands below need access to it; Hydra Engine works on
+> its own either way, as described above and in the module README.
 
 ## Quick start
 
 You need a JDK 25 and Python 3.13 or later.
 
-**With your AI.** Once Hydralysis is published (see its status above), paste this into Claude
+**With your AI.** Paste this into Claude
 Code, Codex, OpenCode or Qoder. It installs
 [Hydralysis](https://github.com/RusticStack/Hydralysis), which installs the pinned Hydra Engine
 release and registers itself with your harness:
@@ -246,8 +246,8 @@ has `hydra-engine-<version>-win_x86_64.zip`, the client alone as `hydra-client-<
 and a `SHA256SUMS`. Unzip the engine anywhere; it holds the install, `ghidra_12.3_DEV\`:
 
 ```powershell
-Get-FileHash hydra-engine-12.3-hydra.4-win_x86_64.zip     # compare with SHA256SUMS
-Expand-Archive hydra-engine-12.3-hydra.4-win_x86_64.zip C:\tools
+Get-FileHash hydra-engine-12.3-hydra.5-win_x86_64.zip     # compare with SHA256SUMS
+Expand-Archive hydra-engine-12.3-hydra.5-win_x86_64.zip C:\tools
 $G = "C:\tools\ghidra_12.3_DEV"
 python $G\Ghidra\Features\HeadlessSession\support\ghidra_session.py ensure   # the daemon
 & $G\support\analyzeHeadless.bat C:\re MyProject -import target.exe          # stock headless

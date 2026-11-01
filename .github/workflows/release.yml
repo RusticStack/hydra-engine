@@ -99,7 +99,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      # The long suites ran locally (D:/Projects/Hydra/_logs, run_parallel on 22 cores) on the commit named in
+      # The long suites ran locally (_logs, run_parallel on 22 cores) on the commit named in
       # .github/local-test-record.json. They are skipped here when every change from that commit to this one is a
       # document (*.md), a workflow file (.github/) or the record itself; any other change runs them on the runner as before.
       - name: Check the local test record

@@ -34,7 +34,7 @@ publish = false
 [workspace.dependencies]
 serde_json = { version = "1.0.154", default-features = false, features = ["std"] }
 
-# The BeautifulRust drop-in lints (C:/dev-overflow/tools/BeautifulRust/lints/lints.toml),
+# The BeautifulRust drop-in lints (BeautifulRust/lints/lints.toml),
 # with the library-only ones kept in the library crate.
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "warn"

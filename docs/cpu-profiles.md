@@ -157,7 +157,7 @@ and 7.9 % below int4 in total CPU; `raptorlake-hybrid` adds a further 6.7 %. The
 this session is load-limited (the first auto round overlapped another lane's heavy job), so CPU,
 not that one wall median, is the stable comparison; the per-op p50/p99 table and the second session
 on the final build (workload CPU −6.6 %, total CPU −2.2 %) are in
-`_logs/rust-round4/profiles/REPORT.md`.
+the round-4 profiles report.
 
 ## Adding a profile (PR checklist)
 
@@ -191,12 +191,9 @@ on the final build (workload CPU −6.6 %, total CPU −2.2 %) are in
    The run exits 1 when the outputs differ. A profile ships only with numbers that show it is faster on its CPU,
    `placed` above zero (otherwise the run measured generic against generic) and `outputs identical`.
 
-5. Run the 16-agent benchmark (the daemon under the concurrent workload), 3 rotated interleaved rounds
-   (bench-h4, o2-integration4, generic, the profile; `run_profiles_ab.py` runs the 12 and writes
-   `results/bench16`):
-
-       python _logs/rust-round4/profiles/scripts/run_profiles_ab.py \
-           generic:1 auto:1 auto:2 generic:2 generic:3 auto:3
+5. Run the 16-agent benchmark (the daemon under the concurrent workload), rotated interleaved rounds of
+   h4, the intermediate builds, generic and the profile (the round-4 `run_profiles_ab.py` harness ran the 12
+   and wrote `results/bench16`; it is internal, not shipped).
 
    and paste the `summary` table (ops/s, tree CPU, CPU per op, peak/mean, per-op p50/p99) into the PR
    with the machine's load noted.

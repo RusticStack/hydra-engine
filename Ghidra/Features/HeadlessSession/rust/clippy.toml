@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# BeautifulRust clippy configuration (C:/dev-overflow/tools/BeautifulRust/lints/clippy.toml).
+# BeautifulRust clippy configuration (BeautifulRust/lints/clippy.toml).
 
 # Flag any function with a bool parameter, not just functions with four or more.
 max-fn-params-bools = 0

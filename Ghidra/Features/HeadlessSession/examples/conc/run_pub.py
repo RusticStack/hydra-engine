@@ -22,8 +22,8 @@ Output: <work>/run/pub-<proj>-<fs>[-RUN_TAG]/results.jsonl, footer.json, calibra
 unchanged) or fully published; the changeset is durable; the next leader resumes"; GR4; D50 counts it apart from the
 300 fork-publish kills). It is not an engine command, so this harness drives Hydralysis' own fault harness: the publisher
 process of ``tests/test_views.py --worker`` (``views.run_publish_job`` of one sealed changeset against Hydralysis' fake
-daemon, which keeps every effect on disk), from the Hydralysis checkout named by ``HYDRALYSIS_SRC`` (default
-``E:/Projects/Hydra/wt/int-hy``, the hydra.4 candidate; it is only read: no bytecode is written there). The engine is not
+daemon, which keeps every effect on disk), from the Hydralysis checkout named by ``HYDRALYSIS_SRC`` (required;
+it is only read: no bytecode is written there). The engine is not
 involved: the files are Hydralysis' (lineage, ``CURRENT.log``, store records, generation folders).
 
 Each iteration: a fresh world (master project, a view "one" with one rename, the changeset sealed), a publisher process
@@ -51,7 +51,7 @@ sys.path.insert(0, str(HERE.parent))
 sys.dont_write_bytecode = True
 import oracle as O  # noqa: E402
 
-HY = pathlib.Path(os.environ.get("HYDRALYSIS_SRC", "E:/Projects/Hydra/wt/int-hy"))
+HY = pathlib.Path(os.environ["HYDRALYSIS_SRC"])
 KS = ["K%d" % i for i in range(1, 18)]
 
 

@@ -154,6 +154,6 @@ The read/query shape of round 3, on the same engine bytes, measured per agent an
 identical in all six read-shape rounds, 0 differing. The differential harness also proves 34/34
 read replies value- and byte-identical to the Python client's on the same requests, with the same
 deadline and reconnect behaviour. The lane's reports have the full evidence:
-`D:/Projects/Hydra/_logs/rust-round4/rustclient/REPORT.md` and
-`D:/Projects/Hydra/_logs/rust-round4/rustclient2/REPORT.md`.
+`_logs/rust-round4/rustclient/REPORT.md` and
+`_logs/rust-round4/rustclient2/REPORT.md`.
 

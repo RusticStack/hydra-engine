@@ -73,7 +73,7 @@ HOOKS = ["-Dghidra.session.testHooks=true"]
 NO_JOB = HOOKS + ["-Dghidra.session.noProcessJob=true"]
 EDIT = "e7_edited_name"
 
-#: SP10 (D:/Projects/Hydra/_logs/spikes/SP10): single worker to script, small project, loaded 5.7 s and
+#: SP10 (_logs/spikes/SP10): single worker to script, small project, loaded 5.7 s and
 #: calm 3.2 s; KotOR loaded 6.4 s and calm 4.3 s; 350 to 450 MB resident, peak 557 MB. The RAM budget is
 #: the peak figure plus margin.
 #:
@@ -82,7 +82,7 @@ EDIT = "e7_edited_name"
 #: ``health.scriptWorkers.last``). Wall time grows with whatever else the machine runs (14.4 s median under
 #: the full suite against 4.5 s alone, the same build); CPU time does not count the time a thread waits. Measured on this machine, the
 #: fixture alone: median 11125 ms of CPU time (singles 10875 to 11484 ms; four at once
-#: 14328 to 15234 ms each, D:/Projects/Hydra/_logs/fix4/e7_cost_calm2.log); the budget is twice the median,
+#: 14328 to 15234 ms each, _logs/fix4/e7_cost_calm2.log); the budget is twice the median,
 #: rounded up, the rule SP10 used for wall time. Wall time is still recorded (``singleStartMs``, ``medianStartMs``), not judged.
 BUDGET_START_CPU_MS = 23_000
 BUDGET_WORKING_SET_MB = 650

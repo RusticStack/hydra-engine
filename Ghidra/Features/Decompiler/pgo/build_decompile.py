@@ -28,7 +28,7 @@ from pathlib import Path
 
 ap = argparse.ArgumentParser()
 ap.add_argument("mode", choices=["base", "sym", "pgi", "pgo"])
-ap.add_argument("--out", default="C:/dev-overflow/hydra-perf/o2-decomp/native")
+ap.add_argument("--out", default="./o2-decomp/native")
 ap.add_argument("--pgd", default=None)
 ap.add_argument("--jobs", type=int, default=8)
 ap.add_argument("--vc", default="C:/Program Files (x86)/Microsoft Visual Studio/18/BuildTools/VC/Auxiliary/Build/vcvars64.bat")

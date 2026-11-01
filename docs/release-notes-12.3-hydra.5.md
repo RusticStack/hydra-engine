@@ -14,7 +14,7 @@ stated about ReFS, power loss or an OS crash, and no Linux or macOS claim is mad
 
 Round-4 evidence (cited below by lane):
 
-- `D:/Projects/Hydra/_logs/rust-round4/perop/REPORT.md` (16-agent benchmark, paired per-op CPU and
+- `_logs/rust-round4/perop/REPORT.md` (16-agent benchmark, paired per-op CPU and
   memory, import+analysis, vanilla 12.2)
 - `suite/REPORT.md`, `analysis/REPORT.md`, `create/REPORT.md`, `close/REPORT.md`, `edit2/REPORT.md`,
   `fresh/REPORT.md`, `io/REPORT.md`, `cds/REPORT.md`, `profiles/REPORT.md`, `hostmem/REPORT.md`,
@@ -22,8 +22,8 @@ Round-4 evidence (cited below by lane):
 - `multiproj/REPORT.md` (16 real agents on three game programs with a fourth importing)
 - `hyedit/REPORT.md` (Hydralysis edit/publish reliability, 208 edits)
 - `games-e/REPORT.md`, `games-cp/REPORT.md` (game corpus against hydra.4 and stock Ghidra 12.2)
-- `D:/Projects/Hydra/hydra-rust-round3.md` sections 5c to 7 (round-3 core already in the tree)
-- gate logs under `D:/Projects/Hydra/_logs/rust-round4/integration/`
+- `hydra-rust-round3.md` sections 5c to 7 (round-3 core already in the tree)
+- gate logs under `_logs/rust-round4/integration/`
 
 ## 1. What a reader of the release must be told
 

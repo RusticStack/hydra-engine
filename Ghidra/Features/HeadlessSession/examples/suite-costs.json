@@ -1932,7 +1932,7 @@
   "what": "T0 of the virtual-time design: per-test cpuS (user+kernel, whole process tree), wallS (whole run) measured alone; read-only data, run_parallel.py ignores these keys",
   "date": "2026-10-29",
   "machine": "DOOMBRINGER",
-  "engine": "E:\\Projects\\Hydra\\_engines\\int-tip",
+  "engine": "_engines\\int-tip",
   "fixed": {
    "daemon_cycle.TOTAL_PROCESS": {
     "wallS": 1.94,

@@ -3,12 +3,12 @@
   "testedCommit": "5da3ecb85bb4b44541226955b423e334bf8f842c",
   "date": "2026-11-01",
   "machine": "Windows 11 Pro 10.0.26300, 24 logical processors, NTFS (C:), JDK 25.0.4.1 Temurin",
-  "install": "fast_install.py install of the tested tree, stamped hydra.version=12.3-hydra.5 (C:/dev-overflow/hydra-engines/o4-h5-release)",
+  "install": "fast_install.py install of the tested tree, stamped hydra.version=12.3-hydra.5 (local install o4-h5-release)",
   "suites": {
-    "daemon_tests.py": "255 tests via run_parallel.py --workers 16 --legacy-project --no-result-cache: 255 passed, 0 skipped, 0 failed alone, 0 failed only under load, 0 problems; queue 281 s, wall 327 s (D:/Projects/Hydra/_logs/rust-round4/release/suite2.out.log)",
-    "contract_tests.py": "7/7 passed (D:/Projects/Hydra/_logs/rust-round4/release/contract.log)",
-    "session_smoke.py": "all smoke checks passed (D:/Projects/Hydra/_logs/rust-round4/release/smoke.log)",
-    "client_compat_tests.py": "54/54 passed (D:/Projects/Hydra/_logs/rust-round4/release/cc2.log)",
+    "daemon_tests.py": "255 tests via run_parallel.py --workers 16 --legacy-project --no-result-cache: 255 passed, 0 skipped, 0 failed alone, 0 failed only under load, 0 problems; queue 281 s, wall 327 s (_logs/rust-round4/release/suite2.out.log)",
+    "contract_tests.py": "7/7 passed (_logs/rust-round4/release/contract.log)",
+    "session_smoke.py": "all smoke checks passed (_logs/rust-round4/release/smoke.log)",
+    "client_compat_tests.py": "54/54 passed (_logs/rust-round4/release/cc2.log)",
     "release gates": "golden 9.1 8616/8616, 412/412 reply identity, per-op CPU/memory, game corpus and multi-project evidence per docs/release-notes-12.3-hydra.5.md"
   }
 }

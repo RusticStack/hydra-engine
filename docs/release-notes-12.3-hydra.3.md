@@ -29,7 +29,7 @@ feature and changes no Hydra behaviour.
 All on Windows 11 x64, JDK 25.0.4, Python 3.15, an NTFS volume (D:), from the zip produced by
 `gradle zipHeadless`, unzipped, with the commit `a8a136b9ac` (the branch tip when these were run).
 
-- **Build:** `zipHeadless` finished with exit 0 (log: `D:/Projects/Hydra/_logs/hydra3-rc/build2.log`).
+- **Build:** `zipHeadless` finished with exit 0 (log: `_logs/hydra3-rc/build2.log`).
   The native decompiler was built from the merged sources, but in this worktree Gradle took the
   compile results from the shared build cache (`FROM-CACHE`, same inputs as the earlier sync
   build), so they were not compiled again here. `hydra.version=12.3-hydra.3` was stamped into
@@ -41,7 +41,7 @@ All on Windows 11 x64, JDK 25.0.4, Python 3.15, an NTFS volume (D:), from the zi
   12.3-hydra.3` produced a client zip with the same three files (byte-equal) plus
   `ghidra_session.py` and `README.txt`.
 - **Suites on the unzipped install** (fresh work and temp directories under
-  `D:/Projects/Hydra/_logs/hydra3-rc/`): `session_smoke.py` exit 0, 34 checks passed;
+  `_logs/hydra3-rc/`): `session_smoke.py` exit 0, 34 checks passed;
   `contract_tests.py` exit 0, 5/5; `daemon_tests.py` exit 0, 31/31. The same three passed on the
   first zip as well (before the `headless.gradle` change below).
 - **Decompile gate** (earlier stream, against 12.3-hydra.2): KotOR 8616/8616 functions identical on
@@ -113,15 +113,15 @@ C83623F4F188E178600F7C4F68A9516647C00FFDF05F0F6EFE6F7C62E8509AF8  hydra-engine-1
 da3a74372f2781a00525e7db49154f766f08bef7d1898c5c6e49191730bb4695  hydra-client-12.3-hydra.3.zip              (26,223 bytes)
 ```
 
-Local copies: `D:/Projects/Hydra/_engines/hydra-3-rc-release/out/` (engine zip and its unzipped install),
-`D:/Projects/Hydra/_logs/hydra3-rc/clientzip/` (client zip).
+Local copies: `_engines/hydra-3-rc-release/out/` (engine zip and its unzipped install),
+`_logs/hydra3-rc/clientzip/` (client zip).
 
 ## Commands for the owner (not run)
 
 Dry run first (builds and tests on CI, publishes nothing; needs the branch on GitHub):
 
 ```sh
-git -C D:/Projects/Hydra/hydra-engine push origin release/hydra-3-rc
+git -C hydra-engine push origin release/hydra-3-rc
 gh workflow run release.yml --repo RusticStack/hydra-engine --ref release/hydra-3-rc -f version=12.3-hydra.3
 gh run watch --repo RusticStack/hydra-engine
 ```
@@ -130,7 +130,7 @@ Publish: merge into `main` (CONTRIBUTING: a merge, never a rebase), tag the merg
 The workflow builds, tests the unzipped zip, and creates the release from the tag.
 
 ```sh
-cd D:/Projects/Hydra/hydra-engine
+cd hydra-engine
 git switch main
 git merge --no-ff release/hydra-3-rc
 git push origin main

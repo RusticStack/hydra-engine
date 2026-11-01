@@ -68,7 +68,7 @@ TRANSIENT_NAME = bl.TRANSIENT_NAME
 #: the real RusticQuery of Hydralysis (it is only read); override with HYDRA_RUSTICQUERY
 RUSTICQUERY = os.environ.get(
     "HYDRA_RUSTICQUERY",
-    "D:/Projects/Hydra/RusticRE/src/hydralysis/scripts/RusticQuery.java")
+    "RusticRE/src/hydralysis/scripts/RusticQuery.java")
 
 NAME = """// @category HeadlessSession.Test
 import ghidra.app.script.GhidraScript;

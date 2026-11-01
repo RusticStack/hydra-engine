@@ -1,7 +1,7 @@
 # Decompiler snapshots (sealed-generation program files)
 
 Status: **prototype, off by default** (`-Dhydra.decompiler.snapshot=true` turns it on). Plan ranks 7 and 12
-(`hydra-rust-plan.md`, `_logs/rust-phase0/phase0-reading-report.md`: D3, D10, E11-E13).
+(the rust plan and its phase-0 reading report: D3, D10, E11-E13).
 
 ## Why
 
@@ -94,7 +94,7 @@ database buffers:
 Proof: `MappedProgramSnapshotTest` (test.slow) and `SnapshotReadsABScript` (exhaustive compare of every byte of every
 block through `Memory.getBytes`, `MemoryBlock.getBytes` and `getByte`, plus cross-block reads, database vs mapping,
 then 8 concurrent readers off/on/off/on with the same seeded reads, whose checksums must match). Results are in the
-p6-offheap-mem report (`_logs/rust-integration/offheap-mem.md`).
+the p6 offheap-mem report.
 
 Not covered: direct `FileBytes.getOriginalByte(s)/getModifiedByte(s)` calls that bypass memory blocks (exporters) still
 read the database; writable and shared programs never get a snapshot.

@@ -1454,7 +1454,7 @@ def environment() -> dict:
 
 class Evidence:
     """The evidence writer: one folder, JSON files with the environment and the report. Nothing under
-    ``D:/Projects/Hydra/_logs`` is hard-coded; the caller passes the folder."""
+    ``_logs`` is hard-coded; the caller passes the folder."""
 
     def __init__(self, folder):
         self.folder = pathlib.Path(folder)

@@ -62,7 +62,7 @@ Same fixed workload, three interleaved rounds, hydra.5 against 12.3-hydra.4
   `_logs/rust-round4/latency/REPORT.md`).
 - **One Sleigh parse per process**: workers adopt the parsed tables; 48 parses (7.03 s) became 2
   (0.05 s), and a digest of every decompiler header is a build input so an incremental native
-  build cannot link mixed layouts (`D:/Projects/Hydra/hydra-rust-round3.md`, 5c).
+  build cannot link mixed layouts (`hydra-rust-round3.md`, 5c).
 - **Edit**: a writable open warms the write-side tables a first change touches, the C signature
   parser is parsed once per daemon, and a re-applied signature skips the parameter resolve loop.
   `edit` p50 6.40 against 11.09 ms in the dedicated 48-edit harness

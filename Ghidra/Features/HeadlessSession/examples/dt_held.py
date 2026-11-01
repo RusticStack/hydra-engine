@@ -20,7 +20,7 @@ The finding. In soak pr-vf2 the handle-holder fault (another process holds the `
 fork with no sharing) made ``open_program`` answer ``bad_request "/flow_fixture.exe is not a program (Unknown-File)"``
 three times in 1.5 s, 0.2 s into the hold: Ghidra could not list the folder, so it read the database item as an
 unknown item. A ``fork_project`` whose source is held failed with a bare ``failed`` carrying the localised system
-message. Measured on the unfixed build (hydra.4 candidate ``bc4004d366``, ``D:/Projects/Hydra/_logs/gate10/``), with
+message. Measured on the unfixed build (hydra.4 candidate ``bc4004d366``, ``_logs/gate10/``), with
 the program's files held:
 
 ========================  =====================================================================================

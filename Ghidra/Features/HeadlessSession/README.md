@@ -229,7 +229,7 @@ PowerShell 7; Windows PowerShell 5.1 writes UTF-16 with `>`, which the build ign
 `Set-Content -Encoding utf8` there):
 
 ```
-echo hydra.version=12.3-hydra.4 > Ghidra/Features/HeadlessSession/src/main/resources/hydra.properties
+echo hydra.version=12.3-hydra.5 > Ghidra/Features/HeadlessSession/src/main/resources/hydra.properties
 gradle zipHeadless            # or buildHeadless
 git checkout -- Ghidra/Features/HeadlessSession/src/main/resources/hydra.properties
 ```
@@ -1464,7 +1464,7 @@ The distribution also leaves out `__pycache__` folders and `.pyc` files that run
   that loaders use to find libraries is one per process, not per project (as it always was);
   see "Parallel imports".
 
-### Limits of 12.3-hydra.4 and protocol 3
+### Limits of 12.3-hydra.5 and protocol 3
 
 These are the limits of [`PROTOCOL-3.md`](PROTOCOL-3.md), section 6.2, one by one (L1 to L19, then the
 eleven "revision 6" limits R6.1 to R6.11). Some belong to the client (Hydralysis); they are listed
