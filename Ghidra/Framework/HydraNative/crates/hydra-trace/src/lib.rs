@@ -16,6 +16,7 @@ pub mod raw;
 pub mod rawio;
 pub mod relations;
 pub mod store;
+pub mod session;
 pub mod symbolize;
 pub mod synth;
 

@@ -155,7 +155,35 @@ impl Lifetimes {
         for name in stmt.query_map([], |r| r.get::<_, String>(0))? {
             life.clocks.insert(name?);
         }
-        // Coverage intervals are reopened lazily: a new batch starts a new interval.
+        // A source whose latest interval is still observing continues it, so a reopened index
+        // extends the interval exactly as an uninterrupted run would.
+        let mut stmt = conn.prepare(
+            "SELECT source_id,id,state,t_end,seq_end FROM coverage_intervals c
+             WHERE id=(SELECT MAX(id) FROM coverage_intervals WHERE source_id=c.source_id)",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, i64>(4)?,
+            ))
+        })?;
+        for row in rows {
+            let (source, id, state, t_end, seq_end) = row?;
+            if state == "observing" {
+                life.cover.insert(
+                    source,
+                    OpenCover {
+                        id,
+                        t_end,
+                        seq_end,
+                        dirty: false,
+                    },
+                );
+            }
+        }
         Ok(life)
     }
 
