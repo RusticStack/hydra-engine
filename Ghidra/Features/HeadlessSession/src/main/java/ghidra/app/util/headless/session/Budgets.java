@@ -109,7 +109,19 @@ final class Budgets {
 		return Runtime.getRuntime().maxMemory();
 	}
 
+	/**
+	 * The memory the process may use: a job object or cgroup memory limit when one applies,
+	 * else the machine's RAM. Every memory-sized budget uses this, never the machine's RAM alone:
+	 * a process held to 8 GB on a 64 GB host must not budget 28 GB of native decompilers (the OS
+	 * would end it, not a {@code busy} reply). The limit comes from the native library through
+	 * {@link HydraCpu#memoryLimitBytes()} (min of the job/cgroup limit and the physical memory);
+	 * the JVM's physical memory is the fallback when it is unavailable.
+	 */
 	static long totalRamBytes() {
+		long limit = HydraCpu.memoryLimitBytes();
+		if (limit > 0) {
+			return limit;
+		}
 		try {
 			if (ManagementFactory
 					.getOperatingSystemMXBean() instanceof com.sun.management.OperatingSystemMXBean os) {
@@ -122,7 +134,7 @@ final class Budgets {
 		return 0;
 	}
 
-	/** {@code nativeBudgetMb}: the setting, else half of the RAM minus the heap (at least 200). */
+	/** {@code nativeBudgetMb}: the setting, else half of the granted memory minus the heap (at least 200). */
 	static long nativeBudgetMb() {
 		if (Settings.has("nativeBudgetMb")) {
 			return Settings.integer("nativeBudgetMb", 0);
@@ -133,11 +145,14 @@ final class Budgets {
 	}
 
 	/**
-	 * The permits of the decompiler gate: {@code min(CPUs, nativeBudget / 200 MB)}, at least 1;
-	 * CPUs are the ones the OS grants the process ({@link HydraCpu#grantedCpus()}).
+	 * The permits of the decompiler gate: {@code min(CPUs, nativeBudget / 200 MB)}, at least 1.
+	 * CPUs are the ones the OS grants the process ({@link HydraCpu#grantedCpus()}), or the active
+	 * tuning profile's decompiler concurrency when it sets one (a profile may keep native
+	 * decompilers on the faster core class); the memory budget still lowers it.
 	 */
 	static int gatePermits() {
-		int cpus = HydraCpu.grantedCpus();
+		int profile = HydraCpu.profile().decompilerThreads(HydraCpu.cpu());
+		int cpus = profile > 0 ? profile : HydraCpu.grantedCpus();
 		return (int) Math.max(1, Math.min(cpus, nativeBudgetMb() / DECOMPILER_MB));
 	}
 

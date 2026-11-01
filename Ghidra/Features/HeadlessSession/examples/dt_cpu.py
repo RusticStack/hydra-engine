@@ -22,7 +22,7 @@
   class, granted CPUs within 1..system and never above the JVM's count, and SetThreadSelectedCpuSets
   set + clear on this machine's granted CPU sets.
 * ``cpu_profile_override``: ``HYDRA_CPU_PROFILE`` is respected (generic, a named profile, an unknown name
-  -> generic, unset -> auto, which is generic everywhere until a profile is measured) and the system property
+  -> generic, unset -> auto, which selects the measured profile for the CPU and generic elsewhere) and the system property
   ``hydra.cpu.profile`` wins over it (and is named in the reason); the daemon logs the profile it runs with.
 * ``cpu_granted_limits`` (Windows): the probe started with affinity 0x3 is granted 2 CPUs (pool 3); started in
   a job object with a 25 % hard CPU rate cap it is granted ceil(0.25 * system) (at most its affinity count);
@@ -82,6 +82,14 @@ def _machine_hybrid(c):
     return _probe_ctl(c, affinity=cpu_bench.affinity_masks()[1])["hybrid"] == "true"
 
 
+def _auto_profile(kv):
+    """The profile ``auto`` must select for the CPU in ``kv`` (the shipped profiles)."""
+    if (kv.get("vendor") == "GenuineIntel" and kv.get("family") == "6"
+            and kv.get("model") in ("183", "186", "191") and kv.get("hybrid") == "true"):
+        return "raptorlake-hybrid"
+    return "generic"
+
+
 def t_cpu_selftest(c):
     rc, out, _ = _probe(c, "--selftest")
     dt.check(rc == 0 and "selftest: ok" in out, "HydraCpu --selftest failed:\n" + out[-2000:])
@@ -92,11 +100,19 @@ def t_cpu_selftest(c):
     if os.name == "nt":
         dt.check(kv["source"] == "windows-cpusets" and kv["nativeAccess"] == "true",
                  f"native CPU sets not read on Windows: {kv}")
+        # CPUID/simd/cache/memory facts come from the native library when it may be called
+        dt.check(kv["simd"] in ("baseline", "sse4_2", "avx2", "avx512"), f"no SIMD level: {kv}")
+        dt.check(int(kv["performanceCores"]) >= 1 or not kv.get("hybrid") == "true",
+                 f"no P-core count on a hybrid CPU: {kv}")
+        dt.check(int(kv["memoryLimitMb"]) > 0 and int(kv["llcGroups"]) >= 1, f"no memory/cache facts: {kv}")
     rc3, out3, kv3 = _probe(c, native=False)
     dt.check(rc3 == 0 and kv3["source"] == "jvm" and "WARNING" not in out3,
              f"without native access the probe must fall back to the JVM silently: {out3[-800:]}")
-    return (f"selftest ok; {kv['vendor']} family {kv['family']} model {kv['model']}, {kv['systemCpus']} logical, "
-            f"{kv['grantedCpus']} granted, hybrid {kv['hybrid']}, auto -> {kv['profile']}")
+    dt.check(kv3["simd"] == "baseline" and kv3["memoryLimitMb"] == "0" and int(kv3["l2Groups"]) == 0,
+             f"without native access the facts must be unknown: {kv3}")
+    return (f"selftest ok; {kv['vendor']} family {kv['family']} model {kv['model']} {kv['simd']}, "
+            f"{kv['systemCpus']} logical, {kv['grantedCpus']} granted, hybrid {kv['hybrid']}, "
+            f"memory {kv['memoryLimitMb']} MB, auto -> {kv['profile']}")
 
 
 def t_cpu_profile_override(c):
@@ -108,10 +124,10 @@ def t_cpu_profile_override(c):
         got[val] = kv["profile"]
     rc, out, kv = _probe(c)
     dt.check(kv.get("requested") == "auto" and kv["reason"].startswith("auto"), f"unset is not auto: {kv}")
-    dt.check(kv["profile"] == "generic", f"auto must be generic until a profile is measured: {kv}")
+    dt.check(kv["profile"] == _auto_profile(kv), f"auto selected {kv['profile']}: {kv}")
     if os.name == "nt":
         kvf = _probe_ctl(c, affinity=cpu_bench.affinity_masks()[1])
-        dt.check(kvf["profile"] == "generic", f"auto with every CPU granted must be generic: {kvf}")
+        dt.check(kvf["profile"] == _auto_profile(kvf), f"auto with every CPU granted: {kvf}")
     rc, out, kv = _probe(c, env={"HYDRA_CPU_PROFILE": "raptorlake-hybrid"}, props=["-Dhydra.cpu.profile=generic"])
     dt.check(kv.get("profile") == "generic", f"the system property does not win over the environment: {kv}")
     dt.check(kv["reason"].startswith("-Dhydra.cpu.profile"), f"the reason does not name the property: {kv}")
@@ -120,6 +136,8 @@ def t_cpu_profile_override(c):
     cpu = r["cpu"]
     dt.check(cpu is not None, "the daemon log has no 'cpu: {...}' line")
     dt.check(cpu["profile"] == "generic" and cpu["requested"] == "generic", f"daemon profile: {cpu}")
+    dt.check(cpu["analysisThreads"] == "0" and cpu["decompilerThreads"] == "0",
+             f"the generic profile must leave the pools to the engine: {cpu}")
     return f"env -> {got}; property wins; daemon: {cpu['profile']} ({cpu['reason']}), granted {cpu['grantedCpus']}"
 
 
@@ -132,7 +150,12 @@ def t_cpu_granted_limits(c):
     kj = _probe_ctl(c, cpu_rate=2500)
     want = min(math.ceil(int(kj["systemCpus"]) * 0.25), int(base["grantedCpus"]))
     dt.check(int(kj["grantedCpus"]) == want, f"25 % job hard cap: granted {kj['grantedCpus']}, want {want}: {kj}")
-    msg = f"affinity 0x3 -> 2 granted; 25 % job cap -> {kj['grantedCpus']} of {kj['systemCpus']}"
+    # a job object memory limit is what the process may use; the budgets follow it, not the RAM
+    km = _probe_ctl(c, commit_mb=4096)
+    dt.check(abs(int(km["memoryLimitMb"]) - 4096) <= 8,
+             f"4 GB job memory limit: reported {km['memoryLimitMb']} MB: {km}")
+    msg = (f"affinity 0x3 -> 2 granted; 25 % job cap -> {kj['grantedCpus']} of {kj['systemCpus']}; "
+           f"4 GB job memory limit -> {km['memoryLimitMb']} MB")
     full = cpu_bench.affinity_masks()[1]
     kf = _probe_ctl(c, affinity=full)
     if kf["hybrid"] == "true":
@@ -155,12 +178,15 @@ def t_cpu_profile_identical(c):
     forced = runs["raptorlake-hybrid"]
     dt.check(forced["cpu"]["profile"] == "raptorlake-hybrid", "forced profile not active")
     dt.check(runs["generic"]["cpu"]["profile"] == "generic", "generic not active")
-    dt.check(runs["auto"]["cpu"]["profile"] == "generic", f"auto must be generic: {runs['auto']['cpu']}")
+    dt.check(runs["auto"]["cpu"]["profile"] == _auto_profile(runs["auto"]["cpu"]),
+             f"auto selected {runs['auto']['cpu']['profile']}: {runs['auto']['cpu']}")
     placed = "n/a (not a hybrid CPU)"
     if hybrid:
         end = forced["cpu_end"] or {}
         dt.check(forced["cpu"]["hybrid"] == "true" and int(forced["cpu"]["backgroundBudget"]) > 0,
                  f"the forced daemon was not granted both core classes: {forced['cpu']}")
+        dt.check(int(forced["cpu"]["analysisThreads"]) == int(forced["cpu"]["grantedCpus"]),
+                 f"the profile's analysis pool is not every granted CPU: {forced['cpu']}")
         dt.check(int(end.get("placedLatencyTotal", 0)) > 0 or int(end.get("placedBackgroundTotal", 0)) > 0,
                  f"the forced daemon placed no thread: {end}")
         dt.check(end.get("placeFailures") == "0", f"placement failures: {end}")
@@ -169,8 +195,8 @@ def t_cpu_profile_identical(c):
     dt.check(n > 0, "no functions decompiled")
     ds = {p: r["digest"] for p, r in runs.items()}
     dt.check(len(set(ds.values())) == 1, f"outputs differ between profiles: {ds}")
-    return (f"{n} functions identical on generic/raptorlake-hybrid/auto(generic), digest {ds['generic'][:12]}; "
-            f"granted {forced['cpu']['grantedCpus']}, forced: {placed}")
+    return (f"{n} functions identical on generic/raptorlake-hybrid/auto({runs['auto']['cpu']['profile']}), "
+            f"digest {ds['generic'][:12]}; granted {forced['cpu']['grantedCpus']}, forced: {placed}")
 
 
 TESTS = {

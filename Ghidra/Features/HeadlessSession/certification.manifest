@@ -52,6 +52,8 @@ format-matrix.json||GHIDRA||||END|
 Module.manifest||GHIDRA||||END|
 PROTOCOL-3.md||GHIDRA||||END|
 README.md||GHIDRA||||END|
+rust/.gitignore||GHIDRA||||END|
+rust/Cargo.lock||GHIDRA||||END|
 src/main/resources/hydra.properties||GHIDRA||||END|
 examples/suite-costs.json||GHIDRA||||END|
 examples/test-map.json||GHIDRA||||END|

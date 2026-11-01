@@ -267,8 +267,9 @@ public class ParallelDecompiler {
 			boolean ordered, boolean stopOnError) {
 		GThreadPool pool = pipelinePool();
 		int workers = pool.getMaxThreadCount();
+		// a CPU tuning profile may set the batch; 0 there means the built-in window below
 		int perWorker = Integer.getInteger(PIPELINE_WINDOW_PROPERTY,
-			ordered ? ORDERED_WINDOW_PER_WORKER : WINDOW_PER_WORKER);
+			HydraCpu.profile().batchWindow(ordered ? ORDERED_WINDOW_PER_WORKER : WINDOW_PER_WORKER));
 		// a callback failure reaches the caller as an ExecutionException, as through a
 		// ConcurrentQ (its QResult keeps the Future's ExecutionException)
 		QCallback<Function, R> wrapped = (f, m) -> {
