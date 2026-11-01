@@ -606,8 +606,40 @@ static void parseSla(Sleigh *sleigh,const string &path)
   sleigh->initialize(store);
 }
 
-/// The calling worker's translator for \b path, parsed on first use; null when it cannot be used.
-/// \param path is the .sla file
+/// The process-wide parse of one .sla file. The .sla decode (its symbol table and constructors) is
+/// the bulk of a translator's set-up, and the result is immutable after `Sleigh::initialize`: the
+/// SLEIGH compiler builds patterns and decision trees, the .sla decode only reads them. One engine
+/// per language is parsed and kept here; every worker adopts its tables and pays only a copy of the
+/// containers (a few milliseconds) instead of the decode (~120 ms for x86).
+struct SlaParse {
+  std::unique_ptr<Sleigh> engine;		///< The parsed engine (the owner of the shared tables)
+  std::unique_ptr<ContextInternal> context;	///< Its own context database (never used to decode)
+};
+
+static std::mutex slaParseLock;
+static std::map<string,std::unique_ptr<SlaParse> > slaParses;
+
+/// The process-wide parse for a .sla file, decoded by the first caller; null when it cannot load.
+/// The path is the .sla file
+static SlaParse *slaParseFor(const string &path)
+
+{
+  std::lock_guard<std::mutex> guard(slaParseLock);
+  std::map<string,std::unique_ptr<SlaParse> >::iterator iter = slaParses.find(path);
+  if (iter != slaParses.end())
+    return (*iter).second.get();
+  std::unique_ptr<SlaParse> made(new SlaParse());
+  made->context.reset(new ContextInternal());
+  made->engine.reset(new Sleigh((LoadImage *)0,made->context.get()));
+  parseSla(made->engine.get(),path);
+  SlaParse *res = made.get();
+  slaParses.emplace(path,std::move(made));
+  return res;
+}
+
+/// The calling worker's translator for PATH, adopted from the process-wide parse of that .sla file;
+/// null when it cannot be used.
+/// The path is the .sla file
 static WorkerSleigh *workerSleighFor(const string &path)
 
 {
@@ -617,8 +649,11 @@ static WorkerSleigh *workerSleighFor(const string &path)
   WorkerSleigh &w(workerSleighs[path]);
   try {
     w.context = new ContextInternal();
+    SlaParse *shared = slaParseFor(path);
+    if (shared == (SlaParse *)0)
+      throw LowlevelError("native decode: the .sla file did not parse");
     w.sleigh = new Sleigh((LoadImage *)0,w.context);
-    parseSla(w.sleigh,path);
+    w.sleigh->adoptParse(*shared->engine);
   }
   catch(std::exception &e) {
     delete w.sleigh;

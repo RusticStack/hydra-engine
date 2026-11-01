@@ -497,6 +497,14 @@ Sleigh::Sleigh(LoadImage *ld,ContextDatabase *c_db)
   discache = (DisassemblyCache *)0;
 }
 
+void Sleigh::adoptParse(const Sleigh &donor)
+
+{
+  SleighBase::adoptParse(donor);
+  reregisterContext();		// the shared context symbols into this engine's context database
+  buildCaches();
+}
+
 void Sleigh::clearForDelete(void)
 
 {
