@@ -13,6 +13,7 @@ pub mod lifetime;
 pub mod model;
 pub mod query;
 pub mod raw;
+pub mod rawio;
 pub mod relations;
 pub mod store;
 pub mod symbolize;
