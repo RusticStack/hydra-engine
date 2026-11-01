@@ -69,6 +69,28 @@ and `fork_dir` add the benchmark's overlay and fork rounds; `plan`, when present
 the driver chose for the read/query work (the Python agent shuffles it with its seed, and the
 driver can hand the same order to both clients).
 
+## Packaging
+
+`build-install.py` builds the release binary and writes it with a provenance marker:
+
+```bash
+python -I build-install.py                      # -> Ghidra/Features/HeadlessSession/build/rust/support/
+python -I build-install.py --install <install>  # also into <install>/Ghidra/Features/HeadlessSession/support/
+python -I build-install.py --check --install <install>   # verify an installed copy against its marker
+```
+
+The build is `cargo build --release --locked` with `CARGO_INCREMENTAL=0` and a target directory
+under `build/` (the source tree stays clean for `:HeadlessSession:ip`); `rust/.cargo/config.toml`
+passes `/Brepro`, so two builds of the same tree produce the same SHA-256. The marker
+(`hydra-agent.provenance.json`) records the crate and client versions, the protocol, the commit,
+the cargo/rustc versions, the size and the SHA-256.
+
+`build.gradle` registers `rustClient`, which runs this script for `assembleDistribution` (the
+full and headless installs). A machine without cargo gets a clear message and the engine build
+continues; with cargo, a failure to compile the client fails the distribution build. `gradle
+build`, the tests and `:HeadlessSession:ip` never build it. The Python client remains the default
+and is unchanged.
+
 ## Measured (round 4, 2026-11-01)
 
 **The full multi-agent benchmark** on `o4-integration2` (12.3-hydra.4): 16 agents (12 direct,

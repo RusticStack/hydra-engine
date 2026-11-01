@@ -1,0 +1,11 @@
+# Reproducible Windows builds: the MSVC linker stamps the PE with a content hash rather than
+# the clock (and the PDB GUID follows the content), so two builds of the same tree are identical.
+# build-install.py's provenance marker records the SHA-256 this produces.
+[target.'cfg(windows)']
+rustflags = ["-C", "link-arg=/Brepro"]
+
+# Keep cargo's output out of the source tree: the module's `ip` task scans every file under
+# Ghidra/Features/HeadlessSession/, and imports the workspace files as Apache-2.0. The path is
+# relative to this .cargo directory (the crate root), so it is the module's build directory.
+[build]
+target-dir = "../build/rust-target"
