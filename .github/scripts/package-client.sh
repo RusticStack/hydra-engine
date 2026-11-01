@@ -38,7 +38,7 @@ protocol=$(sed -n 's/^PROTOCOL = \([0-9]*\)/\1/p' "$work/$name/ghidra_session.py
 cat > "$work/$name/README.txt" <<TXT
 Hydra Engine client $version
 
-ghidra_session.py is the Python client of the Hydra Engine headless session. Python 3.10 or
+ghidra_session.py is the Python client of the Hydra Engine headless session. Python 3.13 or
 later, standard library only. It starts the engine's daemon when it is not running and talks to
 it in JSON lines.
 

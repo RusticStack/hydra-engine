@@ -9,6 +9,134 @@ example `12.3-hydra.1`); its tag is `v` and the version. Releases are on
 
 ## Unreleased
 
+## 12.3-hydra.5
+
+Released 2026-11-01. Based on upstream Ghidra `master` (12.3 DEV) at
+commit `1b9e58a915cf867e106495eaa2a4b18eb4971c9d`, the same upstream commit as 12.3-hydra.3 and
+12.3-hydra.4. This release carries the round-4 work: the Rust protocol client, the PE import's
+dependency-DLL skip, one decompiler Architecture per worker per program, overlay generation
+inheritance, direct prefetch answers, one Sleigh parse per process, and the edit, close, analysis,
+I/O and script-worker start-up changes. Every gate with its run, the measured numbers and what was
+not met are in [`docs/release-notes-12.3-hydra.5.md`](docs/release-notes-12.3-hydra.5.md). Every
+result is for a process tree on Windows x64 with JDK 25 on NTFS.
+
+### Performance at 16 agents
+
+Same fixed workload, three interleaved rounds, hydra.5 against 12.3-hydra.4
+(`_logs/rust-round4/perop/REPORT.md`):
+
+- Workload wall **5.70 s against 13.39 s**; tree CPU **27.95 s against 53.96 s** (-48 %); peak
+  committed memory **1144.5 MB against 1725.3 MB** (-34 %); mean **795.1 MB against 1257.9 MB**
+  (-37 %).
+- Faster at p50 on every operation except `info` (0.52 against 0.49 ms, sub-millisecond parity) and
+  `decompile_fresh` (8.18 against 7.51 ms, +9 %; see "Not met"). `connect` 6.10 against 33.80 ms,
+  `list_functions` 15.36 against 1937.96, `read_script` 5.67
+  against 291.06, `decompile_hot` 0.54 against 10.12, `decompile_overlay` 56.35 against 283.84,
+  `fork` 351.32 against 612.25, `fork_close` 5.23 against 14.93, `save` 49.00 against 55.59,
+  `edit` 7.44 against 9.93, `hy_edit` 364.10 against 421.06, `hy_publish` 1034.56 against
+  2570.99.
+- Import plus auto-analysis of KotOR: **71.4 s wall / 196.4 s CPU / 2.44 GB peak**, against
+  hydra.4's 99.7 / 197.0 / 2.65 and stock Ghidra 12.2's 142.4 / 245.9 / 4.93.
+
+### What changed
+
+- **Rust protocol client and agent** (`Ghidra/Features/HeadlessSession/rust/`): the protocol 2/3
+  core (framing, ids, deadlines and cancel, reconnect, events, raw lines), the read path and a
+  benchmark agent; 434 KiB binary, no unsafe, one dependency. 34 of 34 replies are value- and
+  byte-identical to the Python client and 376 of 376 reply keys hash to one digest over six
+  interleaved rounds. With 16 agents the agent process peaks at 2.71 MB private against 13.90,
+  uses 0.037 against 0.144 s of CPU, and lowers the tree peak by 166.6 MB. The Python client
+  remains the default (`_logs/rust-round4/rustclient/REPORT.md`,
+  `_logs/rust-round4/rustclient2/REPORT.md`).
+- **PE import loads a dependency DLL only when its export table can change the program**: a
+  library is skipped unless the program imports from it by ordinal, and a 32-bit program keeps
+  the old every-table behaviour for the stack purge and "no return". `import_exe` 21.11 -> 9.53
+  CPU s and 4.83 -> 1.73 s wall; `import_dll` 6.14 -> 0.28 and 3.65 -> 0.14 s; imported symbols,
+  functions, purge, calling convention, libraries, memory blocks and source hash identical
+  (`_logs/rust-round4/create/REPORT.md`).
+- **Decompiler host**: one `Architecture` per worker per program, rebound for each generation
+  instead of rebuilt; an annotation-only overlay generation inherits data-type and register-name
+  answers from its base generation; a fresh decompile's prefetched answers are used directly
+  (no query encode and re-decode). The overlay first decompile fell from 1133 to 243 ms and its
+  p99 from 892 to 559 ms (`_logs/rust-round4/hostmem/REPORT.md`,
+  `_logs/rust-round4/latency/REPORT.md`).
+- **One Sleigh parse per process**: workers adopt the parsed tables; 48 parses (7.03 s) became 2
+  (0.05 s), and a digest of every decompiler header is a build input so an incremental native
+  build cannot link mixed layouts (`D:/Projects/Hydra/hydra-rust-round3.md`, 5c).
+- **Edit**: a writable open warms the write-side tables a first change touches, the C signature
+  parser is parsed once per daemon, and a re-applied signature skips the parameter resolve loop.
+  `edit` p50 6.40 against 11.09 ms in the dedicated 48-edit harness
+  (`_logs/rust-round4/edit2/REPORT.md`).
+- **Close**: a disposable fork's close no longer rewrites the two storage indexes, and the channel
+  locker deletes its marker without re-reading it. `fork_close` 5.23 against 14.93 ms at 16
+  agents, 2.75 against 11.25 ms paired (`_logs/rust-round4/close/REPORT.md`,
+  `_logs/rust-round4/perop/REPORT.md`).
+- **Analysis**: the switch analyzer runs its defined and undefined phases through one decompiler
+  pool and queues each phase's functions largest first. KotOR analysis 72.7 -> 69.4 s and 71 ->
+  66.2 s; the switch pass 31.1 -> 27.6 s; the listing digest is identical on KotOR, KotOR II,
+  Empire at War and `choice.exe` (`_logs/rust-round4/analysis/REPORT.md`).
+- **I/O**: one volume query per fork cost (6.8 -> 1.8 ms), the Windows directory sync returns at
+  once instead of throwing, publish verification uses the engine's `decompile` command (0.39
+  against 6.08 ms per call) in a window of 8, and a publish forces only the files the save wrote
+  (14 -> 5 fsyncs). Publish build 922 -> 690 ms; `hy_publish` 1274 -> 1105 ms
+  (`_logs/rust-round4/io/REPORT.md`).
+- **Script worker start-up**: the worker receives the daemon's class cache, AOT cache,
+  configuration and script build store, and the deferred initialization runs before the script.
+  Start CPU 11.6 -> 7.1 s and wall 4.2 -> 2.8 s per worker; the suite's own run fell from 549.8
+  to 443.9 s, part of that difference being a 37 s machine stall in the base run
+  (`_logs/rust-round4/suite/REPORT.md`).
+- **CPU profiles**: `HYDRA_CPU_PROFILE=generic|auto|<name>`, `auto` by default, sizes the pools
+  from the CPUs the OS grants and places threads by core class (each `GThreadPool` uses its own
+  occupancy counter). Total CPU 57.62 -> 53.76 s (-6.7 %), setup CPU -19.3 %, output identical
+  (`_logs/rust-round4/profiles/REPORT.md`).
+- **JIT C1 pins**: the one-shot Xerces XML parser and log4j configuration parser stay on C1;
+  95 C2 compiles, 0.70 s of C2 thread time and 0.33 MB of code are removed per daemon
+  (`_logs/rust-round4/cds/REPORT.md`).
+- **Hydralysis 0.7.0** (released with this engine) publishes the subjects a generation actually
+  applied instead of a wildcard, so a publish does not conflict the agent's own next edit; a dead
+  publish worker or leader answers `failed`/`unled` in 10 s instead of waiting to a deadline, and
+  the next publish moves an unappended sealed generation aside and rebuilds it. The final series had
+  104 edits and 104 publishes with 0 failures, and the earlier fixed series adds another 104 edits
+  and 104 publishes — 208 edits in all. The Hydralysis suite had 1640 results and 0 failed
+  (`_logs/rust-round4/hyedit/REPORT.md`).
+
+### Reliability and scale
+
+- A real multi-project run: 16 agents on Cyberpunk 2077, KotOR and KotOR II while Empire at War
+  imported and auto-analysed behind them, in one daemon and in one daemon per project. Every clean
+  run served 818 of 818 operations with 0 errors, 0 requests waiting on another request, 0 queued
+  lanes, 0 daemon restarts and 0 inconsistent reply hashes; every fork edit was present after save
+  and re-open and every project tree was byte-identical
+  (`_logs/rust-round4/multiproj/REPORT.md`).
+- Game corpus (KotOR II, StarWarsG, Empire at War, KotOR, Cyberpunk 2077): identical to
+  hydra.4 on function and symbol counts, external libraries and every sampled decompile; against
+  stock Ghidra 12.2 only version differences (`_logs/rust-round4/games-e/REPORT.md`,
+  `_logs/rust-round4/games-cp/REPORT.md`).
+- In the 16-agent benchmark all six runs had 412 of 412 reply keys and one canonical digest
+  (`285b55a2…a77df`), identical to hydra.4 (`_logs/rust-round4/perop/REPORT.md`, section 1.1).
+
+### Not met
+
+- Peak memory is **-33 to -40 %**, not -50 %: 1144.5 against 1725.3 MB at 16 agents, mean -37 %.
+  The measured floor and the rejected levers are in `_logs/rust-round4/memory/REPORT.md`.
+- `decompile_fresh` is bound by the stock decompiler's own analysis (84 % of the host decompile)
+  and is not 2x faster: its paired CPU is +17 % (+2.95 ms) and its 16-agent p50 is 9 % slower
+  (8.18 against 7.51 ms), while its paired wall median is faster (4.08 against 4.99 ms). The
+  cause is host dispatch plus per-generation Architecture setup on a cold function
+  (`_logs/rust-round4/fresh/REPORT.md`, perop section 7).
+- `hy_publish` is 1.1-1.5 s median, not below 1 s: 1105 ms against 1274 ms, with 3 of 6 runs at
+  845-994 ms. The rest is eight concurrent publishes over about 1.5 builds plus the harness'
+  250 ms poll (`_logs/rust-round4/io/REPORT.md`).
+- The daemon suite is **254 of 255**: `e2a_kill_fork` remains a pre-existing chaos flake, 1 failure
+  in 6 standalone runs on hydra.4 and 1 in 6 on each of the two preceding integration builds; on this
+  tree it passed 2 of 3 standalone reruns after the suite's one failure
+  (`_logs/rust-round4/integration/e2a-h4.log`, `e2a-int5.log`, `e2a-int6.log`, `e2a-int7.log`).
+- The 16-agent `fork` p50 moved from 214 to 351 ms between sessions while the isolated fork stayed
+  at 81 ms; the ratio is window-dependent and no fork speed-up is stated from that row (perop
+  section 9).
+
+### Other changes in this release
+
 - Python 3.13 or later is required (3.10 reaches end of life in October 2026). `ghidra_session.py`
   exits with status 2 and "Hydra Engine's launcher needs Python 3.13 or later; this is X.Y" on an
   older Python. CI and the upstream sync run on 3.13.
@@ -46,6 +174,16 @@ example `12.3-hydra.1`); its tag is `v` and the version. Releases are on
   fixtures, `zipfldr.dll`, `msvcp_win.dll`) every reference and stack variable was identical at
   1, 2, 4 and 24 threads, but neither analyzer got faster above 2-4 threads (the stack analyzer
   was slower at 24), so a CPU-derived default would add contention for no gain.
+
+### Compatibility
+
+- One port serves protocol 2 and protocol 3; `minClient` stays `1.0.0`, so no existing client is
+  rejected. Hydralysis 0.6.0 refuses this engine by its own pin; **Hydralysis 0.7.0 pins this
+  release**. Clients of hydra.2, hydra.3 and hydra.4 keep working at protocol 2.
+- Headless only: there is no GUI, and projects this engine writes cannot be opened by Ghidra 12.2
+  or 12.1.4.
+- The upgrade and backup policy, the limits of protocol 3 and the database formats are unchanged
+  from 12.3-hydra.4 (`docs/release-notes-12.3-hydra.4.md`, sections 1 and 5).
 
 ## 12.3-hydra.4
 
