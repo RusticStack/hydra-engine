@@ -556,6 +556,25 @@ public abstract class AbstractLibrarySupportLoader extends AbstractProgramLoader
 	}
 
 	/**
+	 * Whether the named library of the program being loaded must be loaded from the search paths
+	 * (or found in the project) so that {@link #postLoadProgramFixups} can read its symbol table.
+	 * <p>
+	 * The default is the historical behaviour: when libraries are to be loaded from disk, or when
+	 * {@link #shouldSearchAllPaths} says all paths are to be searched, every library is looked for.
+	 * A loader whose symbol tables are only read for some libraries can narrow this per library
+	 * (see {@code AbstractOrdinalSupportLoader}).
+	 *
+	 * @param program The {@link Program} being loaded (already loaded, its imports in place)
+	 * @param library The library name as the program imports it
+	 * @param settings The {@link Loader.ImporterSettings}
+	 * @return True if this library must be loaded
+	 */
+	protected boolean needsLibraryFromDisk(Program program, String library,
+			ImporterSettings settings) {
+		return isLoadLibraries(settings) || shouldSearchAllPaths(program, settings);
+	}
+
+	/**
 	 * Creates a {@link ByteProvider} for the given library {@link FSRL}
 	 * 
 	 * @param libFsrl The library {@link FSRL} to get a {@link ByteProvider} for
@@ -641,7 +660,7 @@ public abstract class AbstractLibrarySupportLoader extends AbstractProgramLoader
 					log.appendMsg("Found %s in %s...".formatted(library, linkSearchFolder));
 					log.appendMsg("------------------------------------------------\n");
 				}
-				else if (isLoadLibraries(settings) || shouldSearchAllPaths(program, settings)) {
+				else if (needsLibraryFromDisk(program, library, settings)) {
 					Loaded<Program> loadedLibrary = loadLibraryFromSearchPaths(library,
 						customSearchPaths, libraryDestFolderPath, unprocessed, depth, settings);
 					if (loadedLibrary == null) {
