@@ -33,7 +33,6 @@ import generic.jar.ResourceFile;
 import ghidra.*;
 import ghidra.app.script.*;
 import ghidra.framework.Application;
-import ghidra.framework.HeadlessGhidraApplicationConfiguration;
 import ghidra.framework.model.*;
 import ghidra.program.model.listing.Program;
 import ghidra.program.util.ProgramLocation;
@@ -426,6 +425,16 @@ public final class ScriptWorker implements GhidraLaunchable {
 		return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("windows");
 	}
 
+	/** The file a system property names, or null when it is unset, not a file or not a path. */
+	private static String existingFile(String path) {
+		try {
+			return path != null && !path.isBlank() && Files.isRegularFile(Path.of(path)) ? path : null;
+		}
+		catch (RuntimeException e) {
+			return null;
+		}
+	}
+
 	/** The command line of a worker: this daemon's own JVM, class path and module flags. */
 	private static List<String> command(Lease lease) throws IOException {
 		List<String> cmd = new ArrayList<>();
@@ -435,6 +444,19 @@ public final class ScriptWorker implements GhidraLaunchable {
 			if (keepOption(a)) {
 				cmd.add(a);
 			}
+		}
+		// The daemon's two start-up caches remove the same work here: without them this JVM scans
+		// every class name of the install (about 0.65 s) and loads all classes cold, on the same
+		// class path the daemon just used. A path that no longer exists is simply not passed; the
+		// worker then starts exactly as before (round-4 suite lane, e7_cost: initMs 1221 of 4.5 s).
+		String classCache = existingFile(System.getProperty(SessionApplicationConfiguration.CACHE_PROPERTY));
+		if (classCache != null) {
+			cmd.add("-D" + SessionApplicationConfiguration.CACHE_PROPERTY + "=" + classCache);
+		}
+		String aot = existingFile(System.getProperty("ghidra.session.aot"));
+		if (aot != null && !(ClassLoader.getSystemClassLoader() instanceof GhidraClassLoader)) {
+			// the cache was trained for this class path; standard mode (GhidraClassLoader) cannot use it
+			cmd.add("-XX:AOTCache=" + aot);
 		}
 		int heap = Math.max(128, setting("workerHeapMb", DEFAULT_HEAP_MB));
 		cmd.add("-Xmx" + heap + "m");
@@ -924,7 +946,10 @@ public final class ScriptWorker implements GhidraLaunchable {
 		in.start();
 
 		long t0 = System.nanoTime();
-		HeadlessGhidraApplicationConfiguration config = new HeadlessGhidraApplicationConfiguration();
+		// The daemon's configuration, so the class search cache this JVM was given is read here
+		// too: with the stock configuration every worker scanned every class name of the install
+		// (about 0.65 s, DeferredInit of the language service and SSL on a hit are the daemon's).
+		SessionApplicationConfiguration config = new SessionApplicationConfiguration();
 		if (logFile != null) {
 			config.setApplicationLogFile(new File(logFile));
 		}
@@ -979,7 +1004,18 @@ public final class ScriptWorker implements GhidraLaunchable {
 			if (provider == null) {
 				throw new IllegalStateException("no script provider for " + src.getName());
 			}
-			script = provider.getScriptInstance(src, pw);
+			// A Java script is compiled by javac on every worker run (measured 1.1-4.6 s here,
+			// the largest phase of a start). The daemon's persistent build store is keyed by the
+			// script's content and shared with this state directory, so the second and later
+			// workers load the class instead; a miss compiles as before and stores the result
+			// for the next worker. Any failure falls back to the unchanged path.
+			boolean java = provider instanceof JavaScriptProvider;
+			ScriptClassCache.Before before = java ? ScriptClassCache.before(src, provider) : null;
+			script = java ? ScriptClassCache.persistent(src) : null;
+			if (script == null) {
+				script = provider.getScriptInstance(src, pw);
+				ScriptClassCache.remember(src, provider, before, script);
+			}
 			script.setScriptArgs(Json.strings(req, "args").toArray(new String[0]));
 			ScriptCommands.bindHeadless(script);
 			ProgramLocation loc = null;
