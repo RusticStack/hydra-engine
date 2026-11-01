@@ -1,0 +1,18 @@
+[package]
+name = "hydra-client"
+description = "Client of the Hydra Engine headless session protocol (2 and 3): JSON lines over a loopback socket"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "hydra_client"
+path = "src/lib.rs"
+
+[dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
