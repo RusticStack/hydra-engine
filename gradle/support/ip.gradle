@@ -248,7 +248,8 @@ def isCSourceFile(File file) {
 		   filename.endsWith(".hh") ||
 		   filename.endsWith(".css") ||
 		   filename.endsWith(".jj") ||
-		   filename.endsWith(".proto");
+		   filename.endsWith(".proto") ||
+		   filename.endsWith(".rs");
 }
 
 /*********************************************************************************
@@ -263,7 +264,9 @@ def isBashSourceFile(File file) {
 			filename.endsWith(".sh") ||
 			filename.endsWith(".ps1") ||
 			filename.endsWith(".bash") ||
-			filename.endsWith(".command");
+			filename.endsWith(".command") ||
+			filename.endsWith(".toml") ||
+			filename.endsWith(".md");
 }
 
 /*********************************************************************************
