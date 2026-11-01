@@ -429,12 +429,37 @@ final class ProjectFork {
 	 */
 	static Cost cost(ProjectResolver.Resolved r, File destDir, long bytes, int files)
 			throws IOException {
-		FileStore src = Files.getFileStore(r.gpr().toPath());
-		FileStore dst = Files.getFileStore(existingAncestor(destDir).toPath());
+		FileStore src = fileStore(r.gpr().toPath());
+		FileStore dst = fileStore(existingAncestor(destDir).toPath());
 		boolean same = src.equals(dst);
 		return new Cost(bytes, files, same, src.type(), dst.type(),
 			same && clones(dst), dst.getUsableSpace());
 	}
+
+	/**
+	 * The file store of {@code p}, cached by volume: {@link Files#getFileStore} is a query of the
+	 * volume and costs about 0.5-0.8 ms here (measured), and one fork asks for it three times
+	 * (the cost, the staging folder and the destination). A volume's store does not change while
+	 * the process runs, so one answer per root is enough. A path whose root is null (a relative
+	 * path) is looked up, not cached.
+	 */
+	static FileStore fileStore(java.nio.file.Path p) throws IOException {
+		java.nio.file.Path root = p.toAbsolutePath().getRoot();
+		if (root == null) {
+			return Files.getFileStore(p);
+		}
+		String key = root.toString();
+		FileStore known = STORES.get(key);
+		if (known != null) {
+			return known;
+		}
+		FileStore found = Files.getFileStore(p);
+		STORES.putIfAbsent(key, found);
+		return found;
+	}
+
+	private static final java.util.concurrent.ConcurrentHashMap<String, FileStore> STORES =
+		new java.util.concurrent.ConcurrentHashMap<>();
 
 	/**
 	 * True when {@link Files#copy} block-clones on this file store: ReFS on Windows (Windows 11
@@ -516,7 +541,7 @@ final class ProjectFork {
 			String rk, RequestMonitor m, SortedMap<String, Path> sourceFiles, Steps steps,
 			boolean link, UpgradeCache cache) throws IOException, CancelledException {
 		Files.createDirectories(destDir.toPath());
-		FileStore store = Files.getFileStore(destDir.toPath());
+		FileStore store = fileStore(destDir.toPath());
 		long freeBefore = store.getUsableSpace();
 		File tmp = new File(destDir, ForkIntent.stagingName(name, id));
 		long t0 = System.nanoTime();

@@ -98,7 +98,12 @@ public abstract class VariableDB implements Variable {
 			}
 			else {
 				setStorageAndDataType(newStorage, type);
-				function.updateParametersAndReturn();
+				// Hydra: FunctionVariables.updateFunction repopulates the whole parameter list and
+				// recomputes the dynamic storage of every parameter and the return once at its end;
+				// the intermediate recompute that this write would start is overwritten by it.
+				if (!function.inBulkVariableUpdate()) {
+					function.updateParametersAndReturn();
+				}
 			}
 			if (this instanceof Parameter) {
 				function.updateSignatureSourceAfterVariableChange(source, type);

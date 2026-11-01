@@ -263,9 +263,9 @@ final class Operations {
 					Msg.info(this, "edit op signature us: oldPrototype " + (t1 - t0) / 1000 +
 						", parse " + (t2 - t1) / 1000 + ", apply " + (t3 - t2) / 1000);
 				}
-				return Json.of("op", kind, "address", hex(f.getEntryPoint()), "signature",
-					f.getSignature().getPrototypeString(), "old", oldSig, "new",
-					f.getSignature().getPrototypeString());
+				String newSig = f.getSignature().getPrototypeString();
+				return Json.of("op", kind, "address", hex(f.getEntryPoint()), "signature", newSig,
+					"old", oldSig, "new", newSig);
 			}
 			case "data_type": {
 				Address a = address(p, Json.str(op, "address"));

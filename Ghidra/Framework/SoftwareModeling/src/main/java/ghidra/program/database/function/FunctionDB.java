@@ -801,7 +801,26 @@ public class FunctionDB extends DbObject implements Function {
 	}
 
 	/**
-	 * Increment updateInProgressCount indicating that an update operation is in progress and 
+	 * Hydra: a bulk variable update (FunctionVariables.updateFunction) is repopulating the whole
+	 * parameter list; while it runs, a variable write must not recompute the dynamic storage of
+	 * the list it is about to replace (the update does that once at its end).
+	 */
+	private int bulkVariableUpdate;
+
+	void enterBulkVariableUpdate() {
+		bulkVariableUpdate++;
+	}
+
+	void exitBulkVariableUpdate() {
+		bulkVariableUpdate--;
+	}
+
+	boolean inBulkVariableUpdate() {
+		return bulkVariableUpdate > 0;
+	}
+
+	/**
+	 * Increment updateInProgressCount indicating that an update operation is in progress and
 	 * that any attempted refresh should be deferred.  The updateRefreshReqd flag will be set
 	 * if a refresh was attempted while an update operation was in progress.
 	 */

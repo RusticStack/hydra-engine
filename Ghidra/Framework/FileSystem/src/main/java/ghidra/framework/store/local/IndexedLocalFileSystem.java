@@ -71,6 +71,8 @@ public class IndexedLocalFileSystem extends LocalFileSystem {
 
 	IndexJournal indexJournal; // will always be null when readOnly is true
 	private int journalCount;
+	/** Set by {@link #skipIndexFlushOnClose()}: dispose leaves an empty-journal index alone. */
+	private boolean skipIndexFlush;
 
 	private long nextFileIndexID = 0;
 
@@ -195,11 +197,31 @@ public class IndexedLocalFileSystem extends LocalFileSystem {
 			indexRewriteTimer = null;
 		}
 		if (!readOnly) {
-			flushIndex();
+			// A close is not a place to rewrite an index that is already current. An index write
+			// rewrites the whole file (temp, two deletes, two renames: 1.0-2.4 ms per close on the
+			// measured machine), and with no journal entry since the last write the file on disk
+			// already describes this file system exactly. Disposable forks (the throwaway working
+			// copies of fork_project, project/session fork:true) ask for the skip: they are closed
+			// to be discarded and a reopen replays and compacts the journal
+			// (IndexJournal.replayJournal writes the index). Everything else - the master, a
+			// generation candidate, any project a user keeps - is compacted as before.
+			if (journalCount != 0 || !skipIndexFlush) {
+				flushIndex();
+			}
 		}
 		dispose(rootFolder);
 		rootFolder = null;
 		super.dispose();
+	}
+
+	/**
+	 * A close of this file system leaves the index as it is when the journal is empty: set for the
+	 * disposable forks a session opens and closes to throw away (see {@link #dispose}). A journal
+	 * with entries is still compacted, and the next open compacts what a crash left.
+	 */
+	@Override
+	public void skipIndexFlushOnClose() {
+		skipIndexFlush = true;
 	}
 
 	/**

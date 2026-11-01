@@ -19,6 +19,7 @@ import java.io.IOException;
 
 import ghidra.framework.data.DefaultProjectData;
 import ghidra.framework.main.AppInfo;
+import ghidra.framework.model.ProjectData;
 import ghidra.framework.model.ProjectLocator;
 import ghidra.framework.model.ToolChest;
 import ghidra.framework.project.DefaultProject;
@@ -42,6 +43,12 @@ import ghidra.util.exception.NotFoundException;
 final class SessionProject extends DefaultProject {
 
 	private final boolean writable;
+	/**
+	 * Set by {@link #markDisposableFork()} (a fork whose sidecar says it is disposable): its close
+	 * leaves the storage index as it is when no journal entry is pending, so {@code close_project}
+	 * does not rewrite it (see {@link DefaultProjectData#skipIndexFlushOnClose()}).
+	 */
+	private volatile boolean disposableFork;
 
 	private SessionProject(Manager manager, ProjectLocator locator)
 			throws IOException, NotFoundException, NotOwnerException, LockException {
@@ -67,6 +74,27 @@ final class SessionProject extends DefaultProject {
 
 	boolean isWritable() {
 		return writable;
+	}
+
+	/** Marks this view's project a disposable fork, before it is closed. */
+	void markDisposableFork() {
+		disposableFork = true;
+	}
+
+	/**
+	 * A disposable fork's close does not rewrite a storage index that is already current: the fork
+	 * is discarded, and a reopen replays and compacts the journal. Any other project is closed
+	 * exactly as before.
+	 */
+	@Override
+	public void close() {
+		if (disposableFork) {
+			ProjectData data = getProjectData();
+			if (data instanceof DefaultProjectData dpd) {
+				dpd.skipIndexFlushOnClose();
+			}
+		}
+		super.close();
 	}
 
 	/**

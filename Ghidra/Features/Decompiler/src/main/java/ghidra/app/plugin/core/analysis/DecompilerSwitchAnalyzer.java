@@ -117,9 +117,18 @@ public class DecompilerSwitchAnalyzer extends AbstractAnalyzer {
 			}
 
 			monitor.checkCancelled();
-			runDecompilerAnalysis(program, definedFunctions, monitor);
-			monitor.checkCancelled();
-			runDecompilerAnalysis(program, undefinedFunctions, monitor);
+			// one decompiler pool for both phases: the pool's workers each hold an open copy
+			// of the program, so starting a second pool would pay the process start and the
+			// program transfer again for no result.  The phases keep their order and barrier.
+			DecompilerCallback<Void> callback = newCallback(program, monitor);
+			try {
+				runDecompilerAnalysis(program, definedFunctions, monitor, callback);
+				monitor.checkCancelled();
+				runDecompilerAnalysis(program, undefinedFunctions, monitor, callback);
+			}
+			finally {
+				callback.dispose();
+			}
 			monitor.checkCancelled();
 		}
 		catch (CancelledException ce) {
@@ -155,9 +164,7 @@ public class DecompilerSwitchAnalyzer extends AbstractAnalyzer {
 // End Interface Methods
 //==================================================================================================
 
-	private void runDecompilerAnalysis(Program program, Collection<Function> functions,
-			TaskMonitor monitor) throws InterruptedException, Exception {
-
+	private DecompilerCallback<Void> newCallback(Program program, TaskMonitor monitor) {
 		DecompilerCallback<Void> callback =
 			new DecompilerCallback<Void>(program, new SwitchAnalysisDecompileConfigurer(program)) {
 
@@ -171,14 +178,24 @@ public class DecompilerSwitchAnalyzer extends AbstractAnalyzer {
 			};
 
 		callback.setTimeout(decompilerTimeoutSecondsOption);
+		return callback;
+	}
 
-		try {
-			ParallelDecompiler.decompileFunctions(callback, functions, monitor);
-		}
-		finally {
-			callback.dispose();
-		}
+	private void runDecompilerAnalysis(Program program, Collection<Function> functions,
+			TaskMonitor monitor, DecompilerCallback<Void> callback)
+			throws InterruptedException, Exception {
 
+		// Longest processing time first: the workers take the biggest function bodies first, so a
+		// single slow decompile (a large switch function can take seconds where the rest take
+		// milliseconds) runs alongside the other workers instead of alone at the end.  Each
+		// function's analysis writes only within its own body, so the result does not depend on
+		// the order the queue hands them out; the analysis already ran the caller's unordered
+		// set.  The list is only a scheduling order and is not part of any result.
+		ArrayList<Function> ordered = new ArrayList<>(functions);
+		ordered.sort(Comparator.comparingLong(
+			(Function f) -> f.getBody().getNumAddresses()).reversed());
+
+		ParallelDecompiler.decompileFunctions(callback, ordered, monitor);
 	}
 
 	private void findFunctions(Program program, ArrayList<Address> locations,

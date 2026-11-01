@@ -160,6 +160,15 @@ final class ProjectEntry {
 				Msg.warn(this, "could not close a project view", e);
 			}
 		}
+
+		/** {@link #close()} of a disposable fork: its storage index is left for the next open. */
+		void closeDisposableFork() {
+			if (closed) {
+				return;
+			}
+			project.markDisposableFork();
+			close();
+		}
 	}
 
 	/** A reference on the current view for the caller: retried until one is held. */
@@ -287,6 +296,15 @@ final class ProjectEntry {
 	/** Closes the current view now: the project is closing and nothing uses it. */
 	void closeViews() {
 		view.close();
+	}
+
+	/**
+	 * Closes the current view now as a disposable fork: nothing uses it, and its storage index is
+	 * left as it is when no journal entry is pending (the fork is discarded, a reopen replays the
+	 * journal). Every other close is {@link #closeViews()}.
+	 */
+	void closeDisposableForkView() {
+		view.closeDisposableFork();
 	}
 
 	/**

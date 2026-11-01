@@ -896,6 +896,17 @@ public abstract class LocalFileSystem implements FileSystem {
 	}
 
 	/**
+	 * A close of this file system leaves its storage index as it is when nothing structural changed
+	 * (the journal is empty). Only the disposable forks a session opens to throw away ask for it:
+	 * their close is on the reply path of {@code close_project} and the next open, if any, replays
+	 * and compacts the journal. Nothing changes for a project a user keeps, a generation candidate
+	 * or a backup. No-op where the storage keeps no index.
+	 */
+	public void skipIndexFlushOnClose() {
+		// no index to leave alone
+	}
+
+	/**
 	 * Check to see if file-system has been disposed.
 	 * @throws IOException if file-system has been disposed
 	 */

@@ -726,7 +726,7 @@ final class Governor {
 		if (p == null) {
 			throw new IOException("no existing parent of " + f);
 		}
-		return Files.getFileStore(p.toPath());
+		return ProjectFork.fileStore(p.toPath()); // one volume query per volume, not per admission
 	}
 
 	private static void requireDisk(File at, long estimate, String what) throws IOException {

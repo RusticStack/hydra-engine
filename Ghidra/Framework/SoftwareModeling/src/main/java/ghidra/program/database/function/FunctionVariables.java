@@ -20,6 +20,7 @@ import static ghidra.program.util.FunctionChangeRecord.FunctionChangeType.*;
 import java.util.*;
 
 import ghidra.program.database.ProgramDB;
+import ghidra.program.database.data.DataTypeUtilities;
 import ghidra.program.database.symbol.*;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.data.*;
@@ -460,7 +461,25 @@ class FunctionVariables {
 		}
 
 		// Update return data type
-		returnParam.setDataType(returnType, returnStorage, true, source);
+		function.enterBulkVariableUpdate();
+		try {
+			returnParam.setDataType(returnType, returnStorage, true, source);
+		}
+		finally {
+			function.exitBulkVariableUpdate();
+		}
+
+		// Hydra: a signature applied over an unchanged parameter list (same count, names,
+		// sources, comments and formal types) has nothing to reassign. The old path enumerated
+		// the function's symbols for name conflicts, resolved and cloned every parameter and
+		// cleared then rewrote every parameter name and record; for a signature that only names
+		// the function (the common "apply the decompiled signature again" edit) all of that
+		// writes back the values already stored. The final updateParametersAndReturn below still
+		// recomputes the dynamic storage of every parameter and the return.
+		if (!useCustomStorage && sameParameterShape(params, newParams)) {
+			updateParametersAndReturn(function, useCustomStorage);
+			return;
+		}
 
 		Set<String> nonParamNames = new HashSet<>();
 		for (Symbol s : program.getSymbolTable().getSymbols(function)) {
@@ -700,6 +719,41 @@ class FunctionVariables {
 				s.delete(); // results in callback to doDeleteVariable
 			}
 		}
+	}
+
+	/**
+	 * Hydra: whether {@code newParams} would write back exactly the parameters already stored:
+	 * same count, and for each position the same name, source, comment and formal data type
+	 * (an equivalent type of the same length). Auto parameters are not compared: they are
+	 * derived from the calling convention by {@code updateParametersAndReturn}.
+	 *
+	 * @param oldParams the parameters currently stored (explicit parameters only)
+	 * @param newParams the parameters the update carries
+	 * @return true when the update would change no parameter
+	 */
+	private static boolean sameParameterShape(List<ParameterDB> oldParams,
+			List<? extends Variable> newParams) {
+		if (oldParams.size() != newParams.size()) {
+			return false;
+		}
+		for (int i = 0; i < oldParams.size(); i++) {
+			ParameterDB oldParam = oldParams.get(i);
+			Variable newParam = newParams.get(i);
+			if (newParam instanceof AutoParameterImpl || newParam.isUniqueVariable()) {
+				return false;
+			}
+			DataType oldType = oldParam.getFormalDataType();
+			DataType newType = newParam instanceof Parameter p ? p.getFormalDataType()
+					: newParam.getDataType();
+			if (!java.util.Objects.equals(oldParam.getName(), newParam.getName()) ||
+				oldParam.getSource() != newParam.getSource() ||
+				!java.util.Objects.equals(oldParam.getComment(), newParam.getComment()) ||
+				oldType.getLength() != newType.getLength() ||
+				!DataTypeUtilities.isSameOrEquivalentDataType(oldType, newType)) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	private static int findExplicitThisParameter(List<? extends Variable> params) {

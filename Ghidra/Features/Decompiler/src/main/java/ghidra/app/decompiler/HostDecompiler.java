@@ -127,6 +127,15 @@ public final class HostDecompiler {
 	private static final LongAdder DECODE_NANOS = new LongAdder();
 	private static final LongAdder ANSWER_NANOS = new LongAdder();
 	private static final LongAdder ANSWER_CALLS = new LongAdder();
+	/** Parts of the prefetch, and the reference answers it no longer computes (diagnostics). */
+	private static final boolean COST = Boolean.getBoolean("hydra.decomp.host.cost");
+	private static final LongAdder PREF_ENTRY_NANOS = new LongAdder();
+	private static final LongAdder PREF_SCAN_NANOS = new LongAdder();
+	private static final LongAdder PREF_INSTR_NANOS = new LongAdder();
+	private static final LongAdder PREF_TARGET_NANOS = new LongAdder();
+	private static final LongAdder PREF_PUT_NANOS = new LongAdder();
+	private static final LongAdder PREF_LABELS = new LongAdder();
+	private static final LongAdder PREF_EXTERNS = new LongAdder();
 	private static final LongAdder SPECS_NANOS = new LongAdder();
 	private static final LongAdder SNAPSHOT_NANOS = new LongAdder();
 	private static final LongAdder STORE_NANOS = new LongAdder();
@@ -176,6 +185,8 @@ public final class HostDecompiler {
 		final MethodHandle free;
 		final MethodHandle timings;
 		final MethodHandle jobTimings;
+		final MethodHandle profile;
+		final MethodHandle hits;
 		final int threads;
 		final ExecutorService calls;
 
@@ -222,6 +233,11 @@ public final class HostDecompiler {
 				FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS, ADDRESS));
 			jobTimings = l.downcallHandle(lookup.findOrThrow("hydra_snapshot_timings"),
 				FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS, ADDRESS));
+			profile = l.downcallHandle(lookup.findOrThrow("hydra_dhost_profile"),
+				FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS,
+					ADDRESS, ADDRESS, ADDRESS));
+			hits = l.downcallHandle(lookup.findOrThrow("hydra_dhost_hits"),
+				FunctionDescriptor.ofVoid(ADDRESS));
 			this.threads = threads;
 			int cap;
 			try {
@@ -1008,20 +1024,28 @@ public final class HostDecompiler {
 		if (!g.prefetched.add(f.getEntryPoint())) {
 			return;
 		}
+		long tEntry = COST ? System.nanoTime() : 0;
 		Program p = g.program;
 		Address entry = f.getEntryPoint();
 		AddressSetView body = f.getBody();
 		AnswerBlock block = new AnswerBlock();
-		if (add(block, scope, a, DecompileSnapshot.queryMappedSymbols(entry))) {
+		if (addComputed(block, scope, DecompileSnapshot.queryMappedSymbols(entry),
+			a.answerMappedSymbols(entry))) {
 			PREFETCHED.increment();
 		}
-		if (add(block, scope, a, DecompileSnapshot.queryTrackedRegisters(entry))) {
+		if (addComputed(block, scope, DecompileSnapshot.queryTrackedRegisters(entry),
+			a.answerTrackedRegisters(entry))) {
 			PREFETCHED.increment();
 		}
 		long flags = g.commentFlags;
-		if (flags >= 0 && add(block, scope, a, DecompileSnapshot.queryComments(entry, flags))) {
+		if (flags >= 0 && addComputed(block, scope, DecompileSnapshot.queryComments(entry, flags),
+			a.answerComments(entry, flags))) {
 			PREFETCHED.increment();
 		}
+		if (COST) {
+			PREF_ENTRY_NANOS.add(System.nanoTime() - tEntry);
+		}
+		long tScan = COST ? System.nanoTime() : 0;
 		FunctionManager fm = p.getFunctionManager();
 		// One pass over the body's references: the targets to answer, and the instructions whose
 		// p-code the Java side adds to (an overriding reference, or a primary call reference that
@@ -1045,6 +1069,10 @@ public final class HostDecompiler {
 				}
 			}
 		}
+		if (COST) {
+			PREF_SCAN_NANOS.add(System.nanoTime() - tScan);
+		}
+		long tInstr = COST ? System.nanoTime() : 0;
 		DecodeBlock decode = null;
 		for (Instruction in : p.getListing().getInstructions(body, true)) {
 			Address at = in.getAddress();
@@ -1088,43 +1116,82 @@ public final class HostDecompiler {
 				}
 			}
 		}
+		if (COST) {
+			PREF_INSTR_NANOS.add(System.nanoTime() - tInstr);
+		}
+		long tTargets = COST ? System.nanoTime() : 0;
 		List<Map.Entry<Address, byte[][]>> learned = new ArrayList<>();
 		for (Address to : targets) {
 			if (g.refAnswers.containsKey(to)) {
-				// the store already holds this target's three answers (a previous function
+				// the store already holds this target's answers (a previous function
 				// referenced it): nothing to compute and nothing to put
 				REF_HITS.increment();
 				continue;
 			}
+			// The decompiler asks getMappedSymbols for a reference target, and a code label only
+			// for an address that answer left as a hole (no symbol in its scope cache): computing
+			// labels for symbol answers would be paid for on every function that references the
+			// address and never asked for.
 			byte[] qs = DecompileSnapshot.queryMappedSymbols(to);
-			byte[] ql = DecompileSnapshot.queryCodeLabel(to);	// LAB_...
+			DecompileSnapshot.Answer as = a.answerMappedSymbols(to);
+			byte[] ql = null;
+			DecompileSnapshot.Answer al = null;
+			if (DecompileSnapshot.mapsymIsHole(as.response())) {
+				ql = DecompileSnapshot.queryCodeLabel(to);	// LAB_...
+				al = a.answerCodeLabel(to);
+				PREF_LABELS.increment();
+			}
+			// getExternalRef stays answered for every target: the decompiler asks it for an
+			// external reference symbol whose function is not in its cache, and the mapped-symbol
+			// answer does not always show that (a missed one costs a whole repeated run).
 			byte[] qe = DecompileSnapshot.queryExternalRef(to);	// PTR_...
-			DecompileSnapshot.Answer as = a.answer(qs);
-			DecompileSnapshot.Answer al = a.answer(ql);
-			DecompileSnapshot.Answer ae = a.answer(qe);
+			DecompileSnapshot.Answer ae = a.answerExternalRef(to);
+			PREF_EXTERNS.increment();
 			REF_MISSES.increment();
-			if (as.kind() == DecompileSnapshot.GLOBAL && al.kind() == DecompileSnapshot.GLOBAL &&
+			if (as.kind() == DecompileSnapshot.GLOBAL &&
+				(al == null || al.kind() == DecompileSnapshot.GLOBAL) &&
 				ae.kind() == DecompileSnapshot.GLOBAL) {
+				int n = 2 + (al == null ? 0 : 1);
+				byte[][] pairs = new byte[2 * n][];
+				int at = 0;
 				block.add(EMPTY, qs, as.response());
-				block.add(EMPTY, ql, al.response());
+				pairs[at++] = qs;
+				pairs[at++] = as.response();
+				PREFETCHED.increment();
+				if (al != null) {
+					block.add(EMPTY, ql, al.response());
+					pairs[at++] = ql;
+					pairs[at++] = al.response();
+					PREFETCHED.increment();
+				}
 				block.add(EMPTY, qe, ae.response());
-				PREFETCHED.add(3);
-				learned.add(Map.entry(to, new byte[][] { qs, as.response(), ql, al.response(),
-					qe, ae.response() }));
+				pairs[at++] = qe;
+				pairs[at++] = ae.response();
+				PREFETCHED.increment();
+				learned.add(Map.entry(to, pairs));
 			}
 			else {
 				// the function's own entry (its symbol carries its default names) or a label in a
 				// function namespace: a per-function answer, not shareable
 				addComputed(block, scope, qs, as);
-				addComputed(block, scope, ql, al);
+				if (al != null) {
+					addComputed(block, scope, ql, al);
+				}
 				addComputed(block, scope, qe, ae);
 			}
 		}
+		if (COST) {
+			PREF_TARGET_NANOS.add(System.nanoTime() - tTargets);
+		}
+		long tPut = COST ? System.nanoTime() : 0;
 		try (Arena arena = Arena.ofConfined()) {
 			putAll(l, g, arena, block);
 			if (decode != null) {
 				putDecode(l, g, arena, decode);
 			}
+		}
+		if (COST) {
+			PREF_PUT_NANOS.add(System.nanoTime() - tPut);
 		}
 		for (Map.Entry<Address, byte[][]> e : learned) {
 			g.refAnswers.putIfAbsent(e.getKey(), e.getValue());
@@ -1915,6 +1982,33 @@ public final class HostDecompiler {
 				m.put("archRegisterMs", out.get(JAVA_LONG, 0) / 1_000_000);
 				m.put("archRegisterMaxMs", out.get(JAVA_LONG, 8) / 1_000_000);
 				m.put("hostDecompileMs", out.get(JAVA_LONG, 16) / 1_000_000);
+				if (Boolean.getBoolean("hydra.decomp.host.profile")) {
+					MemorySegment p = a.allocate(9 * 8, 8);
+					lb.profile.invokeExact(p, p.asSlice(8), p.asSlice(16), p.asSlice(24),
+						p.asSlice(32), p.asSlice(40), p.asSlice(48), p.asSlice(56),
+						p.asSlice(64));
+					Map<String, Long> split = new LinkedHashMap<>();
+					split.put("analysisMs", p.get(JAVA_LONG, 0) / 1_000_000);
+					split.put("encodeMs", p.get(JAVA_LONG, 8) / 1_000_000);
+					split.put("decodeMs", p.get(JAVA_LONG, 16) / 1_000_000);
+					split.put("findMs", p.get(JAVA_LONG, 24) / 1_000_000);
+					split.put("decodes", p.get(JAVA_LONG, 32));
+					split.put("finds", p.get(JAVA_LONG, 40));
+					split.put("buildMs", p.get(JAVA_LONG, 48) / 1_000_000);
+					split.put("decompileAtMs", p.get(JAVA_LONG, 56) / 1_000_000);
+					split.put("flushMs", p.get(JAVA_LONG, 64) / 1_000_000);
+					m.put("hostProfile", split);
+					MemorySegment hb = a.allocate(256 * 8, 8);
+					lb.hits.invokeExact(hb);
+					Map<String, Long> used = new TreeMap<>();
+					for (int i = 0; i < 256; i++) {
+						long v = hb.get(JAVA_LONG, i * 8L);
+						if (v > 0) {
+							used.put(Integer.toString(i), v);
+						}
+					}
+					m.put("answersUsedByCommand", used);
+				}
 			}
 			catch (Throwable t) {
 				m.put("timingsError", t.toString());
@@ -1932,6 +2026,15 @@ public final class HostDecompiler {
 				v[0] + " calls " + v[1] / 1_000_000 + " ms"));
 			m.put("answerCostByCommand", cm);
 			m.put("pcodeCallbackMs", DecompileSnapshot.pcodeCallbackNanos() / 1_000_000);
+			Map<String, Long> parts = new LinkedHashMap<>();
+			parts.put("entryMs", PREF_ENTRY_NANOS.sum() / 1_000_000);
+			parts.put("scanMs", PREF_SCAN_NANOS.sum() / 1_000_000);
+			parts.put("instrMs", PREF_INSTR_NANOS.sum() / 1_000_000);
+			parts.put("targetMs", PREF_TARGET_NANOS.sum() / 1_000_000);
+			parts.put("putMs", PREF_PUT_NANOS.sum() / 1_000_000);
+			parts.put("labelAnswers", PREF_LABELS.sum());
+			parts.put("externAnswers", PREF_EXTERNS.sum());
+			m.put("prefetchParts", parts);
 		}
 		return m;
 	}
