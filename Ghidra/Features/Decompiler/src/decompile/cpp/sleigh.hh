@@ -178,13 +178,6 @@ protected:
 public:
   Sleigh(LoadImage *ld,ContextDatabase *c_db);		///< Constructor
   virtual ~Sleigh(void);				///< Destructor
-  /// Build this engine on the parse of another engine of the same .sla file.
-  ///
-  /// Skips the .sla decode (the bulk of a translator's set-up): the shared tables are adopted and
-  /// this engine's context database gets the language's context variables registered, then the
-  /// per-engine parse caches are built. Call reset() to bind it to a program before decoding.
-  /// donor is a fully initialized engine, which must outlive this.
-  void adoptParse(const Sleigh &donor);
   void reset(LoadImage *ld,ContextDatabase *c_db);	///< Reset the engine for a new program
   void buildCaches(void);				///< Build the parse caches for the current loader and context
   virtual void initialize(DocumentStorage &store);

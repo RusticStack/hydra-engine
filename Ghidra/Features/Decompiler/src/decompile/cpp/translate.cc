@@ -244,7 +244,6 @@ AddrSpaceManager::AddrSpaceManager(void)
   stackspace = (AddrSpace *)0;
   uniqspace = (AddrSpace *)0;
   joinallocate = 0;
-  ownsContents = true;
 }
 
 /// The initialization of address spaces is the same across all
@@ -506,8 +505,6 @@ void AddrSpaceManager::setInferPtrBounds(const Range &range)
 AddrSpaceManager::~AddrSpaceManager(void)
 
 {
-  if (!ownsContents)
-    return;			// a translator sharing another one's parse: nothing here is its to free
   for(vector<AddrSpace *>::iterator iter=baselist.begin();iter!=baselist.end();++iter) {
     AddrSpace *spc = *iter;
     if (spc == (AddrSpace *)0) continue;

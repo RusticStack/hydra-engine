@@ -87,14 +87,7 @@ public:
   SleighSymbol *findSymbol(uintm id) const { return symtab.findSymbol(id); }	///< Find a specific SLEIGH symbol by id
   SleighSymbol *findGlobalSymbol(const string &nm) const { return symtab.findGlobalSymbol(nm); }	///< Find a specific global SLEIGH symbol by name
   void encodeSlaSpace(Encoder &encoder,AddrSpace *spc) const;	///< Write the details of given space in .sla format
-  void encode(Encoder &encoder) const;	///< Write out the SLEIGH specification as a \<sleigh> tag
-  /// Take the immutable result of a .sla parse from another engine of the same language.
-  ///
-  /// The address spaces and the symbol table are shared by pointer: donor must outlive this and
-  /// nothing writes to the parse after Sleigh::initialize (patterns and decision trees are built
-  /// by the SLEIGH compiler, not by the .sla decode). The containers are copied, so lookups stay
-  /// local; only donor frees the shared objects.
-  void adoptParse(const SleighBase &donor);
+  void encode(Encoder &encoder) const;	///< Write out the SLEIGH specification as a \<sleigh> tag.
 };
 
 } // End namespace ghidra

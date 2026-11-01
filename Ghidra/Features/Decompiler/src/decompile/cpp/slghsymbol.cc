@@ -47,8 +47,6 @@ SleighSymbol *SymbolScope::findSymbol(const string &nm) const
 SymbolTable::~SymbolTable(void)
 
 {
-  if (!ownsSymbols)
-    return;			// the symbols belong to a shared .sla parse: not this table's to free
   vector<SymbolScope *>::iterator iter;
   for(iter=table.begin();iter!=table.end();++iter)
     if (*iter)

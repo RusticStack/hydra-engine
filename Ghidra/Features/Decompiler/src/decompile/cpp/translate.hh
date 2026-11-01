@@ -237,7 +237,6 @@ class AddrSpaceManager {
   mutable uintb joinallocate;	///< Next offset to be allocated in join space
   mutable set<JoinRecord *,JoinRecordCompare> splitset;	///< Different splits that have been defined in join space
   mutable vector<JoinRecord *> splitlist; ///< JoinRecords indexed by join address
-  bool ownsContents;		///< False when the spaces and records belong to a shared parse (see SleighBase::adoptParse)
 protected:
   AddrSpace *decodeSpace(Decoder &decoder,const Translate *trans); ///< Add a space to the model based an on XML tag
   void decodeSpaces(Decoder &decoder,const Translate *trans); ///< Restore address spaces in the model from a stream
@@ -256,11 +255,6 @@ protected:
 public:
   AddrSpaceManager(void);	///< Construct an empty address space manager
   virtual ~AddrSpaceManager(void); ///< Destroy the manager
-  /// Whether this manager owns (and must free) the spaces and records it holds
-  ///
-  /// Several translators of one language share the parse of its .sla file: the first one owns it,
-  /// the others point at the same spaces. Only the owner frees anything.
-  void setOwnsContents(bool val) { ownsContents = val; }
   int4 getDefaultSize(void) const; ///< Get size of addresses for the default space
   AddrSpace *getSpaceByName(const string &nm) const; ///< Get address space by name
   AddrSpace *getSpaceByShortcut(char sc) const;	///< Get address space from its shortcut

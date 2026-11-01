@@ -112,26 +112,6 @@ void SleighBase::buildXrefs(vector<string> &errorPairs)
 
 /// If \b this SleighBase is being reused with a new program, the context
 /// variables need to be registered with the new program's database
-/// Take the immutable result of a .sla parse from another engine of the same language (see
-/// SleighBase::adoptParse in the header): spaces and symbols are shared, nothing is copied deep.
-void SleighBase::adoptParse(const SleighBase &donor)
-
-{
-  if (this == &donor)
-    return;
-  Translate::operator=(donor);	// address spaces, endianness, alignment, float formats: shared by pointer
-  symtab = donor.symtab;
-  symtab.setOwnsSymbols(false);
-  root = donor.root;
-  maxdelayslotbytes = donor.maxdelayslotbytes;
-  unique_allocatemask = donor.unique_allocatemask;
-  numSections = donor.numSections;
-  userop = donor.userop;
-  varnode_xref = donor.varnode_xref;
-  indexer = donor.indexer;
-  setOwnsContents(false);
-}
-
 void SleighBase::reregisterContext(void)
 
 {
