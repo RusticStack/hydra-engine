@@ -131,6 +131,13 @@ public final class HostDecompiler {
 	private static final LongAdder SNAPSHOT_NANOS = new LongAdder();
 	private static final LongAdder STORE_NANOS = new LongAdder();
 	private static final LongAdder REGISTER_NANOS = new LongAdder();
+	/** Generations made (not hits) and the time a request spent waiting for another's maker. */
+	private static final LongAdder GENERATION_MAKES = new LongAdder();
+	private static final LongAdder GENERATION_WAIT_NANOS = new LongAdder();
+	/** Time a generation waited for another user's snapshot write (ProgramSnapshotFile). */
+	private static final LongAdder SNAPSHOT_WAIT_NANOS = new LongAdder();
+	/** The type answers of a generation (part of {@link #REGISTER_NANOS}). */
+	private static final LongAdder TYPE_NANOS = new LongAdder();
 	private static final Map<String, LongAdder> REASONS = new ConcurrentHashMap<>();
 	/** Missed queries by command element id ("again": the store already held the answer). */
 	private static final Map<String, LongAdder> MISS_KINDS = new ConcurrentHashMap<>();
@@ -161,10 +168,13 @@ public final class HostDecompiler {
 		final MethodHandle storeNative;
 		final MethodHandle storeStats;
 		final MethodHandle storeClose;
+		final MethodHandle storeParent;
 		final MethodHandle warm;
 		final MethodHandle storeValidate;
 		final MethodHandle decompile;
 		final MethodHandle free;
+		final MethodHandle timings;
+		final MethodHandle jobTimings;
 		final int threads;
 		final ExecutorService calls;
 
@@ -186,6 +196,8 @@ public final class HostDecompiler {
 				FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS));
 			storeClose = l.downcallHandle(lookup.findOrThrow("hydra_dhost_store_close"),
 				FunctionDescriptor.ofVoid(ADDRESS));
+			storeParent = l.downcallHandle(lookup.findOrThrow("hydra_dhost_store_set_parent"),
+				FunctionDescriptor.ofVoid(ADDRESS, ADDRESS));
 			warm = l.downcallHandle(lookup.findOrThrow("hydra_dhost_warm"),
 				FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG));
 			storeValidate = l.downcallHandle(lookup.findOrThrow("hydra_dhost_store_validate"),
@@ -203,6 +215,10 @@ public final class HostDecompiler {
 				FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_LONG, JAVA_LONG));
 			completions = l.downcallHandle(lookup.findOrThrow("hydra_dhost_completions"),
 				FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG, JAVA_LONG));
+			timings = l.downcallHandle(lookup.findOrThrow("hydra_dhost_timings"),
+				FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS, ADDRESS));
+			jobTimings = l.downcallHandle(lookup.findOrThrow("hydra_snapshot_timings"),
+				FunctionDescriptor.ofVoid(ADDRESS, ADDRESS, ADDRESS, ADDRESS));
 			this.threads = threads;
 			int cap;
 			try {
@@ -528,11 +544,16 @@ public final class HostDecompiler {
 
 	private static Gen generation(Lib l, Program program, DecompileOptions options)
 			throws IOException {
-		return generation(l, program, program, options);
+		return generation(l, program, program, options, false);
 	}
 
 	private static Gen generation(Lib l, Program program, Program snapshotSource,
 			DecompileOptions options) throws IOException {
+		return generation(l, program, snapshotSource, options, false);
+	}
+
+	private static Gen generation(Lib l, Program program, Program snapshotSource,
+			DecompileOptions options, boolean inheritAnswers) throws IOException {
 		long mod = program.getModificationNumber();
 		// The common case: the generation is current. Its options were encoded when it was made;
 		// the modification number covers a change of the program's options, so no per-request
@@ -578,14 +599,18 @@ public final class HostDecompiler {
 		synchronized (CREATING) {
 			lock = CREATING.computeIfAbsent(program, p -> new Object());
 		}
+		long waitStart = System.nanoTime();
 		synchronized (lock) {
 			synchronized (GENS) {
 				g = GENS.get(program);
 			}
 			if (g != null && g.modification == mod && Arrays.equals(g.options, opts)) {
+				GENERATION_WAIT_NANOS.add(System.nanoTime() - waitStart);
 				return g;
 			}
-			return makeGeneration(l, program, snapshotSource, options, mod, opts);
+			GENERATION_MAKES.increment();
+			return makeGeneration(l, program, snapshotSource, options, mod, opts,
+				inheritAnswers);
 		}
 	}
 
@@ -604,7 +629,9 @@ public final class HostDecompiler {
 				return snap;
 			}
 			try {
+				long wait = System.nanoTime();
 				Thread.sleep(10);
+				SNAPSHOT_WAIT_NANOS.add(System.nanoTime() - wait);
 			}
 			catch (InterruptedException e) {
 				Thread.currentThread().interrupt();
@@ -615,7 +642,8 @@ public final class HostDecompiler {
 	}
 
 	private static Gen makeGeneration(Lib l, Program program, Program snapshotSource,
-			DecompileOptions options, long mod, byte[] opts) throws IOException {
+			DecompileOptions options, long mod, byte[] opts, boolean inheritAnswers)
+			throws IOException {
 		List<Gen> stale = new ArrayList<>();
 		long t0 = System.nanoTime();
 		DecompileSnapshot first = new DecompileSnapshot(program, options);
@@ -653,6 +681,24 @@ public final class HostDecompiler {
 			throw new IOException("the host could not create a store");
 		}
 		Gen made = new Gen(program, snapshotSource, mod, opts, options, store, snap, sla);
+		// the filter the decompiler will ask this generation's comments with: known from the
+		// options, so the first decompile of the generation prefetches them instead of missing
+		// them and repeating its run
+		made.commentFlags = options.getCommentFilter();
+		if (inheritAnswers && snapshotSource != program) {
+			Gen parent;
+			synchronized (GENS) {
+				parent = GENS.get(snapshotSource);
+			}
+			if (parent != null && parent != made) {
+				try {
+					l.storeParent.invokeExact(store, parent.store);
+				}
+				catch (Throwable t) {
+					throw new IOException("linking the generation to its base's answers: " + t, t);
+				}
+			}
+		}
 		if (sla != null) {
 			warmSla(l, sla);
 		}
@@ -661,7 +707,9 @@ public final class HostDecompiler {
 				putContext(l, made, arena, context);
 			}
 			registrationAnswers(l, made, first);
+			long tt = System.nanoTime();
 			typeAnswers(l, made, first);
+			TYPE_NANOS.add(System.nanoTime() - tt);
 			REGISTER_NANOS.add(System.nanoTime() - tstore);
 		}
 		catch (Throwable t) {
@@ -1427,9 +1475,20 @@ public final class HostDecompiler {
 	 */
 	public static Outcome decompile(Program program, Program snapshotSource, Function f,
 			int timeoutSecs) {
+		return decompile(program, snapshotSource, false, f, timeoutSecs);
+	}
+
+	/**
+	 * As {@link #decompile(Program, Program, Function, int)}, with {@code inheritAnswers} asking
+	 * the generation to answer the data-type and register-name queries it lacks from
+	 * {@code snapshotSource}'s generation: an annotation-only overlay cannot change those, and a
+	 * missed one makes it repeat the whole decompile (see {@code Overlay.inheritAnswers}).
+	 */
+	public static Outcome decompile(Program program, Program snapshotSource,
+			boolean inheritAnswers, Function f, int timeoutSecs) {
 		Outcome o;
 		try {
-			o = decompile0(program, snapshotSource, f, timeoutSecs);
+			o = decompile0(program, snapshotSource, inheritAnswers, f, timeoutSecs);
 		}
 		catch (RuntimeException e) {
 			// a defect of the host path must never fail the request: the process path answers it
@@ -1447,8 +1506,8 @@ public final class HostDecompiler {
 		return o;
 	}
 
-	private static Outcome decompile0(Program program, Program snapshotSource, Function f,
-			int timeoutSecs) {
+	private static Outcome decompile0(Program program, Program snapshotSource,
+			boolean inheritAnswers, Function f, int timeoutSecs) {
 		Object lo = lib();
 		if (lo instanceof String why) {
 			return Outcome.fallback("host unavailable: " + why);
@@ -1466,7 +1525,7 @@ public final class HostDecompiler {
 		try {
 			// options: the generation's own, made once with grabFromProgram (the modification
 			// number covers a change of the program's options)
-			g = generation(l, program, snapshotSource, null);
+			g = generation(l, program, snapshotSource, null, inheritAnswers);
 		}
 		catch (IOException | IllegalArgumentException e) {
 			return Outcome.fallback("snapshot: " + e.getMessage());
@@ -1484,7 +1543,7 @@ public final class HostDecompiler {
 					? System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSecs) | 1
 					: 0;
 			try {
-				return hosted(l, g, f, deadline);
+				return hosted(l, g, f, deadline, tg);
 			}
 			catch (TimeoutException e) {
 				return Outcome.fallback("host run over the timeout");	// the run finishes unseen
@@ -1508,7 +1567,7 @@ public final class HostDecompiler {
 		try {
 			fut = l.calls.submit(() -> {
 				try {
-					return hosted(l, g, f, 0);
+					return hosted(l, g, f, 0, tg);
 				}
 				catch (Exception | Error e) {
 					throw e;
@@ -1605,7 +1664,8 @@ public final class HostDecompiler {
 		}
 	}
 
-	private static Outcome hosted(Lib l, Gen g, Function f, long deadline) throws Throwable {
+	private static Outcome hosted(Lib l, Gen g, Function f, long deadline, long genNanos)
+			throws Throwable {
 		DecompileOptions options = g.decompileOptions;
 		DecompileSnapshot a = g.borrow();
 		try {
@@ -1647,7 +1707,7 @@ public final class HostDecompiler {
 						return Outcome.fallback("host decompile did not complete: " +
 							res.getErrorMessage().trim());
 					}
-					trace(f, t1 - t0, runNanos, System.nanoTime() - td, round);
+					trace(f, genNanos, t1 - t0, runNanos, System.nanoTime() - td, round);
 					return new Outcome(res, null);
 				}
 				if (r.rc() != MISSES) {
@@ -1674,13 +1734,13 @@ public final class HostDecompiler {
 	}
 
 	/** Appends one line for a hosted decompile to {@link #TRACE_FILE} (diagnostics). */
-	private static void trace(Function f, long prefetchNanos, long runNanos, long decodeNanos,
-			int rounds) {
+	private static void trace(Function f, long genNanos, long prefetchNanos, long runNanos,
+			long decodeNanos, int rounds) {
 		if (TRACE_FILE == null) {
 			return;
 		}
 		String line = f.getEntryPoint() + " prefetch=" + prefetchNanos + " run=" + runNanos +
-			" decode=" + decodeNanos + " rounds=" + rounds + "\n";
+			" decode=" + decodeNanos + " rounds=" + rounds + " gen=" + genNanos + "\n";
 		synchronized (TRACE) {
 			try {
 				java.nio.file.Files.writeString(java.nio.file.Path.of(TRACE_FILE), line,
@@ -1801,10 +1861,31 @@ public final class HostDecompiler {
 		m.put("nativeMs", NATIVE_NANOS.sum() / 1_000_000);
 		m.put("exportMs", EXPORT_NANOS.sum() / 1_000_000);
 		m.put("generationMs", GEN_NANOS.sum() / 1_000_000);
+		m.put("generationMakes", GENERATION_MAKES.sum());
+		m.put("generationWaitMs", GENERATION_WAIT_NANOS.sum() / 1_000_000);
+		m.put("snapshotWaitMs", SNAPSHOT_WAIT_NANOS.sum() / 1_000_000);
 		m.put("specsMs", SPECS_NANOS.sum() / 1_000_000);
 		m.put("snapshotMs", SNAPSHOT_NANOS.sum() / 1_000_000);
 		m.put("storeMs", STORE_NANOS.sum() / 1_000_000);
 		m.put("registerMs", REGISTER_NANOS.sum() / 1_000_000);
+		m.put("typeMs", TYPE_NANOS.sum() / 1_000_000);
+		if (l instanceof Lib lb) {
+			try (Arena a = Arena.ofConfined()) {
+				MemorySegment out = a.allocate(4 * 8, 8);
+				lb.timings.invokeExact(out, out.asSlice(8), out.asSlice(16), out.asSlice(24));
+				m.put("queueMs", out.get(JAVA_LONG, 0) / 1_000_000);
+				m.put("queueMaxMs", out.get(JAVA_LONG, 8) / 1_000_000);
+				m.put("jobMs", out.get(JAVA_LONG, 16) / 1_000_000);
+				m.put("jobs", out.get(JAVA_LONG, 24));
+				lb.jobTimings.invokeExact(out, out.asSlice(8), out.asSlice(16), out.asSlice(24));
+				m.put("archRegisterMs", out.get(JAVA_LONG, 0) / 1_000_000);
+				m.put("archRegisterMaxMs", out.get(JAVA_LONG, 8) / 1_000_000);
+				m.put("hostDecompileMs", out.get(JAVA_LONG, 16) / 1_000_000);
+			}
+			catch (Throwable t) {
+				m.put("timingsError", t.toString());
+			}
+		}
 		m.put("prefetchMs", PREFETCH_NANOS.sum() / 1_000_000);
 		m.put("learnMs", LEARN_NANOS.sum() / 1_000_000);
 		m.put("decodeMs", DECODE_NANOS.sum() / 1_000_000);

@@ -760,19 +760,25 @@ ENV_MAP = {
 }
 
 
-# Code a daemon runs once per language, whose C2 (optimising) compiles cost more CPU than they
-# save: the RELAX NG validator of the language specs and the Sleigh preprocessor with ANTLR (the
-# .sla staleness scan at the first load of a language). It still runs compiled by C1 (tier 1,
-# after the usual thresholds), never only interpreted; nothing else changes: the JIT never changes
-# what a method computes. The JDK's XML parser is not listed: every project open still parses XML.
-# javac and the class-file API are deliberately NOT listed: a long-lived daemon that serves many
-# agents' ad-hoc scripts runs javac again and again, and kept on C1 every compile after warm-up
-# costs more (measured, 1200 distinct compiles in one JVM: +34..60 % CPU for compiles 401-1200,
-# +8..22 % over all of them), and the JDK 24+ class-file API also generates every lambda, proxy
-# and method-handle class for the whole run.
+# Code a daemon runs once or in one short burst, whose C2 (optimising) compiles cost more CPU
+# than they save: the RELAX NG validator of the language specs and the Sleigh preprocessor with
+# ANTLR (the .sla staleness scan at the first load of a language), the XML parser over language
+# definitions, project files and options, and log4j's configuration parser (start-up only). It
+# still runs compiled by C1 (tier 1, after the usual thresholds), never only interpreted; nothing
+# else changes: the JIT never changes what a method computes. Measured on the KotOR workload (one
+# daemon, 100 decompiles): the Xerces group is 95 C2 compiles / 0.70 s of the 14.31 s C2 thread
+# time and 0.33 MB of code (log4j's config parser added no C2 in this workload), against 0.02 s of
+# execution in the same run; the excluded packages' methods still get C1. javac and the class-file
+# API are deliberately NOT listed: a
+# long-lived daemon that serves many agents' ad-hoc scripts runs javac again and again, and kept
+# on C1 every compile after warm-up costs more (measured, 1200 distinct compiles in one JVM:
+# +34..60 % CPU for compiles 401-1200, +8..22 % over all of them), and the JDK 24+ class-file API
+# also generates every lambda, proxy and method-handle class for the whole run (0.47 s of C2 in
+# the same workload - left on C2 for that reason).
 JIT_ONE_SHOT = [
     "com/sun/msv/*.*", "org/iso_relax/*.*",
     "ghidra/sleigh/grammar/*.*", "ghidra/pcodeCPort/*.*", "org/antlr/*.*",
+    "com/sun/org/apache/xerces/*.*", "org/apache/logging/log4j/core/config/*.*",
 ]
 
 # The JVM option variables, which the launcher passes on to the daemon (env_to_carry).

@@ -19,6 +19,36 @@ apply plugin: 'eclipse'
 
 eclipse.project.name = 'Features HeadlessSession'
 
+// ---------------------------------------------------------------- Rust client (optional)
+// rust/ holds hydra-agent: a second client of this module's protocol, used by the multi-agent
+// benchmark to run an agent without CPython. It is built for a distribution, and only when the
+// machine has cargo and a supported Python; `gradle build`, the tests and this module's jar
+// never need it, and the shipped Python client stays the default. build-install.py prints why
+// it skipped when cargo is absent and exits 0, so a developer without Rust can still build.
+def rustSupport = layout.buildDirectory.dir('rust/support')
+
+tasks.register('rustClient', Exec) {
+	group = 'Hydra'
+	description = 'Builds the Rust client (hydra-agent) and its provenance marker when cargo is present.'
+	def py = rootProject.hasProperty('PYTHON3') ? rootProject.PYTHON3 : null
+	if (py == null) {
+		onlyIf { false }
+	} else {
+		commandLine([*py, '-I', file('rust/build-install.py').absolutePath,
+			'--out', rustSupport.get().asFile.absolutePath,
+			'--target-dir', layout.buildDirectory.dir('rust-target').get().asFile.absolutePath])
+	}
+}
+
+def rustProject = project
+def rustZipPath = rootProject.getZipPath(rustProject)
+rootProject.assembleDistribution {
+	dependsOn tasks.named('rustClient')
+	from(rustSupport.get().asFile) {
+		into(rustZipPath + '/support')
+	}
+}
+
 dependencies {
 	api project(':Base')
 	api project(':Decompiler')

@@ -1,9 +1,25 @@
+/* ###
+ * IP: GHIDRA
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 //! `hydra-agent`: the benchmark's agent shape on the Rust client.
 //!
 //! Two uses:
-//! - `hydra-agent agent --spec spec.json` runs one read/query agent: open the project view,
-//!   list the functions, decompile a hot set and a fresh set, run `BenchRead.java` over a few
-//!   addresses, ask `info`, close. It writes one JSON line per operation, in the benchmark's
+//! - `hydra-agent agent --spec spec.json` runs one direct agent: open the project view, list the
+//!   functions, decompile a hot set and a fresh set, run `BenchRead.java` over a few addresses,
+//!   ask `info`, apply and drop an overlay edit, and (when the spec asks) fork the project, edit,
+//!   decompile, save and close the fork. It writes one JSON line per operation, in the benchmark's
 //!   row schema, so the same aggregator reads Python and Rust agents.
 //! - `hydra-agent call --endpoint <file>` is the differential harness: one request object per
 //!   stdin line, one answer line per stdout line, exactly the bytes the engine sent.

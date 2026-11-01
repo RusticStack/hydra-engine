@@ -1,10 +1,28 @@
+<!--
+# ###
+# IP: GHIDRA
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+-->
+
 # Porting notes: `ghidra_session.py` 1.1.0 client -> `hydra-client`
 
 The Rust crate is a port of the client half of `Ghidra/Features/HeadlessSession/support/
 ghidra_session.py` at `05015c8b73`: the protocol core (`_Base`, `SocketSession`, `_dial`,
-`check_compatible`, `engine_protocols`, `Daemon._check_install`'s protocol check) and the read
-path the multi-agent benchmark uses. The engine, its Java and its replies are not touched, and
-the Python client stays the default.
+`check_compatible`, `engine_protocols`, `Daemon._check_install`'s protocol check), the read path
+the multi-agent benchmark uses, and the write path its direct agents use (apply/drop overlay,
+edit, save, fork). The engine, its Java and its replies are not touched, and the Python client
+stays the default.
 
 ## API mapping
 
@@ -33,8 +51,14 @@ the Python client stays the default.
 | `.call("functions", ...)` + paging | `Session::functions(program, offset, limit, contains, deadline)`, `functions_all` | paging loop is the benchmark's |
 | `.call("decompile", ...)` | `Session::decompile(...)` | 8 optional protocol fields |
 | `.call("script", script="BenchRead.java", args, program, timeout)` | `Session::script`, `Session::bench_read` | there is no `bytes` command in protocol 2; the script is the read path |
-| `.call("close_project", ...)` | `Session::close_project(project, Discard, deadline)` | |
+| `.call("close_project", ...)` | `Session::close_project(project, Option<Discard>, deadline)` | `None` omits `discard`, as the benchmark's read close does |
 | `.call("close_program", ...)` | `Session::close_program(program, Discard, deadline)` | |
+| write path: `.call("open_program", ..., overlay=, writable=, upgrade=)` | `Session::open_program`, `Session::open_program_upgrading` | a fork's writable upgrade open |
+| `.call("apply_overlay", program, overlay, ops)` | `Session::apply_overlay(program, overlay, &[EditOp], deadline)` | `EditOp::Rename/Comment/Signature`; other ops through `call` |
+| `.call("drop_overlay", ...)` | `Session::drop_overlay(program, overlay, deadline)` | |
+| `.call("edit", program, ops)` | `Session::edit(program, &[EditOp], deadline)` | |
+| `.call("save", program, comment=)` | `Session::save(program, Option<&str>, deadline)` | |
+| `.call("fork_project", project, path, writable, timeout)` | `Session::fork_project(project, path, Access, Option<u64>, deadline)` | |
 | `digest(obj)` in `multiagent_bench.py` | `json::digest` | Python `json.dumps(sort_keys=True)` text, SHA-256, first 24 hex |
 | `decomp_hash(r)` in `multiagent_bench.py` | `json::decompile_projection` | the seven keys, `null` for absent |
 
@@ -108,7 +132,10 @@ Plus unit tests for the JSON writer/SHA-256 (`json.rs`) and the spec parser (`sp
 ## Preserved quirks
 
 - Request ids start at 1; `hello` consumes id 1, so the first user request is 2.
-- `hello` asks for protocol 3 and carries `clientVersion`/`client`/`harness`/`token`.
+- The benchmark's fork-signature regex (`multiagent_bench.cmd_agent`) carries two literal
+  backspaces where `\b` was meant, so it never matches a normal signature: the Python agent's
+  `signature` op keeps `__fastcall` and the engine answers it with `__fastcall`. `hydra-agent`
+  reproduces that pattern byte for byte; the reply digests depend on it.- `hello` asks for protocol 3 and carries `clientVersion`/`client`/`harness`/`token`.
 - The answer's protocol is 2 or 3; `check_compatible` runs on the answer, and a failure closes
   the connection before the error is raised.
 - Lines that do not start with `{` (JVM noise) are skipped; empty lines are skipped silently.
@@ -123,7 +150,7 @@ Plus unit tests for the JSON writer/SHA-256 (`json.rs`) and the spec parser (`sp
 
 ```bash
 cd Ghidra/Features/HeadlessSession/rust
-cargo test                      # 36 tests: 19 unit, 13 protocol, 3 spec, 1 doctest
+cargo test                      # 42 tests: 19 library unit, 14 protocol, 8 agent/spec, 1 doctest
 cargo clippy --all-targets -- -D warnings   # BeautifulRust lints, clean
 ```
 
@@ -131,6 +158,7 @@ Against the real engine, the lane's differential harness compares every reply wi
 client's on the same requests (`D:/Projects/Hydra/_logs/rust-round4/rustclient/diff/`): 34/34
 value- and byte-identical (27 with the per-connection client ids in `users` untouched), the same
 digests, the same deadline cancellation and a working reconnect after the daemon restarts. The
-16-agent driver (`.../bench/`) compares the benchmark's reply digests across both clients: 376
-keys, 0 differing in 6 rounds, and measures 2.71 vs 13.90 MB private per agent and 531 vs 698 MB
-tree peak.
+full multi-agent benchmark (`.../rustclient2/bench/`) runs the 16-agent shape with the 12 direct
+agents on each client: **412/412 reply keys and one digest in all nine Python/Rust/mixed runs**,
+including the overlay and fork decompiles, and 0 differing keys on the same requests. The
+read/query agent shape measures 2.71 vs 13.90 MB private per agent and 531 vs 698 MB tree peak.

@@ -58,3 +58,5 @@ examples/test-map.json||GHIDRA||||END|
 examples/fastlib.py||GHIDRA||||END|
 examples/test_fastlib.py||GHIDRA||||END|
 examples/lint_sleeps.py||GHIDRA||||END|
+rust/.gitignore||GHIDRA||||END|
+rust/Cargo.lock||GHIDRA||||END|

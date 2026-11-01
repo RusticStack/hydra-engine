@@ -357,9 +357,46 @@ public class DecompileOptions {
 	private final static boolean COMMENTHEAD_OPTIONDEFAULT = true;	// Must match PrintLanguage::resetDefaultsInternal
 	private boolean commentHeadInclude;
 
+	/**
+	 * The comment filter the decompiler process sends with its {@code getComments} query for
+	 * these options: the C++ {@code Comment::comment_type} bits it asks for, which is the
+	 * {@code PrintLanguage} defaults ({@code user2|warning} in the body, {@code header|warningheader}
+	 * in the function header) changed by exactly the options {@link #encodeOptions} writes.
+	 * <p>
+	 * A hosted decompile prefetches the comments of the function it is about to decompile with
+	 * this filter, so the first decompile of a generation does not miss them and repeat its run
+	 * (comments are fetched once per function and answerer).
+	 * @return the filter (bit 1 user1/EOL, 2 user2/PRE, 4 user3/POST, 8 header/PLATE,
+	 *         16 warning, 32 warningheader)
+	 */
+	public int getCommentFilter() {
+		// PrintLanguage::resetDefaultsInternal's values, then the toggles encodeOptions writes
+		int instr = 2 | 16;	// user2 | warning
+		int head = 8 | 32;	// header | warningheader
+		if (commentPREInclude != COMMENTPRE_OPTIONDEFAULT) {
+			instr = commentPREInclude ? instr | 2 : instr & ~2;
+		}
+		if (commentEOLInclude != COMMENTEOL_OPTIONDEFAULT) {
+			instr = commentEOLInclude ? instr | 1 : instr & ~1;
+		}
+		if (commentPOSTInclude != COMMENTPOST_OPTIONDEFAULT) {
+			instr = commentPOSTInclude ? instr | 4 : instr & ~4;
+		}
+		if (commentPLATEInclude != COMMENTPLATE_OPTIONDEFAULT) {
+			instr = commentPLATEInclude ? instr | 8 : instr & ~8;
+		}
+		if (commentWARNInclude != COMMENTWARN_OPTIONDEFAULT) {
+			instr = commentWARNInclude ? instr | 16 : instr & ~16;
+			head = commentWARNInclude ? head | 32 : head & ~32;
+		}
+		if (commentHeadInclude != COMMENTHEAD_OPTIONDEFAULT) {
+			head = commentHeadInclude ? head | 8 : head & ~8;
+		}
+		return instr | head;
+	}
+
 	public enum NamespaceStrategy {
 		Minimal("minimal", "Minimally"), All("all", "Always"), Never("none", "Never");
-
 		private String label;
 		private String optionString;
 
