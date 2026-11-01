@@ -50,6 +50,7 @@ pub(crate) fn run(
             return std::process::ExitCode::FAILURE;
         }
     };
+    let mut session = Some(session);
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
     for line in stdin.lock().lines() {
@@ -58,10 +59,34 @@ pub(crate) fn run(
             continue;
         }
         let answer = match request(&line) {
-            Ok((cmd, request, deadline)) => match session.call_raw(&cmd, request, deadline) {
-                Ok(reply) => reply.raw.unwrap_or_else(|| format!("{value}\n", value = reply.value)),
-                Err(e) => client_side(&e),
-            },
+            Ok((cmd, _request, _deadline)) if cmd == "__reconnect" => {
+                // Harness control: the daemon was stopped and started again, so the endpoint
+                // file names a new port and token. Re-dial and report the new protocol.
+                match Endpoint::read_file(endpoint).and_then(|ep| {
+                    session
+                        .take()
+                        .ok_or_else(hydra_client::Error::closed)?
+                        .reconnect(ep, &options)
+                }) {
+                    Ok(fresh) => {
+                        let protocol = fresh.protocol();
+                        session = Some(fresh);
+                        format!("{}\n", json!({"ok": true, "result": {"protocol": protocol}}))
+                    }
+                    Err(e) => client_side(&e),
+                }
+            }
+            Ok((cmd, request, deadline)) => {
+                let Some(current) = session.as_ref() else {
+                    return std::process::ExitCode::FAILURE;
+                };
+                match current.call_raw(&cmd, request, deadline) {
+                    Ok(reply) => {
+                        reply.raw.unwrap_or_else(|| format!("{value}\n", value = reply.value))
+                    }
+                    Err(e) => client_side(&e),
+                }
+            }
             Err(message) => format!(
                 "{}\n",
                 json!({"ok": false, "clientSide": true,
@@ -73,7 +98,9 @@ pub(crate) fn run(
         }
         let _ = stdout.flush();
     }
-    session.close();
+    if let Some(session) = session.take() {
+        session.close();
+    }
     std::process::ExitCode::SUCCESS
 }
 

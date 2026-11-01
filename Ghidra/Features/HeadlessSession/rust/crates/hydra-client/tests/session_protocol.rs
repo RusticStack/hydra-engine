@@ -55,7 +55,11 @@ struct FakeEngine {
 }
 
 impl FakeEngine {
-    fn start(mut handler: Handler) -> Self {
+    fn start(handler: Handler) -> Self {
+        Self::start_with_token("x", handler)
+    }
+
+    fn start_with_token(token: &str, mut handler: Handler) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback listener");
         let address = listener.local_addr().expect("the bound address");
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -63,7 +67,7 @@ impl FakeEngine {
         let endpoint = Endpoint::from_value(json!({
             "host": "127.0.0.1",
             "port": address.port(),
-            "token": "x",
+            "token": token,
         }))
         .expect("a complete endpoint");
         let seen = Arc::clone(&requests);
@@ -397,6 +401,50 @@ fn several_threads_each_get_their_own_answer() {
         .expect("the only reference")
         .close();
     engine.wait_closed(1);
+}
+
+#[test]
+fn reconnect_dials_a_restarted_endpoint_with_a_new_token() {
+    // The first daemon answers hello, then ends the connection on any other request.
+    let first = FakeEngine::start(Box::new(|request: &Value, writer: &mut ReplyWriter| {
+        let id = &request["id"];
+        if request["cmd"] == "hello" {
+            writer.response(id, v2_answer(request));
+        } else {
+            writer.shutdown();
+        }
+    }));
+    let session = connect(&first);
+    let e = session
+        .call("work", Map::new(), Some(2.0))
+        .expect_err("the daemon ended the session");
+    assert_eq!(e.code(), code::CLOSED);
+    first.wait_closed(1);
+
+    // The restarted daemon has a new port and a new token; the old session is replaced.
+    let second = FakeEngine::start_with_token("y", Box::new(|request: &Value, writer: &mut ReplyWriter| {
+        let id = &request["id"];
+        if request["cmd"] == "hello" {
+            assert_eq!(request["token"], json!("y"), "the new endpoint's token");
+            writer.response(id, v2_answer(request));
+        } else {
+            writer.response(id, json!({"cmd": request["cmd"]}));
+        }
+    }));
+    let session = session
+        .reconnect(second.endpoint.clone(), &ConnectOptions::new("cc", "tests"))
+        .expect("the restarted daemon accepts the same client");
+    assert_eq!(session.protocol(), 2);
+    assert_eq!(
+        session.call("ping", Map::new(), None).unwrap(),
+        json!({"cmd": "ping"})
+    );
+    // A new connection starts its ids at 1 again: hello took 1, so this reply was 2.
+    let requests = second.requests();
+    assert_eq!(requests[0]["id"], json!(1));
+    assert_eq!(requests[0]["token"], json!("y"));
+    session.close();
+    second.wait_closed(1);
 }
 
 #[test]

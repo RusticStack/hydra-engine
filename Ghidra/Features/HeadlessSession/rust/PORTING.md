@@ -59,7 +59,8 @@ Behavior with no Python test, characterized from `_Base`/`SocketSession` and por
 `several_threads_each_get_their_own_answer`,
 `a_labelled_view_sends_its_labels_and_a_per_call_label_wins`,
 `keep_raw_returns_the_engines_line_byte_for_byte`,
-`a_zero_or_negative_deadline_is_refused_before_anything_is_sent`.
+`a_zero_or_negative_deadline_is_refused_before_anything_is_sent`,
+`reconnect_dials_a_restarted_endpoint_with_a_new_token`.
 
 Plus unit tests for the JSON writer/SHA-256 (`json.rs`) and the spec parser (`spec.rs`).
 
@@ -122,7 +123,7 @@ Plus unit tests for the JSON writer/SHA-256 (`json.rs`) and the spec parser (`sp
 
 ```bash
 cd Ghidra/Features/HeadlessSession/rust
-cargo test                      # 35 tests: 19 unit, 12 protocol, 3 spec, 1 doctest
+cargo test                      # 36 tests: 19 unit, 13 protocol, 3 spec, 1 doctest
 cargo clippy --all-targets -- -D warnings   # BeautifulRust lints, clean
 ```
 
