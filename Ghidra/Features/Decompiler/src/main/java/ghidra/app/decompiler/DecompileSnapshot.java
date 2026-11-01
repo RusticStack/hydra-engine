@@ -235,7 +235,12 @@ public class DecompileSnapshot {
 		}
 		if (callRefs != null && flows != null) {
 			// PcodeEmitPacked rewrites a CALL's destination from the instruction's primary call
-			// reference; it changes nothing when that reference is the instruction's own flow.
+			// reference (PcodeEmit.checkOverrides). It changes nothing when that reference is the
+			// instruction's own flow, and for an indirect call a primary call reference alone is
+			// not an override (the CALLIND branch applies only a CALL_OVERRIDE_UNCONDITIONAL
+			// reference, which `overriding` above already rules out), so the native decode
+			// produces the same p-code there too.
+			boolean computed = false;
 			for (Address ref : callRefs) {
 				boolean own = false;
 				for (Address flow : flows) {
@@ -245,7 +250,12 @@ public class DecompileSnapshot {
 					}
 				}
 				if (!own) {
-					return false;
+					if (!computed) {
+						computed = in.getFlowType().isComputed();
+					}
+					if (!computed) {
+						return false;
+					}
 				}
 			}
 		}
@@ -630,6 +640,30 @@ public class DecompileSnapshot {
 			response[11] == 15 && response[15] == 9;
 	}
 
+	private static final byte[] MAPSYM_OPEN = "<mapsym".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+
+	/**
+	 * True when a getMappedSymbols answer describes a hole (no symbol at the address): the
+	 * decompiler's scope then has no cache entry, so it may ask getCodeLabel for that address.
+	 * @param response a getMappedSymbols response
+	 * @return true for a hole answer (a malformed or exception answer counts as a hole)
+	 */
+	public static boolean mapsymIsHole(byte[] response) {
+		return indexOf(response, MAPSYM_OPEN) < 0;
+	}
+
+	private static int indexOf(byte[] haystack, byte[] needle) {
+		outer: for (int i = 0; i + needle.length <= haystack.length; i++) {
+			for (int j = 0; j < needle.length; j++) {
+				if (haystack[i + j] != needle[j]) {
+					continue outer;
+				}
+			}
+			return i;
+		}
+		return -1;
+	}
+
 	private static byte[] addressQuery(ElementId cmd, Address addr) throws IOException {
 		PatchPackedEncode enc = newEncoder();
 		enc.openElement(cmd);
@@ -1012,6 +1046,183 @@ public class DecompileSnapshot {
 				COST_NANOS[COMMAND_GETPCODE & 0xff].add(dt);
 				COST_CALLS[COMMAND_GETPCODE & 0xff].increment();
 			}
+		}
+	}
+
+	/**
+	 * The answer to a getMappedSymbols query for {@code addr}, built without encoding and decoding
+	 * the query again: the prefetch knows the address. Same bytes and kind as {@link #answer}
+	 * produces for the query.
+	 * @param addr the address
+	 * @return the answer
+	 */
+	public Answer answerMappedSymbols(Address addr) {
+		long t0 = System.nanoTime();
+		long tempIds = dtmanage.getTemporaryIdCount();
+		int kind = addr.equals(funcEntry) ? SCOPED : GLOBAL;
+		ByteArrayOutputStream out = new ByteArrayOutputStream(96);
+		try {
+			try {
+				PatchPackedEncode enc = newEncoder();
+				callback.getMappedSymbols(addr, enc);
+				writeOptional(out, enc);
+			}
+			catch (Exception e) {
+				writeException(out, e);
+			}
+			return finish(out, kind, tempIds);
+		}
+		finally {
+			cost(t0, COMMAND_GETMAPPEDSYMBOLS);
+		}
+	}
+
+	/**
+	 * The answer to a getCodeLabel query for {@code addr}. Same bytes and kind as {@link #answer}.
+	 * @param addr the address
+	 * @return the answer
+	 */
+	public Answer answerCodeLabel(Address addr) {
+		long t0 = System.nanoTime();
+		long tempIds = dtmanage.getTemporaryIdCount();
+		int kind = GLOBAL;
+		ByteArrayOutputStream out = new ByteArrayOutputStream(64);
+		try {
+			try {
+				if (inFunctionNamespace(addr)) {
+					kind = SCOPED;	// the label's prefix leaves out the decompiled function
+				}
+				String res = callback.getCodeLabel(addr);
+				if (res == null) {
+					res = "";
+				}
+				out.write(QUERY_RESPONSE_START);
+				writeString(out, res);
+				out.write(QUERY_RESPONSE_END);
+			}
+			catch (Exception e) {
+				writeException(out, e);
+			}
+			return finish(out, kind, tempIds);
+		}
+		finally {
+			cost(t0, COMMAND_GETCODELABEL);
+		}
+	}
+
+	/**
+	 * The answer to a getExternalRef query for {@code addr}. Same bytes and kind as {@link #answer}.
+	 * @param addr the address
+	 * @return the answer
+	 */
+	public Answer answerExternalRef(Address addr) {
+		long t0 = System.nanoTime();
+		long tempIds = dtmanage.getTemporaryIdCount();
+		ByteArrayOutputStream out = new ByteArrayOutputStream(96);
+		try {
+			try {
+				PatchPackedEncode enc = newEncoder();
+				callback.getExternalRef(addr, enc);
+				writeOptional(out, enc);
+			}
+			catch (Exception e) {
+				writeException(out, e);
+			}
+			return finish(out, GLOBAL, tempIds);
+		}
+		finally {
+			cost(t0, COMMAND_GETEXTERNALREF);
+		}
+	}
+
+	/**
+	 * The answer to a getTrackedRegisters query for {@code addr}. Same bytes and kind as
+	 * {@link #answer}.
+	 * @param addr the address
+	 * @return the answer
+	 */
+	public Answer answerTrackedRegisters(Address addr) {
+		long t0 = System.nanoTime();
+		long tempIds = dtmanage.getTemporaryIdCount();
+		ByteArrayOutputStream out = new ByteArrayOutputStream(96);
+		try {
+			try {
+				PatchPackedEncode enc = newEncoder();
+				callback.getTrackedRegisters(addr, enc);
+				out.write(QUERY_RESPONSE_START);
+				writeString(out, enc);
+				out.write(QUERY_RESPONSE_END);
+			}
+			catch (Exception e) {
+				writeException(out, e);
+			}
+			return finish(out, GLOBAL, tempIds);
+		}
+		finally {
+			cost(t0, COMMAND_GETTRACKEDREGISTERS);
+		}
+	}
+
+	/**
+	 * The answer to a getComments query for {@code addr}. Same bytes and kind as {@link #answer}.
+	 * @param addr the function entry
+	 * @param types the comment type filter
+	 * @return the answer
+	 */
+	public Answer answerComments(Address addr, long types) {
+		long t0 = System.nanoTime();
+		long tempIds = dtmanage.getTemporaryIdCount();
+		ByteArrayOutputStream out = new ByteArrayOutputStream(96);
+		try {
+			try {
+				PatchPackedEncode enc = newEncoder();
+				callback.getComments(addr, (int) types, enc);
+				out.write(QUERY_RESPONSE_START);
+				writeString(out, enc);
+				out.write(QUERY_RESPONSE_END);
+			}
+			catch (Exception e) {
+				writeException(out, e);
+			}
+			return finish(out, GLOBAL, tempIds);
+		}
+		finally {
+			cost(t0, COMMAND_GETCOMMENTS);
+		}
+	}
+
+	/** The common tail of a hand-built answer: a temporary-id answer, or the bytes as they are. */
+	private Answer finish(ByteArrayOutputStream out, int kind, long tempIds) {
+		if (dtmanage.getTemporaryIdCount() != tempIds) {
+			// a temporary data-type id lives for one decompilation only
+			dtmanage.clearTemporaryIds();
+			return new Answer(out.toByteArray(), UNSTORABLE, "temporary data-type id");
+		}
+		return new Answer(out.toByteArray(), kind, null);
+	}
+
+	/** An exception record, as DecompileProcess passes an exception down to the decompiler. */
+	private static void writeException(ByteArrayOutputStream out, Exception e) {
+		out.reset();
+		try {
+			out.write(EXCEPTION_START);
+			String msg = e.getMessage();
+			writeString(out, e.getClass().getName());
+			writeString(out, msg == null ? "" : msg);
+			out.write(EXCEPTION_END);
+		}
+		catch (IOException e1) {
+			// a ByteArrayOutputStream does not throw
+		}
+	}
+
+	private void cost(long t0, int command) {
+		long dt = System.nanoTime() - t0;
+		ANSWER_NANOS.add(dt);
+		ANSWER_CALLS.increment();
+		if (COST) {
+			COST_NANOS[command & 0xff].add(dt);
+			COST_CALLS[command & 0xff].increment();
 		}
 	}
 

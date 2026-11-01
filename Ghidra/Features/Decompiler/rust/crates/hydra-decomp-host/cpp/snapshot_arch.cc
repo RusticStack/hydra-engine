@@ -49,6 +49,25 @@ static std::atomic<uint8> REGISTER_MAX_NANOS(0);
 static std::atomic<uint8> DECOMPILE_NANOS(0);
 static std::atomic<uint8> JOBS(0);
 
+/// Diagnostics (HYDRA_HOST_PROFILE): the decompile's own split - the analysis passes, the result
+/// encoding, the native Sleigh decodes, and the answer-store lookups.
+static const bool HOST_PROFILE = []() {
+  const char *v = getenv("HYDRA_HOST_PROFILE");
+  return v != (const char *)0 && v[0] != 0 && v[0] != '0';
+}();
+static std::atomic<uint8> PROF_ANALYSIS(0);
+static std::atomic<uint8> PROF_ENCODE(0);
+static std::atomic<uint8> PROF_DECODE(0);
+static std::atomic<uint8> PROF_FIND(0);
+static std::atomic<uint8> PROF_DECODES(0);
+static std::atomic<uint8> PROF_FINDS(0);
+static std::atomic<uint8> PROF_BUILD(0);
+static std::atomic<uint8> PROF_DECOMPAT(0);
+static std::atomic<uint8> PROF_FLUSH(0);
+/// Answers served from the store, by command element id (diagnostics: which prefetched answers a
+/// decompile actually asks for).
+static std::atomic<uint8> PROF_HITS[256];
+
 static uint8 nowNanos(void)
 {
   using namespace std::chrono;
@@ -73,6 +92,36 @@ extern "C" __declspec(dllexport) void hydra_snapshot_timings(uint8 *reg,uint8 *r
   *regMax = REGISTER_MAX_NANOS.load(std::memory_order_relaxed);
   *dec = DECOMPILE_NANOS.load(std::memory_order_relaxed);
   *jobs = JOBS.load(std::memory_order_relaxed);
+}
+
+/// \brief The answers served from the store, by command element id: `out[i]` is the number of
+/// queries of command `i` answered (diagnostics; HYDRA_HOST_PROFILE).
+extern "C" __declspec(dllexport) void hydra_snapshot_hits(uint8 *out)
+{
+  if (out == (uint8 *)0)
+    return;
+  for(int4 i=0;i<256;++i)
+    out[i] = PROF_HITS[i].load(std::memory_order_relaxed);
+}
+
+/// \brief The profiling split (HYDRA_HOST_PROFILE): analysis, encoding, native decode, store lookups,
+/// Funcdata build, the whole decompileAt and flushNative, in nanoseconds; then the native decode and
+/// store-lookup counts.
+extern "C" __declspec(dllexport) void hydra_snapshot_profile(uint8 *analysis,uint8 *encode,
+							     uint8 *decode,uint8 *find,
+							     uint8 *decodes,uint8 *finds,
+							     uint8 *build,uint8 *decompile,
+							     uint8 *flush)
+{
+  if (analysis != (uint8 *)0) *analysis = PROF_ANALYSIS.load(std::memory_order_relaxed);
+  if (encode != (uint8 *)0) *encode = PROF_ENCODE.load(std::memory_order_relaxed);
+  if (decode != (uint8 *)0) *decode = PROF_DECODE.load(std::memory_order_relaxed);
+  if (find != (uint8 *)0) *find = PROF_FIND.load(std::memory_order_relaxed);
+  if (decodes != (uint8 *)0) *decodes = PROF_DECODES.load(std::memory_order_relaxed);
+  if (finds != (uint8 *)0) *finds = PROF_FINDS.load(std::memory_order_relaxed);
+  if (build != (uint8 *)0) *build = PROF_BUILD.load(std::memory_order_relaxed);
+  if (decompile != (uint8 *)0) *decompile = PROF_DECOMPAT.load(std::memory_order_relaxed);
+  if (flush != (uint8 *)0) *flush = PROF_FLUSH.load(std::memory_order_relaxed);
 }
 
 
@@ -474,14 +523,26 @@ void SnapshotChannel::answerNext(void)
   prepare(payload);
 }
 
+static int4 commandOf(const string &payload);
+
 /// \param payload is the packed query payload
 /// \return true when the response is a stored answer, false for a miss (an exception is fed)
 bool SnapshotChannel::prepare(const string &payload)
 
 {
+  uint8 t0 = HOST_PROFILE ? nowNanos() : 0;
   const string *resp = store->find(scope,payload,keybuf);
+  if (HOST_PROFILE) {
+    PROF_FIND.fetch_add(nowNanos() - t0,std::memory_order_relaxed);
+    PROF_FINDS.fetch_add(1,std::memory_order_relaxed);
+  }
   if (resp != (const string *)0) {
     answered += 1;
+    if (HOST_PROFILE) {
+      int4 cmd = commandOf(payload);
+      if (cmd >= 0 && cmd < 256)
+	PROF_HITS[cmd].fetch_add(1,std::memory_order_relaxed);
+    }
     if (!resp->empty()) {
       inbuf.set(resp->data(),resp->size());
       return true;
@@ -503,7 +564,13 @@ bool SnapshotChannel::prepare(const string &payload)
 const string *SnapshotChannel::peek(const string &payload) const
 
 {
-  return store->find(scope,payload,keybuf);
+  if (!HOST_PROFILE)
+    return store->find(scope,payload,keybuf);
+  uint8 t0 = nowNanos();
+  const string *res = store->find(scope,payload,keybuf);
+  PROF_FIND.fetch_add(nowNanos() - t0,std::memory_order_relaxed);
+  PROF_FINDS.fetch_add(1,std::memory_order_relaxed);
+  return res;
 }
 
 /// The command element id of a packed query payload (PackedEncode::writeHeader), or -1
@@ -779,7 +846,12 @@ public:
 int4 SnapshotTranslate::oneInstruction(PcodeEmit &emit,const Address &baseaddr) const
 
 {
+  uint8 t0 = HOST_PROFILE ? nowNanos() : 0;
   int4 len = arch->nativeDecode(emit,baseaddr);
+  if (HOST_PROFILE) {
+    PROF_DECODE.fetch_add(nowNanos() - t0,std::memory_order_relaxed);
+    PROF_DECODES.fetch_add(1,std::memory_order_relaxed);
+  }
   if (len >= 0)
     return len;
   return GhidraTranslate::oneInstruction(emit,baseaddr);
@@ -1292,6 +1364,7 @@ string SnapshotArchitecture::registerHost(void)
 void SnapshotArchitecture::decompileAt(const string &addrBytes)
 
 {
+  uint8 whole = HOST_PROFILE ? nowNanos() : 0;
   channel.begin(addrBytes);
   prepareNative();		// the worker's translator serves this generation for this run
   ostream &out(channel.sout);
@@ -1303,7 +1376,10 @@ void SnapshotArchitecture::decompileAt(const string &addrBytes)
     decoder.ingestStream(s);
     Address addr = Address::decode(decoder);
 
+    uint8 tbuild = HOST_PROFILE ? nowNanos() : 0;
     Funcdata *fd = symboltab->getGlobalScope()->queryFunction(addr);
+    if (HOST_PROFILE)
+      PROF_BUILD.fetch_add(nowNanos() - tbuild,std::memory_order_relaxed);
     if (fd == (Funcdata *)0) {
       ostringstream s2;
       s2 << "Bad decompile address: " << addr.getShortcut();
@@ -1313,13 +1389,17 @@ void SnapshotArchitecture::decompileAt(const string &addrBytes)
       throw LowlevelError(s2.str());
     }
     if (!fd->isProcStarted()) {
+      uint8 t0 = HOST_PROFILE ? nowNanos() : 0;
       allacts.getCurrent()->reset( *fd );
       allacts.getCurrent()->perform( *fd );
+      if (HOST_PROFILE)
+	PROF_ANALYSIS.fetch_add(nowNanos() - t0,std::memory_order_relaxed);
     }
 
     out.write("\000\000\001\016",4);
 
     if (fd->isProcComplete()) {
+      uint8 t0 = HOST_PROFILE ? nowNanos() : 0;
       PackedEncode encoder(out);
       encoder.openElement(ELEM_DOC);
       if (getSendParamMeasures() && (allacts.getCurrentName() == "paramid")) {
@@ -1337,8 +1417,12 @@ void SnapshotArchitecture::decompileAt(const string &addrBytes)
 	  print->docFunction(fd);
       }
       encoder.closeElement(ELEM_DOC);
+      if (HOST_PROFILE)
+	PROF_ENCODE.fetch_add(nowNanos() - t0,std::memory_order_relaxed);
     }
     out.write("\000\000\001\017",4);
+    if (HOST_PROFILE)
+      PROF_DECOMPAT.fetch_add(nowNanos() - whole,std::memory_order_relaxed);
   }
   catch(DecoderError &err) {
     errorMsg = "Marshaling error: " + err.explain;
@@ -1600,6 +1684,7 @@ static int runJob(SnapshotJob *job)
       setMisses(job,ch);
     string out;
     out.swap(ch.output());
+    uint8 t2 = HOST_PROFILE ? nowNanos() : 0;
     try {
       w.arch->flushNative();
     }
@@ -1607,6 +1692,8 @@ static int runJob(SnapshotJob *job)
       dropArch(w);
       workerArchs.pop_front();
     }
+    if (HOST_PROFILE)
+      PROF_FLUSH.fetch_add(nowNanos() - t2,std::memory_order_relaxed);
     DECOMPILE_NANOS.fetch_add(nowNanos() - t1,std::memory_order_relaxed);
     if (missed) {
       // The output goes back too: when every miss got a neutral answer (speculate) and the
