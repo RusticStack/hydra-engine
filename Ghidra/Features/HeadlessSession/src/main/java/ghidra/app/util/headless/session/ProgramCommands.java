@@ -1038,7 +1038,9 @@ final class ProgramCommands {
 		// unsaved goes with them, as an in-memory upgrade not saved would: the fork is put back
 		UpgradeCache.Adopted adopted = e.adopted;
 		e.adopted = null;
-		boolean unsaved = adopted != null && e.program != null && e.program.isChanged();
+		// a version placed when the fork was made is the fork's own: a discard leaves it
+		boolean unsaved = adopted != null && !adopted.withFork() && e.program != null &&
+			e.program.isChanged();
 		try {
 			if (e.program != null) {
 				e.program.release(e);

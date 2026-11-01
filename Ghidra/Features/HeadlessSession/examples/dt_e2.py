@@ -532,13 +532,16 @@ def t_upgrade_gate(c):
         r = open_up(s, project=s.call("project")["id"])
         check(r["mode"] == "writable", "a fork without 'disposable' (hydra.2/3) must be exempt")
         s.call("close_project", discard=True)
-        # canonical: no sidecar, an unparseable one, disposable:false, a generation
+        # canonical: no sidecar, an unparseable one, disposable:false, a generation. The forks are
+        # generations (non-disposable from birth): a disposable fork is now made in the current
+        # format (the cache's upgraded version is placed in it), so it cannot stand in for a
+        # canonical older-format project any more
         for tag, mutate in (("nosidecar", lambda p: p.unlink()),
                             ("garbage", lambda p: p.write_text("{not json")),
                             ("notdisposable", lambda p: p.write_text(json.dumps(
                                 {"format": 1, "kind": "ghidra-session-fork", "disposable": False})))):
             fk = s.call("fork_project", project=pid, path=str(c.work / "e2-gate-forks"),
-                        name="C-" + tag, mode="full", wait=60000, open=False)
+                        name="C-" + tag, purpose="generation", mode="full", wait=60000, open=False)
             mutate(pathlib.Path(fk["sidecar"]))
             s.call("open_project", path=fk["gpr"], writable=True)
             expect_error("backup_required", open_up, s, project=s.call("project")["id"])

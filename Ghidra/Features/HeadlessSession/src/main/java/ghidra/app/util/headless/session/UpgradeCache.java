@@ -659,7 +659,7 @@ final class UpgradeCache {
 	 * returns the fork to {@code base}.
 	 */
 	record Adopted(JsonObject info, ProjectEntry project, DefaultProjectData data, Path base,
-			Path target) {}
+			Path target, boolean withFork) {}
 
 	/**
 	 * Puts a fork back as it was before {@link #adoptForFork} when nothing was saved since (the
@@ -765,8 +765,9 @@ final class UpgradeCache {
 				// the fork was given this very version when it was made (placeUpgraded): its
 				// project read it on open, so there is nothing to write and nothing to refresh.
 				// The version goes back with the discard, as an adopted one does
+				// nothing to put back with a discard: the fork was made with this version
 				return new Adopted(Json.of("used", true, "reason", "with the fork", "key",
-					plan.key(), "generation", gen, "version", cur), p, dpd, previous, base);
+					plan.key(), "generation", gen, "version", cur), p, dpd, previous, base, true);
 			}
 			if (!allowWrite || plan.why() == null) {
 				return null; // current format, or only asked whether it was placed
@@ -825,7 +826,7 @@ final class UpgradeCache {
 				}
 			}
 			return new Adopted(Json.of("used", true, "reason", plan.why(), "key", plan.key(),
-				"generation", gen, "version", cur + 1), p, dpd, base, target);
+				"generation", gen, "version", cur + 1), p, dpd, base, target, false);
 		}
 		finally {
 			lease.release();

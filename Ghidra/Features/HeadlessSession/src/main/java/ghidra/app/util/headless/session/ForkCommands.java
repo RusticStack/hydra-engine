@@ -449,8 +449,11 @@ final class ForkCommands {
 				baseRevision = snapshot.revision();
 				steps.mark("revision");
 				m.setMessage("forking " + r.name() + " (" + cost.files() + " files)");
+				// the upgraded version goes into a disposable fork only (a fork or a view): a
+				// generation is a candidate of the source, and the upgrade gate must still see
+				// its older format (a backup opens that way, D12, D66)
 				copied = ProjectFork.stage(r, destDir, name, id, rk, m, listing, steps, link,
-					s.upgradeCache);
+					spec.disposable() ? s.upgradeCache : null);
 				staging.set(copied);
 				if (spec.backup()) {
 					// a backup is compared with its source after the copy (hash: every file of both
