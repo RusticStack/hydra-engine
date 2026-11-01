@@ -86,6 +86,7 @@ mod ffi {
         );
         pub fn hydra_snapshot_set_validate(on: c_int);
         pub fn hydra_snapshot_store_stats(h: *mut c_void, count: *mut u64, bytes: *mut u64);
+        pub fn hydra_snapshot_hits(out: *mut u64);
         pub fn hydra_snapshot_store_close(h: *mut c_void);
         pub fn hydra_snapshot_store_set_parent(h: *mut c_void, parent: *mut c_void);
         pub fn hydra_snapshot_store_program(h: *mut c_void, key: *const c_char, keylen: usize) -> c_int;
@@ -101,6 +102,17 @@ mod ffi {
         ) -> c_int;
         pub fn hydra_snapshot_free(p: *mut c_char);
         pub fn hydra_snapshot_release_thread();
+        pub fn hydra_snapshot_profile(
+            analysis: *mut u64,
+            encode: *mut u64,
+            decode: *mut u64,
+            find: *mut u64,
+            decodes: *mut u64,
+            finds: *mut u64,
+            build: *mut u64,
+            decompile: *mut u64,
+            flush: *mut u64,
+        );
     }
 }
 
@@ -599,6 +611,31 @@ pub extern "C" fn hydra_dhost_timings(
             *jobs = JOBS.load(Ordering::Relaxed);
         }
     }
+}
+
+/// \brief The host's profiling split (HYDRA_HOST_PROFILE; diagnostics): analysis, encode, native
+/// decode and store-lookup nanoseconds, then the native decode and store-lookup counts.
+#[unsafe(no_mangle)]
+pub extern "C" fn hydra_dhost_profile(
+    analysis: *mut u64,
+    encode: *mut u64,
+    decode: *mut u64,
+    find: *mut u64,
+    decodes: *mut u64,
+    finds: *mut u64,
+    build: *mut u64,
+    decompile: *mut u64,
+    flush: *mut u64,
+) {
+    unsafe {
+        ffi::hydra_snapshot_profile(analysis, encode, decode, find, decodes, finds, build, decompile, flush);
+    }
+}
+
+/// \brief The store's answered-query counts by command element id (HYDRA_HOST_PROFILE).
+#[unsafe(no_mangle)]
+pub extern "C" fn hydra_dhost_hits(out: *mut u64) {
+    unsafe { ffi::hydra_snapshot_hits(out) }
 }
 
 /// Store handle moved into a pool job.
