@@ -563,6 +563,9 @@ final class ProgramCommands {
 		}
 	}
 
+	/** Hydra: whether the C parser of a signature op has been loaded (once per daemon). */
+	private static volatile boolean parserWarmed;
+
 	/**
 	 * The reads a first change does before its writes, done at the open of a program opened
 	 * writable: they load the symbol, code-unit and function tables, which the first {@code
@@ -584,7 +587,7 @@ final class ProgramCommands {
 	 */
 	private static void warmFirstReads(Program program, boolean dataTypeList) {
 		long t0 = System.nanoTime();
-		long[] at = new long[9];
+		long[] at = new long[15];
 		try {
 			if (dataTypeList) {
 				java.util.Iterator<ghidra.program.model.data.DataType> types =
@@ -613,20 +616,60 @@ final class ProgramCommands {
 			program.getSymbolTable().getSymbols(a);
 			program.getListing().getComment(CommentType.PLATE, a);
 			at[6] = System.nanoTime();
-			f.getSignature().getPrototypeString();
+			// Hydra: the write side of the first change loads the same tables: a comment is
+			// written through the code unit at the address, a rename checks the name index,
+			// appends a label history record and a signature adds symbols to the function's
+			// namespace. Reading one row of each here loads them inside the fork's open.
+			program.getListing().getCodeUnitAt(a);
 			at[7] = System.nanoTime();
+			java.util.Iterator<ghidra.program.model.symbol.Symbol> same =
+				program.getSymbolTable().getSymbols(f.getName());
+			while (same.hasNext()) {
+				same.next();
+			}
+			at[8] = System.nanoTime();
+			program.getSymbolTable().getLabelHistory(a);
+			at[9] = System.nanoTime();
+			java.util.Iterator<ghidra.program.model.symbol.Symbol> children =
+				program.getSymbolTable().getChildren(f.getSymbol());
+			while (children.hasNext()) {
+				children.next();
+			}
+			at[10] = System.nanoTime();
+			f.getSignature().getPrototypeString();
+			f.getParameters();
+			f.getReturnType();
+			at[11] = System.nanoTime();
+			// Hydra: the C parser of a signature op is loaded by its first use (7-13 ms in a
+			// fresh daemon); parse a throwaway signature once per daemon so the first edit does
+			// not pay it (a later open's parse would only repeat the 0.3 ms the edit pays itself).
+			if (!parserWarmed) {
+				try {
+					ghidra.app.util.cparser.C.CParserUtils.parseSignature(null, program,
+						"int hydra_warm_signature(int a, float b)", false);
+					parserWarmed = true;
+				}
+				catch (ghidra.app.util.cparser.C.ParseException | RuntimeException ex) {
+					Msg.debug(ProgramCommands.class,
+						"could not warm the signature parser: " + ex.getMessage());
+				}
+			}
+			at[12] = System.nanoTime();
 		}
 		catch (RuntimeException ex) {
 			Msg.warn(ProgramCommands.class, "could not warm the first change: " + ex);
 		}
 		finally {
-			at[8] = System.nanoTime();
+			at[13] = System.nanoTime();
 			Msg.info(ProgramCommands.class, "warmed the first change of " + program.getName() +
-				" in " + (at[8] - t0) / 1000 + " us (counts " + (at[1] - at[0]) / 1000 +
+				" in " + (at[13] - t0) / 1000 + " us (counts " + (at[1] - at[0]) / 1000 +
 				", first function " + (at[2] - at[1]) / 1000 + ", functionAt " +
 				(at[3] - at[2]) / 1000 + ", containing " + (at[4] - at[3]) / 1000 + ", primary " +
 				(at[5] - at[4]) / 1000 + ", symbols+comment " + (at[6] - at[5]) / 1000 +
-				", prototype " + (at[7] - at[6]) / 1000 + ")");
+				", code unit " + (at[7] - at[6]) / 1000 + ", name index " +
+				(at[8] - at[7]) / 1000 + ", label history " + (at[9] - at[8]) / 1000 +
+				", children " + (at[10] - at[9]) / 1000 + ", prototype " +
+				(at[11] - at[10]) / 1000 + ", parser " + (at[12] - at[11]) / 1000 + ")");
 		}
 	}
 
