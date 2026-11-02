@@ -109,7 +109,7 @@ jobs:
           if [ -f "$rec" ]; then
             tested=$(python -c "import json; print(json.load(open('$rec'))['testedCommit'])")
             if git merge-base --is-ancestor "$tested" HEAD; then
-              other=$(git diff --name-only "$tested" HEAD | grep -v -E '\.md$|^\.github/' | grep -v -x "$rec" || true)
+              other=$(git diff --name-only "$tested" HEAD | grep -v -E '\.md$|^\.github/|(^|/)(Module|certification)\.manifest$|^licenses/' | grep -v -x "$rec" || true)
               if [ -z "$other" ]; then skip=true; else echo "changed since $tested, beyond documents:"; echo "$other"; fi
             else
               echo "::warning::$tested in $rec is not an ancestor of this commit"

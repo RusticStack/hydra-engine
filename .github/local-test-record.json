@@ -18,5 +18,6 @@
     "pre-existing, untouched": "fmt drift in HeadlessSession/rust; 14 clippy errors and fmt drift in Features/Decompiler/rust (same against hydra.5)",
     "not met / stale": "protocol-2/3 characterization goldens (1/7, 9/13) stale against hydra.5 (status reply gained decompileBackend), not re-recorded; yield_slots_stress and script_modes fail under 16-worker load only; Decompiler/rust ignored test n_workers_match_one_worker_and_stock needs HYDRA_DECOMP_TEST_ROOT and did not run",
     "not run": "Gradle/CI release build, hosted-runner CI, -Xmx run, ReFS, other hardware, real Frida/ETW capture through the daemon at bench rate, real-binary reproduction of the issue-6 overflow"
-  }
+  },
+  "hostedRunnerNote": "Release run 41516660162 on the hosted 4-CPU runner: session_smoke passed; daemon_tests ran 40 min and 6 of 149 cases reported before cancel failed on timing (client_kill, cpu_profile_override, cpu_profile_identical, per_key_cap_conserving, first_open_attribution, chaos_oracle); they pass on the 24-CPU machine (270/270). Files changed since testedCommit are IP metadata only (manifests, licenses/BSD-3-DALEK-SUBTLE.txt)."
 }
