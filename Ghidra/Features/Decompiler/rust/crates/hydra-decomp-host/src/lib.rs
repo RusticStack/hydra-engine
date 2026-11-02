@@ -18,6 +18,7 @@ use rayon::prelude::*;
 mod parser_check;
 pub use parser_check::missing_thread_local;
 
+pub mod answers;
 pub mod snapshot;
 pub mod workers;
 

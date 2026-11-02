@@ -57,9 +57,20 @@ public final class PartialMarkup {
 	private boolean protoDone;
 	private String cutReason = "";
 
-	private PartialMarkup(int keep, long skip) {
+	private final Sink sink;
+
+	/** Receives every piece of the C text as it is read (the whole text, not only the window). */
+	public interface Sink {
+		/**
+		 * @param s the next piece of text, in order
+		 */
+		void accept(String s);
+	}
+
+	private PartialMarkup(int keep, long skip, Sink sink) {
 		this.keep = keep;
 		this.skip = skip;
+		this.sink = sink;
 	}
 
 	/** The recovered C text, at most the {@code keep} characters asked for. */
@@ -114,7 +125,15 @@ public final class PartialMarkup {
 	 * Used to answer a paged request from a response too large to build as a tree.
 	 */
 	public static PartialMarkup read(Decoder decoder, int keep, long skip) {
-		PartialMarkup p = new PartialMarkup(Math.max(0, keep), Math.max(0, skip));
+		return read(decoder, keep, skip, null);
+	}
+
+	/**
+	 * As {@link #read(Decoder, int, long)}, also passing the whole text, piece by piece, to
+	 * {@code sink} (to keep it for later pages without decompiling again).
+	 */
+	public static PartialMarkup read(Decoder decoder, int keep, long skip, Sink sink) {
+		PartialMarkup p = new PartialMarkup(Math.max(0, keep), Math.max(0, skip), sink);
 		try {
 			decoder.openElement(ELEM_DOC);
 			int functions = 0;
@@ -212,6 +231,9 @@ public final class PartialMarkup {
 	}
 
 	private void append(String s) {
+		if (sink != null && !s.isEmpty()) {
+			sink.accept(s);
+		}
 		long start = totalChars;
 		totalChars += s.length();
 		long from = Math.max(start, skip);
