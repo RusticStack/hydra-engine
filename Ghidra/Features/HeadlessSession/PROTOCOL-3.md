@@ -4429,8 +4429,8 @@ the engine has no writer open for it), `cancelled`, `unknown_command` (protocol 
 Additive; `minClient` and the protocol numbers are unchanged, and a `decompile` that completes as before answers byte for byte as before.
 
 **Per-query response cap (issue 6).** The native decompiler's answer is read into a bounded buffer (`DecompileProcess`, `LinkedByteBuffer`);
-the engine's cap is 50 MB. `decompile` takes `maxResultMb` (alias `max_result_mb`; whole MB, 1 to 512) or `maxResultKb` (alias
-`max_result_kb`; 1 to 524288, wins when both are given). A request with either runs on the process path (the in-process host does not
+when a request names no cap the budget is adaptive (it was a fixed 50 MB before `12.3-hydra.6`): at the start of the decompile it is the smaller of a quarter of the free physical memory above a 4096 MB floor and an eighth of the JVM's free heap, each divided by the decompiles in flight, at least 8 MB and at most 1024 MB. The buffer is filled page by page, so memory follows the answer, not the budget. The budget is fixed for the decompile (it is not re-checked while the response is read), the response is held on the heap (no spill to disk), and the decompile is not moved to a background lane: those remain open. `decompile` takes `maxResultMb` (alias `max_result_mb`; whole MB, 1 to 1024; a hard ceiling; absent = the adaptive budget) or `maxResultKb` (alias
+`max_result_kb`; 1 to 1048576, wins when both are given). A request with either runs on the process path (the in-process host does not
 enforce a per-request cap) and the decompiler is given back with its default. A value out of range is `bad_request`.
 
 `maxChars` is a different limit: it cuts the C text of an answer that has already fit in the engine's buffer. It cannot help when the
@@ -4442,13 +4442,25 @@ When the response exceeds the cap the reply is no longer an `IllegalStateExcepti
 
 ```json
 {"name":"f","entry":"0x140076fe0","completed":false,"error":"Exception while decompiling 140076fe0: Response buffer size exceeded for: ...",
- "timedOut":false,"truncated":true,"bytes_emitted":52428800,"reason":"response_buffer","max_result_mb":50,"max_result_bytes":52428800}
+ "timedOut":false,"truncated":true,"bytes_emitted":268435456,"reason":"response_buffer","max_result_mb":256,"max_result_bytes":268435456,
+ "budget":{"mode":"auto","bytes":268435456,"mb":256,"in_flight":1,"free_physical_mb":20480,"free_heap_mb":3072,"floor_physical_mb":4096}}
 ```
 
-`bytes_emitted` is the number of bytes of the decompiler's packed answer the buffer accepted before it filled (the cap). No C text is
-returned: the answer is a nested, packed markup that cannot be decoded from a prefix, and the decompiler builds the whole function's
-p-code before it prints, so there is no "first N statements" or per-block mode in the native process to fall back to. A caller that wants
-more can raise `maxResultMb`. A timeout stays what it was: protocol 3 answers `decompiler_failed` with `details.reason:"timeout"`
+`bytes_emitted` is the number of bytes of the decompiler's packed answer the buffer accepted before it filled (the cap).
+
+**Paging (additive).** `decompile` takes `offset` (characters, default absent). With it the reply's `c` is the page of the text from `offset`, at most `maxChars` characters (so a 50 MB text needs no single JSON), and the reply adds `offset`, `chars` (the whole text) and, while more follows, `next_offset`. Without `offset` nothing changes.
+
+**Budget numbers (additive).** An overflow reply also carries `budget:{mode:"auto"|"ceiling", bytes, mb, in_flight, free_physical_mb, free_heap_mb, floor_physical_mb}` (the last three only for `auto`).
+
+**Partial C text (additive).** The packed answer is a tree read front to back, so the tokens received before the cut are the first
+tokens of the C text. The engine reads them (without building node objects) and adds, when the cut fell inside the C markup:
+`partial:true`, `c` (the text, cut to `maxChars`), `chars` (all characters recovered), `signature`, and
+`cut:{kind:"response_buffer", response_bytes_read, c_recovered:true, c_chars, c_lines, c_tokens, c_returned_chars, what}`. `what` says
+that everything after the text is missing and the last line is probably unfinished. The text is the first part of the complete text
+(comment wrapping and the name transformer are not applied). If the cap ended before the C markup began (the symbols come first), there
+is no `c`/`partial` and `cut` is `{kind, response_bytes_read, c_recovered:false, what}`. `completed` stays false and `reason` stays
+`response_buffer`; the decompiler is still replaced. The decompiler has no per-block or size-bounded mode, so this is the front of the
+text, not a reduced-scope decompile. A timeout stays what it was: protocol 3 answers `decompiler_failed` with `details.reason:"timeout"`
 (retryable), protocol 2 a non-completed reply with `timedOut:true` and now also `reason:"timeout"`; the client distinguishes
 `response_buffer`, `timeout` and a crash (`details.reason:"crash"`).
 

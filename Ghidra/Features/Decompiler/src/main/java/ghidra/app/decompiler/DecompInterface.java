@@ -88,6 +88,8 @@ import ghidra.util.task.TaskMonitor;
 public class DecompInterface {
 
 	private int maxResultBytesOverride; // Hydra: see setMaxResultBytes
+	private int salvageChars;			// Hydra: see setSalvageOverflow; 0 = off
+	private PartialMarkup salvaged;		// Hydra: the C text read from the last overflowed response
 
 	public static class EncodeDecodeSet {
 		public OverlayAddressSpace overlay;		// Active overlay space or null
@@ -775,6 +777,30 @@ public class DecompInterface {
 		}
 	}
 
+	/**
+	 * Hydra (issue 6): when a response passes the size cap, read the C text from the front of
+	 * what was received instead of discarding it. The decompile still fails as before; the text
+	 * is then {@link #takeSalvaged()}. The native process is out of step with the pipe after an
+	 * overflow, so the caller must not reuse this interface for a next decompile unless it
+	 * restarts it.
+	 * @param maxChars the most characters of text to keep, or 0 to turn this off (the default)
+	 */
+	public synchronized void setSalvageOverflow(int maxChars) {
+		salvageChars = Math.max(0, maxChars);
+		salvaged = null;
+	}
+
+	/**
+	 * Hydra (issue 6): the C text read from the response of the last {@link #decompileFunction}
+	 * if it overflowed under {@link #setSalvageOverflow}; null otherwise. Taking it clears it.
+	 * @return the partial text, or null
+	 */
+	public synchronized PartialMarkup takeSalvaged() {
+		PartialMarkup p = salvaged;
+		salvaged = null;
+		return p;
+	}
+
 	private void applyMaxResult() {
 		if (maxResultBytesOverride > 0) {
 			decompProcess.setMaxResultBytes(maxResultBytesOverride);
@@ -1008,6 +1034,19 @@ public class DecompInterface {
 			errorMessage = decompCallback.getErrorMessage();
 		}
 		catch (Exception ex) {
+			salvaged = null;
+			if (salvageChars > 0 && decoder != null && !decoder.isEmpty() &&
+				String.valueOf(ex.getMessage()).contains("Response buffer size exceeded")) {
+				// Hydra (issue 6): the response passed the cap. What was received is the front of
+				// a packed tree; read the C text from it before the partial result is cleared.
+				try {
+					decoder.endIngest();
+					salvaged = PartialMarkup.read(decoder, salvageChars);
+				}
+				catch (Exception salvageFailed) {
+					salvaged = null;
+				}
+			}
 			decoder.clear(); 	// Clear any partial result
 			errorMessage = "Exception while decompiling " + func.getEntryPoint() + ": " +
 				ex.getMessage() + '\n';
