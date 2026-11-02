@@ -205,6 +205,10 @@ pub struct Store {
     life: Lifetimes,
     options: Options,
     sym_interp: Option<i64>,
+    checkpoint: Option<crate::checkpoint::Checkpointer>,
+    /// The last stored `(producer_gen, source_seq)` per source, so a batch does not rescan the
+    /// source's rows to find it. Cleared whenever a batch rolls back.
+    last_seen: std::collections::HashMap<String, (u32, u64)>,
 }
 
 fn event_cost(event: &Event) -> u64 {
@@ -227,7 +231,9 @@ impl Store {
     /// Open or create the index at `path` (the writer).
     pub fn open(path: &Path, session: &str) -> Result<Self> {
         let conn = Connection::open(path)?;
-        Self::init(conn, session)
+        let mut store = Self::init(conn, session)?;
+        store.checkpoint = crate::checkpoint::Checkpointer::start(path);
+        Ok(store)
     }
 
     /// An in-memory index (tests, offline tools).
@@ -244,12 +250,26 @@ impl Store {
             life: Lifetimes::default(),
             options: Options::default(),
             sym_interp: None,
+            checkpoint: None,
+            last_seen: std::collections::HashMap::new(),
         })
+    }
+
+    /// A second read-only handle on the same on-disk index, for a worker thread; `None` for an
+    /// in-memory index.
+    pub fn reader_clone(&self) -> Option<Store> {
+        let path = self.conn.path().filter(|p| !p.is_empty())?;
+        Store::reader(Path::new(path), &self.session).ok()
     }
 
     fn init(conn: Connection, session: &str) -> Result<Self> {
         let _ = conn.pragma_update(None, "journal_mode", "WAL");
         conn.pragma_update(None, "synchronous", "NORMAL")?;
+        // Indexes on random keys outgrow SQLite's 2 MiB default page cache quickly; a larger cache
+        // and fewer checkpoints keep ingest throughput flat as the session grows.
+        conn.pragma_update(None, "cache_size", -131_072_i64)?;
+        conn.pragma_update(None, "wal_autocheckpoint", 65_536_i64)?;
+        conn.pragma_update(None, "temp_store", "MEMORY")?;
         conn.execute_batch(DDL)?;
         conn.execute(
             "INSERT OR IGNORE INTO meta(key,value) VALUES('schema_version',?1),('session',?2),('revision','0'),('ingested_bytes','0')",
@@ -269,6 +289,8 @@ impl Store {
                 ..Options::default()
             },
             sym_interp: None,
+            checkpoint: None,
+            last_seen: std::collections::HashMap::new(),
         })
     }
 
@@ -338,6 +360,7 @@ impl Store {
             // The mirror may be ahead of the rolled-back tables: reload it.
             self.life = Lifetimes::load(&self.conn)?;
             self.sym_interp = None;
+            self.last_seen.clear();
         }
         result
     }
@@ -363,13 +386,16 @@ impl Store {
             .unwrap_or(0);
         let mut stopped = meta_get_tx(&tx, "stopped").is_some();
         // The producer's last sequence in this generation, to detect a jump.
-        let mut last: Option<(u32, u64)> = tx
-            .query_row(
-                "SELECT producer_gen, source_seq FROM events WHERE source_id=?1 ORDER BY seq DESC LIMIT 1",
-                params![source_id],
-                |r| Ok((r.get::<_, u32>(0)?, r.get::<_, u64>(1)?)),
-            )
-            .ok();
+        let mut last: Option<(u32, u64)> = match self.last_seen.get(source_id) {
+            Some(v) => Some(*v),
+            None => tx
+                .query_row(
+                    "SELECT producer_gen, source_seq FROM events NOT INDEXED WHERE source_id=?1 ORDER BY seq DESC LIMIT 1",
+                    params![source_id],
+                    |r| Ok((r.get::<_, u32>(0)?, r.get::<_, u64>(1)?)),
+                )
+                .ok(),
+        };
         let sym_interp = if symbolizer.is_some() {
             Some(sym_interp_in(&tx, &mut self.sym_interp, &symbol_revision)?)
         } else {
@@ -607,6 +633,12 @@ impl Store {
             params![revision.to_string()],
         )?;
         tx.commit()?;
+        if let Some(l) = last {
+            self.last_seen.insert(source_id.to_string(), l);
+        }
+        if let Some(c) = &self.checkpoint {
+            c.after_commit();
+        }
         stats.revision = revision;
         Ok(stats)
     }
