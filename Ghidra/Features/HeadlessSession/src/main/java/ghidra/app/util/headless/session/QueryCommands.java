@@ -183,10 +183,34 @@ final class QueryCommands {
 			return null;
 		}
 		e.project.lastUsed = System.currentTimeMillis();
-		return reply(r.name(), hex(a), r, cap);
+		PAGE_OFFSET.set(pageOffset(req));
+		try {
+			return reply(r.name(), hex(a), r, cap);
+		}
+		finally {
+			PAGE_OFFSET.remove();
+		}
+	}
+
+	/** The {@code offset} of a paged read of the text (chars), for the reply being built on this thread. */
+	private static final ThreadLocal<Integer> PAGE_OFFSET = new ThreadLocal<>();
+
+	private static Integer pageOffset(JsonObject req) {
+		return Json.has(req, "offset") ? (Integer) (int) Json.num(req, "offset", 0, 0, Integer.MAX_VALUE) : null;
 	}
 
 	JsonElement decompile(Program prog, Decompilers e, JsonObject req,
+			RequestMonitor m) {
+		PAGE_OFFSET.set(pageOffset(req));
+		try {
+			return decompile1(prog, e, req, m);
+		}
+		finally {
+			PAGE_OFFSET.remove();
+		}
+	}
+
+	private JsonElement decompile1(Program prog, Decompilers e, JsonObject req,
 			RequestMonitor m) {
 		Function f = function(prog, req);
 		int timeout = (int) Json.num(req, "timeout", 60, 1, 3600);
@@ -301,8 +325,21 @@ final class QueryCommands {
 		String c = res.c();
 		Json.put(r, "signature", res.signature());
 		Json.put(r, "chars", c.length());
-		Json.put(r, "truncated", c.length() > cap);
-		Json.put(r, "c", c.length() > cap ? c.substring(0, cap) : c);
+		Integer off = PAGE_OFFSET.get();
+		if (off == null) {
+			Json.put(r, "truncated", c.length() > cap);
+			Json.put(r, "c", c.length() > cap ? c.substring(0, cap) : c);
+			return r;
+		}
+		// paging: the page of the text from `offset`, `cap` characters long
+		int from = Math.min(off, c.length());
+		int to = (int) Math.min((long) c.length(), (long) from + cap);
+		Json.put(r, "truncated", to < c.length());
+		Json.put(r, "c", c.substring(from, to));
+		Json.put(r, "offset", from);
+		if (to < c.length()) {
+			Json.put(r, "next_offset", to);
+		}
 		return r;
 	}
 
@@ -336,9 +373,17 @@ final class QueryCommands {
 			v3 && capBytes == 0 ? HostDecompileBackend.tryDecompile(prog, e, f, timeout) : null;
 		DecompInterface d = hosted != null ? null : e.borrowDecompiler();
 		boolean healthy = false;
+		Budget budget = null;
+		IN_FLIGHT.incrementAndGet();
 		try {
-			if (d != null && capBytes > 0) {
-				d.setMaxResultBytes(capBytes);
+			if (d != null) {
+				// the request's cap, else the engine default (256 MB; the buffer fills page by page)
+				budget = capBytes > 0 ? Budget.ceiling(capBytes) : Budget.auto();
+				d.setMaxResultBytes((int) budget.bytes());
+			}
+			if (d != null) {
+				// issue 6: a response over the cap still gives the C text it began with
+				d.setSalvageOverflow(cap);
 			}
 			DecompileResults res = hosted != null ? hosted : d.decompileFunction(f, timeout, m);
 			if (m.isCancelled()) {
@@ -355,13 +400,16 @@ final class QueryCommands {
 				if (err != null && err.contains(RESPONSE_OVERFLOW)) {
 					// the engine's response buffer (not max_characters) filled: a structured partial
 					// result, not a fault of the process (the breaker is not tripped)
-					int limit = capBytes > 0 ? capBytes
-							: (d == null ? 50 : d.getOptions().getMaxPayloadMBytes()) << 20;
+					int limit = budget == null ? 50 << 20 : (int) budget.bytes();
 					Json.put(r, "truncated", true);
 					Json.put(r, "bytes_emitted", limit);
 					Json.put(r, "reason", "response_buffer");
 					Json.put(r, "max_result_mb", limit % (1 << 20) == 0 ? (Object) (limit >> 20) : (Object) (limit / 1048576.0));
 					Json.put(r, "max_result_bytes", limit);
+					partialText(r, d == null ? null : d.takeSalvaged(), cap, limit);
+					if (budget != null) {
+						Json.put(r, "budget", budget.json());
+					}
 					if (faultOut != null) {
 						faultOut[0] = true; // the answer depends on this request's cap: not shared
 					}
@@ -405,19 +453,117 @@ final class QueryCommands {
 			return reply(f, done, cap);
 		}
 		finally {
+			IN_FLIGHT.decrementAndGet();
 			if (d != null) {
-				if (capBytes > 0) {
-					d.setMaxResultBytes(0);
-				}
+				d.setSalvageOverflow(0);
+				d.setMaxResultBytes(0);
 				e.returnDecompiler(d, healthy);
 			}
 		}
 	}
 
+	/**
+	 * Issue 6: adds to an overflow reply the C text that was read from the front of the response
+	 * (additive fields only; {@code completed} stays false and {@code reason} stays
+	 * {@code response_buffer}). {@code partial} is true, {@code c} is the text (cut to
+	 * {@code maxChars}), {@code chars} the characters recovered and {@code cut} says what is
+	 * missing. Nothing is added when no text could be read (the response was cut before the C).
+	 */
+	static void partialText(JsonObject r, PartialMarkup pm, int cap, int limitBytes) {
+		JsonObject cut = Json.of("kind", "response_buffer", "response_bytes_read", limitBytes);
+		if (pm == null || pm.text().isEmpty()) {
+			Json.put(cut, "c_recovered", false);
+			Json.put(cut, "what", "nothing of the C text: the response passed the cap before the C markup began" +
+				(pm == null ? "" : " (" + pm.cutReason() + ")"));
+			Json.put(r, "cut", cut);
+			return;
+		}
+		String c = pm.text();
+		Json.put(r, "partial", true);
+		Json.put(r, "c", c);
+		Json.put(r, "chars", pm.chars());
+		Json.put(r, "signature", pm.signature());
+		Json.put(cut, "c_recovered", true);
+		Json.put(cut, "c_chars", pm.chars());
+		Json.put(cut, "c_lines", pm.lines());
+		Json.put(cut, "c_tokens", pm.tokens());
+		Json.put(cut, "c_returned_chars", c.length());
+		Json.put(cut, "what", "the C text ends where the decompiler's response passed the cap (" +
+			(limitBytes % (1 << 20) == 0 ? (limitBytes >> 20) + " MB" : limitBytes / 1024 + " KB") + "): everything after it is missing, the last line is probably " +
+			"unfinished, and long comments are not rewrapped; " +
+			"raise maxResultMb (up to " + MAX_RESULT_MB + ") for more");
+		Json.put(r, "cut", cut);
+	}
+
 	/** The text of the native decompiler's error when its response buffer is over the cap. */
 	static final String RESPONSE_OVERFLOW = "Response buffer size exceeded";
 	/** Largest per-query response cap, in MB (the buffer is heap: {@code LinkedByteBuffer}). */
-	static final int MAX_RESULT_MB = 512;
+	static final int MAX_RESULT_MB = 1024;
+	/** Decompiles of this daemon running now (the adaptive budget is shared between them). */
+	private static final java.util.concurrent.atomic.AtomicInteger IN_FLIGHT =
+		new java.util.concurrent.atomic.AtomicInteger();
+
+	/**
+	 * The response budget of one decompile. {@code ceiling}: the request's own {@code maxResultMb}
+	 * (a hard limit, as before). {@code auto} (a request that names none): derived from the live
+	 * headroom of the machine and of this JVM at the start of the decompile, shared with the
+	 * decompiles in flight, never above {@value #MAX_RESULT_MB} MB and never below
+	 * {@value #AUTO_MIN_MB} MB. The physical-memory term leaves {@value #FLOOR_PHYS_MB} MB free
+	 * for everyone else and takes a quarter of the rest; the heap term takes an eighth of the free
+	 * heap (the decoded tree of a response is several times its size). Environment variable
+	 * {@code HYDRA_TEST_FREE_MB}, when set, replaces the free figures and {@code HYDRA_TEST_BUDGET_KB} the
+	 * budget (test hooks).
+	 */
+	record Budget(String mode, long bytes, long freePhysMb, long freeHeapMb, int inFlight) {
+		static Budget ceiling(long bytes) {
+			return new Budget("ceiling", bytes, -1, -1, IN_FLIGHT.get());
+		}
+
+		static Budget auto() {
+			long physMb;
+			long heapMb;
+			String hook = System.getenv("HYDRA_TEST_FREE_MB");
+			if (hook != null && !hook.isBlank()) {
+				physMb = FLOOR_PHYS_MB + Long.parseLong(hook.trim());
+				heapMb = Long.parseLong(hook.trim());
+			}
+			else {
+				Runtime rt = Runtime.getRuntime();
+				heapMb = (rt.maxMemory() - (rt.totalMemory() - rt.freeMemory())) >> 20;
+				long free = Long.MAX_VALUE >> 20;
+				try {
+					if (java.lang.management.ManagementFactory
+							.getOperatingSystemMXBean() instanceof com.sun.management.OperatingSystemMXBean os) {
+						free = os.getFreeMemorySize() >> 20;
+					}
+				}
+				catch (RuntimeException | LinkageError ex) {
+					// no figure: the heap term alone applies
+				}
+				physMb = free;
+			}
+			int n = Math.max(1, IN_FLIGHT.get());
+			long byPhys = Math.max(0, physMb - FLOOR_PHYS_MB) / 4 / n;
+			long byHeap = Math.max(0, heapMb) / 8 / n;
+			long mb = Math.max(AUTO_MIN_MB, Math.min(MAX_RESULT_MB, Math.min(byPhys, byHeap)));
+			String kb = System.getenv("HYDRA_TEST_BUDGET_KB"); // test hook: the budget itself
+			long bytes = kb != null && !kb.isBlank() ? Long.parseLong(kb.trim()) << 10 : mb << 20;
+			return new Budget("auto", bytes, physMb, heapMb, n);
+		}
+
+		JsonObject json() {
+			JsonObject o = Json.of("mode", mode, "bytes", bytes, "mb", bytes >> 20, "in_flight", inFlight);
+			if (freePhysMb >= 0) {
+				Json.put(o, "free_physical_mb", freePhysMb);
+				Json.put(o, "free_heap_mb", freeHeapMb);
+				Json.put(o, "floor_physical_mb", FLOOR_PHYS_MB);
+			}
+			return o;
+		}
+	}
+
+	static final int AUTO_MIN_MB = 8;
+	static final int FLOOR_PHYS_MB = 4096;
 
 	/**
 	 * The per-query cap on the native decompiler's response, in bytes, or 0 for the engine's own
