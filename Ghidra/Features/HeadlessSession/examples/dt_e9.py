@@ -1021,10 +1021,21 @@ def t_guarded_threads(c):
         # the reaper and the governor beat once per lap: the figure moves
         for name in ("session-reaper", "session-governor"):
             dt.check(st[name]["beatEveryMs"] > 0, f"{name} gives no lap period: {st[name]}")
-        dt.wait_for(lambda: all(_thread_states(s)[n]["lastBeatAgoMs"] <= 2500 and
-                                _thread_states(s)[n]["lastBeatAgoMs"] < st[n]["lastBeatAgoMs"] + 1
-                                for n in ("session-reaper", "session-governor")) or None,
-                    "the reaper and the governor to beat", 20, 0.3)
+        # A beat is seen when a thread's age is smaller than at the poll before (it was reset). The age
+        # of the first reading is no bound: right after a start it is a few ms, and "younger than that"
+        # is almost never true at a poll (the test failed whenever the daemon had just started).
+        seen = {n: st[n]["lastBeatAgoMs"] for n in ("session-reaper", "session-governor")}
+        beat = set()
+
+        def beats():
+            now = _thread_states(s)
+            for n in seen:
+                age = now[n]["lastBeatAgoMs"]
+                if age < seen[n]:
+                    beat.add(n)
+                seen[n] = age
+            return (len(beat) == len(seen) and all(seen[n] <= 2500 for n in seen)) or None
+        dt.wait_for(beats, "the reaper and the governor to beat", 30, 0.3)
         # an unknown thread is refused
         dt.expect_error("bad_request", s.call, "debug_stall", what="thread", thread="no-such-thread")
         # a Throwable in one lap of each thread: it is restarted, counted, alive, and keeps working

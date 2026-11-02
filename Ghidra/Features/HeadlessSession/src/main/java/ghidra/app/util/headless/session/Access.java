@@ -110,8 +110,11 @@ final class Access {
 			// an exclusive holder is the request that closes or forks the project; shared holders
 			// (pins) are not tracked, and the daemon's own holds (client null) are not a client's
 			Client hc = p.exclusiveClient;
-			return p.exclusiveCmd != null && hc != null && hc != waiter ? Waits.HELD_BY_OTHER
-					: Waits.HELD_BY_NONE;
+			if (p.exclusiveCmd != null && hc != null && hc != waiter) {
+				WaitStats.detail("project lock: holder " + hc.label() + " " + p.exclusiveCmd);
+				return Waits.HELD_BY_OTHER;
+			}
+			return Waits.HELD_BY_NONE;
 		});
 		if (got != Waits.Outcome.GOT) {
 			boolean full = got == Waits.Outcome.QUEUE_FULL;

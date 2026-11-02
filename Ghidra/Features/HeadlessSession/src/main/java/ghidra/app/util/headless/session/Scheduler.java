@@ -311,6 +311,19 @@ final class Scheduler {
 		}
 
 		/**
+		 * Hydra (issue 6): a request found to be slow (a decompile whose response spills to disk)
+		 * gives its quick slot back and takes a long-lane slot instead, so that quick queries are not
+		 * held behind it. Never waits: when the long lane is full the request goes on without a slot
+		 * (it is bounded by the decompiler gate's permits), and the caller closes whatever this
+		 * returns. This ticket stays valid and closing it afterwards is correct.
+		 *
+		 * @return the long-lane ticket to close when the request ends, or null when none was free
+		 */
+		Ticket moveToLong() {
+			return Scheduler.this.moveToLong(this);
+		}
+
+		/**
 		 * Waits for a slot again after {@link #yieldSlot}, at the front of its key's queue.
 		 *
 		 * @throws SessionException {@code busy} after {@code waitMs}, {@code cancelled} on cancel
@@ -661,6 +674,31 @@ final class Scheduler {
 			free(s, t, false); // a yield records no hold time and no completion (E3a review)
 			handOver(s);
 			signal(s);
+		}
+		finally {
+			lock.unlock();
+		}
+	}
+
+	private Ticket moveToLong(Ticket t) {
+		lock.lock();
+		try {
+			if (t.closed || t.lane == Lane.LONG) {
+				return null;
+			}
+			if (t.granted) {
+				State q = lanes.get(t.lane);
+				free(q, t, false);
+				handOver(q);
+				signal(q);
+			}
+			State s = lanes.get(Lane.LONG);
+			if (s.inUse < s.slots && s.queue.isEmpty()) {
+				Ticket n = new Ticket(Lane.LONG, t.client, t.cmd, t.key);
+				grant(s, n);
+				return n;
+			}
+			return null;
 		}
 		finally {
 			lock.unlock();

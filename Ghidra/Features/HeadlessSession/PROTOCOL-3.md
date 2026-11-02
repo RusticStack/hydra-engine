@@ -1475,7 +1475,13 @@ tags; X9 an orphan decompiler process that is **suspended** (a busy one exits by
   where the situation exists in v2 (V8, V9).
 - **`health` additions:** `waits.foreignBlocked` (count since start and in the last minute), `governor{views,
   maxViews, heapAfterGcMb, heapState, decompilers, tokens, nativeBudgetMb}`, `leakedWorkers`, `repairs[]`
-  (E8 quarantines and E2a sweeps, each with path and time). The engine knows no lineage; publish queue figures
+  (E8 quarantines and E2a sweeps, each with path and time). `waits.singleFlightOpen` counts the waits of a client
+  for the `open_program` that opens the same program for the first time (one open per program; no trace request is
+  involved, and it is not `foreignBlocked`); the wait counts as single-flight for the whole of that open, also after
+  the opener has set the program object and while it builds its reply (a shared join that finds the program not
+  open yet counts too). Additive: `waits.foreignRecent` lists, newest last, up to 8 recent foreign waits (waiter
+  thread and call path, holder client, command, mode, age, whether the program was open) for diagnosing a non-zero
+  `foreignBlocked`; it is absent while there is none. The engine knows no lineage; publish queue figures
   are Hydralysis's (`status show=queue`).
 - **`status.scheduler`** gains the per-key waiter counts; **replies** gain `waited{queueMs, lockMs, slotMs}` from
   250 ms (D49).
@@ -4429,7 +4435,7 @@ the engine has no writer open for it), `cancelled`, `unknown_command` (protocol 
 Additive; `minClient` and the protocol numbers are unchanged, and a `decompile` that completes as before answers byte for byte as before.
 
 **Per-query response cap (issue 6).** The native decompiler's answer is read into a bounded buffer (`DecompileProcess`, `LinkedByteBuffer`);
-when a request names no cap the budget is adaptive (it was a fixed 50 MB before `12.3-hydra.6`): at the start of the decompile it is the smaller of a quarter of the free physical memory above a 4096 MB floor and an eighth of the JVM's free heap, each divided by the decompiles in flight, at least 8 MB and at most 1024 MB. The buffer is filled page by page, so memory follows the answer, not the budget. The budget is fixed for the decompile (it is not re-checked while the response is read), the response is held on the heap (no spill to disk), and the decompile is not moved to a background lane: those remain open. `decompile` takes `maxResultMb` (alias `max_result_mb`; whole MB, 1 to 1024; a hard ceiling; absent = the adaptive budget) or `maxResultKb` (alias
+when a request names no cap the budget is adaptive (it was a fixed 50 MB before `12.3-hydra.6`): at the start of the decompile it is the smaller of a quarter of the free physical memory above a 4096 MB floor and an eighth of the JVM's free heap, each divided by the decompiles in flight, at least 8 MB and at most 1024 MB. The buffer is filled page by page, so memory follows the answer, not the budget. The budget is computed once at the start; what is re-checked while the response is read, where the response is held beyond the heap threshold and which lane the decompile runs in are in "Spill to disk" below. `decompile` takes `maxResultMb` (alias `max_result_mb`; whole MB, 1 to 1024; a hard ceiling; absent = the adaptive budget) or `maxResultKb` (alias
 `max_result_kb`; 1 to 1048576, wins when both are given). A request with either runs on the process path (the in-process host does not
 enforce a per-request cap) and the decompiler is given back with its default. A value out of range is `bad_request`.
 
@@ -4463,6 +4469,40 @@ is no `c`/`partial` and `cut` is `{kind, response_bytes_read, c_recovered:false,
 text, not a reduced-scope decompile. A timeout stays what it was: protocol 3 answers `decompiler_failed` with `details.reason:"timeout"`
 (retryable), protocol 2 a non-completed reply with `timedOut:true` and now also `reason:"timeout"`; the client distinguishes
 `response_buffer`, `timeout` and a crash (`details.reason:"crash"`).
+
+**Spill to disk and the in-flight guard (additive, `12.3-hydra.6`).** The response is no longer bounded by the JVM heap. `LinkedByteBuffer` keeps
+the first `spillThresholdMb` (setting, default 32; 0 turns the spill off) MB of the decompiler's answer on the heap; every full page after
+that is appended to one temporary file `hydra-decompiler-spill/spill-<pid>-<n>-<t>.bin` under `java.io.tmpdir` (the session's temporary
+area, never the program's or the game's folder) and its heap array is given back. The file is opened delete-on-close, closed and deleted when
+the request ends (success, failure, cancel), and the files of a process that is no longer alive are swept at the next spill. The heap holds the
+threshold plus a small linked node per kilobyte (about 3 % of the response), not the response.
+
+A response that spilled and completed is **not decoded into a tree** (the tree of symbols, pcode and markup is several times the packed size and is
+what filled the heap): the C text is read from the file token by token (`PartialMarkup`, the reader of the partial text) and only the window the
+request asks for (`offset`, `maxChars`) is kept. The reply has the usual fields (`completed:true`, `signature`, `chars` = all characters,
+`truncated`, `c`, and `offset`/`next_offset` when `offset` is given) plus `streamed:true` and `spill:{spilled_bytes, threshold_bytes, c_lines,
+c_tokens, note}`. Differences from the tree path, only for a streamed answer: a long comment is not rewrapped and names do not pass through the
+name transformer; the answer is not cached or shared (each page request decompiles again; the text of one request is a prefix-consistent window of
+the same decompile). A response that stays under the threshold is unchanged, byte for byte.
+
+*Budget with a spill.* With no `maxResultMb`, when the disk has room the adaptive budget is the heap threshold plus a quarter of the volume's free space
+above the engine's `diskReserve` (max(5 GB, 5 %)), divided by the decompiles in flight, at most 2000 MB; with less than 16 MB of disk share the response stays on
+the heap with the budget of before. `maxResultMb` is still a hard ceiling (1 to 1024) on the whole response, heap and file together. `budget` in a reply
+carries `spill:{threshold_bytes, quota_bytes, free_disk_mb, disk_floor_mb, hard_floor_physical_mb}` when the spill is in use.
+
+*In-flight guard.* While the response is read, about every megabyte once it passes 8 MB (or the threshold), the engine checks the free
+physical memory against `spillHardFloorRamMb` (setting, default 1024: a hard floor so that other agents and projects are never starved) and, once
+spilling, the free space of the spill volume against the `diskReserve`, and the file against its quota. A failed check ends the read like the cap
+does: the structured answer above (`completed:false, truncated:true, reason:"response_buffer"`, `partial`/`c`/`cut` from the file, the decompiler
+replaced, no exception, `fault` not counted by the circuit breaker), with `bytes_emitted` = the bytes actually read, and additive `limit`
+(`response_cap` | `free_ram` | `disk_free` | `spill_quota` | `spill_io`), `guard` (the words) and `cut.limit`/`cut.response_bytes_read`.
+
+*Lane.* A decompile is admitted to the quick lane (one slot per CPU). When its response first leaves the heap it gives the quick slot back and
+takes a long-lane slot (`Ticket.moveToLong`, never waiting; the request's monitor then reports `lane:"long"`), so quick queries are not held
+behind it; if the long lane is full it goes on without a slot, bounded by the decompiler gate's permits. It is not a separate background job:
+there is no progress report or `cancel` of its own beyond the request's `timeout` and the ordinary request cancel. Test hooks (environment of the
+daemon): `HYDRA_TEST_SPILL_KB` (threshold; also turns the spill on beside `HYDRA_TEST_BUDGET_KB`), `HYDRA_TEST_SPILL_QUOTA_KB`,
+`HYDRA_TEST_DISK_FREE_MB`, `HYDRA_TEST_LIVE_FREE_MB` (free RAM seen by the guard).
 
 **Non-contiguous bodies (issue 7).** A function whose body is in several pieces (a pdata function with chained unwind fragments) can make
 the decompiler flow from a piece into the data between pieces (a pointer table) and give up with `Bad instruction count exceeded` or

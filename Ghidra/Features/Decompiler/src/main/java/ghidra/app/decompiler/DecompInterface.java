@@ -90,6 +90,10 @@ public class DecompInterface {
 	private int maxResultBytesOverride; // Hydra: see setMaxResultBytes
 	private int salvageChars;			// Hydra: see setSalvageOverflow; 0 = off
 	private PartialMarkup salvaged;		// Hydra: the C text read from the last overflowed response
+	private ResponseSpill responseSpill;	// Hydra (issue 6): spill for the main response, or null
+	private int streamKeep;				// Hydra (issue 6): window of the streamed text
+	private long streamSkip;
+	private PartialMarkup streamed;		// Hydra (issue 6): the text read from a spilled response
 
 	public static class EncodeDecodeSet {
 		public OverlayAddressSpace overlay;		// Active overlay space or null
@@ -791,6 +795,40 @@ public class DecompInterface {
 	}
 
 	/**
+	 * Hydra (issue 6): lets the main response of the next decompiles leave the heap. Pages beyond
+	 * the spill's threshold go to its temporary file and its guard can end the read early (the
+	 * decompile then fails with {@code Response buffer size exceeded} and, under
+	 * {@link #setSalvageOverflow}, the text read so far is {@link #takeSalvaged()}). A response
+	 * that did spill and completed is not decoded into a tree (the tree is several times its size,
+	 * on the heap): the C text window starting at character {@code skip}, at most {@code keep}
+	 * characters, is read from the file token by token and is {@link #takeStreamed()}; the
+	 * result of such a decompile is not {@code decompileCompleted()}.
+	 * @param spill the spill (the caller closes it after the decompile), or null to turn it off
+	 * @param keep the most characters of the text window to hold
+	 * @param skip the characters of text before the window
+	 */
+	public synchronized void setResponseSpill(ResponseSpill spill, int keep, long skip) {
+		responseSpill = spill;
+		streamKeep = Math.max(0, keep);
+		streamSkip = Math.max(0, skip);
+		streamed = null;
+		if (decompProcess != null) {
+			decompProcess.setResponseSpill(spill);
+		}
+	}
+
+	/**
+	 * Hydra (issue 6): the text window read from a spilled response by the last decompile, or
+	 * null (the decompile did not spill, or failed). Taking it clears it.
+	 * @return the text and its counts
+	 */
+	public synchronized PartialMarkup takeStreamed() {
+		PartialMarkup p = streamed;
+		streamed = null;
+		return p;
+	}
+
+	/**
 	 * Hydra (issue 6): the C text read from the response of the last {@link #decompileFunction}
 	 * if it overflowed under {@link #setSalvageOverflow}; null otherwise. Taking it clears it.
 	 * @return the partial text, or null
@@ -1028,10 +1066,22 @@ public class DecompInterface {
 			decoder = activeSet.mainResponse;
 			verifyProcess();
 			syncSnapshot();
+			decompProcess.setResponseSpill(responseSpill);
 			activeSet.mainQuery.clear();
 			AddressXML.encode(activeSet.mainQuery, funcEntry);
 			decompProcess.sendCommandTimeout("decompileAt", timeoutSecs, activeSet);
 			errorMessage = decompCallback.getErrorMessage();
+			streamed = null;
+			if (responseSpill != null && activeSet.mainResponse.isSpilled() &&
+				(errorMessage == null || errorMessage.isEmpty())) {
+				// Hydra (issue 6): the response left the heap; build the text, not the tree
+				PartialMarkup pm = PartialMarkup.read(activeSet.mainResponse, streamKeep, streamSkip);
+				if (pm.markupReached()) {
+					streamed = pm;
+					activeSet.mainResponse.clear();
+					decoder = null;
+				}
+			}
 		}
 		catch (Exception ex) {
 			salvaged = null;

@@ -32,6 +32,7 @@ import ghidra.app.decompiler.*;
 import ghidra.program.model.address.*;
 import ghidra.program.model.listing.*;
 import ghidra.program.model.mem.Memory;
+import ghidra.program.model.pcode.ResponseSpill;
 import ghidra.program.model.symbol.*;
 import ghidra.util.UndefinedFunction;
 
@@ -374,6 +375,8 @@ final class QueryCommands {
 		DecompInterface d = hosted != null ? null : e.borrowDecompiler();
 		boolean healthy = false;
 		Budget budget = null;
+		ResponseSpill spill = null;
+		Scheduler.Ticket[] moved = { null };
 		IN_FLIGHT.incrementAndGet();
 		try {
 			if (d != null) {
@@ -384,10 +387,33 @@ final class QueryCommands {
 			if (d != null) {
 				// issue 6: a response over the cap still gives the C text it began with
 				d.setSalvageOverflow(cap);
+				if (budget.spills()) {
+					// a response past the heap threshold goes to a temporary file; a request that
+					// does so leaves the quick lane for the long one (nothing waits behind it)
+					spill = budget.newSpill(() -> {
+						Scheduler.Ticket t = Scheduler.bound();
+						if (t != null) {
+							moved[0] = t.moveToLong();
+							m.lane("long", "a large decompile (the response spills to disk)");
+						}
+					});
+					Integer off = PAGE_OFFSET.get();
+					d.setResponseSpill(spill, cap, off == null ? 0 : off);
+				}
 			}
 			DecompileResults res = hosted != null ? hosted : d.decompileFunction(f, timeout, m);
 			if (m.isCancelled()) {
 				throw cancelled(m);
+			}
+			PartialMarkup streamed = d == null ? null : d.takeStreamed();
+			if (streamed != null) {
+				// the response spilled and completed: its text was read from the file, no tree built
+				healthy = true;
+				DecompilerGate.Breaker.succeeded(prog, f);
+				if (faultOut != null) {
+					faultOut[0] = true; // large and request-shaped (window, cap): not shared or cached
+				}
+				return streamedReply(f, streamed, spill, budget, cap);
 			}
 			JsonObject r = Json.of("name", f.getName(true), "entry", hex(f.getEntryPoint()));
 			boolean ok = res != null && res.decompileCompleted();
@@ -401,12 +427,27 @@ final class QueryCommands {
 					// the engine's response buffer (not max_characters) filled: a structured partial
 					// result, not a fault of the process (the breaker is not tripped)
 					int limit = budget == null ? 50 << 20 : (int) budget.bytes();
+					boolean guard = spill != null && spill.tripped() != ResponseSpill.Limit.NONE;
 					Json.put(r, "truncated", true);
-					Json.put(r, "bytes_emitted", limit);
+					Json.put(r, "bytes_emitted", guard ? Math.max(spill.ingested(), 0) : limit);
 					Json.put(r, "reason", "response_buffer");
+					Json.put(r, "limit", guard ? spill.tripped().id() : ResponseSpill.Limit.CAP.id());
+					if (guard) {
+						Json.put(r, "guard", spill.detail());
+					}
 					Json.put(r, "max_result_mb", limit % (1 << 20) == 0 ? (Object) (limit >> 20) : (Object) (limit / 1048576.0));
 					Json.put(r, "max_result_bytes", limit);
 					partialText(r, d == null ? null : d.takeSalvaged(), cap, limit);
+					if (guard && r.get("cut") instanceof JsonObject cut) {
+						// stopped by the in-flight guard, not by the cap: say what and how far
+						Json.put(cut, "response_bytes_read", spill.ingested());
+						Json.put(cut, "limit", spill.tripped().id());
+						if (cut.has("what")) {
+							Json.put(cut, "what", cut.get("what").getAsString()
+								.replaceFirst("passed the cap \\([^)]*\\)", "was stopped (" + spill.detail() + ")")
+								.replaceFirst("; raise maxResultMb.*$", "; free memory or disk space and retry"));
+						}
+					}
 					if (budget != null) {
 						Json.put(r, "budget", budget.json());
 					}
@@ -457,9 +498,55 @@ final class QueryCommands {
 			if (d != null) {
 				d.setSalvageOverflow(0);
 				d.setMaxResultBytes(0);
+				d.setResponseSpill(null, 0, 0);
+				if (spill != null) {
+					spill.close(); // deletes the temporary file
+				}
+				if (moved[0] != null) {
+					moved[0].close();
+				}
 				e.returnDecompiler(d, healthy);
 			}
 		}
+	}
+
+	/**
+	 * The reply of a decompile whose response spilled to disk and completed: the window of the C
+	 * text read from the file token by token (no tree was built, so the heap did not carry the
+	 * response). Same fields as {@link #reply}; additive {@code streamed:true} and {@code spill}.
+	 * The text is the one the pretty printer gives for the same tokens, except that a long comment
+	 * is not rewrapped and names do not pass through the name transformer.
+	 */
+	private static JsonObject streamedReply(Function f, PartialMarkup pm, ResponseSpill spill,
+			Budget budget, int cap) {
+		JsonObject r = Json.of("name", f.getName(true), "entry", hex(f.getEntryPoint()));
+		Json.put(r, "completed", true);
+		Json.put(r, "signature", pm.signature());
+		long total = pm.chars();
+		Json.put(r, "chars", total);
+		Integer off = PAGE_OFFSET.get();
+		String c = pm.text();
+		long from = off == null ? 0 : Math.min((long) off, total);
+		long to = from + c.length();
+		Json.put(r, "truncated", to < total);
+		Json.put(r, "c", c);
+		if (off != null) {
+			Json.put(r, "offset", from);
+			if (to < total) {
+				Json.put(r, "next_offset", to);
+			}
+		}
+		Json.put(r, "streamed", true);
+		JsonObject sp = Json.of("spilled_bytes", spill.spilledBytes(), "threshold_bytes", spill.threshold(),
+			"c_lines", pm.lines(), "c_tokens", pm.tokens());
+		Json.put(sp, "note", "the response was larger than the heap threshold and was read from a temporary " +
+			"file: the text is not rewrapped (long comments) and not run through the name transformer; a page " +
+			"request decompiles again (a streamed answer is not cached)");
+		Json.put(r, "spill", sp);
+		if (budget != null) {
+			Json.put(r, "budget", budget.json());
+		}
+		return r;
 	}
 
 	/**
@@ -514,9 +601,11 @@ final class QueryCommands {
 	 * {@code HYDRA_TEST_FREE_MB}, when set, replaces the free figures and {@code HYDRA_TEST_BUDGET_KB} the
 	 * budget (test hooks).
 	 */
-	record Budget(String mode, long bytes, long freePhysMb, long freeHeapMb, int inFlight) {
+	record Budget(String mode, long bytes, long freePhysMb, long freeHeapMb, int inFlight,
+			long spillThreshold, long spillQuota, long diskFreeMb, long diskFloorMb) {
 		static Budget ceiling(long bytes) {
-			return new Budget("ceiling", bytes, -1, -1, IN_FLIGHT.get());
+			long[] sp = spillPlan(bytes, bytes, IN_FLIGHT.get(), false);
+			return new Budget("ceiling", bytes, -1, -1, IN_FLIGHT.get(), sp[0], sp[1], sp[2], sp[3]);
 		}
 
 		static Budget auto() {
@@ -530,17 +619,8 @@ final class QueryCommands {
 			else {
 				Runtime rt = Runtime.getRuntime();
 				heapMb = (rt.maxMemory() - (rt.totalMemory() - rt.freeMemory())) >> 20;
-				long free = Long.MAX_VALUE >> 20;
-				try {
-					if (java.lang.management.ManagementFactory
-							.getOperatingSystemMXBean() instanceof com.sun.management.OperatingSystemMXBean os) {
-						free = os.getFreeMemorySize() >> 20;
-					}
-				}
-				catch (RuntimeException | LinkageError ex) {
-					// no figure: the heap term alone applies
-				}
-				physMb = free;
+				long free = ResponseSpill.osFreeMb();
+				physMb = free < 0 ? Long.MAX_VALUE >> 20 : free;
 			}
 			int n = Math.max(1, IN_FLIGHT.get());
 			long byPhys = Math.max(0, physMb - FLOOR_PHYS_MB) / 4 / n;
@@ -548,7 +628,66 @@ final class QueryCommands {
 			long mb = Math.max(AUTO_MIN_MB, Math.min(MAX_RESULT_MB, Math.min(byPhys, byHeap)));
 			String kb = System.getenv("HYDRA_TEST_BUDGET_KB"); // test hook: the budget itself
 			long bytes = kb != null && !kb.isBlank() ? Long.parseLong(kb.trim()) << 10 : mb << 20;
-			return new Budget("auto", bytes, physMb, heapMb, n);
+			boolean hooked = kb != null && !kb.isBlank();
+			// with a disk to spill to, the response is no longer bounded by the heap: the budget is
+			// the heap part (the threshold) plus a share of the disk above the engine's reserve
+			long[] sp = spillPlan(bytes, Long.MAX_VALUE, n, hooked);
+			if (sp[0] > 0 && !hooked) {
+				bytes = Math.min(AUTO_SPILL_MAX_MB << 20, sp[0] + sp[1]);
+			}
+			return new Budget("auto", bytes, physMb, heapMb, n, sp[0], sp[1], sp[2], sp[3]);
+		}
+
+		/**
+		 * The spill plan {threshold, quota, free disk MB, floor MB} of a response of at most
+		 * {@code cap} bytes held on the heap up to {@code heapBytes}; threshold 0 = no spill.
+		 */
+		private static long[] spillPlan(long heapBytes, long cap, int inFlight, boolean hooked) {
+			String th = System.getenv("HYDRA_TEST_SPILL_KB");	// test hook: the threshold itself
+			long threshold;
+			if (th != null && !th.isBlank()) {
+				threshold = Long.parseLong(th.trim()) << 10;
+			}
+			else if (hooked) {
+				threshold = 0;	// a hooked budget alone keeps the heap-only behaviour
+			}
+			else {
+				threshold = Math.min((long) Settings.integer("spillThresholdMb", SPILL_THRESHOLD_MB) << 20,
+					heapBytes);
+			}
+			if (threshold <= 0) {
+				return new long[] { 0, 0, -1, 0 };
+			}
+			java.nio.file.Path dir = spillDir();
+			String dh = System.getenv("HYDRA_TEST_DISK_FREE_MB");
+			long diskMb = dh != null && !dh.isBlank() ? Long.parseLong(dh.trim()) : ResponseSpill.usableMb(dir);
+			long floorMb = QueryCommands.diskFloorMb(dir);
+			long share = diskMb < 0 ? 0 : Math.max(0, diskMb - floorMb) / 4 / Math.max(1, inFlight);
+			String qh = System.getenv("HYDRA_TEST_SPILL_QUOTA_KB");	// test hook
+			long quota = qh != null && !qh.isBlank() ? Long.parseLong(qh.trim()) << 10 : share << 20;
+			if (cap != Long.MAX_VALUE) {
+				quota = Math.min(quota, Math.max(0, cap - threshold));
+			}
+			if (quota < SPILL_MIN_QUOTA_BYTES && (qh == null || qh.isBlank())) {
+				return new long[] { 0, 0, diskMb, floorMb };	// no room on the disk: heap only, as before
+			}
+			return new long[] { threshold, quota, diskMb, floorMb };
+		}
+
+		boolean spills() {
+			return spillThreshold > 0;
+		}
+
+		/** A spill with this budget's plan; {@code onFirst} runs when the response first leaves the heap. */
+		ResponseSpill newSpill(Runnable onFirst) {
+			String lf = System.getenv("HYDRA_TEST_LIVE_FREE_MB");	// test hook: free RAM seen by the guard
+			String dh = System.getenv("HYDRA_TEST_DISK_FREE_MB");
+			java.util.function.LongSupplier ram = lf != null && !lf.isBlank()
+					? (() -> Long.parseLong(lf.trim())) : null;
+			java.util.function.LongSupplier disk = dh != null && !dh.isBlank()
+					? (() -> Long.parseLong(dh.trim())) : null;
+			return new ResponseSpill(new ResponseSpill.Config(spillDir(), spillThreshold, spillQuota,
+				Settings.integer("spillHardFloorRamMb", HARD_FLOOR_PHYS_MB), diskFloorMb, ram, disk, onFirst));
 		}
 
 		JsonObject json() {
@@ -558,9 +697,45 @@ final class QueryCommands {
 				Json.put(o, "free_heap_mb", freeHeapMb);
 				Json.put(o, "floor_physical_mb", FLOOR_PHYS_MB);
 			}
+			if (spillThreshold > 0) {
+				Json.put(o, "spill", Json.of("threshold_bytes", spillThreshold, "quota_bytes", spillQuota,
+					"free_disk_mb", diskFreeMb, "disk_floor_mb", diskFloorMb,
+					"hard_floor_physical_mb", Settings.integer("spillHardFloorRamMb", HARD_FLOOR_PHYS_MB)));
+			}
 			return o;
 		}
 	}
+
+	/** Where a spilling response goes: a folder of the session's temporary area. */
+	static java.nio.file.Path spillDir() {
+		return java.nio.file.Path.of(System.getProperty("java.io.tmpdir"), "hydra-decompiler-spill");
+	}
+
+	/** Free space, in MB, that a spill never takes: the engine's {@code diskReserve} of that volume. */
+	static long diskFloorMb(java.nio.file.Path dir) {
+		try {
+			java.nio.file.Path p = dir.toAbsolutePath();
+			while (p != null && !java.nio.file.Files.exists(p)) {
+				p = p.getParent();
+			}
+			if (p != null) {
+				return Budgets.diskReserveBytes(java.nio.file.Files.getFileStore(p).getTotalSpace()) >> 20;
+			}
+		}
+		catch (java.io.IOException | RuntimeException ex) {
+			// fall through
+		}
+		return 5L << 10;
+	}
+
+	/** Response bytes the heap keeps before a response spills (the setting {@code spillThresholdMb}). */
+	static final int SPILL_THRESHOLD_MB = 32;
+	/** Free physical memory under which a response read stops (the setting {@code spillHardFloorRamMb}). */
+	static final int HARD_FLOOR_PHYS_MB = 1024;
+	/** The most an adaptive budget grants a spilling response (the cap is an int number of bytes). */
+	static final int AUTO_SPILL_MAX_MB = 2000;
+	/** A disk share under this is not worth a spill file: the response stays on the heap. */
+	static final long SPILL_MIN_QUOTA_BYTES = 16L << 20;
 
 	static final int AUTO_MIN_MB = 8;
 	static final int FLOOR_PHYS_MB = 4096;

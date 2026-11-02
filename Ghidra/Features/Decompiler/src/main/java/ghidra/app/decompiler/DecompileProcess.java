@@ -142,6 +142,7 @@ public class DecompileProcess {
 	private int archId = -1;              // architecture id for decomp process
 	private DecompileCallback callback;   // Callback interface for decompiler
 	private String programSource;		// String describing program for error reports
+	private volatile ResponseSpill responseSpill;	// Hydra (issue 6): spill for the main response, or null
 	private int maxResultBytes = 50 << 20; // maximum result size in bytes to allow from decompiler (default 50 MBytes)
 
 	private PackedDecode paramDecoder;			// Decoder to use for queries from the decompiler
@@ -532,6 +533,9 @@ public class DecompileProcess {
 					// determined by maxResultBytes
 					currentResponse = mainResponse;
 					currentResponse.open(maxResultBytes, programSource);
+					if (responseSpill != null && currentResponse instanceof PackedDecode pd) {
+						pd.setSpill(responseSpill);	// Hydra (issue 6): pages beyond the heap threshold go to disk
+					}
 					break;
 				case 15:			// This is the end of the main decompiler output
 					if (currentResponse == null) {
@@ -763,6 +767,15 @@ public class DecompileProcess {
 	 */
 	public void setMaxResultSize(int maxResultSizeMBytes) {
 		this.maxResultBytes = maxResultSizeMBytes << 20;
+	}
+
+	/**
+	 * Hydra (issue 6): the spill the main result of the next commands is read through (pages beyond
+	 * its threshold go to a temporary file, and its guard can end the read early), or null.
+	 * @param spill the spill; the caller closes it
+	 */
+	public void setResponseSpill(ResponseSpill spill) {
+		this.responseSpill = spill;
 	}
 
 	/**

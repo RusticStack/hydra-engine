@@ -51,6 +51,16 @@ final class RequestMonitor extends TaskMonitorAdapter {
 	private final long createdAt = System.currentTimeMillis();
 	private volatile String cmd = "";
 	private volatile String artifact;
+	/** The request line when the request is only in its light form (a raw trace read), else null. */
+	private volatile byte[] raw;
+
+	void rawRequest(byte[] line) {
+		raw = line;
+	}
+
+	byte[] rawRequest() {
+		return raw;
+	}
 
 	private volatile Caller.Identity caller;
 	/** What the request waits for now (a scheduler slot, the import queue), or null. */

@@ -170,12 +170,19 @@ pub(crate) fn payload(
                 map.insert(name, Value::from(*v));
             }
             Prop::Text(text) => {
-                let units: Vec<u8> = text
-                    .to_ascii_lowercase()
-                    .replace('/', "\\")
-                    .encode_utf16()
-                    .flat_map(u16::to_le_bytes)
-                    .collect();
+                // Lower-cased (ASCII only), `/` as `\`, UTF-16LE: one pass, one allocation.
+                let mut units: Vec<u8> = Vec::with_capacity(text.len() * 2);
+                let mut utf16 = [0u16; 2];
+                for c in text.chars() {
+                    let c = if c == '/' {
+                        '\\'
+                    } else {
+                        c.to_ascii_lowercase()
+                    };
+                    for unit in c.encode_utf16(&mut utf16) {
+                        units.extend_from_slice(&unit.to_le_bytes());
+                    }
+                }
                 let id = keyed_id(key, &units);
                 if resource.is_none() {
                     resource = Some(id.clone());

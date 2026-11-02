@@ -72,6 +72,7 @@ def t_fork_upgrade_from_cache(c):
     src = src.parent if src.suffix == ".gpr" else src
     legacy = c.work / "h2-legacy"
     dt.clone_tree(src, legacy)
+    dt.own_project(legacy)  # the committed fixture names its maker, not the user running the tests
     before = dt.tree_state(legacy)
     cache = c.work / "h2-upgrade-cache"
     if cache.exists():

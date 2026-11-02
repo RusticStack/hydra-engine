@@ -1581,6 +1581,7 @@ def t_upgrade_cache(c: Ctx):
     def legacy_copy(name):
         dst = c.work / name
         clone_tree(src, dst)
+        own_project(dst)  # the committed fixture names its maker, not the user running the tests
         return dst
 
     # 1. opted out: the in-memory upgrade, which is also the first open's yardstick
@@ -2880,6 +2881,7 @@ def t_legacy_overlay(c: Ctx):
     src = src.parent if src.suffix == ".gpr" else src
     legacy = c.work / "legacyOverlay"
     clone_tree(src, legacy)
+    own_project(legacy)  # the committed fixture names its maker, not the user running the tests
     before = tree_state(legacy)
     cache = c.work / "upgrade-cache-ov"
     if cache.exists():

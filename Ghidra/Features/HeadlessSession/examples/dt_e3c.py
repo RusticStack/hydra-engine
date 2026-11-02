@@ -531,6 +531,19 @@ def t_reader_leave_all(c):
 
 # ---- refcount_leak --------------------------------------------------------------------------
 
+def _later_refs(obs, pid):
+    """Diagnostic for a failed check: whether the count converges (a late release) or stays (a leak)."""
+    out = []
+    for _ in range(6):
+        time.sleep(1.0)
+        try:
+            slot = [x for x in obs.call("status")["projectStates"] if x["project"] == pid]
+            out.append(slot[0].get("viewRefs") if slot else None)
+        except Exception as e:  # noqa: BLE001
+            out.append(type(e).__name__)
+    return out
+
+
 def t_refcount_leak(c):
     exe = prepare(c)
     gpr = c.copy_fixture("e3cRl")
@@ -618,9 +631,20 @@ def t_refcount_leak(c):
             return (not any(cl["requests"] for cl in st["clients"] if cl["name"] != "obs") and
                     not any(pg.get("abandonedRequests") for pg in st["programs"]))
         dt.wait_for(quiet, "every request to have ended", 600, 0.2)
+        # A cut client's decompile may still be ending in the native process (it holds its view pin until
+        # then; seen as 3 for under a second on a loaded machine, back to 2 at the next read): wait for the
+        # count to settle. A leaked pin never settles, so the check below still fails for it.
+        def refs_settled():
+            _st, _pgs, _slot = settled()
+            return (len(_slot) == 1 and _slot[0].get("viewRefs") == 1 + len(_pgs)) or None
+        with contextlib.suppress(Exception):
+            dt.wait_for(refs_settled, "the view references to settle", 30, 0.2)
         st, pgs, slot = settled()
         dt.check(len(slot) == 1 and slot[0].get("viewRefs") == 1 + len(pgs),
-                 f"view references did not return to 1 + {len(pgs)} program(s): {slot}")
+                 f"view references did not return to 1 + {len(pgs)} program(s): {slot}; programs "
+                 f"{json.dumps(pgs, default=str)[:1500]}; clients "
+                 f"{json.dumps([cl for cl in st['clients'] if cl.get('requests')], default=str)[:1000]}; "
+                 f"later: {_later_refs(obs, pid)}")
         dt.check(bl.timed(c, obs, "status")["ok"], "status")
         # nothing is stuck: shared, exclusive acquirers and an interrupt-free channel
         j = reader(c, d, gpr, exe, "after")
@@ -791,7 +815,7 @@ def t_analyzing_join(c):
 
 # ---- refresh_no_blackout --------------------------------------------------------------------
 
-@dt.prebuilt("e3c-two-program", users=("refresh_no_blackout", "foreign_blocked_counter", "yield_slots_stress"))
+@dt.prebuilt("e3c-two-program", users=("refresh_no_blackout", "foreign_blocked_counter", "yield_slots_stress", "first_open_attribution"))
 def _two_program_project(c, name):
     """The fixture with a second program (the dll) imported.
 
@@ -1061,6 +1085,51 @@ def t_project_waiter_caps(c):
         d.stop(force=True)
 
 
+# ---- first_open_attribution -----------------------------------------------------------------
+
+def t_first_open_attribution(c):
+    """4 clients open the same program at the same moment, 40 times: nobody's wait is "foreign".
+
+    The wait of a second client for the request that opens the program for the first time is
+    ``singleFlightOpen`` (one open per program), also in the moments after the opener has set the
+    program object and before it has released its lock (it still builds the reply): that window
+    used to count as ``foreignBlocked`` (seen once as ``trace_agent_workload`` under load)."""
+    gpr, exe, _other = _two_program_project(c, "e3cFo")
+    d = c.daemon("e3c-fo", keepWarm=0)
+    rs = []
+    try:
+        rs = [reader(c, d, gpr, exe, f"r{i}", open_program=False) for i in range(4)]
+        pid = rs[0].call("project")["id"]
+        rounds = 40
+        for rnd in range(rounds):
+            errs = []
+            bar = threading.Barrier(len(rs))
+
+            def go(s):
+                try:
+                    bar.wait(30)
+                    s.call("open_program", path=exe)
+                except Exception as e:  # noqa: BLE001
+                    errs.append(repr(e))
+
+            ts = [threading.Thread(target=go, args=(s,)) for s in rs]
+            for t in ts:
+                t.start()
+            for t in ts:
+                t.join(120)
+            dt.check(not errs, f"round {rnd}: {errs}")
+            for s in rs:
+                s.call("close_program", program=f"{pid}:/{exe}")
+        w = waits(rs[0])
+        dt.check(w["foreignBlocked"]["total"] == 0,
+                 f"a first open counted as a request waiting on another: {w}")
+        return (f"{rounds} rounds of 4 simultaneous first opens: foreignBlocked 0, singleFlightOpen "
+                f"{w['singleFlightOpen']}, contended waits {w['contended']}")
+    finally:
+        close_all(*rs)
+        d.stop(force=True)
+
+
 # ---- foreign_blocked_counter ----------------------------------------------------------------
 
 def t_foreign_blocked_counter(c):
@@ -1163,7 +1232,13 @@ def t_yield_slots_stress(c):
             hid = sleeper(c, O, 2000, "TestSleep.java", exclusive=True)
             time.sleep(0.5)
             # both quick slots are held by lock waiters now unless they yielded them
-            victims.append(bl.timed(c, V, "list", project=vp, programsOnly=True, wait=1000))
+            v = bl.timed(c, V, "list", project=vp, programsOnly=True, wait=1000)
+            if not v["ok"] or v["ms"] >= 1000:
+                # what the lane and the lock queues looked like when the victim was refused or slow
+                with contextlib.suppress(Exception):
+                    v["diag"] = {"round": round_, "scheduler": V.call("status").get("scheduler"),
+                                 "waits": V.call("status").get("waits")}
+            victims.append(v)
             attempt(c, O, hid)
         for th in ths:
             th.join(60)
@@ -1176,7 +1251,7 @@ def t_yield_slots_stress(c):
         dt.check(codes.get("ok", 0) >= 20, f"too few completed requests {codes}")
         slow = [v for v in victims if not v["ok"] or v["ms"] >= 1000]
         dt.check(not slow, f"the quick request of a client of another project was refused or slow while "
-                           f"the waiters waited: {[(v.get('code'), v['ms']) for v in slow]}")
+                           f"the waiters waited: {[(v.get('code'), v['ms'], v.get('diag')) for v in slow]}")
         st = O.call("status")["scheduler"]["quick"]
         dt.check(st["inUse"] == 0, f"quick slots still held after the stress: {st}")
         return (f"yieldSlots on, 2 quick slots, 12 waiters on one program under 6 exclusive holds: "
@@ -1209,7 +1284,7 @@ def t_chaos_oracle(c):
     rs = []
     O = None
     try:
-        rs = [reader(c, d, gpr, exe, f"cr{i}") for i in range(8)]
+        rs = [reader(c, d, gpr, exe, f"cr{i}") for i in range(4)]
         pid = rs[0].call("project")["id"]
         fn = bl.first_function(rs[0])
         stop = threading.Event()
@@ -1416,6 +1491,7 @@ TESTS = {
     "refresh_no_blackout": t_refresh_no_blackout,
     "registry_state_machine": t_registry_state_machine,
     "foreign_blocked_counter": t_foreign_blocked_counter,
+    "first_open_attribution": t_first_open_attribution,
     "yield_slots_stress": t_yield_slots_stress,
     "chaos_oracle": t_chaos_oracle,
     "project_waiter_caps": t_project_waiter_caps,

@@ -44,6 +44,8 @@ final class TraceNative {
 
 	final AtomicLong calls = new AtomicLong();
 	final AtomicLong replyBytes = new AtomicLong();
+	/** Time spent inside the engine's request call, in nanoseconds (for the health report). */
+	final AtomicLong engineNanos = new AtomicLong();
 	final String library;
 
 	private final MethodHandle init;
@@ -93,7 +95,7 @@ final class TraceNative {
 				Health.contribute("trace", () -> t == null
 						? Json.of("enabled", false)
 						: Json.of("enabled", true, "library", t.library, "root", t.root,
-							"calls", t.calls.get(), "replyBytes", t.replyBytes.get(), "sessions",
+							"calls", t.calls.get(), "replyBytes", t.replyBytes.get(), "engineMs", t.engineNanos.get() / 1_000_000, "sessions",
 							TraceLeases.count()));
 			}
 		}
@@ -163,17 +165,27 @@ final class TraceNative {
 
 	/** As above; {@code progress} is two native longs (done, total) or null. */
 	byte[] call(String cmd, byte[] req, MemorySegment cancel, MemorySegment progress) {
-		try (Arena a = Arena.ofConfined()) {
-			byte[] cb = cmd.getBytes(StandardCharsets.UTF_8);
-			MemorySegment c = a.allocate(Math.max(1, cb.length));
+		try {
+			byte[] cb = commandBytes(cmd);
+			// one per-thread scratch segment: [reply FIRST_BUFFER][length 8][command][request]
+			long need = FIRST_BUFFER + 8L + cb.length + req.length;
+			Scratch sc = SCRATCH.get();
+			if (sc.seg == null || sc.seg.byteSize() < need) {
+				sc.seg = Arena.ofAuto().allocate(Math.max(need, FIRST_BUFFER + 4096L), 8);
+				if (need > (4L << 20)) {
+					SCRATCH.remove(); // a huge request is not kept
+				}
+			}
+			MemorySegment out = sc.seg.asSlice(0, FIRST_BUFFER);
+			MemorySegment len = sc.seg.asSlice(FIRST_BUFFER, 8);
+			MemorySegment c = sc.seg.asSlice(FIRST_BUFFER + 8L, cb.length);
+			MemorySegment r = sc.seg.asSlice(FIRST_BUFFER + 8L + cb.length, req.length);
 			MemorySegment.copy(cb, 0, c, ValueLayout.JAVA_BYTE, 0, cb.length);
-			MemorySegment r = a.allocate(Math.max(1, req.length));
 			MemorySegment.copy(req, 0, r, ValueLayout.JAVA_BYTE, 0, req.length);
-			MemorySegment out = a.allocate(FIRST_BUFFER);
-			MemorySegment len = a.allocate(ValueLayout.JAVA_LONG);
 			boolean armed = cancel != null && setCancel != null;
 			boolean reporting = progress != null && setProgress != null;
 			int rc;
+			long t0 = System.nanoTime();
 			try {
 				if (armed) {
 					setCancel.invokeExact(cancel);
@@ -185,6 +197,7 @@ final class TraceNative {
 					(long) FIRST_BUFFER, len);
 			}
 			finally {
+				engineNanos.addAndGet(System.nanoTime() - t0);
 				if (armed) {
 					setCancel.invokeExact(MemorySegment.NULL);
 				}
@@ -198,7 +211,7 @@ final class TraceNative {
 				bytes = out.asSlice(0, n).toArray(ValueLayout.JAVA_BYTE);
 			}
 			else if (rc == ERR_BUFFER) {
-				MemorySegment big = a.allocate(n);
+				MemorySegment big = Arena.ofAuto().allocate(n);
 				long got = (long) copy.invokeExact(big, n);
 				if (got != n) {
 					throw new IllegalStateException("the kept reply was lost (" + got + ")");
@@ -216,5 +229,47 @@ final class TraceNative {
 			throw new SessionException(SessionException.FAILED,
 				"trace native call failed: " + t, Json.of("reason", "native_call"), t);
 		}
+	}
+
+	private static final class Scratch {
+		MemorySegment seg;
+	}
+
+	private static final ThreadLocal<Scratch> SCRATCH = ThreadLocal.withInitial(Scratch::new);
+	private static final java.util.concurrent.ConcurrentHashMap<String, byte[]> COMMANDS =
+		new java.util.concurrent.ConcurrentHashMap<>();
+	private static final java.util.concurrent.ConcurrentLinkedQueue<MemorySegment> CELLS =
+		new java.util.concurrent.ConcurrentLinkedQueue<>();
+
+	private static byte[] commandBytes(String cmd) {
+		byte[] b = COMMANDS.get(cmd);
+		if (b == null) {
+			b = cmd.getBytes(StandardCharsets.UTF_8);
+			if (COMMANDS.size() < 64) {
+				COMMANDS.put(cmd, b);
+			}
+		}
+		return b;
+	}
+
+	/**
+	 * A zeroed native cell for one call, recycled by {@link #giveCells}: the cancel flag (an
+	 * {@code int32} at 0) and the progress pair (two {@code int64} at 8). The cells live as long as
+	 * the process, so no per-call shared arena has to be closed (that is a handshake with every
+	 * thread of the VM).
+	 */
+	static MemorySegment takeCells() {
+		MemorySegment c = CELLS.poll();
+		if (c == null) {
+			c = Arena.global().allocate(24, 8);
+		}
+		else {
+			c.fill((byte) 0);
+		}
+		return c;
+	}
+
+	static void giveCells(MemorySegment c) {
+		CELLS.add(c);
 	}
 }

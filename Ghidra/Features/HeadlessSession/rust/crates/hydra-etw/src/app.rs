@@ -8,9 +8,9 @@ use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{RecvTimeoutError, SyncSender, sync_channel};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{RecvTimeoutError, SyncSender, channel, sync_channel};
 use std::time::{Duration, Instant};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
@@ -33,9 +33,13 @@ struct Args {
     kernel_filter: bool,
 }
 
+/// The kernel PID filter takes at most this many ids (`EVENT_FILTER_TYPE_PID`).
+const KERNEL_FILTER_MAX: usize = 8;
+
 fn parse(args: &[String]) -> Result<Args, String> {
     let mut out = Args {
         gen_: 1,
+        kernel_filter: false,
         providers: Provider::ALL.to_vec(),
         ..Args::default()
     };
@@ -66,7 +70,11 @@ fn parse(args: &[String]) -> Result<Args, String> {
                     value()?.parse().map_err(|_| "--duration-ms is a number")?,
                 ));
             }
+            // The kernel PID filter is opt-in: measured on this machine, Microsoft-Windows-Kernel-File and -Registry do not
+            // apply it (2.75 of 2.97 million file events still arrived from outside the tree), and a child's first
+            // events are not delivered until the consumer, which sees them up to a flush timer later, re-enables.
             "--kernel-filter" => out.kernel_filter = true,
+            "--consumer-filter" => out.kernel_filter = false,
             other => return Err(format!("unknown argument {other}")),
         }
     }
@@ -107,6 +115,14 @@ struct Counters {
     written: AtomicU64,
     write_failed: AtomicU64,
     bytes: AtomicU64,
+    /// Child processes that joined the tree after the start (each one re-enables the providers' PID filter).
+    tree_growth: AtomicU64,
+    /// Time from a child's `ProcessStart` to the end of the re-enable that admitted it: events of that child inside
+    /// the window were not delivered. Total and worst case, nanoseconds.
+    growth_window_ns_total: AtomicU64,
+    growth_window_ns_max: AtomicU64,
+    /// 1 while the providers carry a kernel PID filter, 0 when the tree outgrew it (then the consumer filters).
+    kernel_filter_active: AtomicU64,
 }
 
 fn get(c: &AtomicU64) -> u64 {
@@ -179,7 +195,7 @@ impl Writer {
         }
         e.insert("payload".into(), payload);
         self.seq += 1;
-        match self.chain.push(e) {
+        match self.chain.push(&e) {
             Ok(line) => match self.file.write_all(&line) {
                 Ok(()) => {
                     counters.written.fetch_add(1, Ordering::Relaxed);
@@ -205,6 +221,10 @@ impl Writer {
     fn ns(&self, ticks: u64) -> u64 {
         u64::try_from(u128::from(ticks) * 1_000_000_000 / u128::from(self.freq)).unwrap_or(u64::MAX)
     }
+}
+
+fn ticks_to_ns(ticks: u64, freq: u64) -> u64 {
+    u64::try_from(u128::from(ticks) * 1_000_000_000 / u128::from(freq)).unwrap_or(u64::MAX)
 }
 
 fn now_ns(freq: u64) -> u64 {
@@ -336,26 +356,28 @@ pub(crate) fn run(raw: &[String]) -> i32 {
             return 2;
         }
     };
-    let tree = Arc::new(Mutex::new(initial_tree(&args.pids)));
-    let roots: Vec<u32> = tree
-        .lock()
-        .map(|t| t.iter().copied().collect())
-        .unwrap_or_default();
+    let tree = initial_tree(&args.pids);
+    let mut roots: Vec<u32> = tree.iter().copied().collect();
+    roots.sort_unstable();
+    let kernel_filter = args.kernel_filter && roots.len() <= KERNEL_FILTER_MAX;
+    counters
+        .kernel_filter_active
+        .store(u64::from(kernel_filter), Ordering::Relaxed);
     let mut enable_report = Vec::new();
     let mut enabled = 0;
     for p in &args.providers {
-        let filter: &[u32] = if args.kernel_filter { &roots } else { &[] };
+        let filter: &[u32] = if kernel_filter { &roots } else { &[] };
         let status = session.enable(*p, filter);
         if status == 0 {
             enabled += 1;
         }
         enable_report.push(json!({"provider": p.name(), "short": p.short(), "status": status, "enabled": status == 0,
-            "kernel_filter": args.kernel_filter && status == 0}));
+            "kernel_filter": kernel_filter && status == 0}));
     }
     writer.put(&counters, "core.capture.source", now_ns(freq), None, None, json!({
         "source_type": "etw", "state": if enabled > 0 { "activated" } else { "refused" }, "session": session_name,
         "producer_gen": args.gen_, "providers": enable_report, "tree_roots": args.pids, "tree_size_at_start": roots.len(),
-        "filter": if args.kernel_filter { "kernel pid filter on the roots (children created later are missed until re-enabled) plus tree filter" } else { "tree filter in the consumer" },
+        "filter": if kernel_filter { "kernel pid filter on the tree, re-enabled as children start (a child's first events, before the re-enable, are not delivered: the window is reported as tree_growth), plus the tree filter in the consumer" } else if args.kernel_filter { "tree filter in the consumer (the tree has more than eight processes, more than the kernel pid filter takes)" } else { "tree filter in the consumer" },
         "clock": {"domain": clock_domain(freq), "unit": "qpc-tick", "frequency_hz": freq}}));
     if enabled == 0 {
         session.stop();
@@ -369,14 +391,16 @@ pub(crate) fn run(raw: &[String]) -> i32 {
     // Consumer callback: filter, decode, hand to the writer. A full queue is counted, never blocked on.
     let (tx, rx): (SyncSender<Pending>, _) = sync_channel(QUEUE);
     let cb_counters = Arc::clone(&counters);
-    let cb_tree = Arc::clone(&tree);
+    // Only the callback reads or changes the tree; a child joining it sends the new member list to the main loop,
+    // which re-enables the providers so the kernel filter admits the child.
+    let (grow_tx, grow_rx) = channel::<(Vec<u32>, u64)>();
+    let mut cb_tree = tree;
     let cb_key = key;
     let mut cache = InfoCache::new();
     let callback: etw::Callback = Box::new(move |ev| {
         cb_counters.seen.fetch_add(1, Ordering::Relaxed);
         let Some(provider) = ev.provider else { return };
         let mut subject = ev.pid;
-        let in_tree = |pid: u32| cb_tree.lock().is_ok_and(|t| t.contains(&pid));
         let mut decoded = None;
         if provider == Provider::Process && matches!(ev.id, 1..=6) {
             decoded = ev.properties(&mut cache);
@@ -389,14 +413,16 @@ pub(crate) fn run(raw: &[String]) -> i32 {
                         prop_int(props, "ProcessID"),
                         prop_int(props, "ParentProcessID"),
                     )
-                    && let Ok(mut t) = cb_tree.lock()
-                    && (t.contains(&parent) || t.contains(&ev.pid))
+                    && (cb_tree.contains(&parent) || cb_tree.contains(&ev.pid))
+                    && cb_tree.insert(child)
                 {
-                    t.insert(child);
+                    let mut members: Vec<u32> = cb_tree.iter().copied().collect();
+                    members.sort_unstable();
+                    let _ = grow_tx.send((members, ev.ticks));
                 }
             }
         }
-        if !in_tree(subject) && !in_tree(ev.pid) {
+        if !cb_tree.contains(&subject) && !cb_tree.contains(&ev.pid) {
             cb_counters.outside_tree.fetch_add(1, Ordering::Relaxed);
             return;
         }
@@ -411,11 +437,8 @@ pub(crate) fn run(raw: &[String]) -> i32 {
         if partial {
             cb_counters.partial.fetch_add(1, Ordering::Relaxed);
         }
-        if provider == Provider::Process
-            && ev.id == 2
-            && let Ok(mut t) = cb_tree.lock()
-        {
-            t.remove(&subject); // the pid may be reused
+        if provider == Provider::Process && ev.id == 2 {
+            cb_tree.remove(&subject); // the pid may be reused
         }
         let item = Pending {
             kind: kind_of(provider, ev.id),
@@ -487,12 +510,32 @@ pub(crate) fn run(raw: &[String]) -> i32 {
         if stop {
             break;
         }
-        std::thread::sleep(Duration::from_millis(50));
+        if let Ok((mut members, first_ticks)) = grow_rx.recv_timeout(Duration::from_millis(50)) {
+            // Coalesce a burst of children into one re-enable with the newest member list.
+            while let Ok((newer, _)) = grow_rx.try_recv() {
+                members = newer;
+            }
+            let use_filter = args.kernel_filter && members.len() <= KERNEL_FILTER_MAX;
+            for p in &args.providers {
+                let filter: &[u32] = if use_filter { &members } else { &[] };
+                session.enable(*p, filter);
+            }
+            counters
+                .kernel_filter_active
+                .store(u64::from(use_filter), Ordering::Relaxed);
+            let window = now_ns(freq).saturating_sub(ticks_to_ns(first_ticks, freq));
+            counters.tree_growth.fetch_add(1, Ordering::Relaxed);
+            counters
+                .growth_window_ns_total
+                .fetch_add(window, Ordering::Relaxed);
+            counters
+                .growth_window_ns_max
+                .fetch_max(window, Ordering::Relaxed);
+        }
     }
     let final_stats = session.stats();
     session.stop();
     let consume_result = consumer.join();
-    etw::clear_callback();
     let Ok(mut writer) = writer_thread.join() else {
         return 2;
     };
@@ -535,7 +578,9 @@ fn health(state: &str, c: &Counters, s: &etw::SessionStats, providers: &[Value])
                      "buffers_written": s.buffers_written, "provider_enable_failures": providers.iter().filter(|p| p["enabled"] == false).count(),
                      "providers": providers},
         "transport": {"seen": get(&c.seen), "outside_tree": get(&c.outside_tree), "matched": get(&c.matched),
-                      "queue_dropped": get(&c.queue_dropped), "decode_failed": get(&c.decode_failed), "partial_decode": get(&c.partial)},
+                      "queue_dropped": get(&c.queue_dropped), "decode_failed": get(&c.decode_failed), "partial_decode": get(&c.partial),
+                      "kernel_filter_active": get(&c.kernel_filter_active) == 1, "tree_growth": get(&c.tree_growth),
+                      "growth_window_ns_total": get(&c.growth_window_ns_total), "growth_window_ns_max": get(&c.growth_window_ns_max)},
         "writer": {"written": get(&c.written), "bytes": get(&c.bytes), "write_failed": get(&c.write_failed)},
     })
 }
