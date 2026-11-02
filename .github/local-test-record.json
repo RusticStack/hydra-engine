@@ -1,14 +1,16 @@
 {
-  "release": "12.3-hydra.5",
-  "testedCommit": "5da3ecb85bb4b44541226955b423e334bf8f842c",
-  "date": "2026-11-01",
-  "machine": "Windows 11 Pro 10.0.26300, 24 logical processors, NTFS (C:), JDK 25.0.4.1 Temurin",
-  "install": "fast_install.py install of the tested tree, stamped hydra.version=12.3-hydra.5 (local install o4-h5-release)",
+  "release": "12.3-hydra.6 (draft, non-functional lane only)",
+  "testedCommit": "30d1b21a68423645f7fff3071ec3916772d8841a",
+  "date": "2026-11-02",
+  "machine": "Windows 11 Pro 10.0.26300, i7-13700KF 24 logical processors, 47.79 GiB RAM, NTFS (C:, D:, E:), power plan Balanced, JDK 25.0.5+8 Temurin, Python 3.15.2, Rust 1.99.1; machine shared with other lanes",
+  "install": "source-built candidate (javac classes and hydra_native.dll from branch trace/l-nfr-eng on a copy of the published 12.3-hydra.5 install), release stamp dev",
   "suites": {
-    "daemon_tests.py": "255 tests via run_parallel.py --workers 16 --legacy-project --no-result-cache: 255 passed, 0 skipped, 0 failed alone, 0 failed only under load, 0 problems; queue 281 s, wall 327 s (_logs/rust-round4/release/suite2.out.log)",
-    "contract_tests.py": "7/7 passed (_logs/rust-round4/release/contract.log)",
-    "session_smoke.py": "all smoke checks passed (_logs/rust-round4/release/smoke.log)",
-    "client_compat_tests.py": "54/54 passed (_logs/rust-round4/release/cc2.log)",
-    "release gates": "golden 9.1 8616/8616, 412/412 reply identity, per-op CPU/memory, game corpus and multi-project evidence per docs/release-notes-12.3-hydra.5.md"
+    "hydra-trace tests/privacy.rs": "7/7 passed in release (commit 30d1b21a68)",
+    "daemon_tests.py (trace_*)": "11/11 passed (_logs/trace-lnfr/daemon_tests_trace.log)",
+    "scale.rs (ignored, 1M events)": "passed: ingest 18,981 events/s, query p50 0.02 ms, peak 1,229 MiB (_logs/trace-lnfr/scale.log)",
+    "multiagent_bench.py via trace_bench_rounds.py": "18 runs: 412 reply keys, digest 285b55a2f873abb9, 0 waits, trace digest 91606cf1e287 in 12 trace runs (_logs/trace-lnfr/bench/rounds2-report.md); 9 runs at 4 logical CPUs (bench/aff4-report.md)",
+    "multiproj_bench.py": "12 rotated runs: 818/818 core operations, 0 errors, 632-key digest 9071602cf75b, 0 waits, project trees byte-identical (_logs/trace-lnfr/mp-report.md)",
+    "trace_constrained.py": "disk and budget scenarios: every assertion held (_logs/trace-lnfr/constrained/constrained1.json)",
+    "not run": "contract_tests.py, client_compat_tests.py, full daemon_tests.py, session_smoke.py: not run by this lane"
   }
 }
