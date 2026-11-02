@@ -108,6 +108,23 @@ original VA and module are never rewritten. Re-symbolization writes a new **inte
 to the latest and can pin one. Interpretations record codec and schema hashes, byte-range provenance and the context
 interval they apply to. Original observations are immutable.
 
+**Interpretation reprocess (§14.5).** `trace_reprocess` decodes the bytes an event carries (a hex `bytes` field, or a stored
+artifact) under a codec table `{layout name: codec}`. Which layout is in force where comes from `contexts` (explicit `from_seq`
+to `to_seq` ranges) or from `context`, a rule over the trace's own marker events (a marker's `layout` field names the layout in
+force until the next marker, so two layouts can live in one trace). Each run is a new numbered revision; the codec and schema
+hashes, the context interval and, per decoded field, the source byte range are recorded. A corrected codec is simply the next
+revision: earlier ones stay readable, observations are never rewritten. Bytes no field covers are never dropped: they are kept as
+`_unconsumed` {`hex`, `len`, `byte_off`, `byte_len`} and counted in the revision's `stats`. An unknown layout, bad hex or an
+evicted artifact is an `_error` row. The revision is journalled in `interp.jsonl`, so `verify`, `rebuild` and recovery
+restore it under the same number and the rebuilt digest equals the original.
+
+**Session metadata, scope, retention.** The profile id and hash, scope, limitations, target, capture configuration and scenario
+are stored in `session.json` (`meta`) and returned by `trace_info`. Correlation keys are scoped: `session:<id>` by default,
+so the same value in two sessions is unlinkable; `shared:<name>` only when every session asks for the same shared scope with
+the same key. A session may be evicted (to a quota or on request): its directory is removed and a tombstone is written; an export
+bundle made from it is then reported not reproducible (`session-evicted`). `trace_info` is O(1); the store digest is computed
+(and cached per revision) only on request and excludes the symbolization interpretations.
+
 ## 11. Values and payloads (§14.6)
 
 - Scalars are stored as values with their acquisition semantics.

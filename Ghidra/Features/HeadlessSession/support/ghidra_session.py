@@ -1411,6 +1411,35 @@ class _Base:
         return self.call("trace_resymbolize", deadline, session=session, cap=cap, program=program,
                          **fields)
 
+    def trace_reprocess(self, session: str, cap: str, codecs: dict, deadline: float | None = None, **fields):
+        """Decodes the bytes of the session's events under ``codecs`` (layout name -> codec) as a new,
+        numbered interpretation revision (long lane). ``context`` (a marker rule) or ``contexts``
+        (explicit ranges) say which layout is in force where; the observations are not changed and
+        bytes a codec does not cover are kept and shown as ``_unconsumed``."""
+        return self.call("trace_reprocess", deadline, session=session, cap=cap, codecs=codecs, **fields)
+
+    def trace_relations(self, session: str, cap: str | None = None, deadline: float | None = None, **fields):
+        """``op`` ``materialize`` (needs ``cap``; long lane) stores the relations at the current
+        revision; ``status`` says whether the stored ones are current."""
+        if cap is not None:
+            fields["cap"] = cap
+        return self.call("trace_relations", deadline, session=session, **fields)
+
+    def trace_artifact(self, session: str, cap: str, scope: str, max_bytes: int, data_hex: str,
+                       deadline: float | None = None, **fields):
+        """Stores a payload artifact (private bytes, durable before any event may reference it)."""
+        return self.call("trace_artifact", deadline, session=session, cap=cap, scope=scope,
+                         max_bytes=max_bytes, data_hex=data_hex, **fields)
+
+    def trace_evict(self, deadline: float | None = None, **fields):
+        """Evicts a closed session (``session``) or the oldest closed ones until the store fits its
+        quota (``to_quota``); each leaves a tombstone."""
+        return self.call("trace_evict", deadline, **fields)
+
+    def trace_bundle(self, path: str, deadline: float | None = None, **fields):
+        """Whether an export folder can still be reproduced from the store (not evicted, intact)."""
+        return self.call("trace_bundle", deadline, path=path, **fields)
+
     def _send_request(self, cmd: str, fields: dict, abandon: bool = False) -> int:
         with self._lock:
             self._id += 1

@@ -18,7 +18,7 @@ sha2 = "0.10"
 hmac = "0.12"
 crc32fast = "1"
 memmap2 = "0.9"
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled", "hooks"] }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

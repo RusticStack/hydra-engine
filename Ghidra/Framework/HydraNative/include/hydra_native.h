@@ -131,7 +131,8 @@ void hydra_cs_free(HydraCsScan *s);
  * the bytes and parses nothing but the command name. Added in hydra_native ABI 2.
  *
  * Commands: trace_open, trace_append, trace_mark, trace_query, trace_explain, trace_diff,
- * trace_check, trace_export, trace_close, trace_list, trace_info, trace_resymbolize.
+ * trace_check, trace_export, trace_close, trace_list, trace_info, trace_resymbolize,
+ * trace_reprocess, trace_relations, trace_artifact, trace_evict, trace_bundle.
  */
 #define HYDRA_TRACE_OK            0
 #define HYDRA_TRACE_ERR_NULL     -1 /* a required pointer is NULL */
@@ -157,9 +158,14 @@ int32_t hydra_trace_request(const uint8_t *cmd, size_t cmd_len, const uint8_t *r
  * out_cap is too small. */
 int64_t hydra_trace_reply_copy(uint8_t *out, size_t out_cap);
 
-/* Cancels trace_export and trace_resymbolize running on this thread: flag points at a native
+/* Cancels any trace command (long loops, scans and SQL statements poll it) running on this thread: flag points at a native
  * int32 the caller sets non-zero; the command stops at its next check and answers code
  * "cancelled", leaving nothing behind. NULL removes the flag. It must stay valid until removed. */
 void hydra_trace_set_cancel(const int32_t *flag);
+
+/* Progress of the long trace commands (export, resymbolize, reprocess, relations, diff scans):
+ * cell points at two int64 the command writes (done, total) into, total 0 when unknown; read them
+ * from another thread. NULL removes the cell. It must stay valid until removed. */
+void hydra_trace_set_progress(int64_t *cell);
 
 #endif

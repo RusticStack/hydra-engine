@@ -51,6 +51,8 @@ final class TraceNative {
 	private final MethodHandle copy;
 	/** Null when the library predates {@code hydra_trace_set_cancel}. */
 	private final MethodHandle setCancel;
+	/** Null when the library predates {@code hydra_trace_set_progress}. */
+	private final MethodHandle setProgress;
 	private volatile String root;
 
 	private TraceNative(SymbolLookup l, String library) {
@@ -66,6 +68,13 @@ final class TraceNative {
 				ValueLayout.JAVA_LONG));
 		setCancel = l.find("hydra_trace_set_cancel").map(a -> LINKER.downcallHandle(a,
 			FunctionDescriptor.ofVoid(ValueLayout.ADDRESS))).orElse(null);
+		setProgress = l.find("hydra_trace_set_progress").map(a -> LINKER.downcallHandle(a,
+			FunctionDescriptor.ofVoid(ValueLayout.ADDRESS))).orElse(null);
+	}
+
+	/** Whether long commands report progress. */
+	boolean reportsProgress() {
+		return setProgress != null;
 	}
 
 	private static volatile TraceNative instance;
@@ -149,6 +158,11 @@ final class TraceNative {
 	 * non-zero to cancel (null: not cancellable); it must stay valid until this returns.
 	 */
 	byte[] call(String cmd, byte[] req, MemorySegment cancel) {
+		return call(cmd, req, cancel, null);
+	}
+
+	/** As above; {@code progress} is two native longs (done, total) or null. */
+	byte[] call(String cmd, byte[] req, MemorySegment cancel, MemorySegment progress) {
 		try (Arena a = Arena.ofConfined()) {
 			byte[] cb = cmd.getBytes(StandardCharsets.UTF_8);
 			MemorySegment c = a.allocate(Math.max(1, cb.length));
@@ -158,10 +172,14 @@ final class TraceNative {
 			MemorySegment out = a.allocate(FIRST_BUFFER);
 			MemorySegment len = a.allocate(ValueLayout.JAVA_LONG);
 			boolean armed = cancel != null && setCancel != null;
+			boolean reporting = progress != null && setProgress != null;
 			int rc;
 			try {
 				if (armed) {
 					setCancel.invokeExact(cancel);
+				}
+				if (reporting) {
+					setProgress.invokeExact(progress);
 				}
 				rc = (int) request.invokeExact(c, (long) cb.length, r, (long) req.length, out,
 					(long) FIRST_BUFFER, len);
@@ -169,6 +187,9 @@ final class TraceNative {
 			finally {
 				if (armed) {
 					setCancel.invokeExact(MemorySegment.NULL);
+				}
+				if (reporting) {
+					setProgress.invokeExact(MemorySegment.NULL);
 				}
 			}
 			long n = len.get(ValueLayout.JAVA_LONG, 0);

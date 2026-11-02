@@ -704,3 +704,75 @@ fn partial_results_name_their_limits() {
     assert!(rest["next"].is_null());
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// The protocol option: a shared scope is chosen when the session is created, with a key given out
+/// of band. Sessions that share it correlate; sessions that do not (the default `session:<id>`
+/// scope) cannot be linked to them, and neither the key nor the secret reaches any file or reply.
+#[test]
+fn the_shared_scope_option_correlates_only_the_sessions_that_ask_for_it() {
+    let root = scratch("shared-option");
+    let svc = Service::new(&root);
+    let key = "5a".repeat(32);
+    let ev = |n: u64| vec![event(n, "app.x", json!({"name": {"$string": SECRETS[0]}}))];
+    let corr = |id: &str| {
+        let q = call(
+            &svc,
+            "trace_query",
+            &json!({"session": id, "kinds": ["app.x"]}),
+        );
+        let payload: Value =
+            serde_json::from_str(q["rows"][0]["payload"].as_str().unwrap()).unwrap();
+        payload["name"]["corr_id"].as_str().unwrap().to_string()
+    };
+    for (id, shared) in [("a", true), ("b", true), ("c", false), ("d", false)] {
+        let mut open = json!({"session": id});
+        if shared {
+            open["shared_scope"] = json!({"name": "team-1", "key": key});
+        }
+        assert_eq!(call(&svc, "trace_open", &open)["ok"], true);
+        call(
+            &svc,
+            "trace_append",
+            &json!({"session": id, "events": ev(0)}),
+        );
+    }
+    assert_eq!(
+        corr("a"),
+        corr("b"),
+        "an explicitly shared scope correlates"
+    );
+    assert_ne!(corr("c"), corr("d"), "the default scope is per session");
+    assert_ne!(
+        corr("a"),
+        corr("c"),
+        "shared and default scopes do not link"
+    );
+    let info = call(&svc, "trace_info", &json!({"session": "a"}));
+    assert_eq!(info["scope"], "shared:team-1");
+    assert_eq!(
+        call(&svc, "trace_info", &json!({"session": "c"}))["scope"],
+        "session:c"
+    );
+    // A session that already holds events cannot be moved into a shared scope afterwards.
+    let late = call(
+        &svc,
+        "trace_open",
+        &json!({"session": "c", "shared_scope": {"name": "team-1", "key": key}}),
+    );
+    assert_eq!(
+        late["ok"], true,
+        "reopening an open writer only merges metadata"
+    );
+    assert_eq!(late["scope"], "session:c");
+    drop(svc);
+    let svc2 = Service::new(&root);
+    let late = call(
+        &svc2,
+        "trace_open",
+        &json!({"session": "c", "shared_scope": {"name": "team-1", "key": key}}),
+    );
+    assert_eq!(late["error"]["code"], "refused", "{late}");
+    // The secret text is nowhere on disk (the key lives only in the session key directory).
+    assert_tree_free_of(&root, &[SECRETS[0]], "store with shared scope");
+    let _ = std::fs::remove_dir_all(root);
+}
