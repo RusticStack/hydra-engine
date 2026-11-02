@@ -569,6 +569,7 @@ impl Service {
 
     fn query(&self, r: QueryReq) -> Reply {
         let store = self.reader(&r.session)?;
+        let _snapshot = store.read_snapshot()?;
         if let Some(what) = &r.lifetimes {
             let Some(rows) = query::lifetimes(&store, what)? else {
                 return Err(fail("refused", format!("no lifetime table {what}")));
