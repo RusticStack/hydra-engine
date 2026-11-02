@@ -83,13 +83,40 @@ record ForkIntent(String id, long pid, long procStartMs, String rk, String name,
 		Path tmp = staging.resolve(FILE + ".tmp");
 		Files.writeString(tmp, new GsonBuilder().disableHtmlEscaping().create().toJson(o),
 			StandardCharsets.UTF_8);
-		try {
-			Files.move(tmp, staging.resolve(FILE), StandardCopyOption.REPLACE_EXISTING,
-				StandardCopyOption.ATOMIC_MOVE);
+		// A handle holder (an indexer or antivirus scanner that opens the file just written, or the
+		// folder just made) makes the rename fail for a moment with AccessDenied or a sharing
+		// violation, more often on a loaded machine; the other renames of the fork retry for that
+		// too (e2a_kill_fork saw this one fail a retry after a kill, under load).
+		FileSystemException last = null;
+		for (int i = 0; i < ProjectFork.RETRIES; i++) {
+			try {
+				try {
+					Files.move(tmp, staging.resolve(FILE), StandardCopyOption.REPLACE_EXISTING,
+						StandardCopyOption.ATOMIC_MOVE);
+				}
+				catch (AtomicMoveNotSupportedException e) {
+					Files.move(tmp, staging.resolve(FILE), StandardCopyOption.REPLACE_EXISTING);
+				}
+				return;
+			}
+			catch (NoSuchFileException e) {
+				throw e;
+			}
+			catch (FileSystemException e) {
+				last = e;
+				if (i == ProjectFork.RETRIES - 1) {
+					break; // no pause after the last attempt
+				}
+				try {
+					Thread.sleep(25L << i);
+				}
+				catch (InterruptedException ie) {
+					Thread.currentThread().interrupt();
+					throw e;
+				}
+			}
 		}
-		catch (AtomicMoveNotSupportedException e) {
-			Files.move(tmp, staging.resolve(FILE), StandardCopyOption.REPLACE_EXISTING);
-		}
+		throw last;
 	}
 
 	/** The intent in {@code staging}, or empty when there is none or it cannot be read. */

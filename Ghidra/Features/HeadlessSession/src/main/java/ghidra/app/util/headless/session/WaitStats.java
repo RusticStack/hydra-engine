@@ -60,8 +60,41 @@ final class WaitStats {
 		// static helpers
 	}
 
+	/** The last few foreign waits, newest last: who waited from where, and who held (guarded by itself). */
+	private static final ArrayDeque<String> LAST = new ArrayDeque<>();
+	/** What the holder callback saw for the wait this thread is about to count (D49 evidence). */
+	private static final ThreadLocal<String> DETAIL = new ThreadLocal<>();
+
+	/** Called by an attribution callback: the holders it saw, kept with the wait it leads to. */
+	static void detail(String what) {
+		DETAIL.set(what);
+	}
+
 	/** A wait that starts while another client's request holds the lock. */
 	static void foreign(boolean shared) {
+		String d = DETAIL.get();
+		DETAIL.remove();
+		StringBuilder sb = new StringBuilder(shared ? "shared wait" : "exclusive wait");
+		sb.append(" by ").append(Thread.currentThread().getName()).append(" via");
+		int n = 0;
+		for (StackTraceElement f : new Throwable().getStackTrace()) {
+			String c = f.getClassName();
+			if (c.startsWith("ghidra.app.util.headless.session.") && !c.endsWith("Waits") &&
+				!c.endsWith("WaitStats")) {
+				sb.append(' ').append(c.substring(c.lastIndexOf('.') + 1)).append('.')
+						.append(f.getMethodName());
+				if (++n == 4) {
+					break;
+				}
+			}
+		}
+		sb.append("; ").append(d == null ? "holders unknown" : d);
+		synchronized (LAST) {
+			LAST.addLast(sb.toString());
+			while (LAST.size() > 8) {
+				LAST.pollFirst();
+			}
+		}
 		FOREIGN.incrementAndGet();
 		if (shared) {
 			FOREIGN_SHARED.incrementAndGet();
@@ -105,6 +138,9 @@ final class WaitStats {
 		synchronized (RECENT) {
 			RECENT.clear();
 		}
+		synchronized (LAST) {
+			LAST.clear();
+		}
 		synchronized (RING) {
 			ringFill = 0;
 			ringNext = 0;
@@ -132,6 +168,13 @@ final class WaitStats {
 		JsonObject o = Json.of("foreignBlocked", fb, "singleFlightOpen", SINGLE_FLIGHT.get(),
 			"contended", WAITS.get());
 		Json.put(o, "lockWaitP99Ms", p99);
+		synchronized (LAST) {
+			if (!LAST.isEmpty()) {
+				com.google.gson.JsonArray a = new com.google.gson.JsonArray();
+				LAST.forEach(a::add);
+				o.add("foreignRecent", a);
+			}
+		}
 		return o;
 	}
 }

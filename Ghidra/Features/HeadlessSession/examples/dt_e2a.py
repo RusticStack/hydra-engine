@@ -294,7 +294,8 @@ def _retry_on(c, src, s, pdir, name, before, rep):
         rep["retry"] = "ok"
     except Exception as e:  # noqa: BLE001
         rep["retry"] = getattr(e, "code", type(e).__name__)
-        rep["retry_error"] = str(e)[:200]
+        rep["retry_error"] = str(e)
+        rep["retry_details"] = getattr(e, "details", None)
     after = classify(pdir, name)
     rep["after"], rep["after_staging"], rep["after_state"] = after
     rep["leftovers_after"] = leftovers(pdir)
@@ -364,8 +365,9 @@ def t_e2a_kill_fork(c):
         problems.append(f"{unrecognised_rep} .rep without .gpr that no intent names")
     if blocked:
         problems.append(f"{blocked} retries blocked: " + "; ".join(
-            f"{r['before']}/{r['retry']}: {r.get('retry_error', '')}"[:120]
-            for r in rows if r["before"] != "complete" and r["retry"] != "ok")[:400])
+            f"w{r['worker']}-{r['iter']} {r['before']}/{r['retry']}: {r.get('retry_error', '')} "
+            f"details={json.dumps(r.get('retry_details'), default=str)} before_staging={r['before_staging']}"
+            for r in rows if r["before"] != "complete" and r["retry"] != "ok")[:6000])
     if staging_after or left_after:
         problems.append(f"{staging_after} staging folders and {left_after} leftovers after the "
                         f"next fork: " + "; ".join(str(r["leftovers_after"]) for r in rows
