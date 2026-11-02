@@ -22,12 +22,11 @@ import com.google.gson.*;
 import com.google.gson.internal.LazilyParsedNumber;
 
 /**
- * The raw request path of the trace reads ({@code trace_query}, {@code trace_explain},
- * {@code trace_diff}, {@code trace_check} with {@code persist:false}): the request line is scanned
- * once, on its bytes, for the few top-level scalar fields the daemon's own stages read (id, cmd,
- * the caller labels, the session ids, the lane and wait fields), and the line itself is what the
- * engine receives. No Gson tree is built for the engine's own fields (the filter, the assertions,
- * the list of kinds), and nothing is copied back out of one.
+ * The raw request path of the trace commands: the request line is scanned once, on its bytes, for
+ * the few top-level scalar fields the daemon's own stages read (id, cmd, the caller labels, the
+ * session ids, the lane and wait fields), and the line itself is what the router receives
+ * ({@code hydra_trace_route}). No Gson tree is built for the engine's own fields (the filter, the
+ * assertions, the events, the list of kinds), and nothing is copied back out of one.
  * <p>
  * The scan is conservative: any request it does not recognise with certainty (a field only Java
  * handles, a non-string session id, a duplicate key, text that is not strict JSON at the top level)
@@ -39,18 +38,16 @@ final class TraceFast {
 	record Scanned(JsonObject req, JsonElement id, String cmd) {
 	}
 
-	private static final Set<String> RAW_COMMANDS =
-		Set.of("trace_query", "trace_explain", "trace_diff", "trace_check", "trace_append");
 	/**
-	 * Fields Java consumes before or instead of the engine: their presence ends the fast path.
-	 * ({@code cap} is the writer's own capability: {@code trace_append} carries it, nothing else here.)
+	 * Fields only Java can act on: a program (or project, or module list) to symbolize ends the
+	 * fast path. Every other field of a trace request is the router's ({@code hydra_trace_route}).
 	 */
-	private static final Set<String> JAVA_FIELDS = Set.of("create", "mode", "takeover",
-		"program", "project", "modules", "background", "name");
+	private static final Set<String> JAVA_FIELDS = Set.of("program", "project", "modules");
 	/** Fields the daemon's generic stages read: they must be scalars. */
 	private static final Set<String> SCALAR_ONLY = Set.of("id", "cmd", "client", "harness",
 		"parallel", "ordered", "artifact", "overlay", "wait", "waitMs", "timeout", "lane", "token",
-		"session", "a", "b", "persist", "deadline", "deadlineMs", "op", "cap");
+		"session", "a", "b", "persist", "deadline", "deadlineMs", "op", "cap", "create", "mode",
+		"takeover", "background", "name", "label");
 
 	private TraceFast() {
 	}
@@ -160,29 +157,18 @@ final class TraceFast {
 				return null;
 			}
 			String cmd = cmdEl.getAsString();
-			if (!RAW_COMMANDS.contains(cmd)) {
+			if (!TraceCommands.isTrace(cmd)) {
 				return null;
 			}
 			JsonElement id = req.get("id");
 			if (id != null && !id.isJsonPrimitive()) {
 				return null;
 			}
-			if (req.has("cap") && !cmd.equals("trace_append")) {
-				return null; // a capability on a read: the ordinary path decides
-			}
 			if (cmd.equals("trace_append")) {
 				if (!eventsArray || req.has("events")) {
 					return null; // events must be an array: the ordinary path says so otherwise
 				}
 				req.add("events", new JsonArray()); // stands for the array, which the engine reads
-			}
-			if (cmd.equals("trace_check")) {
-				// the ordinary path tells the engine persist:false; here the client must say so
-				JsonElement p = req.get("persist");
-				if (p == null || !p.isJsonPrimitive() || !p.getAsJsonPrimitive().isBoolean() ||
-					p.getAsBoolean()) {
-					return null;
-				}
 			}
 			return new Scanned(req, id, cmd);
 		}

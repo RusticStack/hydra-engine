@@ -177,7 +177,7 @@ final class Session {
 	 */
 	void disconnect(Client c) {
 		c.running.values().forEach(RequestMonitor::cancel);
-		TraceLeases.clientGone(c); // its writer leases are orphaned; readers hold nothing
+		TraceNative.clientGone(c); // its writer leases are orphaned; readers hold nothing
 		List<String> joined;
 		synchronized (c.projects) {
 			joined = new ArrayList<>(c.projects);

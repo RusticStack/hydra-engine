@@ -1011,8 +1011,8 @@ Where each part runs (placement):
 
 | Part | Where | Lane |
 |---|---|---|
-| Parse, validate, lease check | the request thread (`TraceCommands`, `TraceLeases`) | quick |
-| Append, index, query, explain, check, info | Rust (`hydra_trace_request`); the reply bytes are sent unchanged | quick |
+| Validate, lane, lease check, request shaping, reply wrapping | Rust (`hydra_trace_route`, `hydra-trace`'s `route` module); Java scans the line for the fields its own stages read (`TraceFast`) | quick |
+| Append, index, query, explain, check, info | Rust (the same call); the reply bytes are sent unchanged | quick |
 | Export, resymbolize, large diff | Rust, with a native cancel flag the request's monitor sets | long |
 | Function table of a program | Java walks the program once under its shared lock (`TraceSymbols`) and sends it to Rust as data | request thread |
 

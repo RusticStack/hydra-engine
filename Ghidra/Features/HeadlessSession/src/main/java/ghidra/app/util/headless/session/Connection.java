@@ -179,6 +179,7 @@ final class Connection {
 			// the release below is still being handed to its own thread.
 			open = false;
 			client.leaving = true;
+			TraceNative.clientLeaving(client); // a writer lease it holds counts as orphaned now
 			if (Thread.currentThread().isVirtual()) {
 				// the release closes programs and projects (Ghidra DB, lock files) and waits up to
 				// cleanupGraceS + abandonWaitS: it runs on a platform thread, so the virtual
@@ -210,6 +211,7 @@ final class Connection {
 	private void release() {
 		open = false;
 		client.leaving = true;
+		TraceNative.clientLeaving(client);
 		// cancel first: the worker must not finish a long request for a client that is gone;
 		// a request parked in a lock wait is interrupted by its cancel (Waits, 3.5)
 		client.running.values().forEach(RequestMonitor::cancel);
