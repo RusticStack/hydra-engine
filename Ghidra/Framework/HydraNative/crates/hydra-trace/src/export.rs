@@ -242,7 +242,10 @@ pub fn export(
     // The identity of the bundle is what it says, not when or by whom it was written.
     let bundle_id = format!(
         "tb_{}",
-        hex(&Sha256::digest(canon::to_vec(&Value::Object(table.clone())).map_err(|e| Error::Refused(e.to_string()))?))
+        hex(&Sha256::digest(
+            canon::to_vec(&Value::Object(table.clone()))
+                .map_err(|e| Error::Refused(e.to_string()))?
+        ))
     );
     let manifest = json!({
         "format": FORMAT,
@@ -306,7 +309,9 @@ pub fn verify(folder: &Path) -> Result<()> {
         if hex(&Sha256::digest(&data)) != want
             || entry.get("bytes").and_then(Value::as_u64) != Some(data.len() as u64)
         {
-            return Err(Error::Refused(format!("{name} does not match the manifest")));
+            return Err(Error::Refused(format!(
+                "{name} does not match the manifest"
+            )));
         }
     }
     let mut present = Vec::new();
@@ -324,7 +329,9 @@ pub fn verify(folder: &Path) -> Result<()> {
     walk(folder, folder, &mut present)?;
     for name in present {
         if name != "manifest.json" && !listed.contains_key(&name) {
-            return Err(Error::Refused(format!("{name} is not listed in the manifest")));
+            return Err(Error::Refused(format!(
+                "{name} is not listed in the manifest"
+            )));
         }
     }
     Ok(())
@@ -384,7 +391,16 @@ mod tests {
         std::fs::write(out.join("traces/pins.json"), b"{}").unwrap();
         assert!(verify(&out).is_err());
         // an unlisted file is refused too
-        let report2 = export(&store, Some(&arts), &out, &ExportOptions { overwrite: true, ..opts() }).unwrap();
+        let report2 = export(
+            &store,
+            Some(&arts),
+            &out,
+            &ExportOptions {
+                overwrite: true,
+                ..opts()
+            },
+        )
+        .unwrap();
         assert_eq!(report.bundle_id, report2.bundle_id);
         std::fs::write(out.join("extra.txt"), b"x").unwrap();
         assert!(verify(&out).is_err());
@@ -399,12 +415,19 @@ mod tests {
             &store,
             Some(&arts),
             &d.join("b"),
-            &ExportOptions { exported_at: "later".into(), ..opts() },
+            &ExportOptions {
+                exported_at: "later".into(),
+                ..opts()
+            },
         )
         .unwrap();
         assert_eq!(a.bundle_id, b.bundle_id);
         for f in a.files.iter().filter(|f| *f != "manifest.json") {
-            assert_eq!(std::fs::read(d.join("a").join(f)).unwrap(), std::fs::read(d.join("b").join(f)).unwrap(), "{f}");
+            assert_eq!(
+                std::fs::read(d.join("a").join(f)).unwrap(),
+                std::fs::read(d.join("b").join(f)).unwrap(),
+                "{f}"
+            );
         }
         let _ = std::fs::remove_dir_all(d);
     }
@@ -412,29 +435,47 @@ mod tests {
     #[test]
     fn artifacts_are_omitted_unless_authorized_and_the_omission_is_listed() {
         let (d, mut store, arts) = setup("d");
-        let spec = ArtifactSpec { scope: "packet".into(), max_bytes: 64, retention_secs: None, redact: vec![] };
+        let spec = ArtifactSpec {
+            scope: "packet".into(),
+            max_bytes: 64,
+            retention_secs: None,
+            redact: vec![],
+        };
         let kept = arts.put(&mut store, b"authorized bytes", &spec, 0).unwrap();
         let held = arts.put(&mut store, b"private bytes", &spec, 0).unwrap();
         let gone = arts.put(&mut store, b"gone", &spec, 0).unwrap();
-        arts.tombstone(&mut store, &gone, "retention-expired").unwrap();
+        arts.tombstone(&mut store, &gone, "retention-expired")
+            .unwrap();
         let out = d.join("out");
         let r = export(
             &store,
             Some(&arts),
             &out,
-            &ExportOptions { authorized_artifacts: vec![kept.clone(), gone.clone()], ..opts() },
+            &ExportOptions {
+                authorized_artifacts: vec![kept.clone(), gone.clone()],
+                ..opts()
+            },
         )
         .unwrap();
         assert_eq!(r.artifacts_included, vec![kept.clone()]);
         assert!(out.join(format!("traces/artifacts/{kept}.bin")).is_file());
         assert!(!out.join(format!("traces/artifacts/{held}.bin")).exists());
-        assert!(r.not_reproducible.contains(&json!({"artifact": held, "limitation": "payload-not-authorized"})));
-        assert!(r.not_reproducible.contains(&json!({"artifact": gone, "limitation": "artifact-evicted"})));
+        assert!(
+            r.not_reproducible
+                .contains(&json!({"artifact": held, "limitation": "payload-not-authorized"}))
+        );
+        assert!(
+            r.not_reproducible
+                .contains(&json!({"artifact": gone, "limitation": "artifact-evicted"}))
+        );
         // a payload never leaks into any other member
         for f in &r.files {
             let bytes = std::fs::read(out.join(f)).unwrap();
             if !f.starts_with("traces/artifacts/") {
-                assert!(!String::from_utf8_lossy(&bytes).contains("private bytes"), "{f}");
+                assert!(
+                    !String::from_utf8_lossy(&bytes).contains("private bytes"),
+                    "{f}"
+                );
             }
         }
         let _ = std::fs::remove_dir_all(d);
@@ -446,7 +487,18 @@ mod tests {
         let out = d.join("precious");
         std::fs::create_dir_all(&out).unwrap();
         std::fs::write(out.join("keep.txt"), b"keep").unwrap();
-        assert!(export(&store, Some(&arts), &out, &ExportOptions { overwrite: true, ..opts() }).is_err());
+        assert!(
+            export(
+                &store,
+                Some(&arts),
+                &out,
+                &ExportOptions {
+                    overwrite: true,
+                    ..opts()
+                }
+            )
+            .is_err()
+        );
         assert!(export(&store, Some(&arts), &out, &opts()).is_err());
         assert!(out.join("keep.txt").is_file());
         let _ = std::fs::remove_dir_all(d);

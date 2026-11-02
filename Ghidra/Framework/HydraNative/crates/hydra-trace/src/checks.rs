@@ -158,7 +158,10 @@ pub(crate) fn eval(store: &Store, assertion: &Assertion, result: &mut CheckResul
             // (frame, state key) -> has a write been seen in this frame
             let mut written: HashMap<(i64, i64, String), bool> = HashMap::new();
             let mut judged: HashMap<(i64, i64, String), ()> = HashMap::new();
-            for row in load(store, &["core.marker", "core.state.write", "core.state.read"])? {
+            for row in load(
+                store,
+                &["core.marker", "core.state.write", "core.state.read"],
+            )? {
                 if row.kind == "core.marker" {
                     if let Some(f) = row.payload.get("frame").and_then(Value::as_i64) {
                         frame.insert(row.pgen, f);
@@ -290,11 +293,9 @@ pub(crate) fn eval(store: &Store, assertion: &Assertion, result: &mut CheckResul
 fn corr_of(store: &Store, seq: i64) -> Option<String> {
     store
         .conn()
-        .query_row(
-            "SELECT corr FROM events WHERE seq=?1",
-            params![seq],
-            |r| r.get(0),
-        )
+        .query_row("SELECT corr FROM events WHERE seq=?1", params![seq], |r| {
+            r.get(0)
+        })
         .ok()
         .flatten()
 }
@@ -307,7 +308,11 @@ pub fn run(store: &mut Store, assertion: &Assertion) -> Result<CheckResult> {
     let tx = store.conn_mut().transaction()?;
     tx.execute(
         "INSERT OR REPLACE INTO assertions(name,rev,spec) VALUES(?1,?2,?3)",
-        params![name, rev.parse::<i64>().unwrap_or(1), serde_json::to_string(assertion)?],
+        params![
+            name,
+            rev.parse::<i64>().unwrap_or(1),
+            serde_json::to_string(assertion)?
+        ],
     )?;
     tx.execute(
         "INSERT INTO check_results(assertion,revision,verdict,checked,counterexamples,coverage,reason) VALUES(?1,?2,?3,?4,?5,?6,?7)",
@@ -355,7 +360,10 @@ mod tests {
             ev("app.use", 1, 1, json!({"corr": "a"}), |_| {}),
             ev("app.close", 2, 1, json!({"corr": "a"}), |_| {}),
         ]);
-        assert_eq!(verdict(&good, order(&["app.open", "app.use", "app.close"])).verdict, Verdict::Pass);
+        assert_eq!(
+            verdict(&good, order(&["app.open", "app.use", "app.close"])).verdict,
+            Verdict::Pass
+        );
         let bad = load_events(vec![
             ev("app.use", 0, 1, json!({"corr": "a"}), |_| {}),
             ev("app.open", 1, 1, json!({"corr": "a"}), |_| {}),
@@ -364,7 +372,10 @@ mod tests {
         assert_eq!(r.verdict, Verdict::Fail);
         assert_eq!(r.counterexamples, vec!["ev_c_2"]);
         let none = load_events(vec![ev("app.x", 0, 1, json!({}), |_| {})]);
-        assert_eq!(verdict(&none, order(&["app.open", "app.use"])).verdict, Verdict::Unknown);
+        assert_eq!(
+            verdict(&none, order(&["app.open", "app.use"])).verdict,
+            Verdict::Unknown
+        );
     }
 
     #[test]
@@ -376,25 +387,52 @@ mod tests {
         ]);
         let req = verdict(
             &store,
-            Assertion::RequiredTransition { name: "r".into(), rev: 1, from: "app.lock".into(), to: "app.unlock".into(), key_field: "corr".into() },
+            Assertion::RequiredTransition {
+                name: "r".into(),
+                rev: 1,
+                from: "app.lock".into(),
+                to: "app.unlock".into(),
+                key_field: "corr".into(),
+            },
         );
-        assert_eq!((req.verdict, req.checked, req.counterexamples), (Verdict::Fail, 2, vec!["ev_c_3".to_string()]));
+        assert_eq!(
+            (req.verdict, req.checked, req.counterexamples),
+            (Verdict::Fail, 2, vec!["ev_c_3".to_string()])
+        );
         let forb = verdict(
             &store,
-            Assertion::ForbiddenTransition { name: "f".into(), rev: 1, from: "app.lock".into(), to: "app.unlock".into(), key_field: "corr".into() },
+            Assertion::ForbiddenTransition {
+                name: "f".into(),
+                rev: 1,
+                from: "app.lock".into(),
+                to: "app.unlock".into(),
+                key_field: "corr".into(),
+            },
         );
         assert_eq!(forb.verdict, Verdict::Fail);
         assert_eq!(forb.counterexamples, vec!["ev_c_2"]);
         let ok = verdict(
             &store,
-            Assertion::ForbiddenTransition { name: "f".into(), rev: 1, from: "app.unlock".into(), to: "app.lock".into(), key_field: "corr".into() },
+            Assertion::ForbiddenTransition {
+                name: "f".into(),
+                rev: 1,
+                from: "app.unlock".into(),
+                to: "app.lock".into(),
+                key_field: "corr".into(),
+            },
         );
         assert_eq!(ok.verdict, Verdict::Pass);
     }
 
     #[test]
     fn only_on_role() {
-        let a = |kind: &str| Assertion::OnlyOnRole { name: "role".into(), rev: 1, kind: kind.into(), role: "server".into(), role_field: "role".into() };
+        let a = |kind: &str| Assertion::OnlyOnRole {
+            name: "role".into(),
+            rev: 1,
+            kind: kind.into(),
+            role: "server".into(),
+            role_field: "role".into(),
+        };
         let store = load_events(vec![
             ev("app.spawn", 0, 1, json!({"role": "server"}), |_| {}),
             ev("app.spawn", 1, 1, json!({"role": "client"}), |_| {}),
@@ -412,17 +450,39 @@ mod tests {
     }
 
     fn w(seq: u64, key: &str) -> crate::model::Event {
-        ev("core.state.write", seq, 1, json!({"object": 1, "key": key}), |_| {})
+        ev(
+            "core.state.write",
+            seq,
+            1,
+            json!({"object": 1, "key": key}),
+            |_| {},
+        )
     }
 
     fn r(seq: u64, key: &str) -> crate::model::Event {
-        ev("core.state.read", seq, 1, json!({"object": 1, "key": key}), |_| {})
+        ev(
+            "core.state.read",
+            seq,
+            1,
+            json!({"object": 1, "key": key}),
+            |_| {},
+        )
     }
 
     #[test]
     fn write_precedes_read_in_frame() {
-        let a = Assertion::WritePrecedesReadInFrame { name: "wr".into(), rev: 1 };
-        let good = load_events(vec![frame(0, 1), w(1, "a"), r(2, "a"), frame(3, 2), w(4, "a"), r(5, "a")]);
+        let a = Assertion::WritePrecedesReadInFrame {
+            name: "wr".into(),
+            rev: 1,
+        };
+        let good = load_events(vec![
+            frame(0, 1),
+            w(1, "a"),
+            r(2, "a"),
+            frame(3, 2),
+            w(4, "a"),
+            r(5, "a"),
+        ]);
         let v = verdict(&good, a.clone());
         assert_eq!((v.verdict, v.checked), (Verdict::Pass, 2));
         let bad = load_events(vec![frame(0, 1), w(1, "a"), frame(2, 2), r(3, "a")]);
@@ -433,24 +493,53 @@ mod tests {
 
     #[test]
     fn at_most_once_per_frame_and_no_frame_without() {
-        let once = Assertion::AtMostOncePerFrame { name: "once".into(), rev: 1, kind: "app.draw".into() };
+        let once = Assertion::AtMostOncePerFrame {
+            name: "once".into(),
+            rev: 1,
+            kind: "app.draw".into(),
+        };
         let draw = |seq| ev("app.draw", seq, 1, json!({}), |_| {});
-        let store = load_events(vec![frame(0, 1), draw(1), frame(2, 2), draw(3), draw(4), frame(5, 3)]);
+        let store = load_events(vec![
+            frame(0, 1),
+            draw(1),
+            frame(2, 2),
+            draw(3),
+            draw(4),
+            frame(5, 3),
+        ]);
         let v = verdict(&store, once);
-        assert_eq!((v.verdict, v.counterexamples), (Verdict::Fail, vec!["ev_c_5".to_string()]));
-        let need = Assertion::NoFrameWithout { name: "e".into(), rev: 1, required: "app.draw".into() };
+        assert_eq!(
+            (v.verdict, v.counterexamples),
+            (Verdict::Fail, vec!["ev_c_5".to_string()])
+        );
+        let need = Assertion::NoFrameWithout {
+            name: "e".into(),
+            rev: 1,
+            required: "app.draw".into(),
+        };
         let v = verdict(&store, need);
         assert_eq!(v.verdict, Verdict::Fail);
         assert_eq!(v.checked, 3);
         assert_eq!(v.counterexamples, vec!["ev_c_6"]);
         let full = load_events(vec![frame(0, 1), draw(1), frame(2, 2), draw(3)]);
-        let need = Assertion::NoFrameWithout { name: "e".into(), rev: 1, required: "app.draw".into() };
+        let need = Assertion::NoFrameWithout {
+            name: "e".into(),
+            rev: 1,
+            required: "app.draw".into(),
+        };
         assert_eq!(verdict(&full, need).verdict, Verdict::Pass);
     }
 
     #[test]
     fn round_trip() {
-        let rt = Assertion::RoundTrip { name: "rt".into(), rev: 1, write_kind: "app.save".into(), read_kind: "app.load".into(), key_field: "slot".into(), value_field: "value".into() };
+        let rt = Assertion::RoundTrip {
+            name: "rt".into(),
+            rev: 1,
+            write_kind: "app.save".into(),
+            read_kind: "app.load".into(),
+            key_field: "slot".into(),
+            value_field: "value".into(),
+        };
         let store = load_events(vec![
             ev("app.save", 0, 1, json!({"slot": 1, "value": 10}), |_| {}),
             ev("app.save", 1, 1, json!({"slot": 2, "value": 20}), |_| {}),
@@ -458,7 +547,10 @@ mod tests {
             ev("app.load", 3, 1, json!({"slot": 2, "value": 0}), |_| {}),
         ]);
         let v = verdict(&store, rt);
-        assert_eq!((v.verdict, v.checked, v.counterexamples), (Verdict::Fail, 2, vec!["ev_c_4".to_string()]));
+        assert_eq!(
+            (v.verdict, v.checked, v.counterexamples),
+            (Verdict::Fail, 2, vec!["ev_c_4".to_string()])
+        );
     }
 
     #[test]
@@ -466,9 +558,22 @@ mod tests {
         let store = load_events(vec![
             frame(0, 1),
             ev("app.draw", 1, 1, json!({}), |_| {}),
-            ev("core.capture.gap", 2, 1, json!({"reason": "ring-overflow", "dropped": 4, "out_of_band": true}), |_| {}),
+            ev(
+                "core.capture.gap",
+                2,
+                1,
+                json!({"reason": "ring-overflow", "dropped": 4, "out_of_band": true}),
+                |_| {},
+            ),
         ]);
-        let v = verdict(&store, Assertion::NoFrameWithout { name: "e".into(), rev: 1, required: "app.draw".into() });
+        let v = verdict(
+            &store,
+            Assertion::NoFrameWithout {
+                name: "e".into(),
+                rev: 1,
+                required: "app.draw".into(),
+            },
+        );
         assert_eq!(v.verdict, Verdict::Unknown);
     }
 
@@ -484,9 +589,21 @@ mod tests {
         .unwrap();
         let r = run(&mut store, &spec).unwrap();
         assert_eq!(r.verdict, Verdict::Pass);
-        let n: i64 = store.conn().query_row("SELECT COUNT(*) FROM check_results WHERE verdict='pass'", [], |r| r.get(0)).unwrap();
+        let n: i64 = store
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM check_results WHERE verdict='pass'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(n, 1);
-        let spec_back: String = store.conn().query_row("SELECT spec FROM assertions WHERE name='rt'", [], |r| r.get(0)).unwrap();
+        let spec_back: String = store
+            .conn()
+            .query_row("SELECT spec FROM assertions WHERE name='rt'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert!(spec_back.contains("round_trip"));
     }
 }

@@ -202,9 +202,8 @@ pub fn resymbolize(
         params![rev, parent, symbol_revision],
     )?;
     {
-        let mut read = tx.prepare(
-            "SELECT seq,process_gen,va,callstack FROM events ORDER BY seq",
-        )?;
+        let mut read =
+            tx.prepare("SELECT seq,process_gen,va,callstack FROM events ORDER BY seq")?;
         let mut write = tx.prepare_cached(
             "INSERT INTO event_symbols(interp,seq,function,reason) VALUES(?1,?2,?3,?4)",
         )?;

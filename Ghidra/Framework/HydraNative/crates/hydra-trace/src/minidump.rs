@@ -124,8 +124,12 @@ pub fn parse(data: &[u8]) -> Result<Dump, DumpError> {
     for i in 0..n_streams {
         let at = dir + i * 12;
         let ty = rd.u32(at).ok_or(DumpError::Truncated("stream directory"))?;
-        let size = rd.u32(at + 4).ok_or(DumpError::Truncated("stream directory"))? as usize;
-        let rva = rd.u32(at + 8).ok_or(DumpError::Truncated("stream directory"))? as usize;
+        let size = rd
+            .u32(at + 4)
+            .ok_or(DumpError::Truncated("stream directory"))? as usize;
+        let rva = rd
+            .u32(at + 8)
+            .ok_or(DumpError::Truncated("stream directory"))? as usize;
         streams.entry(ty).or_insert((rva, size));
     }
     let architecture = streams
@@ -229,7 +233,13 @@ fn in_module(modules: &[DumpModule], addr: u64) -> bool {
 
 /// Frames of one thread: the instruction pointer, then stack values that fall in a module, from
 /// the stack pointer upward.
-fn scan_stack(stack: &[u8], base: u64, rsp: u64, rip: Option<u64>, modules: &[DumpModule]) -> Vec<u64> {
+fn scan_stack(
+    stack: &[u8],
+    base: u64,
+    rsp: u64,
+    rip: Option<u64>,
+    modules: &[DumpModule],
+) -> Vec<u64> {
     let mut frames = Vec::new();
     if let Some(rip) = rip.filter(|r| in_module(modules, *r)) {
         frames.push(rip);
@@ -377,7 +387,11 @@ pub fn resolve(dump: &Dump, symbolizer: &dyn Symbolizer, addr: u64) -> Option<St
 }
 
 /// Report the patterns of spec 15.9.
-pub fn patterns(dump: &Dump, symbolizer: Option<&dyn Symbolizer>, cfg: &PatternConfig) -> Vec<Pattern> {
+pub fn patterns(
+    dump: &Dump,
+    symbolizer: Option<&dyn Symbolizer>,
+    cfg: &PatternConfig,
+) -> Vec<Pattern> {
     let mut out = Vec::new();
     let names = |th: &DumpThread| -> Vec<(u64, Option<String>)> {
         th.frames
@@ -392,12 +406,19 @@ pub fn patterns(dump: &Dump, symbolizer: Option<&dyn Symbolizer>, cfg: &PatternC
     };
 
     // all threads suspended by thread T
-    let running: Vec<&DumpThread> = dump.threads.iter().filter(|t| t.suspend_count == 0).collect();
+    let running: Vec<&DumpThread> = dump
+        .threads
+        .iter()
+        .filter(|t| t.suspend_count == 0)
+        .collect();
     if dump.threads.len() >= 2 && running.len() == 1 {
         let t = running[0];
         let suspend_frames: Vec<u64> = names(t)
             .into_iter()
-            .filter(|(_, n)| n.as_ref().is_some_and(|n| cfg.suspend_functions.contains(n)))
+            .filter(|(_, n)| {
+                n.as_ref()
+                    .is_some_and(|n| cfg.suspend_functions.contains(n))
+            })
             .map(|(a, _)| a)
             .collect();
         let mut limitations = Vec::new();
@@ -448,7 +469,10 @@ pub fn patterns(dump: &Dump, symbolizer: Option<&dyn Symbolizer>, cfg: &PatternC
     for th in &dump.threads {
         let hits: Vec<u64> = names(th)
             .into_iter()
-            .filter(|(_, n)| n.as_ref().is_some_and(|n| cfg.fault_handler_functions.contains(n)))
+            .filter(|(_, n)| {
+                n.as_ref()
+                    .is_some_and(|n| cfg.fault_handler_functions.contains(n))
+            })
             .map(|(a, _)| a)
             .collect();
         if !hits.is_empty() {
@@ -474,8 +498,10 @@ pub fn last_event_before(store: &crate::store::Store, dump: &Dump) -> crate::sto
          ORDER BY t_wall_ns DESC, seq DESC LIMIT 1",
         rusqlite::params![t],
         |r| {
-            Ok(json!({"event_id": r.get::<_, String>(0)?, "kind": r.get::<_, String>(1)?,
-                      "process_gen": r.get::<_, Option<i64>>(2)?}))
+            Ok(
+                json!({"event_id": r.get::<_, String>(0)?, "kind": r.get::<_, String>(1)?,
+                      "process_gen": r.get::<_, Option<i64>>(2)?}),
+            )
         },
     );
     Ok(match hit {
@@ -510,7 +536,8 @@ pub(crate) mod fixtures {
             let mut streams: Vec<(u32, Vec<u8>)> = Vec::new();
             // Data placed after the directory; patch RVAs once the layout is known.
             let mut data: Vec<u8> = Vec::new();
-            let n_streams = 3 + usize::from(self.pid.is_some()) + usize::from(self.exception.is_some());
+            let n_streams =
+                3 + usize::from(self.pid.is_some()) + usize::from(self.exception.is_some());
             let base = 32 + n_streams * 12;
             let place = |data: &mut Vec<u8>, bytes: &[u8]| -> u32 {
                 let at = base + data.len();
@@ -558,7 +585,8 @@ pub(crate) mod fixtures {
                 let mut ctx = vec![0u8; 0x4d0];
                 let rsp = sbase + rsp_off;
                 ctx[0x98..0xa0].copy_from_slice(&rsp.to_le_bytes());
-                ctx[0xf8..0x100].copy_from_slice(&words.first().copied().unwrap_or(0).to_le_bytes());
+                ctx[0xf8..0x100]
+                    .copy_from_slice(&words.first().copied().unwrap_or(0).to_le_bytes());
                 // rip is overwritten below by the first module address when requested
                 let ctx_rva = place(&mut data, &ctx);
                 let mut t = Vec::new();
@@ -633,10 +661,30 @@ mod tests {
             ModuleTable {
                 code: vec![],
                 functions: vec![
-                    FunctionRange { start: 0x1000, end: 0x1100, name: "WaitForSingleObject".into(), type_name: None },
-                    FunctionRange { start: 0x2000, end: 0x2100, name: "SuspendThread".into(), type_name: None },
-                    FunctionRange { start: 0x3000, end: 0x3100, name: "HostFaultHandler".into(), type_name: None },
-                    FunctionRange { start: 0x4000, end: 0x4100, name: "MainLoop".into(), type_name: None },
+                    FunctionRange {
+                        start: 0x1000,
+                        end: 0x1100,
+                        name: "WaitForSingleObject".into(),
+                        type_name: None,
+                    },
+                    FunctionRange {
+                        start: 0x2000,
+                        end: 0x2100,
+                        name: "SuspendThread".into(),
+                        type_name: None,
+                    },
+                    FunctionRange {
+                        start: 0x3000,
+                        end: 0x3100,
+                        name: "HostFaultHandler".into(),
+                        type_name: None,
+                    },
+                    FunctionRange {
+                        start: 0x4000,
+                        end: 0x4100,
+                        name: "MainLoop".into(),
+                        type_name: None,
+                    },
                 ],
             },
         );
@@ -645,7 +693,13 @@ mod tests {
 
     /// Stack words: values in the module are return addresses; others are noise.
     fn thread(tid: u32, suspend: u32, words: &[u64]) -> (u32, u32, u64, u64, Vec<u64>) {
-        (tid, suspend, 0x1000_0000 * u64::from(tid), 0, words.to_vec())
+        (
+            tid,
+            suspend,
+            0x1000_0000 * u64::from(tid),
+            0,
+            words.to_vec(),
+        )
     }
 
     fn dump(threads: Vec<(u32, u32, u64, u64, Vec<u64>)>) -> Vec<u8> {
@@ -670,8 +724,18 @@ mod tests {
         assert_eq!(d.modules[0].name, "game.exe");
         assert_eq!(d.modules[0].base, BASE);
         assert_eq!(d.threads.len(), 2);
-        assert_eq!(d.threads[0].frames, vec![BASE + 0x4010, BASE + 0x4010, BASE + 0x1010]);
-        assert_eq!(d.exception, Some(DumpException { thread_id: 1, code: 0xc000_0005, address: BASE + 0x4010 }));
+        assert_eq!(
+            d.threads[0].frames,
+            vec![BASE + 0x4010, BASE + 0x4010, BASE + 0x1010]
+        );
+        assert_eq!(
+            d.exception,
+            Some(DumpException {
+                thread_id: 1,
+                code: 0xc000_0005,
+                address: BASE + 0x4010
+            })
+        );
     }
 
     #[test]
@@ -704,13 +768,22 @@ mod tests {
         let d = parse(&bytes).unwrap();
         let sym = table();
         let ps = patterns(&d, Some(&sym), &PatternConfig::windows());
-        let p = ps.iter().find(|p| p.pattern == "all-threads-suspended").unwrap();
+        let p = ps
+            .iter()
+            .find(|p| p.pattern == "all-threads-suspended")
+            .unwrap();
         assert!(p.summary.contains("thread 3"));
         assert!(p.summary.contains("suspend call"));
         assert!(p.frames.contains(&(BASE + 0x2010)));
         // no symbols: the claim is weaker and says so
         let weak = patterns(&d, None, &PatternConfig::windows());
-        assert!(weak.iter().find(|p| p.pattern == "all-threads-suspended").unwrap().limitations.contains(&"no-symbol".to_string()));
+        assert!(
+            weak.iter()
+                .find(|p| p.pattern == "all-threads-suspended")
+                .unwrap()
+                .limitations
+                .contains(&"no-symbol".to_string())
+        );
     }
 
     #[test]
@@ -728,10 +801,19 @@ mod tests {
             ..PatternConfig::windows()
         };
         let ps = patterns(&d, Some(&sym), &cfg);
-        let wait = ps.iter().find(|p| p.pattern == "threads-waiting-on-one-site").unwrap();
+        let wait = ps
+            .iter()
+            .find(|p| p.pattern == "threads-waiting-on-one-site")
+            .unwrap();
         assert_eq!(wait.threads, vec![1, 2, 3]);
-        assert!(wait.limitations.contains(&"lock-owner-unresolved".to_string()));
-        let fault = ps.iter().find(|p| p.pattern == "thread-in-fault-handler").unwrap();
+        assert!(
+            wait.limitations
+                .contains(&"lock-owner-unresolved".to_string())
+        );
+        let fault = ps
+            .iter()
+            .find(|p| p.pattern == "thread-in-fault-handler")
+            .unwrap();
         assert_eq!(fault.threads, vec![4]);
         assert!(!ps.iter().any(|p| p.pattern == "all-threads-suspended"));
     }
@@ -740,12 +822,19 @@ mod tests {
     fn events_import_into_a_session_and_symbolize() {
         use crate::store::{Budget, Options, Store};
         use std::sync::Arc;
-        let bytes = dump(vec![thread(1, 0, &[BASE + 0x1010, BASE + 0x4010]), thread(2, 1, &[BASE + 0x2010])]);
+        let bytes = dump(vec![
+            thread(1, 0, &[BASE + 0x1010, BASE + 0x4010]),
+            thread(2, 1, &[BASE + 0x2010]),
+        ]);
         let d = parse(&bytes).unwrap();
         let events = to_events(&d, "minidump");
         let mut store = Store::memory("dump").unwrap();
         store
-            .set_options(Options { symbolizer: Some(Arc::new(table())), symbol_revision: "p@1".into(), budget: Budget::default() })
+            .set_options(Options {
+                symbolizer: Some(Arc::new(table())),
+                symbol_revision: "p@1".into(),
+                budget: Budget::default(),
+            })
             .unwrap();
         let mut chain = crate::raw::Chain::new("minidump");
         let bytes: Vec<u8> = events

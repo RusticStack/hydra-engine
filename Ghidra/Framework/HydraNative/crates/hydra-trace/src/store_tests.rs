@@ -141,7 +141,9 @@ fn symbolizing_store() -> (Store, Vec<Map<String, Value>>) {
         ),
         ev("app.a", 2, 7, json!({}), |e| e.va = Some(0x1150)),
         ev("app.a", 3, 7, json!({}), |e| e.va = Some(0x1f00)),
-        ev("app.a", 4, 7, json!({}), |e| e.callstack = vec![0x9000_0000]),
+        ev("app.a", 4, 7, json!({}), |e| {
+            e.callstack = vec![0x9000_0000]
+        }),
         ev("app.a", 5, 7, json!({}), |_| {}),
         ev("app.a", 6, 7, json!({}), |e| e.va = Some(0x1800)),
     ];

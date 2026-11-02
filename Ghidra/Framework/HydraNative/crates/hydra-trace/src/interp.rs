@@ -227,7 +227,8 @@ pub fn reprocess(
         ..ReprocessStats::default()
     };
     {
-        let mut sql = String::from("SELECT seq, payload FROM events WHERE payload LIKE '%\"bytes\"%'");
+        let mut sql =
+            String::from("SELECT seq, payload FROM events WHERE payload LIKE '%\"bytes\"%'");
         if !kinds.is_empty() {
             sql.push_str(&format!(
                 " AND kind IN ({})",
@@ -261,20 +262,20 @@ pub fn reprocess(
             for f in &ctx.codec.fields {
                 match decode_field(f, &bytes) {
                     Some(v) => {
-                        write.execute(params![
-                            rev,
-                            seq,
-                            f.name,
-                            v.to_string(),
-                            f.offset,
-                            f.len
-                        ])?;
+                        write.execute(params![rev, seq, f.name, v.to_string(), f.offset, f.len])?;
                     }
                     None => short = true,
                 }
             }
             if short {
-                write.execute(params![rev, seq, "_error", "\"short-payload\"", None::<i64>, None::<i64>])?;
+                write.execute(params![
+                    rev,
+                    seq,
+                    "_error",
+                    "\"short-payload\"",
+                    None::<i64>,
+                    None::<i64>
+                ])?;
                 stats.short_payload += 1;
             } else {
                 stats.decoded += 1;
@@ -368,13 +369,43 @@ mod tests {
                 "s",
                 0,
                 &records(vec![
-                    ev("core.marker", 0, 1, serde_json::json!({"layout": "A"}), |_| {}),
+                    ev(
+                        "core.marker",
+                        0,
+                        1,
+                        serde_json::json!({"layout": "A"}),
+                        |_| {},
+                    ),
                     // id 7, hp 100 in layout A
-                    ev("app.msg", 1, 1, serde_json::json!({"bytes": "07006400"}), |_| {}),
-                    ev("core.marker", 2, 1, serde_json::json!({"layout": "B"}), |_| {}),
+                    ev(
+                        "app.msg",
+                        1,
+                        1,
+                        serde_json::json!({"bytes": "07006400"}),
+                        |_| {},
+                    ),
+                    ev(
+                        "core.marker",
+                        2,
+                        1,
+                        serde_json::json!({"layout": "B"}),
+                        |_| {},
+                    ),
                     // hp 100000, id 9 in layout B
-                    ev("app.msg", 3, 1, serde_json::json!({"bytes": "a0860100" .to_string() + "0900"}), |_| {}),
-                    ev("app.msg", 4, 1, serde_json::json!({"bytes": "0102"}), |_| {}),
+                    ev(
+                        "app.msg",
+                        3,
+                        1,
+                        serde_json::json!({"bytes": "a0860100" .to_string() + "0900"}),
+                        |_| {},
+                    ),
+                    ev(
+                        "app.msg",
+                        4,
+                        1,
+                        serde_json::json!({"bytes": "0102"}),
+                        |_| {},
+                    ),
                 ]),
             )
             .unwrap();
@@ -390,13 +421,30 @@ mod tests {
         let stats = reprocess(&mut store, &contexts, &["app.msg".into()], "initial").unwrap();
         assert_eq!((stats.decoded, stats.short_payload), (2, 1));
         let a = decoded(&store, 2, None).unwrap();
-        assert_eq!(a.iter().find(|d| d.field == "hp").unwrap().value, json!(100));
-        assert_eq!(a.iter().find(|d| d.field == "hp").unwrap().byte_off, Some(2));
+        assert_eq!(
+            a.iter().find(|d| d.field == "hp").unwrap().value,
+            json!(100)
+        );
+        assert_eq!(
+            a.iter().find(|d| d.field == "hp").unwrap().byte_off,
+            Some(2)
+        );
         let b = decoded(&store, 4, None).unwrap();
-        assert_eq!(b.iter().find(|d| d.field == "hp").unwrap().value, json!(100000));
-        assert_eq!(b.iter().find(|d| d.field == "id").unwrap().byte_off, Some(4));
+        assert_eq!(
+            b.iter().find(|d| d.field == "hp").unwrap().value,
+            json!(100000)
+        );
+        assert_eq!(
+            b.iter().find(|d| d.field == "id").unwrap().byte_off,
+            Some(4)
+        );
         // The short payload is recorded, not guessed.
-        assert!(decoded(&store, 5, None).unwrap().iter().any(|d| d.field == "_error"));
+        assert!(
+            decoded(&store, 5, None)
+                .unwrap()
+                .iter()
+                .any(|d| d.field == "_error")
+        );
     }
 
     #[test]
@@ -420,12 +468,24 @@ mod tests {
         // The first guess was wrong: hp is big endian in layout A.
         codecs.get_mut("A").unwrap().fields[1].endian = Some("be".into());
         let second = contexts_from_markers(&store, &codecs).unwrap();
-        let r2 = reprocess(&mut store, &second, &["app.msg".into()], "A.hp is big endian").unwrap();
+        let r2 = reprocess(
+            &mut store,
+            &second,
+            &["app.msg".into()],
+            "A.hp is big endian",
+        )
+        .unwrap();
         assert_eq!(r2.revision, r1.revision + 1);
         let old = decoded(&store, 2, Some(r1.revision)).unwrap();
         let new = decoded(&store, 2, Some(r2.revision)).unwrap();
-        assert_eq!(old.iter().find(|d| d.field == "hp").unwrap().value, json!(100));
-        assert_eq!(new.iter().find(|d| d.field == "hp").unwrap().value, json!(25600));
+        assert_eq!(
+            old.iter().find(|d| d.field == "hp").unwrap().value,
+            json!(100)
+        );
+        assert_eq!(
+            new.iter().find(|d| d.field == "hp").unwrap().value,
+            json!(25600)
+        );
         // Default is the latest; the observation itself never changed.
         assert_eq!(decoded(&store, 2, None).unwrap(), new);
         let revs = revisions(&store).unwrap();

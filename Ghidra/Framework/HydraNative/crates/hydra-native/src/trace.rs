@@ -65,7 +65,11 @@ pub unsafe extern "C" fn hydra_trace_init(root: *const u8, root_len: usize) -> i
     };
     let path = PathBuf::from(text);
     let set = SERVICE.get_or_init(|| (path.clone(), Service::new(path.clone())));
-    if set.0 == path { TRACE_OK } else { TRACE_ERR_STATE }
+    if set.0 == path {
+        TRACE_OK
+    } else {
+        TRACE_ERR_STATE
+    }
 }
 
 /// Runs one trace command.
@@ -156,10 +160,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let root = dir.to_str().unwrap();
         // SAFETY: root is a live string.
-        assert_eq!(unsafe { hydra_trace_init(root.as_ptr(), root.len()) }, TRACE_OK);
+        assert_eq!(
+            unsafe { hydra_trace_init(root.as_ptr(), root.len()) },
+            TRACE_OK
+        );
         // SAFETY: as above, with a different root.
-        assert_eq!(unsafe { hydra_trace_init(b"other".as_ptr(), 5) }, TRACE_ERR_STATE);
-        assert_eq!(unsafe { hydra_trace_init(std::ptr::null(), 0) }, TRACE_ERR_NULL);
+        assert_eq!(
+            unsafe { hydra_trace_init(b"other".as_ptr(), 5) },
+            TRACE_ERR_STATE
+        );
+        assert_eq!(
+            unsafe { hydra_trace_init(std::ptr::null(), 0) },
+            TRACE_ERR_NULL
+        );
 
         let ok = |cmd: &str, req: &str| -> serde_json::Value {
             let (rc, out, _) = call(cmd, req, 1 << 20);
@@ -170,18 +183,39 @@ mod tests {
         };
         ok("trace_open", r#"{"session":"abi"}"#);
         let ev = r#"{"kind":"core.marker","source_id":"p","source_seq":0,"producer_gen":1,"clock_domain":"c","t_mono_ns":1,"confidence":"exact","payload":{"corr":"x"}}"#;
-        assert_eq!(ok("trace_append", &format!(r#"{{"session":"abi","events":[{ev}]}}"#))["accepted"], 1);
+        assert_eq!(
+            ok(
+                "trace_append",
+                &format!(r#"{{"session":"abi","events":[{ev}]}}"#)
+            )["accepted"],
+            1
+        );
         ok("trace_mark", r#"{"session":"abi","label":"m"}"#);
         let q = ok("trace_query", r#"{"session":"abi"}"#);
         let id = q["rows"][0]["event_id"].as_str().unwrap().to_string();
-        ok("trace_explain", &format!(r#"{{"session":"abi","event_id":"{id}"}}"#));
-        ok("trace_check", r#"{"session":"abi","assertions":[{"type":"cardinality","name":"c","kind":"core.marker","min":1,"max":5}]}"#);
+        ok(
+            "trace_explain",
+            &format!(r#"{{"session":"abi","event_id":"{id}"}}"#),
+        );
+        ok(
+            "trace_check",
+            r#"{"session":"abi","assertions":[{"type":"cardinality","name":"c","kind":"core.marker","min":1,"max":5}]}"#,
+        );
         ok("trace_info", r#"{"session":"abi"}"#);
         ok("trace_list", "");
         ok("trace_diff", r#"{"a":"abi","b":"abi"}"#);
         let out = dir.join("exp");
-        ok("trace_export", &format!(r#"{{"session":"abi","out":{}}}"#, serde_json::to_string(out.to_str().unwrap()).unwrap()));
-        ok("trace_resymbolize", r#"{"session":"abi","symbols":{"modules":{}},"symbol_revision":"r"}"#);
+        ok(
+            "trace_export",
+            &format!(
+                r#"{{"session":"abi","out":{}}}"#,
+                serde_json::to_string(out.to_str().unwrap()).unwrap()
+            ),
+        );
+        ok(
+            "trace_resymbolize",
+            r#"{"session":"abi","symbols":{"modules":{}},"symbol_revision":"r"}"#,
+        );
         ok("trace_close", r#"{"session":"abi"}"#);
 
         // Errors are replies, not crashes.
@@ -202,7 +236,10 @@ mod tests {
         assert_eq!(n as usize, needed);
         assert!(serde_json::from_slice::<serde_json::Value>(&big).is_ok());
         // SAFETY: as above; nothing is kept any more.
-        assert_eq!(unsafe { hydra_trace_reply_copy(big.as_mut_ptr(), big.len()) }, -1);
+        assert_eq!(
+            unsafe { hydra_trace_reply_copy(big.as_mut_ptr(), big.len()) },
+            -1
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -211,7 +248,15 @@ mod tests {
         let mut len = 0usize;
         // SAFETY: null command pointer is the case under test; no other pointer is read.
         let rc = unsafe {
-            hydra_trace_request(std::ptr::null(), 0, std::ptr::null(), 0, std::ptr::null_mut(), 0, &mut len)
+            hydra_trace_request(
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null_mut(),
+                0,
+                &mut len,
+            )
         };
         assert_eq!(rc, TRACE_ERR_NULL);
     }

@@ -40,7 +40,12 @@ fn a_killed_import_is_repaired_and_the_rebuilt_index_equals_the_original() {
     for (round, delay_ms) in [150u64, 400, 900].into_iter().enumerate() {
         let session_id = format!("s{round}");
         let mut child = Command::new(env!("CARGO_BIN_EXE_hydra-trace"))
-            .args(["import", root.to_str().unwrap(), &session_id, file.to_str().unwrap()])
+            .args([
+                "import",
+                root.to_str().unwrap(),
+                &session_id,
+                file.to_str().unwrap(),
+            ])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -71,7 +76,10 @@ fn a_killed_import_is_repaired_and_the_rebuilt_index_equals_the_original() {
         assert_eq!(s.store().event_count().unwrap(), next + 1);
         assert!(events <= 400_000);
     }
-    assert!(killed_mid_run >= 1, "the importer finished before every kill; raise the event count");
+    assert!(
+        killed_mid_run >= 1,
+        "the importer finished before every kill; raise the event count"
+    );
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -82,7 +90,12 @@ fn rebuild_after_losing_the_index_equals_the_original_digest() {
     jsonl(&file, 30_000);
     let root = dir.join("root");
     let status = Command::new(env!("CARGO_BIN_EXE_hydra-trace"))
-        .args(["import", root.to_str().unwrap(), "s", file.to_str().unwrap()])
+        .args([
+            "import",
+            root.to_str().unwrap(),
+            "s",
+            file.to_str().unwrap(),
+        ])
         .stdout(Stdio::null())
         .status()
         .unwrap();
@@ -92,7 +105,10 @@ fn rebuild_after_losing_the_index_equals_the_original_digest() {
         r.digest().unwrap()
     };
     for ext in ["", "-wal", "-shm"] {
-        let _ = std::fs::remove_file(format!("{}{ext}", session::index_path(&root.join("s")).display()));
+        let _ = std::fs::remove_file(format!(
+            "{}{ext}",
+            session::index_path(&root.join("s")).display()
+        ));
     }
     let out = Command::new(env!("CARGO_BIN_EXE_hydra-trace"))
         .args(["rebuild", root.to_str().unwrap(), "s"])

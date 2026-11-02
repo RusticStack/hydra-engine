@@ -20,7 +20,9 @@ fn scratch(name: &str) -> PathBuf {
 
 #[cfg(windows)]
 fn peak_rss() -> u64 {
-    use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+    use windows_sys::Win32::System::ProcessStatus::{
+        GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+    };
     use windows_sys::Win32::System::Threading::GetCurrentProcess;
     // SAFETY: an all-zero counters struct with cb set is the documented input; the pseudo handle
     // of the current process is always valid.
@@ -47,7 +49,10 @@ fn event(i: u64, seed: u64) -> Value {
         3 => "app.request",
         _ => "app.completion",
     };
-    let corr = format!("c{}", (i - i % 5 + if i % 5 == 4 { 0 } else { 0 }) / 5 + seed);
+    let corr = format!(
+        "c{}",
+        (i - i % 5 + if i % 5 == 4 { 0 } else { 0 }) / 5 + seed
+    );
     json!({
         "kind": kind, "source_id": "bench", "source_seq": i, "producer_gen": 1, "clock_domain": "c",
         "t_mono_ns": 1000 + i * 10, "confidence": "exact", "process_id": 7, "thread_id": 1 + i % 8,
@@ -73,19 +78,42 @@ fn run(n: u64, rss_limit: u64) {
     let dir = scratch(&format!("n{n}"));
     let (s, rate) = load(&dir, "big", n, 0);
     let rss_after_ingest = peak_rss();
-    println!("ingest: {n} events, {rate:.0} events/s, peak working set {} MiB", rss_after_ingest >> 20);
+    println!(
+        "ingest: {n} events, {rate:.0} events/s, peak working set {} MiB",
+        rss_after_ingest >> 20
+    );
     assert_eq!(s.store().event_count().unwrap(), n);
-    assert!(rss_after_ingest < rss_limit, "peak working set {rss_after_ingest} exceeds {rss_limit}");
+    assert!(
+        rss_after_ingest < rss_limit,
+        "peak working set {rss_after_ingest} exceeds {rss_limit}"
+    );
     drop(s);
 
     let store = session::reader(&dir, "big").unwrap();
     let mut times = Vec::new();
     for round in 0..40u64 {
         let filters = [
-            Filter { kinds: vec!["app.request".into()], after: (round * 997) as i64 % n as i64, limit: 100, ..Filter::default() },
-            Filter { resource_key: Some(format!("res/{}", round * 31 % 5000)), limit: 100, ..Filter::default() },
-            Filter { corr: Some(format!("c{}", round * 17 % (n / 5))), limit: 100, ..Filter::default() },
-            Filter { state_key: Some(format!("0:{}#?:hp", round % 4096)), limit: 100, ..Filter::default() },
+            Filter {
+                kinds: vec!["app.request".into()],
+                after: (round * 997) as i64 % n as i64,
+                limit: 100,
+                ..Filter::default()
+            },
+            Filter {
+                resource_key: Some(format!("res/{}", round * 31 % 5000)),
+                limit: 100,
+                ..Filter::default()
+            },
+            Filter {
+                corr: Some(format!("c{}", round * 17 % (n / 5))),
+                limit: 100,
+                ..Filter::default()
+            },
+            Filter {
+                state_key: Some(format!("0:{}#?:hp", round % 4096)),
+                limit: 100,
+                ..Filter::default()
+            },
         ];
         for f in &filters {
             let t = Instant::now();
@@ -96,26 +124,45 @@ fn run(n: u64, rss_limit: u64) {
     }
     times.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let p95 = times[times.len() * 95 / 100];
-    println!("indexed query: p50 {:.2} ms, p95 {p95:.2} ms over {} queries", times[times.len() / 2], times.len());
+    println!(
+        "indexed query: p50 {:.2} ms, p95 {p95:.2} ms over {} queries",
+        times[times.len() / 2],
+        times.len()
+    );
     assert!(p95 < 250.0, "p95 {p95} ms");
 
     // Diff against a smaller second session, inside a fixed event budget, three runs.
     let (b, _) = load(&dir, "other", n / 4, 1);
     drop(b);
     let other = session::reader(&dir, "other").unwrap();
-    let spec = AlignSpec { keys: vec!["kind".into(), "process".into()], event_budget: n as usize + 1, ..AlignSpec::default() };
+    let spec = AlignSpec {
+        keys: vec!["kind".into(), "process".into()],
+        event_budget: n as usize + 1,
+        ..AlignSpec::default()
+    };
     let t = Instant::now();
-    let first = serde_json::to_string(&diff_aligned_default(&store, &other, &spec).unwrap()).unwrap();
+    let first =
+        serde_json::to_string(&diff_aligned_default(&store, &other, &spec).unwrap()).unwrap();
     let secs = t.elapsed().as_secs_f64();
     println!("aligned diff: {secs:.2} s, {} bytes of reply", first.len());
     for _ in 0..2 {
-        assert_eq!(first, serde_json::to_string(&diff_aligned_default(&store, &other, &spec).unwrap()).unwrap());
+        assert_eq!(
+            first,
+            serde_json::to_string(&diff_aligned_default(&store, &other, &spec).unwrap()).unwrap()
+        );
     }
-    let tight = AlignSpec { event_budget: 1000, ..spec };
+    let tight = AlignSpec {
+        event_budget: 1000,
+        ..spec
+    };
     let d = diff_aligned_default(&store, &other, &tight).unwrap();
     assert!(d.limitations.contains(&"budget-reached".to_string()));
     assert!(d.scanned_a <= 1000);
-    assert!(peak_rss() < rss_limit, "peak working set after queries and diff: {}", peak_rss());
+    assert!(
+        peak_rss() < rss_limit,
+        "peak working set after queries and diff: {}",
+        peak_rss()
+    );
     println!("peak working set at the end: {} MiB", peak_rss() >> 20);
     let _ = std::fs::remove_dir_all(dir);
 }

@@ -343,7 +343,8 @@ pub fn diff_aligned(
     }
 
     let mut normalizations = vec![
-        "event ids, sequence numbers, timestamps, pids, tids and addresses are never keys".to_string(),
+        "event ids, sequence numbers, timestamps, pids, tids and addresses are never keys"
+            .to_string(),
     ];
     for k in &spec.keys {
         normalizations.push(match k.as_str() {
@@ -472,7 +473,11 @@ mod tests {
         let a = run("a", 100, 100, false);
         let b = run("b", 999, 5000, false);
         let d = diff_aligned_default(&a, &b, &spec(&["kind", "phase", "process"])).unwrap();
-        assert!(d.entries.iter().all(|e| e.class == DiffClass::Same), "{:?}", d.entries);
+        assert!(
+            d.entries.iter().all(|e| e.class == DiffClass::Same),
+            "{:?}",
+            d.entries
+        );
         assert!(d.entries.iter().any(|e| e.key == "app.draw|load@+2|p1"));
         assert!(d.normalizations.iter().any(|n| n.starts_with("phase:")));
         assert_eq!((d.unmatched_a, d.unmatched_b), (0, 0));
@@ -483,7 +488,11 @@ mod tests {
         let a = run("a", 100, 100, false);
         let b = run("b", 999, 5000, true);
         let d = diff_aligned_default(&a, &b, &spec(&["kind", "role"])).unwrap();
-        let extra = d.entries.iter().find(|e| e.key.starts_with("app.extra")).unwrap();
+        let extra = d
+            .entries
+            .iter()
+            .find(|e| e.key.starts_with("app.extra"))
+            .unwrap();
         assert_eq!(extra.class, DiffClass::OnlyB);
         assert_eq!(d.unmatched_b, 1);
         // Same event counts, different frame offsets: keys only match under the offset key.
@@ -504,16 +513,30 @@ mod tests {
         let mut c = Store::memory("c").unwrap();
         c.ingest("s", 0, &records(c_events)).unwrap();
         let d = diff_aligned_default(&a, &c, &spec(&["kind", "phase"])).unwrap();
-        let save: Vec<_> = d.entries.iter().filter(|e| e.key.starts_with("app.save")).collect();
+        let save: Vec<_> = d
+            .entries
+            .iter()
+            .filter(|e| e.key.starts_with("app.save"))
+            .collect();
         assert_eq!(save.len(), 2);
-        assert!(save.iter().any(|e| e.key.ends_with("@+2") && e.class == DiffClass::OnlyA));
-        assert!(save.iter().any(|e| e.key.ends_with("@+0") && e.class == DiffClass::OnlyB));
+        assert!(
+            save.iter()
+                .any(|e| e.key.ends_with("@+2") && e.class == DiffClass::OnlyA)
+        );
+        assert!(
+            save.iter()
+                .any(|e| e.key.ends_with("@+0") && e.class == DiffClass::OnlyB)
+        );
     }
 
     struct EveryoneIsAmbiguous;
     impl RoleResolver for EveryoneIsAmbiguous {
         fn role(&self, e: &AlignEvent<'_>) -> Role {
-            if e.kind == "app.save" { Role::Ambiguous } else { Role::Unknown }
+            if e.kind == "app.save" {
+                Role::Ambiguous
+            } else {
+                Role::Unknown
+            }
         }
     }
 
@@ -522,7 +545,11 @@ mod tests {
         let a = run("a", 1, 0, false);
         let b = run("b", 2, 0, false);
         let d = diff_aligned(&a, &b, &spec(&["kind", "role"]), &EveryoneIsAmbiguous).unwrap();
-        let save = d.entries.iter().find(|e| e.key.starts_with("app.save")).unwrap();
+        let save = d
+            .entries
+            .iter()
+            .find(|e| e.key.starts_with("app.save"))
+            .unwrap();
         assert_eq!(save.class, DiffClass::NotComparable);
         assert_eq!(d.ambiguous, 2);
         assert!(d.limitations.contains(&"alignment-ambiguous".to_string()));
@@ -534,7 +561,12 @@ mod tests {
             "m.dll".into(),
             ModuleTable {
                 code: vec![],
-                functions: vec![FunctionRange { start: 0x100, end: 0x200, name: fname.into(), type_name: None }],
+                functions: vec![FunctionRange {
+                    start: 0x100,
+                    end: 0x200,
+                    name: fname.into(),
+                    type_name: None,
+                }],
             },
         );
         let mut store = Store::memory(session).unwrap();
@@ -547,7 +579,13 @@ mod tests {
             .unwrap();
         let events = vec![
             ev("core.process.start", 0, 1, json!({}), |_| {}),
-            ev("core.module.load", 1, 1, json!({"name": "m.dll", "base": 0x1000, "size": 0x1000}), |_| {}),
+            ev(
+                "core.module.load",
+                1,
+                1,
+                json!({"name": "m.dll", "base": 0x1000, "size": 0x1000}),
+                |_| {},
+            ),
             ev("app.call", 2, 1, json!({}), |e| e.va = Some(0x1150)),
             ev("app.call", 3, 1, json!({}), |e| e.va = Some(0x1150)),
         ];
@@ -561,10 +599,19 @@ mod tests {
         let b = symbolized("b", "Update_v2");
         let mut s = spec(&["kind", "function"]);
         let unmapped = diff_aligned_default(&a, &b, &s).unwrap();
-        assert!(unmapped.entries.iter().any(|e| e.key == "app.call|Update" && e.class == DiffClass::OnlyA));
+        assert!(
+            unmapped
+                .entries
+                .iter()
+                .any(|e| e.key == "app.call|Update" && e.class == DiffClass::OnlyA)
+        );
         s.function_map.insert("Update_v2".into(), "Update".into());
         let mapped = diff_aligned_default(&a, &b, &s).unwrap();
-        let call = mapped.entries.iter().find(|e| e.key == "app.call|Update").unwrap();
+        let call = mapped
+            .entries
+            .iter()
+            .find(|e| e.key == "app.call|Update")
+            .unwrap();
         assert_eq!(call.class, DiffClass::Same);
         assert_eq!(mapped.unmapped_functions, 0);
     }
@@ -577,7 +624,11 @@ mod tests {
         s.event_budget = 4;
         let d = diff_aligned_default(&a, &b, &s).unwrap();
         assert!(d.limitations.contains(&"budget-reached".to_string()));
-        assert!(d.entries.iter().all(|e| e.class != DiffClass::OnlyA && e.class != DiffClass::OnlyB));
+        assert!(
+            d.entries
+                .iter()
+                .all(|e| e.class != DiffClass::OnlyA && e.class != DiffClass::OnlyB)
+        );
         assert!(d.scanned_a <= 4 && d.scanned_b <= 4);
     }
 
@@ -588,14 +639,27 @@ mod tests {
         let s = spec(&["kind", "phase", "process", "role"]);
         let one = serde_json::to_string(&diff_aligned_default(&a, &b, &s).unwrap()).unwrap();
         for _ in 0..3 {
-            assert_eq!(one, serde_json::to_string(&diff_aligned_default(&a, &b, &s).unwrap()).unwrap());
+            assert_eq!(
+                one,
+                serde_json::to_string(&diff_aligned_default(&a, &b, &s).unwrap()).unwrap()
+            );
         }
     }
 
     #[test]
     fn bad_specs_are_refused_and_clocks_need_calibration() {
         let a = run("a", 1, 0, false);
-        assert!(diff_aligned_default(&a, &a, &AlignSpec { keys: vec![], ..AlignSpec::default() }).is_err());
+        assert!(
+            diff_aligned_default(
+                &a,
+                &a,
+                &AlignSpec {
+                    keys: vec![],
+                    ..AlignSpec::default()
+                }
+            )
+            .is_err()
+        );
         assert!(diff_aligned_default(&a, &a, &spec(&["pid"])).is_err());
         let mut bad_role = spec(&["kind"]);
         bad_role.role_field = Some("a'); DROP".into());

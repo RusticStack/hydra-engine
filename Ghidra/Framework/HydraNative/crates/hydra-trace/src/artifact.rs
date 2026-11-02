@@ -146,9 +146,11 @@ impl Artifacts {
         let rev = store.revision()?;
         let sha: Option<String> = store
             .conn()
-            .query_row("SELECT sha256 FROM artifacts WHERE id=?1", params![id], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT sha256 FROM artifacts WHERE id=?1",
+                params![id],
+                |r| r.get(0),
+            )
             .ok();
         let Some(sha) = sha else {
             return Err(Error::Refused(format!("unknown artifact {id}")));
@@ -180,16 +182,21 @@ fn hex(bytes: &[u8]) -> String {
 pub fn state(store: &Store, id: &str) -> Result<Option<String>> {
     Ok(store
         .conn()
-        .query_row("SELECT state FROM artifacts WHERE id=?1", params![id], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT state FROM artifacts WHERE id=?1",
+            params![id],
+            |r| r.get(0),
+        )
         .ok())
 }
 
 /// Refuse a payload that names an artifact that is not durable yet (or never existed). A
 /// tombstoned artifact may still be referenced by events that were written while it existed, but
 /// no new reference is accepted.
-pub fn require_present_refs(store: &Store, payload: &serde_json::Map<String, serde_json::Value>) -> Result<()> {
+pub fn require_present_refs(
+    store: &Store,
+    payload: &serde_json::Map<String, serde_json::Value>,
+) -> Result<()> {
     for key in ["artifact", "artifacts"] {
         let ids: Vec<&str> = match payload.get(key) {
             Some(serde_json::Value::String(s)) => vec![s.as_str()],
@@ -257,11 +264,7 @@ mod tests {
     fn setup(name: &str) -> (Artifacts, Store, PathBuf) {
         let d = std::env::temp_dir().join(format!("hydra-art-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
-        (
-            Artifacts::open(&d).unwrap(),
-            Store::memory("a").unwrap(),
-            d,
-        )
+        (Artifacts::open(&d).unwrap(), Store::memory("a").unwrap(), d)
     }
 
     fn spec() -> ArtifactSpec {
@@ -279,9 +282,15 @@ mod tests {
         let id = arts.put(&mut store, b"0123456789", &spec(), 1000).unwrap();
         assert!(arts.path(&id).is_file());
         assert_eq!(arts.read(&store, &id).unwrap(), b"0123456789");
-        let ok = serde_json::json!({"artifact": id}).as_object().unwrap().clone();
+        let ok = serde_json::json!({"artifact": id})
+            .as_object()
+            .unwrap()
+            .clone();
         assert!(require_present_refs(&store, &ok).is_ok());
-        let bad = serde_json::json!({"artifact": "art_missing"}).as_object().unwrap().clone();
+        let bad = serde_json::json!({"artifact": "art_missing"})
+            .as_object()
+            .unwrap()
+            .clone();
         assert!(require_present_refs(&store, &bad).is_err());
         let _ = std::fs::remove_dir_all(d);
     }
@@ -312,16 +321,28 @@ mod tests {
         let (arts, mut store, d) = setup("d");
         let id = arts.put(&mut store, b"secret", &spec(), 1000).unwrap();
         assert!(arts.evict_expired(&mut store, 1059).unwrap().is_empty());
-        assert_eq!(arts.evict_expired(&mut store, 1060).unwrap(), vec![id.clone()]);
+        assert_eq!(
+            arts.evict_expired(&mut store, 1060).unwrap(),
+            vec![id.clone()]
+        );
         assert!(!arts.path(&id).exists());
-        assert!(matches!(arts.read(&store, &id), Err(Error::Refused(m)) if m == "artifact-evicted"));
+        assert!(
+            matches!(arts.read(&store, &id), Err(Error::Refused(m)) if m == "artifact-evicted")
+        );
         let reason: String = store
             .conn()
-            .query_row("SELECT reason FROM tombstones WHERE id=?1", params![id], |r| r.get(0))
+            .query_row(
+                "SELECT reason FROM tombstones WHERE id=?1",
+                params![id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(reason, "retention-expired");
         // No new reference to a tombstoned artifact.
-        let p = serde_json::json!({"artifact": id}).as_object().unwrap().clone();
+        let p = serde_json::json!({"artifact": id})
+            .as_object()
+            .unwrap()
+            .clone();
         assert!(require_present_refs(&store, &p).is_err());
         let _ = std::fs::remove_dir_all(d);
     }
@@ -334,7 +355,10 @@ mod tests {
         let c = arts.put(&mut store, b"three", &spec(), 0).unwrap();
         arts.tombstone(&mut store, &c, "manual").unwrap();
         let g = gate(&store, &[a.clone(), c.clone()]).unwrap();
-        assert_eq!(g.included.iter().map(|i| i.id.clone()).collect::<Vec<_>>(), vec![a]);
+        assert_eq!(
+            g.included.iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
+            vec![a]
+        );
         assert!(g.omitted.contains(&(b, "payload-not-authorized")));
         assert!(g.omitted.contains(&(c, "artifact-evicted")));
         let _ = std::fs::remove_dir_all(d);

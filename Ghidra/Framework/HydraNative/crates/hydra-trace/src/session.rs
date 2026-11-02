@@ -383,7 +383,10 @@ impl Session {
         Ok(reply)
     }
 
-    fn prepare(&mut self, value: &Value) -> std::result::Result<(String, Map<String, Value>, usize), String> {
+    fn prepare(
+        &mut self,
+        value: &Value,
+    ) -> std::result::Result<(String, Map<String, Value>, usize), String> {
         let Some(obj) = value.as_object() else {
             return Err("event is not an object".into());
         };
@@ -439,7 +442,9 @@ impl Session {
             .get_mut(source)
             .ok_or_else(|| Error::Segment("writer missing".into()))?;
         if let Some(why) = &writer.damaged {
-            return Err(Error::Refused(format!("segment {source} is damaged: {why}")));
+            return Err(Error::Refused(format!(
+                "segment {source} is damaged: {why}"
+            )));
         }
         let first_n = writer.chain.count();
         let mut bytes = Vec::with_capacity(records.len() * 256);
@@ -459,7 +464,12 @@ impl Session {
     }
 
     /// Record a named point: an event of kind `core.marker` from the session's own source.
-    pub fn mark(&mut self, label: &str, phase: Option<&str>, frame: Option<i64>) -> Result<AppendReply> {
+    pub fn mark(
+        &mut self,
+        label: &str,
+        phase: Option<&str>,
+        frame: Option<i64>,
+    ) -> Result<AppendReply> {
         let mut payload = Map::new();
         payload.insert("label".into(), label.into());
         if let Some(p) = phase {
@@ -471,10 +481,7 @@ impl Session {
         let seq = self.mark_seq;
         self.mark_seq += 1;
         // Continue the marks source after a reopen.
-        let base = self
-            .writers
-            .get("marks")
-            .map_or(0, |w| w.chain.count());
+        let base = self.writers.get("marks").map_or(0, |w| w.chain.count());
         let event = json!({
             "kind": "core.marker",
             "source_id": "marks",
@@ -756,8 +763,20 @@ mod tests {
         let (mut s, _) = Session::open(&r, "s1", Options::default()).unwrap();
         s.mark("level 1", Some("load"), Some(0)).unwrap();
         s.mark("level 2", Some("play"), Some(10)).unwrap();
-        let n: i64 = s.store().conn().query_row("SELECT COUNT(*) FROM events WHERE kind='core.marker'", [], |r| r.get(0)).unwrap();
-        let m: i64 = s.store().conn().query_row("SELECT COUNT(*) FROM marks", [], |r| r.get(0)).unwrap();
+        let n: i64 = s
+            .store()
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE kind='core.marker'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let m: i64 = s
+            .store()
+            .conn()
+            .query_row("SELECT COUNT(*) FROM marks", [], |r| r.get(0))
+            .unwrap();
         assert_eq!((n, m), (2, 2));
         let _ = std::fs::remove_dir_all(r);
     }
@@ -784,8 +803,16 @@ mod tests {
             let mut f = OpenOptions::new().append(true).open(&seg_path).unwrap();
             f.write_all(&line).unwrap();
             f.write_all(b"deadbeef {\"torn\"").unwrap(); // and a torn tail after it
-            let mut m = OpenOptions::new().append(true).open(r.join("s1/manifest.jsonl")).unwrap();
-            writeln!(m, "{}", json!({"source": "src_a", "first_n": next, "count": 1})).unwrap();
+            let mut m = OpenOptions::new()
+                .append(true)
+                .open(r.join("s1/manifest.jsonl"))
+                .unwrap();
+            writeln!(
+                m,
+                "{}",
+                json!({"source": "src_a", "first_n": next, "count": 1})
+            )
+            .unwrap();
         }
         let (mut s, rec) = Session::open(&r, "s1", Options::default()).unwrap();
         assert_eq!(rec.replayed_batches, 1);
@@ -793,9 +820,11 @@ mod tests {
         assert_eq!(s.store().event_count().unwrap(), 33);
         assert_ne!(s.store().digest().unwrap(), want_digest);
         // The chain continues after the repair and the index equals a rebuild.
-        s.append(&[json!({"kind": "app.more", "source_id": "src_a", "source_seq": 100, "producer_gen": 1,
-            "clock_domain": "qpc-10mhz", "t_mono_ns": 123456, "confidence": "exact"})])
-            .unwrap();
+        s.append(&[
+            json!({"kind": "app.more", "source_id": "src_a", "source_seq": 100, "producer_gen": 1,
+            "clock_domain": "qpc-10mhz", "t_mono_ns": 123456, "confidence": "exact"}),
+        ])
+        .unwrap();
         let v = verify(&r, "s1", &Options::default()).unwrap();
         assert!(v.index_matches_segments, "{v:?}");
         assert!(v.segments.iter().all(|c| c.clean));
@@ -815,12 +844,21 @@ mod tests {
         let ev = json!({"kind": "app.late", "source_id": "src_a", "source_seq": 5000, "producer_gen": 1,
             "clock_domain": "qpc-10mhz", "t_mono_ns": 99999, "confidence": "exact"});
         let line = chain.push(ev.as_object().unwrap().clone()).unwrap();
-        OpenOptions::new().append(true).open(&seg_path).unwrap().write_all(&line).unwrap();
+        OpenOptions::new()
+            .append(true)
+            .open(&seg_path)
+            .unwrap()
+            .write_all(&line)
+            .unwrap();
         let (s, rec) = Session::open(&r, "s1", Options::default()).unwrap();
         assert_eq!(rec.tail_batches, 1);
         assert_eq!(s.store().event_count().unwrap(), 13);
         drop(s);
-        assert!(verify(&r, "s1", &Options::default()).unwrap().index_matches_segments);
+        assert!(
+            verify(&r, "s1", &Options::default())
+                .unwrap()
+                .index_matches_segments
+        );
         let _ = std::fs::remove_dir_all(r);
     }
 
@@ -831,7 +869,16 @@ mod tests {
         {
             let (mut s, _) = Session::open(&r, "s1", Options::default()).unwrap();
             s.append(&events(1, 40)).unwrap();
-            s.append(&events(2, 20).into_iter().map(|mut e| { e["source_id"] = json!("src_b"); e }).collect::<Vec<_>>()).unwrap();
+            s.append(
+                &events(2, 20)
+                    .into_iter()
+                    .map(|mut e| {
+                        e["source_id"] = json!("src_b");
+                        e
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
             s.append(&[]).unwrap();
             digest = s.store().digest().unwrap();
         }
@@ -858,7 +905,13 @@ mod tests {
         bytes[200] ^= 1;
         std::fs::write(&p, bytes).unwrap();
         let (mut s, rec) = Session::open(&r, "s1", Options::default()).unwrap();
-        assert!(rec.sources[0].damage.as_deref().unwrap().contains("corrupt"));
+        assert!(
+            rec.sources[0]
+                .damage
+                .as_deref()
+                .unwrap()
+                .contains("corrupt")
+        );
         let err = s.append(&events(1, 3)).unwrap_err();
         assert!(err.to_string().contains("damaged"));
         let _ = std::fs::remove_dir_all(r);
@@ -867,7 +920,9 @@ mod tests {
     #[test]
     fn names_and_listing() {
         assert!(valid_name("a-b_c.1"));
-        assert!(!valid_name("../x") && !valid_name("") && !valid_name(".hidden") && !valid_name("a/b"));
+        assert!(
+            !valid_name("../x") && !valid_name("") && !valid_name(".hidden") && !valid_name("a/b")
+        );
         let r = root("j");
         let (_s, _) = Session::open(&r, "one", Options::default()).unwrap();
         let (_t, _) = Session::open(&r, "two", Options::default()).unwrap();

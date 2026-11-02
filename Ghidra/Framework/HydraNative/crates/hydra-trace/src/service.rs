@@ -255,7 +255,10 @@ impl Service {
             return Err(fail("too_large", "request exceeds 16 MiB"));
         }
         if !COMMANDS.contains(&command) {
-            return Err(fail("unknown_command", format!("unknown command {command}")));
+            return Err(fail(
+                "unknown_command",
+                format!("unknown command {command}"),
+            ));
         }
         let req: Value = if request.is_empty() {
             json!({})
@@ -280,10 +283,16 @@ impl Service {
     }
 
     fn writer(&self, session: &str) -> std::result::Result<Arc<Mutex<Session>>, Failure> {
-        let map = self.writers.lock().map_err(|_| fail("internal", "poisoned"))?;
-        map.get(session)
-            .cloned()
-            .ok_or_else(|| fail("not_open", format!("session {session} is not open for writing; call trace_open")))
+        let map = self
+            .writers
+            .lock()
+            .map_err(|_| fail("internal", "poisoned"))?;
+        map.get(session).cloned().ok_or_else(|| {
+            fail(
+                "not_open",
+                format!("session {session} is not open for writing; call trace_open"),
+            )
+        })
     }
 
     fn with_writer<T>(
@@ -307,13 +316,20 @@ impl Service {
     }
 
     fn open(&self, r: OpenReq) -> Reply {
-        let mut map = self.writers.lock().map_err(|_| fail("internal", "poisoned"))?;
+        let mut map = self
+            .writers
+            .lock()
+            .map_err(|_| fail("internal", "poisoned"))?;
         if let Some(w) = map.get(&r.session) {
             let g = w.lock().map_err(|_| fail("internal", "poisoned"))?;
-            return Ok(json!({"session": r.session, "already_open": true, "revision": g.store().revision()?}));
+            return Ok(
+                json!({"session": r.session, "already_open": true, "revision": g.store().revision()?}),
+            );
         }
         let options = Options {
-            symbolizer: r.symbols.map(|t| Arc::new(t) as Arc<dyn symbolize::Symbolizer>),
+            symbolizer: r
+                .symbols
+                .map(|t| Arc::new(t) as Arc<dyn symbolize::Symbolizer>),
             symbol_revision: r.symbol_revision.unwrap_or_default(),
             budget: Budget {
                 max_events: r.max_events,
@@ -322,10 +338,14 @@ impl Service {
         };
         std::fs::create_dir_all(&self.root)?;
         let (mut session, recovery) = Session::open(&self.root, &r.session, options)?;
-        session.set_preview(crate::corrid::PreviewPolicy { allow_preview: r.preview });
+        session.set_preview(crate::corrid::PreviewPolicy {
+            allow_preview: r.preview,
+        });
         let revision = session.store().revision()?;
         map.insert(r.session.clone(), Arc::new(Mutex::new(session)));
-        Ok(json!({"session": r.session, "revision": revision, "recovery": serde_json::to_value(&recovery)?}))
+        Ok(
+            json!({"session": r.session, "revision": revision, "recovery": serde_json::to_value(&recovery)?}),
+        )
     }
 
     fn append(&self, r: AppendReq) -> Reply {
@@ -347,8 +367,10 @@ impl Service {
                 return Err(fail("refused", format!("cannot group by {by}")));
             }
             let groups = query::groups(&store, by, &r.kinds)?;
-            return Ok(json!({"revision": store.revision()?, "group_by": by, "groups": serde_json::to_value(&groups)?,
-                             "gaps": gaps_of(&store)?}));
+            return Ok(
+                json!({"revision": store.revision()?, "group_by": by, "groups": serde_json::to_value(&groups)?,
+                             "gaps": gaps_of(&store)?}),
+            );
         }
         let page = query::query(
             &store,
@@ -460,7 +482,10 @@ impl Service {
     }
 
     fn close(&self, r: SessionReq) -> Reply {
-        let mut map = self.writers.lock().map_err(|_| fail("internal", "poisoned"))?;
+        let mut map = self
+            .writers
+            .lock()
+            .map_err(|_| fail("internal", "poisoned"))?;
         let was_open = map.remove(&r.session).is_some();
         Ok(json!({"session": r.session, "was_open": was_open}))
     }
@@ -472,8 +497,14 @@ impl Service {
                 Ok(s) => (s.revision().unwrap_or(0), s.event_count().unwrap_or(0)),
                 Err(_) => (0, 0),
             };
-            let open = self.writers.lock().map(|m| m.contains_key(&id)).unwrap_or(false);
-            out.push(json!({"session": id, "revision": revision, "events": events, "writer_open": open}));
+            let open = self
+                .writers
+                .lock()
+                .map(|m| m.contains_key(&id))
+                .unwrap_or(false);
+            out.push(
+                json!({"session": id, "revision": revision, "events": events, "writer_open": open}),
+            );
         }
         Ok(json!({"sessions": out}))
     }
@@ -483,7 +514,9 @@ impl Service {
         let conn = store.conn();
         let count = |sql: &str| -> i64 { conn.query_row(sql, [], |x| x.get(0)).unwrap_or(0) };
         let sources: Vec<Value> = {
-            let mut stmt = conn.prepare("SELECT source_id,segment_records,state FROM sources ORDER BY source_id")?;
+            let mut stmt = conn.prepare(
+                "SELECT source_id,segment_records,state FROM sources ORDER BY source_id",
+            )?;
             stmt.query_map([], |x| {
                 Ok(json!({"source_id": x.get::<_, String>(0)?, "records": x.get::<_, i64>(1)?, "state": x.get::<_, String>(2)?}))
             })?
@@ -491,7 +524,11 @@ impl Service {
         };
         let counts = symbolize::counts(&store, None)?;
         let rel = relations::current(&store)?;
-        let open = self.writers.lock().map(|m| m.contains_key(&r.session)).unwrap_or(false);
+        let open = self
+            .writers
+            .lock()
+            .map(|m| m.contains_key(&r.session))
+            .unwrap_or(false);
         Ok(json!({
             "session": r.session,
             "revision": store.revision()?,
@@ -525,12 +562,17 @@ impl Service {
             if !session::index_path(&self.root.join(&r.session)).exists() {
                 return Err(fail("refused", format!("no session {}", r.session)));
             }
-            let mut store = Store::open(&session::index_path(&self.root.join(&r.session)), &r.session)?;
+            let mut store = Store::open(
+                &session::index_path(&self.root.join(&r.session)),
+                &r.session,
+            )?;
             symbolize::resymbolize(&mut store, &r.symbols, &r.symbol_revision)?
         };
         let store = self.reader(&r.session)?;
-        Ok(json!({"interp": rev, "counts": serde_json::to_value(symbolize::counts(&store, Some(rev))?)?,
-                  "revision": store.revision()?}))
+        Ok(
+            json!({"interp": rev, "counts": serde_json::to_value(symbolize::counts(&store, Some(rev))?)?,
+                  "revision": store.revision()?}),
+        )
     }
 }
 
@@ -583,29 +625,68 @@ mod tests {
         let (s, d) = svc("all");
         let o = call(&s, "trace_open", json!({"session": "a"}));
         assert_eq!(o["ok"], true);
-        let ap = call(&s, "trace_append", json!({"session": "a", "events": events(Recipe::Interleave, 1, 40)}));
+        let ap = call(
+            &s,
+            "trace_append",
+            json!({"session": "a", "events": events(Recipe::Interleave, 1, 40)}),
+        );
         assert_eq!(ap["accepted"], 42);
-        assert_eq!(call(&s, "trace_mark", json!({"session": "a", "label": "x", "phase": "p", "frame": 1}))["ok"], true);
-        let q = call(&s, "trace_query", json!({"session": "a", "kinds": ["app.request"], "limit": 5}));
+        assert_eq!(
+            call(
+                &s,
+                "trace_mark",
+                json!({"session": "a", "label": "x", "phase": "p", "frame": 1})
+            )["ok"],
+            true
+        );
+        let q = call(
+            &s,
+            "trace_query",
+            json!({"session": "a", "kinds": ["app.request"], "limit": 5}),
+        );
         assert_eq!(q["rows"].as_array().unwrap().len(), 5);
         assert!(q["next"].is_number());
-        let g = call(&s, "trace_query", json!({"session": "a", "group_by": "kind"}));
+        let g = call(
+            &s,
+            "trace_query",
+            json!({"session": "a", "group_by": "kind"}),
+        );
         assert!(g["groups"].as_array().unwrap().len() >= 2);
         let first = q["rows"][0]["event_id"].as_str().unwrap().to_string();
-        let ex = call(&s, "trace_explain", json!({"session": "a", "event_id": first, "direction": "downstream"}));
+        let ex = call(
+            &s,
+            "trace_explain",
+            json!({"session": "a", "event_id": first, "direction": "downstream"}),
+        );
         assert!(ex["nodes"].as_array().unwrap().len() >= 2, "{ex}");
-        let c = call(&s, "trace_check", json!({"session": "a", "assertions": [
-            {"type": "request_completion", "name": "rc", "request": "app.request", "completion": "app.completion"}]}));
+        let c = call(
+            &s,
+            "trace_check",
+            json!({"session": "a", "assertions": [
+            {"type": "request_completion", "name": "rc", "request": "app.request", "completion": "app.completion"}]}),
+        );
         assert_eq!(c["results"][0]["verdict"], "pass");
         assert_eq!(c["persisted"], true);
         call(&s, "trace_open", json!({"session": "b"}));
-        call(&s, "trace_append", json!({"session": "b", "events": events(Recipe::Interleave, 2, 20)}));
+        call(
+            &s,
+            "trace_append",
+            json!({"session": "b", "events": events(Recipe::Interleave, 2, 20)}),
+        );
         let df = call(&s, "trace_diff", json!({"a": "a", "b": "b"}));
         assert!(df["diff"]["entries"].is_array());
-        let al = call(&s, "trace_diff", json!({"a": "a", "b": "b", "align": {"keys": ["kind"]}}));
+        let al = call(
+            &s,
+            "trace_diff",
+            json!({"a": "a", "b": "b", "align": {"keys": ["kind"]}}),
+        );
         assert!(al["aligned"]["entries"].is_array());
         let out = d.join("exp");
-        let ex = call(&s, "trace_export", json!({"session": "a", "out": out.to_str().unwrap(), "exported_at": "t"}));
+        let ex = call(
+            &s,
+            "trace_export",
+            json!({"session": "a", "out": out.to_str().unwrap(), "exported_at": "t"}),
+        );
         assert_eq!(ex["ok"], true, "{ex}");
         assert!(out.join("manifest.json").is_file());
         let info = call(&s, "trace_info", json!({"session": "a"}));
@@ -613,14 +694,36 @@ mod tests {
         assert_eq!(info["writer_open"], true);
         let l = call(&s, "trace_list", json!({}));
         assert_eq!(l["sessions"].as_array().unwrap().len(), 2);
-        assert_eq!(call(&s, "trace_close", json!({"session": "a"}))["was_open"], true);
+        assert_eq!(
+            call(&s, "trace_close", json!({"session": "a"}))["was_open"],
+            true
+        );
         // errors
-        assert_eq!(call(&s, "trace_append", json!({"session": "a", "events": []}))["error"]["code"], "not_open");
-        assert_eq!(call(&s, "trace_nope", json!({}))["error"]["code"], "unknown_command");
-        assert_eq!(call(&s, "trace_query", json!({"session": "zzz"}))["error"]["code"], "refused");
-        assert_eq!(call(&s, "trace_query", json!({"nonsense": 1}))["error"]["code"], "bad_request");
+        assert_eq!(
+            call(&s, "trace_append", json!({"session": "a", "events": []}))["error"]["code"],
+            "not_open"
+        );
+        assert_eq!(
+            call(&s, "trace_nope", json!({}))["error"]["code"],
+            "unknown_command"
+        );
+        assert_eq!(
+            call(&s, "trace_query", json!({"session": "zzz"}))["error"]["code"],
+            "refused"
+        );
+        assert_eq!(
+            call(&s, "trace_query", json!({"nonsense": 1}))["error"]["code"],
+            "bad_request"
+        );
         assert_eq!(s.handle("trace_info", b"{not json")[..], br#"{"error":{"code":"bad_request","message":"key must be a string at line 1 column 2"},"ok":false}"#[..]);
-        assert_eq!(call(&s, "trace_query", json!({"session": "b", "group_by": "pid; drop"}))["error"]["code"], "refused");
+        assert_eq!(
+            call(
+                &s,
+                "trace_query",
+                json!({"session": "b", "group_by": "pid; drop"})
+            )["error"]["code"],
+            "refused"
+        );
         let _ = std::fs::remove_dir_all(d);
     }
 
@@ -628,10 +731,21 @@ mod tests {
     fn replies_are_byte_identical_across_calls() {
         let (s, d) = svc("det");
         call(&s, "trace_open", json!({"session": "a"}));
-        call(&s, "trace_append", json!({"session": "a", "events": events(Recipe::Interleave, 1, 40)}));
+        call(
+            &s,
+            "trace_append",
+            json!({"session": "a", "events": events(Recipe::Interleave, 1, 40)}),
+        );
         call(&s, "trace_open", json!({"session": "b"}));
-        call(&s, "trace_append", json!({"session": "b", "events": events(Recipe::Interleave, 9, 80)}));
-        let req = serde_json::to_vec(&json!({"a": "a", "b": "b", "align": {"keys": ["kind", "role"], "role_field": "name"}})).unwrap();
+        call(
+            &s,
+            "trace_append",
+            json!({"session": "b", "events": events(Recipe::Interleave, 9, 80)}),
+        );
+        let req = serde_json::to_vec(
+            &json!({"a": "a", "b": "b", "align": {"keys": ["kind", "role"], "role_field": "name"}}),
+        )
+        .unwrap();
         let first = s.handle("trace_diff", &req);
         for _ in 0..3 {
             assert_eq!(first, s.handle("trace_diff", &req));
@@ -642,9 +756,15 @@ mod tests {
     #[test]
     fn symbolization_and_resymbolize_through_the_service() {
         let (s, d) = svc("sym");
-        let symbols = |name: &str| json!({"modules": {"main.exe": {"functions": [
-            {"start": 0, "end": 0x2000, "name": name}]}}});
-        call(&s, "trace_open", json!({"session": "a", "symbols": symbols("First"), "symbol_revision": "r1"}));
+        let symbols = |name: &str| {
+            json!({"modules": {"main.exe": {"functions": [
+            {"start": 0, "end": 0x2000, "name": name}]}}})
+        };
+        call(
+            &s,
+            "trace_open",
+            json!({"session": "a", "symbols": symbols("First"), "symbol_revision": "r1"}),
+        );
         let mut evs = events(Recipe::Baseline, 1, 5);
         evs.push(json!({"kind": "app.call", "source_id": "src_a", "source_seq": 7, "producer_gen": 1,
             "clock_domain": "qpc-10mhz", "t_mono_ns": 99999, "confidence": "exact", "process_id": 1000,
@@ -656,11 +776,23 @@ mod tests {
         assert_eq!(r["ok"], true);
         let info = call(&s, "trace_info", json!({"session": "a"}));
         assert_eq!(info["symbolization"]["symbolized"], 1, "{info}");
-        let re = call(&s, "trace_resymbolize", json!({"session": "a", "symbols": symbols("Second"), "symbol_revision": "r2"}));
+        let re = call(
+            &s,
+            "trace_resymbolize",
+            json!({"session": "a", "symbols": symbols("Second"), "symbol_revision": "r2"}),
+        );
         assert_eq!(re["counts"]["symbolized"], 1);
-        let q = call(&s, "trace_query", json!({"session": "a", "kinds": ["app.call"], "with_symbols": true}));
+        let q = call(
+            &s,
+            "trace_query",
+            json!({"session": "a", "kinds": ["app.call"], "with_symbols": true}),
+        );
         assert_eq!(q["symbols"]["rows"][0]["function"], "Second");
-        let pinned = call(&s, "trace_query", json!({"session": "a", "kinds": ["app.call"], "with_symbols": true, "interp": 1}));
+        let pinned = call(
+            &s,
+            "trace_query",
+            json!({"session": "a", "kinds": ["app.call"], "with_symbols": true, "interp": 1}),
+        );
         assert_eq!(pinned["symbols"]["rows"][0]["function"], "First");
         let _ = std::fs::remove_dir_all(d);
     }
@@ -669,15 +801,28 @@ mod tests {
     fn readers_do_not_wait_for_a_busy_writer() {
         let (s, d) = svc("busy");
         call(&s, "trace_open", json!({"session": "a"}));
-        call(&s, "trace_append", json!({"session": "a", "events": events(Recipe::Baseline, 1, 20)}));
+        call(
+            &s,
+            "trace_append",
+            json!({"session": "a", "events": events(Recipe::Baseline, 1, 20)}),
+        );
         let w = s.writer("a").ok().unwrap();
         let held = w.lock().unwrap();
         // A second writer request is answered busy at once; queries are unaffected.
-        assert_eq!(call(&s, "trace_append", json!({"session": "a", "events": []}))["error"]["code"], "busy");
-        assert_eq!(call(&s, "trace_query", json!({"session": "a", "limit": 3}))["ok"], true);
+        assert_eq!(
+            call(&s, "trace_append", json!({"session": "a", "events": []}))["error"]["code"],
+            "busy"
+        );
+        assert_eq!(
+            call(&s, "trace_query", json!({"session": "a", "limit": 3}))["ok"],
+            true
+        );
         assert_eq!(call(&s, "trace_info", json!({"session": "a"}))["ok"], true);
         drop(held);
-        assert_eq!(call(&s, "trace_append", json!({"session": "a", "events": []}))["ok"], true);
+        assert_eq!(
+            call(&s, "trace_append", json!({"session": "a", "events": []}))["ok"],
+            true
+        );
         let _ = std::fs::remove_dir_all(d);
     }
 }

@@ -79,7 +79,9 @@ fn random_fill(buf: &mut [u8]) -> Result<()> {
     if status == 0 {
         Ok(())
     } else {
-        Err(Error::Refused(format!("BCryptGenRandom failed: {status:#x}")))
+        Err(Error::Refused(format!(
+            "BCryptGenRandom failed: {status:#x}"
+        )))
     }
 }
 
@@ -130,7 +132,10 @@ impl KeyRing {
                     let mut bytes = [0u8; 32];
                     let text = text.trim();
                     if text.len() != 64 {
-                        return Err(Error::Refused(format!("key file {} is damaged", path.display())));
+                        return Err(Error::Refused(format!(
+                            "key file {} is damaged",
+                            path.display()
+                        )));
                     }
                     for (i, b) in bytes.iter_mut().enumerate() {
                         *b = u8::from_str_radix(&text[i * 2..i * 2 + 2], 16)
@@ -189,7 +194,9 @@ pub fn redacted_preview(text: &str) -> String {
         } else {
             word.to_string()
         };
-        mask_next = SECRET_WORDS.iter().any(|w| lower.trim_end_matches([':', '=']) == *w)
+        mask_next = SECRET_WORDS
+            .iter()
+            .any(|w| lower.trim_end_matches([':', '=']) == *w)
             && (lower.ends_with(':') || lower.ends_with('='));
         if !out.is_empty() {
             out.push(' ');
@@ -340,9 +347,21 @@ mod tests {
             .as_object()
             .unwrap()
             .clone();
-        scrub(&mut map, &mut ring, "x", PreviewPolicy { allow_preview: true }).unwrap();
+        scrub(
+            &mut map,
+            &mut ring,
+            "x",
+            PreviewPolicy {
+                allow_preview: true,
+            },
+        )
+        .unwrap();
         assert!(map["s"]["preview"].as_str().unwrap().contains("***"));
-        assert!(!map.to_owned().into_iter().any(|(_, v)| v.to_string().contains("abcDEF")));
+        assert!(
+            !map.to_owned()
+                .into_iter()
+                .any(|(_, v)| v.to_string().contains("abcDEF"))
+        );
         let _ = std::fs::remove_dir_all(d);
     }
 }

@@ -302,10 +302,26 @@ mod tests {
     /// handoff chain a -> b -> c plus a fork a -> d, all by tokens.
     fn chain() -> Store {
         load(vec![
-            ev("app.a", 0, 7, json!({"handoff": "t1", "produces": "p"}), |e| e.thread_id = Some(1)),
-            ev("app.b", 1, 7, json!({"handoff": "t1", "consumes": "p", "produces": "q"}), |e| e.thread_id = Some(2)),
-            ev("app.c", 2, 7, json!({"consumes": "q"}), |e| e.thread_id = Some(3)),
-            ev("app.d", 3, 7, json!({"consumes": "p"}), |e| e.thread_id = Some(4)),
+            ev(
+                "app.a",
+                0,
+                7,
+                json!({"handoff": "t1", "produces": "p"}),
+                |e| e.thread_id = Some(1),
+            ),
+            ev(
+                "app.b",
+                1,
+                7,
+                json!({"handoff": "t1", "consumes": "p", "produces": "q"}),
+                |e| e.thread_id = Some(2),
+            ),
+            ev("app.c", 2, 7, json!({"consumes": "q"}), |e| {
+                e.thread_id = Some(3)
+            }),
+            ev("app.d", 3, 7, json!({"consumes": "p"}), |e| {
+                e.thread_id = Some(4)
+            }),
         ])
     }
 
@@ -328,16 +344,27 @@ mod tests {
             &store,
             "ev_x_1",
             Direction::Downstream,
-            Budget { max_depth: 1, ..Budget::default() },
+            Budget {
+                max_depth: 1,
+                ..Budget::default()
+            },
         )
         .unwrap();
         assert_eq!(shallow.truncated.as_deref(), Some("depth"));
-        assert!(shallow.boundaries.iter().any(|b| b.reason == "budget-reached"));
+        assert!(
+            shallow
+                .boundaries
+                .iter()
+                .any(|b| b.reason == "budget-reached")
+        );
         let tiny = explain(
             &store,
             "ev_x_1",
             Direction::Downstream,
-            Budget { max_events: 1, ..Budget::default() },
+            Budget {
+                max_events: 1,
+                ..Budget::default()
+            },
         )
         .unwrap();
         assert_eq!(tiny.truncated.as_deref(), Some("events"));
@@ -360,8 +387,14 @@ mod tests {
         let store = chain();
         assert!(explain(&store, "ev_x_99", Direction::Upstream, Budget::default()).is_err());
         assert!(explain(&store, "nope", Direction::Upstream, Budget::default()).is_err());
-        let a = serde_json::to_string(&explain(&store, "ev_x_1", Direction::Downstream, Budget::default()).unwrap()).unwrap();
-        let b = serde_json::to_string(&explain(&store, "ev_x_1", Direction::Downstream, Budget::default()).unwrap()).unwrap();
+        let a = serde_json::to_string(
+            &explain(&store, "ev_x_1", Direction::Downstream, Budget::default()).unwrap(),
+        )
+        .unwrap();
+        let b = serde_json::to_string(
+            &explain(&store, "ev_x_1", Direction::Downstream, Budget::default()).unwrap(),
+        )
+        .unwrap();
         assert_eq!(a, b);
     }
 }

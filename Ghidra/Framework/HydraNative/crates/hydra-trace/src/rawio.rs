@@ -45,8 +45,8 @@ mod win {
     use std::os::windows::ffi::OsStrExt;
     use std::path::{Path, PathBuf};
     use windows_sys::Win32::Foundation::{
-        CloseHandle, ERROR_HANDLE_EOF, ERROR_IO_PENDING, GetLastError, HANDLE, INVALID_HANDLE_VALUE,
-        WAIT_OBJECT_0,
+        CloseHandle, ERROR_HANDLE_EOF, ERROR_IO_PENDING, GetLastError, HANDLE,
+        INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
     };
     use windows_sys::Win32::Storage::FileSystem::{
         CreateFileW, FILE_FLAG_OVERLAPPED, FILE_GENERIC_READ, FILE_NOTIFY_CHANGE_LAST_WRITE,
@@ -60,7 +60,10 @@ mod win {
     const CHUNK: usize = 1 << 20;
 
     fn wide(p: &Path) -> Vec<u16> {
-        p.as_os_str().encode_wide().chain(std::iter::once(0)).collect()
+        p.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
     }
 
     /// Follows one growing segment. The file is read with overlapped I/O; [`Tail::wait`] sleeps
@@ -108,7 +111,11 @@ mod win {
                 return Err(err);
             }
             let dir = path.parent().unwrap_or_else(|| Path::new("."));
-            let dir = if dir.as_os_str().is_empty() { Path::new(".") } else { dir };
+            let dir = if dir.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                dir
+            };
             let wd = wide(dir);
             // SAFETY: wd is a NUL terminated wide string.
             let notify = unsafe {
@@ -340,7 +347,10 @@ mod tests {
         let _ = tail.wait(300);
         let poll = tail.poll().unwrap();
         assert_eq!(poll.pending_bytes, 0);
-        assert_eq!(tail.records_seen(), raw::scan(&seg.bytes, &seg.id).records.len() as u64);
+        assert_eq!(
+            tail.records_seen(),
+            raw::scan(&seg.bytes, &seg.id).records.len() as u64
+        );
         let _ = std::fs::remove_dir_all(d);
     }
 

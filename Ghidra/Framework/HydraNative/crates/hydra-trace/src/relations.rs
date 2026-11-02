@@ -465,9 +465,9 @@ pub fn current(store: &Store) -> Result<(Vec<Relation>, &'static str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::raw;
     use crate::store_tests::{ev, records};
     use crate::synth::{self, Recipe};
-    use crate::raw;
     use serde_json::json;
 
     fn load(events: Vec<crate::model::Event>) -> Store {
@@ -489,16 +489,24 @@ mod tests {
             .filter(|r| r.relation == "request-completion")
             .collect();
         assert_eq!(rc.len(), 20);
-        assert!(rc.iter().all(|r| r.status == "supported" && r.to_seq.is_some()));
+        assert!(
+            rc.iter()
+                .all(|r| r.status == "supported" && r.to_seq.is_some())
+        );
         assert!(all.iter().all(|r| r.relation != "temporal-only"));
         // x's request is paired with x's completion even though y's completion came first.
         let corr_of = |seq: i64| -> String {
             store
                 .conn()
-                .query_row("SELECT corr FROM events WHERE seq=?1", params![seq], |r| r.get(0))
+                .query_row("SELECT corr FROM events WHERE seq=?1", params![seq], |r| {
+                    r.get(0)
+                })
                 .unwrap()
         };
-        assert!(rc.iter().all(|r| corr_of(r.from_seq) == corr_of(r.to_seq.unwrap())));
+        assert!(
+            rc.iter()
+                .all(|r| corr_of(r.from_seq) == corr_of(r.to_seq.unwrap()))
+        );
     }
 
     #[test]
@@ -541,15 +549,46 @@ mod tests {
     #[test]
     fn handoff_buffer_creation_and_field_write_edges() {
         let store = load(vec![
-            ev("app.post", 0, 7, json!({"handoff": "t1", "produces": "buf1", "corr": "job"}), |e| e.thread_id = Some(1)),
-            ev("app.run", 1, 7, json!({"handoff": "t1", "consumes": "buf1", "created_by": "job"}), |e| e.thread_id = Some(2)),
-            ev("core.state.write", 2, 7, json!({"object": 1, "key": "hp", "new": 5}), |_| {}),
-            ev("core.state.read", 3, 7, json!({"object": 1, "key": "hp", "value": 5}), |_| {}),
-            ev("core.state.read", 4, 7, json!({"object": 1, "key": "hp", "value": 9}), |_| {}),
+            ev(
+                "app.post",
+                0,
+                7,
+                json!({"handoff": "t1", "produces": "buf1", "corr": "job"}),
+                |e| e.thread_id = Some(1),
+            ),
+            ev(
+                "app.run",
+                1,
+                7,
+                json!({"handoff": "t1", "consumes": "buf1", "created_by": "job"}),
+                |e| e.thread_id = Some(2),
+            ),
+            ev(
+                "core.state.write",
+                2,
+                7,
+                json!({"object": 1, "key": "hp", "new": 5}),
+                |_| {},
+            ),
+            ev(
+                "core.state.read",
+                3,
+                7,
+                json!({"object": 1, "key": "hp", "value": 5}),
+                |_| {},
+            ),
+            ev(
+                "core.state.read",
+                4,
+                7,
+                json!({"object": 1, "key": "hp", "value": 9}),
+                |_| {},
+            ),
         ]);
         let all = compute(&store, false).unwrap();
         let has = |relation: &str, status: &str| {
-            all.iter().any(|r| r.relation == relation && r.status == status)
+            all.iter()
+                .any(|r| r.relation == relation && r.status == status)
         };
         assert!(has("async-handoff", "supported"));
         assert!(has("buffer-transform", "supported"));
@@ -561,10 +600,27 @@ mod tests {
     #[test]
     fn temporal_only_exists_only_when_asked_and_says_so() {
         let store = load(vec![
-            ev("core.state.write", 0, 7, json!({"object": 1, "key": "a"}), |_| {}),
-            ev("core.state.write", 1, 7, json!({"object": 1, "key": "b"}), |_| {}),
+            ev(
+                "core.state.write",
+                0,
+                7,
+                json!({"object": 1, "key": "a"}),
+                |_| {},
+            ),
+            ev(
+                "core.state.write",
+                1,
+                7,
+                json!({"object": 1, "key": "b"}),
+                |_| {},
+            ),
         ]);
-        assert!(compute(&store, false).unwrap().iter().all(|r| r.relation != "temporal-only"));
+        assert!(
+            compute(&store, false)
+                .unwrap()
+                .iter()
+                .all(|r| r.relation != "temporal-only")
+        );
         let t = compute(&store, true).unwrap();
         let temporal: Vec<_> = t.iter().filter(|r| r.relation == "temporal-only").collect();
         assert_eq!(temporal.len(), 1);
