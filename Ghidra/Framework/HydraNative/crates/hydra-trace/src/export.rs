@@ -35,6 +35,9 @@ pub fn write_events_jsonl(store: &Store, out: &mut impl Write) -> Result<u64> {
     let mut rows = stmt.query([])?;
     let mut n = 0;
     while let Some(r) = rows.next()? {
+        if n % 1024 == 0 {
+            crate::cancel::check()?;
+        }
         let mut m = Map::new();
         let put = |m: &mut Map<String, Value>, k: &str, v: Value| {
             m.insert(k.into(), v);
@@ -261,7 +264,12 @@ pub fn export(
     // Stage, then move into place; a half-written export is never visible.
     let stage = out.with_extension(format!("{}.staging", std::process::id()));
     let _ = std::fs::remove_dir_all(&stage);
+    crate::cancel::check()?;
     for (name, data) in &files {
+        if let Err(e) = crate::cancel::check() {
+            let _ = std::fs::remove_dir_all(&stage);
+            return Err(e);
+        }
         let path = stage.join(name);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;

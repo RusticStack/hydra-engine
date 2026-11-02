@@ -18,6 +18,9 @@ pub struct Filter {
     pub corr: Option<String>,
     /// Exclusive cursor: only `seq > after`.
     pub after: i64,
+    /// Inclusive upper bound: only `seq <= up_to`. `None` pins to the newest event at the time
+    /// of the query, and the page reports it.
+    pub up_to: Option<i64>,
     pub limit: usize,
 }
 
@@ -39,6 +42,8 @@ pub struct Page {
     pub rows: Vec<Row>,
     /// Pass back as `after` for the next page; `None` when the result is complete.
     pub next: Option<i64>,
+    /// The pin this page was read at; pass it back with `next` to page one snapshot.
+    pub up_to: i64,
     pub truncated: bool,
 }
 
@@ -47,10 +52,14 @@ pub fn query(store: &Store, filter: &Filter) -> Result<Page> {
     let limit = filter.limit.clamp(1, MAX_LIMIT);
     let conn = store.conn();
     let revision = store.revision()?;
+    let up_to: i64 = match filter.up_to {
+        Some(u) => u,
+        None => conn.query_row("SELECT COALESCE(MAX(seq),0) FROM events", [], |r| r.get(0))?,
+    };
     let mut sql = String::from(
-        "SELECT seq,event_id,kind,source_id,t_mono_ns,process_id,thread_id,payload FROM events WHERE seq>?1",
+        "SELECT seq,event_id,kind,source_id,t_mono_ns,process_id,thread_id,payload FROM events WHERE seq>?1 AND seq<=?2",
     );
-    let mut args: Vec<rusqlite::types::Value> = vec![filter.after.into()];
+    let mut args: Vec<rusqlite::types::Value> = vec![filter.after.into(), up_to.into()];
     if !filter.kinds.is_empty() {
         let marks = vec!["?"; filter.kinds.len()].join(",");
         sql.push_str(&format!(" AND kind IN ({marks})"));
@@ -97,6 +106,7 @@ pub fn query(store: &Store, filter: &Filter) -> Result<Page> {
         revision,
         rows,
         next,
+        up_to,
         truncated: filter.limit > MAX_LIMIT,
     })
 }
@@ -569,6 +579,33 @@ mod tests {
         )
         .unwrap();
         assert_eq!(second.rows[0].seq, first.rows[29].seq + 1);
+    }
+
+    #[test]
+    fn a_page_reports_its_pin_and_a_pinned_page_ignores_later_events() {
+        let store = load(Recipe::Baseline, 1, 100, "pin");
+        let first = query(
+            &store,
+            &Filter {
+                limit: 10,
+                ..Filter::default()
+            },
+        )
+        .unwrap();
+        assert!(first.up_to >= first.rows[9].seq);
+        let again = query(
+            &store,
+            &Filter {
+                limit: 1000,
+                after: first.next.unwrap(),
+                up_to: Some(first.rows[9].seq + 5),
+                ..Filter::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(again.rows.last().unwrap().seq, first.rows[9].seq + 5);
+        assert_eq!(again.up_to, first.rows[9].seq + 5);
+        assert_eq!(again.next, None);
     }
 
     #[test]

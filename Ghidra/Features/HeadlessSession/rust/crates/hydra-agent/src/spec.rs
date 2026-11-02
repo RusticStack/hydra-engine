@@ -30,7 +30,8 @@ use serde_json::Value;
 /// One step of the read/query work, in the order the driver chose.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PlanItem {
-    /// `decompile_hot`, `decompile_fresh`, `read_script` or `info`.
+    /// `decompile_hot`, `decompile_fresh`, `read_script`, `info` or `trace_read` (the trace read
+    /// workload over the session named by `arg`).
     pub(crate) op: String,
     /// The step's argument: an address, four addresses, or nothing.
     pub(crate) arg: PlanArg,
@@ -41,7 +42,7 @@ pub(crate) struct PlanItem {
 pub(crate) enum PlanArg {
     /// No argument (`info`).
     None,
-    /// One address (`decompile_hot`, `decompile_fresh`).
+    /// One address (`decompile_hot`, `decompile_fresh`) or one trace session id (`trace_read`).
     One(String),
     /// Several addresses (`read_script`, four at a time as the benchmark does).
     Many(Vec<String>),
@@ -107,7 +108,8 @@ impl Spec {
     /// The file's I/O error, or a message naming the missing or unusable field.
     pub(crate) fn read(path: &Path) -> Result<Self, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let value: Value = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        let value: Value =
+            serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
         Self::from_value(&value)
     }
 
@@ -165,8 +167,14 @@ impl Spec {
             hot: list("hot"),
             fresh: list("fresh"),
             reads: list("reads"),
-            client: value.get("client").and_then(Value::as_str).map(str::to_owned),
-            harness: value.get("harness").and_then(Value::as_str).map(str::to_owned),
+            client: value
+                .get("client")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            harness: value
+                .get("harness")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
             deadline: value.get("deadline").and_then(Value::as_f64),
             max_chars: value
                 .get("maxChars")
@@ -185,10 +193,7 @@ impl Spec {
                 .get("edit_name")
                 .and_then(Value::as_str)
                 .map(str::to_owned),
-            fork: value
-                .get("fork")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
+            fork: value.get("fork").and_then(Value::as_bool).unwrap_or(false),
             fork_dir: value
                 .get("fork_dir")
                 .and_then(Value::as_str)
@@ -312,6 +317,20 @@ mod tests {
             ])
         );
         assert_eq!(spec.plan[2].arg, PlanArg::None);
+    }
+
+    #[test]
+    fn a_trace_read_step_names_its_session() {
+        let spec = Spec::from_value(&json!({
+            "name": "a",
+            "endpoint": "e.json",
+            "rows": "r.jsonl",
+            "project": {"name": "p", "gpr": "g", "program": "x"},
+            "plan": [{"op": "info"}, {"op": "trace_read", "arg": "tbench0001"}]
+        }))
+        .expect("spec");
+        assert_eq!(spec.plan[1].op, "trace_read");
+        assert_eq!(spec.plan[1].arg, PlanArg::One("tbench0001".to_owned()));
     }
 
     #[test]

@@ -4332,6 +4332,67 @@ the publish order of D41, the flush-before-rename rule of E12 (A38) and the repl
   default this amendment no longer makes; it is not a measurement of (a)-(d) alone.
   `<hydra-perf>/fork/forkbench-*.json`.
 
+### 8.20 Revision 8.16: the trace commands (capability `trace`, `12.3-hydra.6`, WS-C)
+
+Twelve protocol 3 commands that record and read **semantic traces** (`TRACE-1.md`). Capability `trace`=1 is advertised only when the
+`hydra_native` library has the trace functions and `-set trace=false` was not given; `minClient` stays `1.0.0`. A protocol 2 connection
+(the stock 1.0.0 client) gets `unknown_command` for every `trace_*` name and keeps working.
+
+**Who does what.** The Rust engine (`hydra-trace`'s `Service`, called through `hydra_trace_request`: request bytes in, reply bytes out)
+owns the store and the shapes of the requests and replies below; its replies are deterministic JSON (sorted keys, no floats) and go
+back as they are through the direct-reply path, with `"ok":true` inside the `result` object, so the Python and the Rust client see the same
+reply line (`daemon_tests.py trace_client_identity`). Java adds what only the daemon knows: the **writer lease**, the **symbol table** of a
+program, the **disk reserve**, the **lane**, the **cancel** flag and the **store root**. Fields only Java reads (`create`, `mode`, `cap`,
+`takeover`, `program`, `project`, `modules`, `background`, `name`) are removed before the request reaches the engine.
+
+| Command | Fields | Reply (`result`) | Lane |
+|---|---|---|---|
+| `trace_open` | `session`? (a new id when `create`), `create`=false, `mode`=`read`\|`write` (default `write` with `create`, else `read`), `cap`?, `takeover`=false, `program`?, `project`?, `modules`? [module names], `max_events`?, `max_bytes`?, `preview`? | writer: `session`, `created`, `revision`, `recovery` {`sources` [{`source`, `records`, `torn_bytes_removed`, `damage`}], `replayed_batches`, `tail_batches`} (or `already_open`), `lease` {`role`, `producerGen`, `holder`, `cap` (only when a new capability is issued), `reclaimed`, `tookOver`}, `symbols` {`revision`, `symbolRevision`, `program`, `modification`, `functions`, `modules`} when `program` was given. Reader: `session`, `created:false`, `revision`, `events`, `lease`. | quick |
+| `trace_append` | `session`, `cap`, `events` [TRACE-1 envelopes: `kind`, `source_id`, `source_seq`, `producer_gen`, `clock_domain`, `t_mono_ns`, `confidence`, `payload`, ...] | `accepted`, `rejected` [{`index`, `reason`}], `revision`, `dropped_budget`, `strings_keyed`. One group commit: a reader sees all of a batch or none of it. | quick |
+| `trace_mark` | `session`, `cap`, `label`, `phase`?, `frame`? | as `trace_append` for one `core.marker` | quick |
+| `trace_query` | `session`, `kinds`?, `resource_key`?, `state_key`?, `corr`?, `process_gen`?, `after`?, `up_to`?, `limit`=100 (at most 1000), `group_by`? (`kind`, `resource`, `state`, `module`, `source`), `with_symbols`?, `interp`? | `revision`, `rows`, `next`, `up_to`, `truncated`, `gaps`; with `group_by`: `groups` [{`key`, `count`, `first_event`}]; with `with_symbols`: `symbols` {`interp`, `rows` [{`seq`, `function`, `reason`}]}. A page reports the high-water mark it read at as `up_to`; passing it back with `after` pages one snapshot while the writer goes on. | quick |
+| `trace_explain` | `session`, `event_id`, `direction`=`downstream`\|`upstream`, `max_depth`?, `max_events`?, `max_bytes`? | `root`, `nodes`, `edges`, `paths`, `boundaries`, `truncated` | quick |
+| `trace_diff` | `a`, `b` (session ids), `group_by`=`kind`, `kinds`?, `align`? {`keys`, ...}, `background`=false | `diff` {`entries`, `unmatched_a`, `unmatched_b`, ...} or, with `align`, `aligned`; byte-deterministic for the same two snapshots | quick; **long** with `background:true` or when the two indexes together exceed `trace.quickMB` |
+| `trace_check` | `session`, `assertions` [{`type`, `name`, ...}], `persist`=true, `cap`? | `results` [{`verdict` (`pass`, `fail` or `unknown`), ...}], `persisted`. The results are stored in the session only for the lease holder (`cap`); anyone else gets `persisted:false`. | quick |
+| `trace_export` | `session`, `name`=`export`, `overwrite`?, `authorized_artifacts`?, `exported_at`? | `out` (the folder `<root>/<session>/export/<name>`), `bundle_id`, `revision`, `events`, `files`. `out` cannot be chosen by the client. | **long** |
+| `trace_close` | `session`, `cap` | `session`, `was_open`; the writer ends its writing, the session stays readable and the capability stays valid (the lease becomes an orphan) | quick |
+| `trace_list` | | `sessions` [{`session`, `revision`, `events`, `writer_open`, `lease`}], `count` | quick |
+| `trace_info` | `session` | `revision`, `events`, `sources`, `gaps`, `rejects`, `stopped`, `budget`, `interpretations`, `symbolization`, `relations`, `writer_open`, `digest`, `lease` (`held` with `holder` and `producerGen`, `orphan`, `none`; never a capability or a time), `symbolRevision`? | quick |
+| `trace_resymbolize` | `session`, `cap`, `program`, `project`?, `modules`? | `interp` (the new interpretation), `counts`, `revision`, `symbols` (as in `trace_open`); the raw observations are not touched | **long** |
+
+**Writer lease.** A session has one writer. `trace_open` with `create` (or `mode:"write"` on an orphaned session) grants the lease and
+returns a 128-bit capability, `cap`; the daemon keeps only its SHA-256 (`lease.json`). Writing commands carry `cap` and must come from the
+connection that holds the lease; anything else is `not_owner` (`details`: `session`, `holder`, `orphan`, `producerGen`, `suggest`
+`read`, `takeover` or `open`). A producer that reconnects opens with its `cap`: the lease moves to the new connection and `producerGen`
+goes up by one. When the holder's connection ends the lease is an **orphan**: its `cap` holder may reclaim it, anyone may `takeover:true`
+(a new `cap`, a new generation, the old `cap` worthless); a live holder is never taken over. After a daemon restart every lease is an
+orphan. Reads never need the lease. (The engine itself has one writer per session and answers `busy` to a second request that
+writes the same session at the same moment; the lease keeps the second writer out before that.)
+
+**Recovery.** The engine writes the raw hash-chained segment (`segments/<source>.trace`) before the index commits. A writer open cuts a torn
+tail and replays the batches the index does not have (`recovery`); a session whose index was lost is rebuilt from its segments. A reader of
+a session whose writer died sees the committed rows only.
+
+**Symbolization.** `trace_open` (with `program`) and `trace_resymbolize` walk the program once under its shared lock and send the engine a
+table of module-relative function ranges and executable ranges (`symbols`, with `symbol_revision` `r<n>`, n counting up per session; recorded
+in `symbols.json`). The engine resolves each event's address against the module it was in at the time (from the trace's own
+`core.module.load` events), pins the answer to that interpretation, and keeps every earlier interpretation: `trace_query` with
+`with_symbols` and `interp` reads any of them. An address that does not resolve keeps `function:null` and a reason (`no-stack`, `not-code`,
+`module-unknown`, `no-symbol`). `modules` names the module(s) the program is the image of (default: the program's file name).
+
+**Store and limits.** The store root is `-Dhydra.trace.root`, else `-set trace.root=<dir>`, else `<state>/traces`. `-set trace.quickMB`
+(default 64) is the size of two indexes above which a diff runs in the long lane; `-set trace=false` disables the commands. A new session,
+`trace_resymbolize` and `trace_export` need `diskReserve` plus an estimate free on the store's volume, else `busy` with
+`details.reason:"capacity"` and `details.resource:"disk"` (reads, and appends to an existing session, are still served). A session id is
+1 to 64 of `A-Za-z0-9_-`; a request is at most 16 MiB; a query page at most 1000 rows. A cancelled request (`cancel`, a timeout, a dead
+client) stops inside the engine at its next check (a native flag it polls; `trace_export` and `trace_resymbolize` check) and answers
+`cancelled`; an export leaves no folder.
+
+**Error codes** (the engine's own code is kept in `details.engineCode`): `bad_request` (shape, a bad `group_by`, an unknown assertion
+type), `not_found` (no such session), `not_owner`, `busy` (disk reserve, or a second writer at once), `conflict` (the session exists;
+the engine has no writer open for it), `cancelled`, `unknown_command` (protocol 2), `failed` with `details.reason` `native_missing`,
+`native_call`, `trace_root` or `no_trace_root`, or `details.engineCode` `corrupt`, `io`, `internal`.
+
 ### W0
 
 **X0 (Hydra, L): the oracle, the regression suites and the red table.**

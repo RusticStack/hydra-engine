@@ -41,7 +41,7 @@ final class Advertised {
 	static final List<String> CAPABILITIES = List.of("errorNext", "expectAll", "idempotency",
 		"laneHint", "maintLane", "queueInfo", "cancelWait", "forkReport", "format", "backup",
 		"upgradeGate", "scriptIsolation", "scriptSha256", "attemptedChanges", "health", "identity",
-		"seal", "forkAtomic", "admission");
+		"seal", "forkAtomic", "admission", "trace");
 
 	/** The limit names, in reply order. */
 	static final List<String> LIMITS = List.of("maxQuick", "maxLong", "maxMaint", "maxImports",
