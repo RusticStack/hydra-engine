@@ -1,9 +1,11 @@
 # Hydra Engine 12.3-hydra.6: release notes
 
-Prepared 2026-11-02. **Not tagged, not pushed, not published.** Based on the same upstream Ghidra `master` (12.3 DEV)
-commit as 12.3-hydra.5. This release adds the semantic trace and the `decompile` response cap and fragment-wise decompile of
-issues 6 and 7 (see `CHANGELOG.md`). This file records every gate that was run for the release with its result, the lane
-measurements of the non-functional workstream (sections 1 to 6), and what was not met or not run.
+Released 2026-11-02. Based on the same upstream Ghidra `master` (12.3 DEV) commit as 12.3-hydra.5
+(`1b9e58a915cf867e106495eaa2a4b18eb4971c9d`). This release adds the semantic trace and the `decompile` response cap, partial text,
+fragment-wise decompile and spill-to-disk of issues 6 and 7 (see `CHANGELOG.md`). This file records every gate that was run for the
+release with its result, and what was not met or not run. **Section F is the final gate pass** on the final install; sections 0 to 6 are
+the earlier candidate gate pass and the lane measurements, kept with their own install and date, and are superseded by section F where
+both speak (notably `trace_info`, which is O(1) now, and the ingest rate).
 
 Rule (as in the hydra.5 notes): a claim appears only with the run that produced it. Scope of every result: a process tree on
 Windows x64 with JDK 25 on NTFS, on one shared machine (system requirements in `README.md`; other lanes were running on it, which
@@ -12,7 +14,59 @@ is why wall times in the soak differ between runs). Nothing is stated about ReFS
 Evidence: `E:/Projects/Hydra/_logs/trace-final/F/` (gates of section 0), `_logs/trace-final/` (the first gate pass on the
 pre-merge install, same results), `_logs/trace-lnfr/` (sections 1 to 6).
 
-## 0. Release gates of the candidate
+## F. Final gates (install `final2b`, tree `trace/final2-eng` merged into `trace/integration`)
+
+Install under test: `C:/dev-overflow/hydra-engines/final2b/ghidra_12.3_DEV` on NTFS, stamped 12.3-hydra.6, assembled locally from the
+tree (javac, release `hydra_native.dll`, `hydra-trace`, `hydra-agent`, `hydra-etw`); **not a Gradle or CI build of the release zip**, which
+does not exist yet. Logs: `E:/Projects/Hydra/_logs/final2/` (build, Rust) and `final2/F2/` (suites). One shared machine (i7-13700KF, 24
+logical processors) with other jobs running; wall times and CPU in the bench are noisy for that reason.
+
+| Gate | Result | Run |
+|---|---|---|
+| Golden 9.1 (KotOR, 8,616 functions, `production` and `explicit`) | **pass**: 8,616 of 8,616, both diffs rc 0, source tree hash unchanged (`6d8ced78...0df`) | `F2/g91b.out.log` ("GATE 9.1 PASS") |
+| `client_compat_tests.py` | **61/61** (includes `frag_noncontiguous`, `cap_overflow`, `cap_partial`, `cap_default`, `spill`, `trace_client_fields`, `trace_stock_refused`) | `F2/cc.log` |
+| `contract_tests.py` | **7/7** | `F2/contract.log` |
+| `session_smoke.py` | all smoke checks passed | `F2/smoke.log` |
+| Legacy cases `upgrade_cache`, `legacy_overlay`, `fork_upgrade_from_cache` | **3/3** (the fixture copies are re-owned for the running user now, see the changelog) | `F2/legacy.log` |
+| Daemon suite `run_parallel.py`, 16 at once | **270 of 270 passed**, 0 skipped, 0 failed alone, 0 failed under load, 0 problems; wall 512 s | `F2/daemon.log` |
+| Named flaky cases alone | 6/6 passed | `F2/flaky.log` |
+| Rust (`cargo test`, release) in HeadlessSession/rust, HydraNative, Decompiler/rust, hydra-snapshot | all exit 0; the ignored tests of HydraNative (including the 1,000,000-event `scale.rs`: 2 passed, 74.82 s) and hydra-snapshot exit 0 | `final2/rust-summary.log`, `test-*.log`, `test-ignored-*.log` |
+| `clippy` and `fmt` | HydraNative and hydra-snapshot clean; HeadlessSession/rust clippy clean but `fmt` drifts; Decompiler/rust has clippy errors (14) and `fmt` drift. These two are **pre-existing against hydra.5 and untouched** by this release | `final2/rust-summary.log`, `clippy-*.log`, `fmt-*.log` |
+| 16-agent bench, 825 operations, h5 against the candidate, 3 rotated rounds, 6 configurations (18 runs) | `foreignBlocked` **0 in all 18 runs** (and in the 6 re-run runs); trace digest `c12316d79475b820` and 0 trace errors in all 6 trace runs; agents digest `285b55a2f873abb9` with 412 reply keys in **17 of 18 runs**. **One run** (`cand-auto 191625`) answered 341 keys with digest `917fbe6c1c936de9`, 4 agent operation errors (the others have 1) and 8 contended, with another lane's CPU burner running beside it; explained below, and a clean re-run of 6 runs is all 412 keys | `F2/bench-report.md`, `F2/bench/` |
+
+The one deviating bench run (`cand-auto 191625`): 341 of 412 keys, 4 operation errors (the `cand-auto` row of the report shows ops ok 662 to 825
+across its three runs), while another lane's CPU burner was running. Per the lane B-clean analysis (stated by the lead; the per-request refusal
+text is in that lane's analysis, not re-derived here): this was the bounded request queue working under CPU starvation. 3 requests were
+refused as busy ("already has 7 requests waiting for it; retry later", the `lock_queue_full` cap) while the 16-agent open storm took about
+1.3 s (`open_view` p50 1313 ms against 3 to 7 ms normally). The bench agents do not retry on busy, so the refused agents skipped work (662
+operations, 341 keys). No data was corrupted. Not applied, possible follow-ups: give waiters behind a single-flight opener the half-lane
+limit, or retry on busy in the bench agent.
+
+**Clean re-run (lane B-clean, `_logs/bclean/B1.report.md`, same install `final2b`)**: 6 runs, 3 `cand-auto` without trace load and 3
+`candtr-auto` with 4 trace readers and a live capture: all 6 have agents digest `285b55a2f873abb9`, 412 keys, `foreignBlocked` 0, `contended`
+0, exactly 1 operation error each (the baseline `edit` bad_request that every run shows), trace digest `c12316d79475b820` and 0 trace errors in
+the 3 trace runs. Tree CPU median 20.65 s (20.06 to 21.05) without trace load against 25.6 s (25.08 to 26.06) with it, about +24 %.
+
+Medians of the 3 rounds (min-max in `F2/bench-report.md`): tree CPU s h5-generic 21.23, h5-auto 20.22, cand-generic 20.80, cand-auto 24.38,
+candtr-generic 29.11, candtr-auto 27.28; peak committed MB 978, 1060, 1065, 1101, 1129, 1028. The `cand-auto` median is lifted by the
+deviating run and by the noise; a quiet-machine comparison with h5 was not completed.
+
+### F.1 Not run, not met (final pass)
+
+- **Soak (multi-project) on `final2b` was not run to completion**; only a partial `f1-candtr-a` result exists in `F2/mp/`, which is not a
+  gate result. The soak on the earlier install (section 0.5) was 818 of 818, 0 errors, 0 waits.
+- Not run: a memory-limited (`-Xmx`) run, the hosted-runner CI, a Gradle or CI build of the release zip, ReFS, other hardware, a real Frida
+  or ETW capture through the daemon at the bench rate.
+- `Features/Decompiler/rust` ignored tests exit 101: `n_workers_match_one_worker_and_stock` needs `HYDRA_DECOMP_TEST_ROOT`, which was not
+  set; that test did not run.
+- The protocol-2 and protocol-3 characterization goldens (1/7 and 9/13) are stale against hydra.5 as well (the status reply gained
+  `decompileBackend`) and were not re-recorded.
+- `yield_slots_stress` and `script_modes` fail under 16-worker load only (no failure alone is recorded in these logs).
+- The `cand-auto` bench deviation above.
+- Real-binary reproduction of the issue-6 overflow was not done: the overflow, partial, paging and spill behaviour is tested with the
+  size-hook and 8 KB-threshold cases of `cc_issues_eng.py` on a test function (116,988 characters of C), not with the reporter's binary.
+
+## 0. Release gates of the first candidate (earlier install; superseded by section F where they overlap)
 
 Candidate: branch `trace/final-eng` = `trace/integration` (including `trace/issues-eng` 241439c72d) plus the snapshot fix of 0.1.
 The install under test is `C:/dev-overflow/hydra-engines/trace-final/ghidra_12.3_DEV` on NTFS, stamped
@@ -110,7 +164,7 @@ means wall time is not a result of this release. Correctness columns are in the 
 - **Overhead on a bare-loop microbenchmark is not met.** Hydralysis `docs/trace-overhead.md`: 0.1 % (16 ms frames) and 1.7 % (200 us
   frames) are inside the 5 % target; a loop of about 4 us per frame costs 113 % of mean frame time with 678k of 990k hits shed (counted and
   cited). The 2 % target for sampled mode is not established by any run listed here.
-- **Live `trace_info` is O(session size)**: it is the main trace cost in the soak (section 4). Not fixed.
+- **Live `trace_info` was O(session size)** when sections 0 to 4 were measured and the main trace cost in the soak (section 4). `1e05454ccc` made it O(1) afterwards; the soak was not re-run with it, so the soak cost is the old figure.
 - **Daemon CPU cost of trace use is not free** (0.4, 0.5).
 - **The trace reply digest differs from the lane runs** (`91606cf1e287...` in sections 3 and 4, `c12316d79475...` here); it is identical
   across all 6 bench runs and both soak runs here, so the stability gate holds. Which merged lane changed the reply bytes was not bisected.
@@ -127,7 +181,7 @@ means wall time is not a result of this release. Correctness columns are in the 
   session holds no `$string` values**: string ids are keyed per install by design (unlinkable across installs), so a
   session with strings has a different digest per install. The stability gate uses reference sessions without strings.
 - `trace_info` on a live session costs O(session size) (it digests every table on each call): 151 to 192 ms p50 and
-  436 to 541 ms p99 at 100,000 events. It is the dominant trace cost in the multi-project run (section 4). Not fixed here.
+  436 to 541 ms p99 at 100,000 events. It is the dominant trace cost in the multi-project run (section 4). Made O(1) afterwards by `1e05454ccc`; not re-measured in the soak.
 - The protocol has no shared-scope option: key scope is always `session:<id>`. Shared scope exists at the key-ring level and
   is tested there only.
 - There is no session-level eviction, only artifact eviction with a tombstone; an exported bundle cannot be recalled.
