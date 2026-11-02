@@ -1,0 +1,819 @@
+## ###
+# IP: GHIDRA
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+##
+"""Reply-parity harness for the Hydra Engine daemon: record a fixed corpus of requests against one
+install, keep every reply line (masked), and compare two recordings. Standard library only.
+
+    python reply_parity.py record --ghidra <install dir> --work <empty dir> --out <file.jsonl>
+    python reply_parity.py compare <a.jsonl> <b.jsonl>        # exit 0 same, 1 differs, 2 bad input
+    python reply_parity.py --selftest                          # the masks and compare, offline
+
+``--ghidra`` is the install root (the directory that holds ``Ghidra/``, for example
+``C:\\dev-overflow\\hydra-engines\\final2b\\ghidra_12.3_DEV``). The client is the install's own
+``support/ghidra_session.py`` (protocol 3); the protocol-2 section uses the vendored stock 1.0.0
+client, as the characterization suite does. ``--work`` must be empty or absent: every run builds
+its own fixtures there. ``--kotor <Project.gpr>`` adds the KotOR project (default: the golden 9.1
+project ``D:/Projects/Hydra/_golden/kotor-src-copy/kotor.gpr`` when it exists; ``--no-kotor``
+leaves it out). A missing KotOR project is recorded as a ``skipped`` line, so two recordings
+compare only if they both had it or both lacked it.
+
+The corpus (sections, in the order they run; each request is one record):
+
+* ``session`` (daemon ``v3``): ping, hello, status, health, projects, programs, overlays; the
+  ``no_project`` and ``no_program`` errors of every command that needs one; ``bad_request``,
+  ``not_found`` and ``unknown_command``; ``ping`` with a bad label; ``cancel`` with a target and
+  with ``all``.
+* ``read``: open a project read-only, open it again (joins), ``project``/``projects``/``list``
+  variants (folder, paging, programsOnly, not_found, bad limit); ``info``, ``programs``, ``status``,
+  ``journal``, ``overlays``; ``functions`` (paging, ``contains``, ``regex``, a bad regex); decompile
+  fresh and hot (the same request twice), by name, by address, by ``rva:`` and ``va:`` address,
+  with ``maxChars``, with ``timeout``, and their errors; the synthetic non-contiguous function
+  (``fragments``), a contiguous large one, ``maxResultKb`` 1 (the response cap, truncated and
+  partial), the same again after the cap, ``maxResultMb`` out of range; ``switch``.
+* ``multi-client``: a second client joins the read-only project, reads it, closes; the first
+  client closes it last.
+* ``overlay``: overlay programs (open, info, rename, comment, decompile, functions, script-free),
+  ``drop_overlay``, ``promote_overlay`` into a fork (the overlay publish path), and its errors.
+* ``edit-fork-publish``: a writable project: rename (with ``expect``), comment, ``edit`` batches
+  (one applied, one refused with nothing applied), ``journal`` (since, limit, author), ``analyze``
+  options error, ``script`` (a write, a read), ``save`` (and "nothing to save"), ``close_program``
+  refused with unsaved changes and ``discard``, ``fork_project`` (full, read-only, named ``.gpr``,
+  the conflict on an existing fork, bad mode and bad name), refresh, a fork of a fork, and the
+  publish of one fork (the ``.gpr``-last fork publish protocol).
+* ``trace`` (daemon ``v3``, protocol 3): ``trace_open`` (create, conflict, not_found, bad path),
+  ``trace_append`` (30 synthetic TRACE-1 envelopes from ``dt_trace.ev``, rejected kinds, a
+  non-list), ``trace_mark``, ``trace_query`` (paging, ``group_by`` kind and an invalid key,
+  ``kinds``), ``trace_explain``, ``trace_check`` (cardinality, forbidden, an unknown type),
+  ``trace_info``, ``trace_diff`` between two synthetic sessions, ``trace_list``.
+* ``kotor`` (daemon ``v3``): the golden 9.1 project, read-only, its first function decompiled
+  fresh and hot; or ``skipped``.
+* ``trace-busy`` (daemon ``tight``, ``engine.diskReserve`` above the free space): ``trace_open``
+  refused with ``busy`` (resource ``disk``), as in ``dt_trace.t_disk_reserve``.
+* ``protocol2`` (daemon ``v2``, the vendored stock 1.0.0 client): ping, status, projects, open,
+  info, functions, decompile fresh and hot, a decompile by address, ``trace_list`` answered
+  ``unknown_command``, close.
+
+Masks (applied to every reply and to every request's fields, in this order; each is a rule of
+``characterization_tests.Masker`` unless marked *new*):
+
+1. Top-level ``id`` of a reply -> ``<id>`` (the request counter; *new*, the id is volatile by
+   definition).
+2. Keys in ``characterization_tests.VOLATILE`` (``ms``, ``pid``, ``startedAt``, ``port``,
+   ``token``, ``install``, ``hydraVersion``, ``time``, ``host``, ``method``, ``trace`` ...) and
+   keys ending ``Ms``, ``MsAgo``, ``Mb``, ``PerMb``, ``Seconds`` or ``Bytes`` -> ``<masked>``
+   (their key and type stay).
+3. *new* keys whose scalar value is masked: ``cap`` (a trace lease capability, random per
+   session), ``elapsed``, ``ts``, ``cid``, ``t_mono_ns`` (a trace mark's monotonic time), ``have``
+   (free disk space in the ``busy`` reason; ``need`` stays), ``cacheBuild`` and ``progress`` (the
+   KotOR upgrade-cache build state and its copy progress, which are timing-dependent), and
+   ``store_bytes`` (the size of the trace store, which moves by a byte between runs; not yet
+   explained, so it is masked and listed as a blind spot). The list key ``pids`` keeps its length and masks each
+   item. ``seen`` (GC collections), ``phase`` (cache-build phase) and the whole ``tick`` object
+   (the daemon heartbeat) are wall-clock driven and masked too. Under ``scheduler`` the capacity keys ``slots``/``cap``/``perKeyCap`` are masked and
+   must stay positive ints (rule 4 below handles them).
+3a. *new* text rules: a 16-hex host-derived file ID before a program path (``<fid>:/x.exe``)
+   -> ``<fid>:``; ``N MB free`` in a message -> ``<n> MB free``.
+4. The copied project's total size (``bytes`` next to ``mode``) -> ``<masked>``; anything but a
+   positive int is a harness error, not a mask.
+5. Release stamps ``12.3-hydra.6`` and the like inside text -> ``<hydra-version>``.
+6. ``N ms`` inside text -> ``<n>ms``; numbers of 10 or more digits inside text -> ``<n>``.
+7. ISO timestamps (``2026-11-02T10:00:00Z``) -> ``<time>``.
+8. 16-hex-digit revision fingerprints -> ``<revN>``, numbered by first appearance in the run, so
+   equal and different revisions stay distinguishable.
+9. Paths: the work directory -> ``<WORK>`` and the install -> ``<INSTALL>`` (both slash styles).
+   A project path under the work directory is therefore ``<WORK>/...``.
+
+The masked reply is stored in canonical form (``json.dumps`` with no spaces, ASCII escapes, keys
+in the order the daemon wrote them). Each record of the JSONL output holds ``n`` (1-based),
+``section``, ``daemon``, ``who`` (the client), ``cmd``, ``request`` (the masked fields) and
+``reply`` (the masked reply object), or ``skipped`` (a section that did not run), or a
+``<no reply: ...>`` string when the daemon sent no answer within the deadline.
+
+Deadlines: every request waits at most ``DEADLINE`` seconds (``SCRIPT_DEADLINE`` for scripts).
+The engine-client sessions use the client's own ``deadline`` (which sends ``cancel``); the stock
+1.0.0 client has no deadline, so its reads are bounded by a watchdog that shuts the socket.
+
+Not covered (see the report that goes with the lane): timing of replies and progress events (not
+replies), the start-up banner, ``shutdown``, the ``busy`` on a project lock (needs a project-exclusive
+request of a known duration), file-system dependent forks (``copy-on-write``, ``maxCopyMb``),
+``import`` of new programs beyond the fixture, ``sealed``/``seal_project``, the protocol-3
+``hello`` capability values (masked by the ``trace`` and ``method`` rules), multi-process
+races, and the Hydralysis client. Any byte the masks hide is a blind spot; ``--selftest`` lists them.
+"""
+import argparse
+import contextlib
+import difflib
+import json
+import pathlib
+import re
+import shutil
+import socket
+import sys
+import threading
+import time
+
+sys.dont_write_bytecode = True
+HERE = pathlib.Path(__file__).resolve().parent
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
+
+import characterization_tests as ct  # noqa: E402  (Masker, fixture PEs, scripts, client loader)
+import cc_issues_eng as ie  # noqa: E402  (the synthetic non-contiguous PE and its script)
+import dt_trace as dtt  # noqa: E402  (ev(): the TRACE-1 envelope of the trace tests)
+
+#: Seconds a request may wait for its reply, and for a script (the JVM starts inside it).
+DEADLINE = 90.0
+SCRIPT_DEADLINE = 180.0
+DEFAULT_KOTOR = "D:/Projects/Hydra/_golden/kotor-src-copy/kotor.gpr"
+#: Masked on top of ``characterization_tests.VOLATILE`` (scalars only; see the docstring, rule 3).
+EXTRA_VOLATILE = {"cap", "elapsed", "ts", "cid",
+                  # trace mark time (monotonic clock), free disk space, KotOR cache-build state
+                  "t_mono_ns", "have", "cacheBuild", "progress", "store_bytes",
+                  # daemon heartbeat, GC collection count, cache-build phase (wall-clock driven)
+                  "seen", "phase"}
+#: Whole objects masked: the daemon heartbeat (its counters move with wall-clock time).
+#: ``cacheBuildInfo``: the KotOR upgrade-cache build in flight when the program opens (a background job
+#: whose message and copy progress depend on timing; the build's result is not masked, only its state).
+EXTRA_OBJECT = {"tick", "cacheBuildInfo"}
+#: Lists masked item by item (their length stays): daemon process ids.
+EXTRA_LIST = {"pids"}
+#: A 16-hex host-derived file ID before a program path (``<fid>:/swkotor.exe``).
+FID = re.compile(r"\b[0-9a-f]{16}:")
+FREE = re.compile(r"\d+ MB free")
+
+F1, F2, ENTRY = ct.F1, ct.F2, ct.ENTRY
+ENTRY_FRAG, BIG = ie.ENTRY, ie.BIG
+NOWHERE = "nowhere/Nothing.gpr"
+
+
+class Harness(Exception):
+    """The corpus cannot be recorded: a step the rest depends on failed, or a fixture did not build."""
+
+
+class ParityMasker(ct.Masker):
+    """The characterization masker, plus the harness keys of rule 3."""
+
+    def value(self, v, key=None):
+        if key in EXTRA_LIST and isinstance(v, list):
+            return ["<masked>" for _ in v]
+        if key in EXTRA_OBJECT and isinstance(v, dict):
+            return "<masked>"
+        if key in EXTRA_VOLATILE and v is not None and not isinstance(v, (dict, list)):
+            return "<masked>"
+        out = super().value(v, key)
+        if isinstance(out, str):
+            out = FREE.sub("<n> MB free", FID.sub("<fid>:", out))
+        return out
+
+
+def canon(masker, line):
+    """The masked, canonical form of one raw reply line (rules 1 to 9)."""
+    out = masker.value(json.loads(line))
+    if isinstance(out, dict) and "id" in out:
+        out["id"] = "<id>"
+    return out
+
+
+def stop(d):
+    try:
+        d.stop(force=True)
+    except Exception:  # noqa: BLE001
+        with contextlib.suppress(Exception):
+            d.kill()
+
+
+def watchdog(session, seconds):
+    """Shuts the socket of a stock-client session after ``seconds``, so its blocking read returns."""
+    def fire():
+        with contextlib.suppress(Exception):
+            session.sock.shutdown(socket.SHUT_RDWR)
+    t = threading.Timer(seconds, fire)
+    t.daemon = True
+    t.start()
+    return t
+
+
+class Recorder:
+    def __init__(self, masker, fh, log):
+        self.masker = masker
+        self.fh = fh
+        self.log = log
+        self.n = 0
+        self.section = ""
+        self.daemon = ""
+        self.mask_errors = []
+
+    def start(self, section, daemon):
+        self.section, self.daemon = section, daemon
+        self.log(f"section {section} (daemon {daemon})")
+
+    def skip(self, reason):
+        self.n += 1
+        self._emit({"n": self.n, "section": self.section, "skipped": reason})
+        self.log(f"  skipped: {reason}")
+
+    def _emit(self, rec):
+        self.fh.write(json.dumps(rec, separators=(",", ":"), ensure_ascii=True) + "\n")
+
+    def write(self, who, cmd, fields, reply):
+        self.n += 1
+        try:
+            req = self.masker.value(dict(fields))
+        except ct.Fail as e:
+            self.mask_errors.append(f"request {self.n} {cmd}: {e}")
+            req = "<mask error>"
+        self._emit({"n": self.n, "section": self.section, "daemon": self.daemon, "who": who,
+                    "cmd": cmd, "request": req, "reply": reply})
+
+
+class Conn:
+    """One client session of a run. Every request goes through ``q``, which records it and returns
+    the raw (unmasked) reply object, or ``None`` when no reply came."""
+
+    def __init__(self, rec, session, who, exc, stock=False):
+        self.rec, self.s, self.who, self.exc, self.stock = rec, session, who, exc, stock
+        self.replies = {}
+        orig = session._recv
+
+        def tapped(*a, **k):
+            line = orig(*a, **k)
+            if line:
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    return line
+                if isinstance(obj, dict) and "id" in obj and "ok" in obj:
+                    self.replies[obj["id"]] = line.rstrip("\r\n")
+            return line
+        session._recv = tapped
+
+    def q(self, cmd, deadline=DEADLINE, **f):
+        rid = self.s.send(cmd, **f)
+        code = None
+        dog = watchdog(self.s, deadline) if self.stock else None
+        try:
+            if self.stock:
+                self.s.wait(rid)
+            else:
+                self.s.wait(rid, deadline)
+        except self.exc as e:
+            code = getattr(e, "code", None) or "error"
+        finally:
+            if dog is not None:
+                dog.cancel()
+        line = self.replies.pop(rid, None)
+        if line is None:
+            reply = f"<no reply: {code or 'missing'}>"
+            obj = None
+        else:
+            obj = json.loads(line)
+            try:
+                reply = canon(self.rec.masker, line)
+            except ct.Fail as e:
+                self.rec.mask_errors.append(f"{cmd}: {e}")
+                reply = "<mask error>"
+        self.rec.write(self.who, cmd, f, reply)
+        return obj
+
+    def ok(self, cmd, deadline=DEADLINE, **f):
+        obj = self.q(cmd, deadline, **f)
+        if obj is None or not obj.get("ok"):
+            raise Harness(f"{self.who}: {cmd} {f} must succeed here: "
+                          f"{(obj or {}).get('error') or 'no reply'}")
+        return obj["result"]
+
+    def close(self):
+        with contextlib.suppress(Exception):
+            self.s.close()
+
+
+# ---- fixtures ------------------------------------------------------------------------------
+
+def write_inputs(work):
+    """The scripts and the synthetic PEs of the run (the same ones the other suites write)."""
+    scripts, bins = work / "scripts", work / "bin"
+    scripts.mkdir(parents=True, exist_ok=True)
+    bins.mkdir(parents=True, exist_ok=True)
+    for name, text in ct.SCRIPTS.items():
+        (scripts / name).write_text(text)
+    (scripts / "FragFixture.java").write_text(ie.FIX_SCRIPT)
+    (bins / "alpha.exe").write_bytes(ct.make_pe(7))
+    (bins / "beta.exe").write_bytes(ct.make_pe(9))
+    (bins / "frag.exe").write_bytes(ie.make_pe())
+    state = work / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    cfg = {"tmpdir": str(work / "tmp"), "scriptPath": [str(scripts)], "keepWarm": 600}
+    (work / "tmp").mkdir(parents=True, exist_ok=True)
+    (state / "config.json").write_text(json.dumps(cfg))
+    return scripts, bins, state
+
+
+def build_fixture(gs, install, work, state, scripts, bins, log):
+    """Alpha, beta and the non-contiguous frag.exe in one project, analysed; frag's function at
+    ``ENTRY`` edited by FragFixture.java and saved. Built once per run, outside the recording."""
+    base = work / "fixture"
+    base.mkdir(parents=True, exist_ok=True)
+    gpr = base / "Fixture.gpr"
+    d = gs.Daemon(install, str(state), "rp-fix")
+    s = d.connect("rp-fixture", "parity")
+    t0 = time.monotonic()
+    try:
+        s.call("script", script=str(scripts / "CharMakeProject.java"), program=None,
+               args=[str(base), "Fixture"], timeout=SCRIPT_DEADLINE)
+        s.call("open_project", path=str(gpr), writable=True)
+        for n in ("alpha.exe", "beta.exe", "frag.exe"):
+            s.call("import", file=str(bins / n), analyze=True, timeout=600, wait=300000)
+        s.call("open_program", path="/frag.exe", writable=True)
+        s.call("script", script=str(scripts / "FragFixture.java"), save=True,
+               timeout=SCRIPT_DEADLINE)
+        s.call("close_program", discard=True)
+        s.call("close_project")
+    finally:
+        with contextlib.suppress(Exception):
+            s.close()
+        stop(d)
+    log(f"fixture built in {time.monotonic() - t0:.1f} s")
+    return base
+
+
+def copy_project(base, dst):
+    if dst.exists():
+        shutil.rmtree(dst)
+    shutil.copytree(base, dst)
+    return dst / "Fixture.gpr"
+
+
+# ---- the corpus ----------------------------------------------------------------------------
+
+def sec_session(a, rec, P, work):
+    rec.start("session", "v3")
+    a.ok("ping")
+    a.ok("hello", client="rp-a", harness="rp-h", clientVersion="1.1.0", protocol=3)
+    for cmd in ("status", "health", "projects", "programs", "overlays"):
+        a.ok(cmd)
+    for cmd, extra in (("list", {}), ("project", {}), ("refresh", {}), ("reopen", {}),
+                       ("close_project", {}), ("import", {"file": "x"}),
+                       ("open_program", {"path": "/alpha.exe"}), ("switch", {"path": "/alpha.exe"})):
+        a.q(cmd, **extra)
+    for cmd, extra in (("info", {}), ("save", {}), ("functions", {}),
+                       ("decompile", {"name": "x"}), ("rename", {"address": ENTRY, "name": "x"}),
+                       ("edit", {"ops": [{"op": "rename", "address": ENTRY, "name": "x"}]}),
+                       ("journal", {}), ("discard_edits", {"author": 1}),
+                       ("comment", {"address": ENTRY, "text": "x"}), ("analyze", {}),
+                       ("close_program", {}), ("promote_overlay", {"overlay": "o"})):
+        a.q(cmd, **extra)
+    a.q("fork_project", path="x")
+    a.q("script")
+    a.q("script", script="NoSuchScript.java")
+    a.q("apply_overlay")
+    a.q("open_project")
+    a.q("open_project", path=str(work / NOWHERE))
+    a.q("bogus")
+    a.q("ping", client=5)
+    a.ok("ping", client="labelled", harness="other")
+    a.q("cancel")
+    a.ok("cancel", target=999)
+    a.ok("cancel", all=True)
+
+
+def sec_read(a, rec, P):
+    rec.start("read", "v3")
+    a.ok("open_project", path=P)
+    a.q("open_project", path=P)  # joins
+    a.ok("project")
+    a.ok("projects")
+    a.ok("list")
+    a.ok("list", programsOnly=True, metadata=False)
+    a.ok("list", folder="/", recursive=False, offset=0, limit=10)
+    a.q("list", folder="/nope")
+    a.q("list", limit="many")
+    a.ok("open_program", path="/alpha.exe")
+    a.ok("info")
+    a.ok("info", program="p1:/alpha.exe")
+    a.ok("programs")
+    a.ok("status")
+    a.ok("journal")
+    a.ok("functions")
+    a.ok("functions", limit=2, offset=1)
+    a.ok("functions", contains="FUN")
+    a.ok("functions", regex="^entry$")
+    a.q("functions", regex="(")
+    a.ok("decompile", name="entry")          # fresh
+    a.ok("decompile", name="entry")          # hot: the same request again
+    a.ok("decompile", address=F2, maxChars=40)
+    a.ok("decompile", address="rva:0x1020", timeout=30)
+    a.q("decompile", address="va:0x140001040")  # the va: form may be refused: recorded either way
+    a.q("decompile", name="nothing_here")
+    a.q("decompile", address="0x140001ff0")
+    a.q("decompile", address="zz")
+    a.q("decompile")
+    a.ok("overlays")
+    # the synthetic functions of cc_issues_eng: non-contiguous, large, and the response cap
+    a.ok("open_program", path="/frag.exe")
+    a.ok("info")
+    a.ok("decompile", address=ENTRY_FRAG)           # fragments: the data piece is skipped
+    a.ok("decompile", address=BIG)                  # contiguous, large
+    a.ok("decompile", address=BIG, maxResultKb=1)   # the response cap: truncated, partial
+    a.ok("decompile", address=BIG)                  # complete again after the cap
+    a.ok("decompile", address=ENTRY_FRAG, maxResultKb=1)
+    a.q("decompile", address=BIG, maxResultMb=999)  # out of range
+    a.ok("switch", path="p1:/alpha.exe")
+
+
+def sec_multi(a, b, rec, P):
+    rec.start("multi-client", "v3")
+    b.ok("projects")
+    b.ok("open_project", path=P)
+    b.ok("open_program", path="/alpha.exe")
+    b.ok("info")
+    b.ok("functions", limit=2)
+    b.ok("decompile", name="entry")
+    a.ok("status")
+    b.ok("close_project")
+    a.ok("close_project")                      # last user of a read-only view: stays warm
+
+
+def sec_overlay(a, rec, P):
+    rec.start("overlay", "v3")
+    a.ok("open_project", path=P)
+    a.ok("open_program", path="/alpha.exe")
+    a.ok("overlays")
+    a.q("open_program", path="/alpha.exe", overlay="bad name!")
+    a.ok("open_program", path="/alpha.exe", overlay="rp")
+    a.ok("open_program", path="/alpha.exe", overlay="rp")  # joins the same overlay
+    a.ok("info", overlay="rp")
+    a.ok("rename", overlay="rp", address=F1, name="rp_ov")
+    a.ok("comment", overlay="rp", address=F1, text="overlay comment")
+    a.ok("decompile", overlay="rp", address=F2, maxChars=80)
+    a.ok("functions", overlay="rp", contains="rp_")
+    a.ok("functions", contains="rp_")
+    a.q("info", overlay="nope")
+    a.ok("drop_overlay", overlay="nope")
+    a.ok("overlays")
+    pr = a.ok("promote_overlay", overlay="rp", fork={"path": str(a.work / "forks" / "ov-fork"),
+                                                     "mode": "full"})
+    a.ok("info", program=pr["target"])
+    a.ok("functions", program=pr["target"], contains="rp_")
+    a.ok("drop_overlay", overlay="rp")
+    a.ok("close_project")
+
+
+def sec_edit(a, rec, P):
+    rec.start("edit-fork-publish", "v3")
+    a.ok("open_project", path=P, writable=True)
+    a.ok("open_program", path="/alpha.exe", writable=True)
+    a.ok("info")
+    a.ok("journal")
+    a.ok("rename", address=F1, name="rp_helper")
+    a.ok("rename", address=F1, name="rp_helper2", expect="rp_helper")
+    a.q("rename", address=F1, name="rp_helper3", expect="not_it")
+    a.q("rename", address=F1, name="x", kind="other")
+    a.ok("rename", address="0x140001010", name="rp_label", kind="label")
+    a.ok("comment", address=F1, text="first")
+    a.ok("comment", address=F1, text="plate text", type="plate")
+    a.q("comment", address=F1, text="third", expect="first")
+    a.q("comment", address=F1, text="x", type="bogus")
+    a.ok("edit", ops=[{"op": "rename", "address": F2, "name": "rp_f2"},
+                      {"op": "comment", "address": F2, "text": "two", "type": "plate"}])
+    a.q("edit", ops=[{"op": "rename", "address": F2, "name": "never"},
+                     {"op": "rename", "address": F1, "name": "z", "expect": "wrong"}])
+    a.q("edit", ops=[])
+    a.q("edit", ops=[{"op": "unknown"}])
+    a.ok("journal")
+    a.ok("journal", since=3, limit=2)
+    a.ok("journal", author=1)
+    a.q("analyze", options={"No Such Option": True})
+    a.ok("script", script="CharPrint.java", args=["one", "two"])
+    a.ok("script", script="CharWrite.java")
+    a.ok("save", comment="rp-parity")
+    a.ok("save")                               # nothing to save
+    a.ok("rename", address=F1, name="rp_after_save")
+    a.q("close_program")                       # unsaved changes: refused
+    a.ok("save")
+    a.ok("close_program")
+    a.ok("open_program", path="/alpha.exe", writable=True)
+    a.ok("functions")
+    # publish: fork_project writes a complete fork (staging, then .gpr last)
+    fk = a.ok("fork_project", path=str(a.work / "forks" / "fork1"), mode="full", project="p1")
+    a.q("fork_project", path=str(a.work / "forks" / "fork1"), mode="full", project="p1")
+    a.q("fork_project", path=str(a.work / "forks" / "f0"), mode="bogus")
+    a.q("fork_project", path=str(a.work / "forks" / "f0"), name="bad/name")
+    a.ok("fork_project", path=str(a.work / "forks" / "fork2" / "Named.gpr"), mode="full",
+         writable=False)
+    a.ok("projects")
+    fid = fk["project"]
+    a.ok("open_program", path=f"{fid}:/alpha.exe", writable=True)
+    a.ok("rename", address=F1, name="forked_name")
+    a.ok("save")
+    a.ok("refresh", project=fid)
+    a.ok("fork_project", project=fid, path=str(a.work / "forks" / "fork3"), mode="full")
+    a.ok("info", program="p1:/alpha.exe")
+    a.ok("close_project", project=fid)
+    a.ok("close_project")
+
+
+def sec_trace(a, rec):
+    rec.start("trace", "v3")
+    sess, sess2 = "rp-trace-a", "rp-trace-b"
+    o = a.ok("trace_open", session=sess, create=True)
+    cap = o["lease"]["cap"]
+    evs = [dtt.ev(i, "core.resource.open" if i % 2 else "core.resource.read",
+                  va=0x401000 + i, module="x.exe") for i in range(30)]
+    a.ok("trace_append", session=sess, cap=cap, events=evs)
+    a.q("trace_append", session=sess, cap=cap, events=[{"kind": "core.nope"}, dtt.ev(30, "app.fine")])
+    a.ok("trace_mark", session=sess, cap=cap, label="phase-1")
+    a.q("trace_append", session=sess, cap=cap, events="not-a-list")
+    qr = a.ok("trace_query", session=sess, limit=100)
+    a.ok("trace_query", session=sess, group_by="kind")
+    a.q("trace_query", session=sess, group_by="pid")
+    a.ok("trace_query", session=sess, kinds=["core.resource.open"], limit=5)
+    a.ok("trace_explain", session=sess, event_id=qr["rows"][0]["event_id"])
+    a.q("trace_check", session=sess, cap=cap,
+        assertions=[{"type": "cardinality", "kind": "core.resource.open", "min": 15}])
+    a.q("trace_check", session=sess, cap=cap,
+        assertions=[{"type": "forbidden", "kind": "core.error", "name": "no-errors"}])
+    a.q("trace_check", session=sess, assertions=[{"type": "nope"}])
+    a.ok("trace_info", session=sess)
+    a.q("trace_open", session=sess, create=True)           # conflict
+    a.q("trace_open", session="rp-trace-none")              # not_found
+    a.q("trace_open", session="../escape", create=True)     # bad_request
+    o2 = a.ok("trace_open", session=sess2, create=True)
+    a.ok("trace_append", session=sess2, cap=o2["lease"]["cap"],
+         events=[dtt.ev(i, "core.marker") for i in range(5)])
+    a.ok("trace_diff", a=sess, b=sess2)
+    a.ok("trace_list")
+
+
+def sec_kotor(a, rec, work, kotor):
+    rec.start("kotor", "v3")
+    if not kotor or not pathlib.Path(kotor).exists():
+        rec.skip(f"no KotOR project at {kotor}: the golden 9.1 project is not on this machine")
+        return
+    src = pathlib.Path(kotor)
+    dst = work / "kotor"
+    shutil.copytree(src.parent, dst)
+    a.ok("open_project", path=str(dst / src.name))
+    a.ok("open_program", path="/swkotor.exe")
+    a.ok("info")
+    fns = a.ok("functions", limit=20)["functions"]
+    pick = next((f for f in fns if f["size"] >= 4 and not f["external"] and not f["thunk"]), None)
+    if pick is None:
+        raise Harness("no decompilable function among the first 20 KotOR functions")
+    a.ok("decompile", address=pick["address"])
+    a.ok("decompile", address=pick["address"])
+    a.ok("close_project")
+
+
+def sec_busy(gs, install, state, rec, work, log):
+    rec.start("trace-busy", "tight")
+    d = gs.Daemon(install, str(state), "rp-tight", engine={"diskReserve": "900000000"})
+    s = d.connect("rp-t", "trace")
+    t = None
+    try:
+        t = Conn(rec, s, "t", gs.SessionError)
+        t.q("trace_open", session="rp-trace-full", create=True)
+    finally:
+        if t is not None:
+            t.close()
+        stop(d)
+
+
+def sec_protocol2(stock, install, state, rec, P2, log):
+    rec.start("protocol2", "v2")
+    d = stock.Daemon(install, str(state), "rp-v2")
+    s = d.connect("rp-a2", "rp-h")
+    a = Conn(rec, s, "a2", stock.SessionError, stock=True)
+    try:
+        a.ok("ping")
+        a.ok("status")
+        a.ok("projects")
+        a.ok("open_project", path=P2)
+        a.ok("open_program", path="/alpha.exe")
+        a.ok("info")
+        a.ok("functions", limit=2)
+        a.ok("decompile", name="entry")
+        a.ok("decompile", name="entry")
+        a.ok("decompile", address=F2, maxChars=40)
+        a.q("trace_list")
+        a.ok("close_project")
+    finally:
+        a.close()
+        stop(d)
+
+
+def run_record(a):
+    install = str(pathlib.Path(a.ghidra).absolute())
+    work = pathlib.Path(a.work).absolute()
+    if work.exists() and any(work.iterdir()):
+        print(f"error: --work {work} is not empty", file=sys.stderr)
+        return 2
+    work.mkdir(parents=True, exist_ok=True)
+    out = pathlib.Path(a.out).absolute()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    t0 = time.monotonic()
+
+    def log(msg):
+        print(f"[{time.monotonic() - t0:7.1f}s] {msg}", file=sys.stderr, flush=True)
+
+    gs = ct.load_client("install", install)
+    stock = ct.load_client("stock", install)
+    scripts, bins, state = write_inputs(work)
+    masker = ParityMasker([(str(work), "<WORK>"), (install, "<INSTALL>"),
+                           (str(work.resolve()), "<WORK>")])
+    kotor = None if a.no_kotor else (a.kotor or DEFAULT_KOTOR)
+    base = build_fixture(gs, install, work, state, scripts, bins, log)
+    try:
+        with out.open("w", encoding="utf-8", newline="\n") as fh:
+            rec = Recorder(masker, fh, log)
+            # daemon v3: session, reads, multi-client, overlays, edits, trace, KotOR
+            d = gs.Daemon(install, str(state), "rp-v3")
+            a = Conn(rec, d.connect("rp-a", "rp-h"), "a", gs.SessionError)
+            a.work = work
+            try:
+                P = str(copy_project(base, work / "project"))
+                sec_session(a, rec, P, work)
+                sec_read(a, rec, P)
+                b = Conn(rec, d.connect("rp-b", "rp-h"), "b", gs.SessionError)
+                try:
+                    sec_multi(a, b, rec, P)
+                finally:
+                    b.close()
+                log("sections session, read, multi-client done")
+                sec_overlay(a, rec, P)
+                sec_edit(a, rec, P)
+                sec_trace(a, rec)
+                sec_kotor(a, rec, work, kotor)
+                log("daemon v3 sections done")
+            finally:
+                a.close()
+                stop(d)
+            # daemon tight: busy from the disk reserve
+            sec_busy(gs, install, state, rec, work, log)
+            log("trace-busy done")
+            # protocol 2: the stock 1.0.0 client against its own copy of the project
+            P2 = str(copy_project(base, work / "project-v2"))
+            sec_protocol2(stock, install, state, rec, P2, log)
+            log("protocol2 done")
+    except (Harness, ct.Fail) as e:
+        print(f"HARNESS ERROR: {e}", file=sys.stderr)
+        out.unlink(missing_ok=True)
+        return 2
+    except Exception as e:  # noqa: BLE001  (a daemon or client failure: never exit 1 here)
+        import traceback
+        traceback.print_exc()
+        print(f"HARNESS ERROR: {type(e).__name__}: {e}", file=sys.stderr)
+        out.unlink(missing_ok=True)
+        return 2
+    if rec.mask_errors:
+        for m in rec.mask_errors:
+            print(f"MASK ERROR: {m}", file=sys.stderr)
+        return 2
+    log(f"recorded {rec.n} records to {out} in {time.monotonic() - t0:.1f} s")
+    return 0
+
+
+# ---- compare -------------------------------------------------------------------------------
+
+def load(path):
+    recs = []
+    with open(path, encoding="utf-8") as fh:
+        for i, line in enumerate(fh, 1):
+            if line.strip():
+                recs.append(json.loads(line))
+    return recs
+
+
+def _block(rec):
+    body = {k: rec[k] for k in ("cmd", "request", "reply", "skipped") if k in rec}
+    return json.dumps(body, indent=1, ensure_ascii=True).splitlines()
+
+
+def compare(pa, pb, out=sys.stdout):
+    ra, rb = load(pa), load(pb)
+    diffs = 0
+    for i in range(max(len(ra), len(rb))):
+        x = ra[i] if i < len(ra) else None
+        y = rb[i] if i < len(rb) else None
+        if x is not None and y is not None:
+            if {k: v for k, v in x.items() if k != "n"} == {k: v for k, v in y.items() if k != "n"}:
+                continue
+        diffs += 1
+        label = (x or y).get("cmd", "?")
+        sect = (x or y).get("section", "?")
+        out.write(f"--- request {i + 1}: {label} [{sect}]\n")
+        if x is None or y is None:
+            out.write(f"    only in {'B' if x is None else 'A'}\n")
+            continue
+        out.writelines(line + "\n" for line in difflib.unified_diff(
+            _block(x), _block(y), fromfile=f"A:{pa}", tofile=f"B:{pb}", lineterm=""))
+    same = len(ra) == len(rb) and diffs == 0
+    out.write(f"{len(ra)} records in A, {len(rb)} in B; "
+              f"{'identical' if same else str(diffs) + ' differ'}\n")
+    return 0 if same else 1
+
+
+# ---- selftest ------------------------------------------------------------------------------
+
+def selftest():
+    import tempfile
+    bad = []
+
+    def check(name, cond):
+        if not cond:
+            bad.append(name)
+    work = pathlib.Path("C:/dev-overflow/h7-parity/selftest-masks")
+    m = ParityMasker([(str(work), "<WORK>"), ("C:/inst", "<INSTALL>")])
+    raw = ('{"id":7,"ok":true,"result":{"ms":12,"pid":99,"lease":{"cap":"abc123","producerGen":1},'
+           '"path":"C:/inst/x","note":"took 12 ms","release":"12.3-hydra.6","rev":"0123456789abcdef",'
+           '"when":"2026-11-02T10:00:00Z","scheduler":{"quick":{"slots":4,"inUse":0}}}}')
+    got = canon(m, raw)
+    check("id masked at top", got["id"] == "<id>")
+    check("ms masked", got["result"]["ms"] == "<masked>")
+    check("pid masked", got["result"]["pid"] == "<masked>")
+    check("cap masked", got["result"]["lease"]["cap"] == "<masked>")
+    check("producerGen kept", got["result"]["lease"]["producerGen"] == 1)
+    check("install path masked", got["result"]["path"] == "<INSTALL>/x")
+    check("text ms masked", "<n>ms" in got["result"]["note"])
+    check("release stamp masked", got["result"]["release"] == "<hydra-version>")
+    check("rev renumbered", got["result"]["rev"] == "<rev1>")
+    check("iso time masked", got["result"]["when"] == "<time>")
+    check("scheduler slots masked", got["result"]["scheduler"]["quick"]["slots"] == "<masked>")
+    check("scheduler inUse kept", got["result"]["scheduler"]["quick"]["inUse"] == 0)
+    raw2 = raw.replace('"abc123"', '"zzz999"').replace('"ms":12', '"ms":40')
+    check("two runs mask to the same line",
+          json.dumps(canon(m, raw), sort_keys=False) == json.dumps(canon(m, raw2), sort_keys=False))
+    bad_total = '{"id":1,"ok":true,"result":{"bytes":0,"mode":"full"}}'
+    try:
+        canon(m, bad_total)
+        check("bytes 0 is a harness error", False)
+    except ct.Fail:
+        pass
+    with tempfile.TemporaryDirectory(prefix="rp-selftest-", dir=None) as td:
+        pa, pb = pathlib.Path(td) / "a.jsonl", pathlib.Path(td) / "b.jsonl"
+        recs = [{"n": 1, "section": "s", "daemon": "v3", "who": "a", "cmd": "ping",
+                 "request": {}, "reply": {"ok": True}}]
+        pa.write_text("".join(json.dumps(r) + "\n" for r in recs), encoding="utf-8")
+        pb.write_text(pa.read_text(encoding="utf-8"), encoding="utf-8")
+        import io
+        buf = io.StringIO()
+        check("identical files compare equal", compare(str(pa), str(pb), buf) == 0)
+        recs[0]["reply"] = {"ok": False}
+        pb.write_text("".join(json.dumps(r) + "\n" for r in recs), encoding="utf-8")
+        buf = io.StringIO()
+        check("a changed reply compares unequal", compare(str(pa), str(pb), buf) == 1)
+        check("the diff names the request", "request 1: ping" in buf.getvalue())
+    blind = ["hello capability values under the masked keys trace and method (VOLATILE)",
+             "key order and string escapes are canonical, not the daemon's raw bytes",
+             "timing, progress events and the start-up banner are not replies"]
+    if bad:
+        print("selftest FAILED: " + ", ".join(bad))
+        return 1
+    print("selftest ok")
+    print("blind spots (masked or not recorded):")
+    for b in blind:
+        print("  - " + b)
+    return 0
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--selftest", action="store_true", help="check the masks and compare offline")
+    sub = ap.add_subparsers(dest="cmd")
+    r = sub.add_parser("record", help="run the corpus against one install")
+    r.add_argument("--ghidra", required=True, help="install root (holds Ghidra/)")
+    r.add_argument("--work", required=True, help="empty work directory")
+    r.add_argument("--out", required=True, help="JSON-lines corpus to write")
+    r.add_argument("--kotor", help=f"KotOR project (default {DEFAULT_KOTOR})")
+    r.add_argument("--no-kotor", action="store_true", help="leave the KotOR section out")
+    c = sub.add_parser("compare", help="diff two corpora; exit 1 on any difference")
+    c.add_argument("a")
+    c.add_argument("b")
+    a = ap.parse_args(argv)
+    if a.selftest:
+        return selftest()
+    if a.cmd == "record":
+        return run_record(a)
+    if a.cmd == "compare":
+        try:
+            return compare(a.a, a.b)
+        except (OSError, ValueError) as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+    ap.print_help()
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
