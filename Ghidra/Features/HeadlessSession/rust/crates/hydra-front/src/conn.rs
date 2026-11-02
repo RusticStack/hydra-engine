@@ -255,6 +255,18 @@ fn attach_all(shared: &Arc<Shared>, except: &Arc<Core>) {
     }
 }
 
+/// Makes a client visible to `attach_all`. Only a client whose hello has been answered is
+/// registered: attaching it earlier would discard the reply it is still owed.
+fn register(shared: &Shared, core: &Arc<Core>) {
+    let mut all = shared
+        .clients
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !all.iter().any(|c| Arc::ptr_eq(c, core)) {
+        all.push(Arc::clone(core));
+    }
+}
+
 /// Removes a client that left and closes its backend connection.
 fn leave(shared: &Shared, core: &Arc<Core>) {
     shared
@@ -371,6 +383,7 @@ impl<'a> Client<'a> {
         let result = identity.hello_result(core.protocol, &shared.live(core.id));
         self.send(&ok_reply(first_id.as_deref(), &result))?;
         shared.native_replies.fetch_add(1, Ordering::Relaxed);
+        register(shared, core);
 
         // Detached: only what needs no JVM is answered here; the first other request attaches.
         while let Some(text) = self.next_request(buf)? {
@@ -448,6 +461,18 @@ impl<'a> Client<'a> {
             Entry::Hello(id) => (id, None),
             Entry::Request(text) => (None, Some(text)),
         };
+        // The link stays locked for the whole attach: another thread starting the backend must not
+        // attach this client a second time (attach_all only takes links it can lock at once).
+        let mut link = core
+            .link
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Link::Attached(s) = &*link {
+            let s = s.try_clone()?;
+            drop(link);
+            self.pipe(s, pending);
+            return Ok(());
+        }
         let (ep, stream, reply) = match connect_backend(shared, core) {
             Ok(t) => t,
             Err(e) => {
@@ -468,11 +493,9 @@ impl<'a> Client<'a> {
             }
         }
         let write_side = link_up(shared, core, stream)?;
-        *core
-            .link
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            Link::Attached(write_side.try_clone()?);
+        *link = Link::Attached(write_side.try_clone()?);
+        drop(link);
+        register(shared, core);
         attach_all(shared, core);
         self.pipe(write_side, pending);
         Ok(())
