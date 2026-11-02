@@ -62,3 +62,14 @@ examples/test_fastlib.py||GHIDRA||||END|
 examples/lint_sleeps.py||GHIDRA||||END|
 rust/.gitignore||GHIDRA||||END|
 rust/Cargo.lock||GHIDRA||||END|
+TRACE-1.md||GHIDRA||||END|
+examples/scripts/BenchRead.java||GHIDRA||||END|
+examples/scripts/CheckEdit.java||GHIDRA||||END|
+examples/scripts/RusticSetup.java||GHIDRA||||END|
+examples/scripts/SetAnalyzed.java||GHIDRA||||END|
+rust/crates/hydra-etw/src/app.rs||GHIDRA||||END|
+rust/crates/hydra-etw/src/etw.rs||GHIDRA||||END|
+rust/crates/hydra-etw/src/events.rs||GHIDRA||||END|
+rust/crates/hydra-etw/src/main.rs||GHIDRA||||END|
+rust/crates/hydra-etw/src/segment.rs||GHIDRA||||END|
+trace-schema/event.schema.json||GHIDRA||||END|
