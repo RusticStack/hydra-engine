@@ -383,6 +383,18 @@ final class ProgramEntry implements Decompilers, DecompilerGate.Pool {
 
 	/** Lock acquisition, bounded and cancel-aware ({@link Waits}); records the holder. */
 	Lock acquire(boolean exclusive, long waitMs, Client c, String cmd) {
+		return acquire(exclusive, waitMs, c, cmd, false);
+	}
+
+	/**
+	 * As {@link #acquire(boolean, long, Client, String)}; {@code opening} marks the hold as part of
+	 * this program's single-flight open from the start. That is a read-only {@code open_program} on
+	 * the exclusive path: it opens the program, switches it to its upgrade cache copy (the program
+	 * object is released and opened again inside a hold that began while the program was open) or
+	 * finds it opened by the request it waited for. Whoever waits behind such a hold waits for the
+	 * open of the program, not for a lock another client held back.
+	 */
+	Lock acquire(boolean exclusive, long waitMs, Client c, String cmd, boolean opening) {
 		// a dead client's request still holds the lock and ignores cancel: tell at once (3.5)
 		// (not for a thread that already holds this program: a re-entrant acquire by the abandoned
 		// holder's own script goes through its own hold)
@@ -413,7 +425,8 @@ final class ProgramEntry implements Decompilers, DecompilerGate.Pool {
 				h.depth++;
 				return h;
 			}
-			return new Hold(c, cmd, exclusive, who, program == null && "open_program".equals(cmd));
+			return new Hold(c, cmd, exclusive, who,
+				opening || program == null && "open_program".equals(cmd));
 		});
 		if (exclusive) {
 			exclusiveHolder = Caller.label(c) + " " + cmd;
