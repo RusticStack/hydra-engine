@@ -190,6 +190,36 @@ Several at once (same machine; the module README has the method):
   with this build (it asks for `"upgrade": true`) moves its databases to a format that Ghidra
   12.2 and 12.1.4 cannot read. Work on a `fork_project` copy when the original must stay as it is.
 
+## System requirements
+
+What the engine and the semantic trace need. Every number below was measured on one machine, the reference
+machine; nothing is extrapolated, so there is no "minimum" that was measured on smaller hardware. Where a row
+says "not measured" it was not. Evidence: `docs/release-notes-12.3-hydra.6.md`.
+
+| | Requirement | Basis |
+|---|---|---|
+| Minimum (stated, not a measured floor) | Windows x64 on NTFS, JDK 25, Python 3.13 or later, a trace volume with free space above `diskReserve` (default 5,120 MB) plus 16 MB per new session. | These are what the engine enforces or documents. No machine smaller than the reference was run; a run limited to 4 logical CPUs on the reference machine is the smallest that was (below). |
+| Reference (all recorded runs) | Intel Core i7-13700KF (8 P-cores with SMT and 8 E-cores, 24 logical processors), 47.79 GiB RAM (4 DIMMs, 3000 MT/s), NVMe system and project volumes, NTFS on C:, D: and E:, Windows 11 Pro 10.0.26300, power plan Balanced, JDK Temurin 25.0.5+8, Python 3.15.2, Rust 1.99.1; daemon heap maximum 11,264 MB; CPU profile `generic` and `auto`. | The machine was shared with other work while the runs went (system busy cores 4.3 to 8.8 during the multi-project runs); the load is recorded per run. |
+| Recommended | The reference configuration, for 16 simultaneous agents on three game programs with a live capture and two analysis agents reading it: the run peaked at 1.9 to 2.8 GB committed for the whole process tree and used 5 to 9 busy cores. Size memory above that for your programs. | Measured headroom on the reference machine; not a tested hardware floor. |
+| Optional capability | Kernel ETW capture needs an elevated process (`hydra-etw`). In-process hooks need Frida. Symbolization needs the program open in the daemon. Without them that source is not available; this lane did not test those refusals. | Capture is a Hydralysis feature; its overhead numbers are in Hydralysis `docs/trace-overhead.md`, not in this table. |
+
+Support matrix: Windows 11 x64 on NTFS is the supported and tested platform. ReFS was not run for the trace.
+Linux and macOS are not claimed. Headless only.
+
+When the machine is short of a resource the trace answers in words and never in different evidence. These runs
+were done on the reference machine with the limit applied (`examples/trace_constrained.py`, `examples/multiagent_bench.py --affinity`):
+
+- **Disk short:** a daemon started with a `diskReserve` far above the free space refused a new session and an append with
+  `busy`, reason `capacity`, resource `disk`, with `have`, `need` and `retryAfterMs`; the refused session left no file;
+  reads were still served.
+- **Event budget reached:** a session with a 2,000-event budget given 10,000 events accepted 2,000 and counted 8,000
+  as `dropped_budget`, reported the stop in `trace_info`, recorded one `core.capture.gap` event, the check over it was
+  `unknown` and never `pass`, and a later append was refused and counted.
+- **4 logical CPUs:** the 16-agent workload with trace readers and a live capture completed with all 825 core operations
+  correct (same 412-key digest as without limits), 0 waits and the same trace digest, but slower than on 24 CPUs:
+  median workload wall 7.3 s (generic) and 7.9 s (auto) against 6.5 s for 12.3-hydra.5 without trace at the same limit, and about 7 to 8 tree CPU-seconds more (27.2 and 28.3 against 20.5). Whether the daemon sized its pools from the 4 granted CPUs was not read back.
+- **Memory short:** not measured.
+
 ## Protocols
 
 One port serves protocol 2 and protocol 3. A client that asks for nothing newer gets protocol 2, with

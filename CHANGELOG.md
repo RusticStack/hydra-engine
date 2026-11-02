@@ -9,6 +9,13 @@ example `12.3-hydra.1`); its tag is `v` and the version. Releases are on
 
 ## Unreleased
 
+### Semantic trace: non-functional measurements (draft)
+
+- Privacy tests for the trace (`hydra-trace` `tests/privacy.rs`): secrets absent from replies, index, WAL, segments, exports and CLI output; keyed ids stable per scope and unlinkable across sessions and installs; payload artifacts excluded from export unless authorized; evicted artifacts leave a tombstone; the retention budget accounts for every event.
+- Benchmarks: `multiagent_bench.py` and `multiproj_bench.py` take `--trace-readers`, `--cpu-profile`; `multiagent_bench.py` also `--affinity`; `trace_bench_rounds.py` runs and reports interleaved rounds; `trace_constrained.py` runs the disk and event-budget refusals.
+- Measured: with 4 trace readers and a live capture the 16-agent run shows 0 waits and unchanged core replies; tree CPU rises by about 9 s (+45 %) in the 5 s workload, and `trace_info` on a live session costs O(session size). Details and what was not run: `docs/release-notes-12.3-hydra.6.md`.
+- README: "System requirements" (minimum, reference, recommended, optional capabilities, support matrix, constrained behaviour); module README: a row for the trace store in "Why each part lives where it does".
+
 ## 12.3-hydra.5
 
 Released 2026-11-01. Based on upstream Ghidra `master` (12.3 DEV) at
