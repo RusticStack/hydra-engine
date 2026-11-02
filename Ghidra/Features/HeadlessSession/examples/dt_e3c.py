@@ -631,6 +631,14 @@ def t_refcount_leak(c):
             return (not any(cl["requests"] for cl in st["clients"] if cl["name"] != "obs") and
                     not any(pg.get("abandonedRequests") for pg in st["programs"]))
         dt.wait_for(quiet, "every request to have ended", 600, 0.2)
+        # A cut client's decompile may still be ending in the native process (it holds its view pin until
+        # then; seen as 3 for under a second on a loaded machine, back to 2 at the next read): wait for the
+        # count to settle. A leaked pin never settles, so the check below still fails for it.
+        def refs_settled():
+            _st, _pgs, _slot = settled()
+            return (len(_slot) == 1 and _slot[0].get("viewRefs") == 1 + len(_pgs)) or None
+        with contextlib.suppress(Exception):
+            dt.wait_for(refs_settled, "the view references to settle", 30, 0.2)
         st, pgs, slot = settled()
         dt.check(len(slot) == 1 and slot[0].get("viewRefs") == 1 + len(pgs),
                  f"view references did not return to 1 + {len(pgs)} program(s): {slot}; programs "
