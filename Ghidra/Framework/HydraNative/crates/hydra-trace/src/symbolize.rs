@@ -116,6 +116,28 @@ pub fn resolve_site(
     }
 }
 
+/// The functions of a captured call stack, innermost first, as a JSON array (`null` for a frame
+/// that is in no known module or no function). `None` when no stack was captured.
+pub fn resolve_stack(
+    symbolizer: &dyn Symbolizer,
+    life: &Lifetimes,
+    pgen: u32,
+    stack: &[u64],
+    seq: i64,
+) -> Option<String> {
+    if stack.is_empty() {
+        return None;
+    }
+    let names: Vec<Option<String>> = stack
+        .iter()
+        .map(|&addr| {
+            let module = life.find_module(pgen, addr, seq);
+            resolve_site(symbolizer, module, Some(addr)).0
+        })
+        .collect();
+    serde_json::to_string(&names).ok()
+}
+
 /// Counts per outcome for one interpretation revision. `symbolized / (total - no_stack -
 /// not_code)` is the M1 ratio over events that have a captured, mapped code address.
 #[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
@@ -205,7 +227,7 @@ pub fn resymbolize(
         let mut read =
             tx.prepare("SELECT seq,process_gen,va,callstack FROM events ORDER BY seq")?;
         let mut write = tx.prepare_cached(
-            "INSERT INTO event_symbols(interp,seq,function,reason) VALUES(?1,?2,?3,?4)",
+            "INSERT INTO event_symbols(interp,seq,function,reason,stack) VALUES(?1,?2,?3,?4,?5)",
         )?;
         let mut rows = read.query([])?;
         while let Some(row) = rows.next()? {
@@ -220,7 +242,8 @@ pub fn resymbolize(
             let site = site_of(va.map(|v| v as u64), &stack);
             let module = site.and_then(|a| life.find_module(pgen.unwrap_or(0), a, seq));
             let (function, reason) = resolve_site(symbolizer, module, site);
-            write.execute(params![rev, seq, function, reason])?;
+            let names = resolve_stack(symbolizer, &life, pgen.unwrap_or(0), &stack, seq);
+            write.execute(params![rev, seq, function, reason, names])?;
         }
     }
     bump_revision(&tx)?;
