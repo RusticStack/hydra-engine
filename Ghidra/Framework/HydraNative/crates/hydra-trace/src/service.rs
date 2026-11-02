@@ -57,6 +57,7 @@ impl From<Error> for Failure {
         let message = e.to_string();
         let code = match &e {
             Error::Refused(_) => "refused",
+            Error::Cancelled => "cancelled",
             Error::Json(_) => "bad_request",
             Error::Sql(rusqlite::Error::SqliteFailure(f, _))
                 if matches!(
@@ -160,6 +161,9 @@ struct QueryReq {
     with_symbols: bool,
     #[serde(default)]
     interp: Option<i64>,
+    /// Pin: only events with `seq <= up_to` (a first page answers its own `up_to`).
+    #[serde(default)]
+    up_to: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -381,6 +385,7 @@ impl Service {
                 state_key: r.state_key,
                 corr: r.corr,
                 after: r.after,
+                up_to: r.up_to,
                 limit: r.limit.unwrap_or(100),
             },
         )?;

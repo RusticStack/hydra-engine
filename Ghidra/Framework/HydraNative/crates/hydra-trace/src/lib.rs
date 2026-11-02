@@ -4,6 +4,7 @@
 
 pub mod align;
 pub mod artifact;
+pub mod cancel;
 pub mod canon;
 pub mod checks;
 pub mod corrid;

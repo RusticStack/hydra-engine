@@ -131,6 +131,25 @@ pub unsafe extern "C" fn hydra_trace_reply_copy(out: *mut u8, out_cap: usize) ->
     })
 }
 
+/// Installs the cancel flag of the next requests on this thread: a native `int32` the caller sets
+/// non-zero to cancel; `hydra_trace_request` stops `trace_export` and `trace_resymbolize` at the
+/// next check and answers `cancelled`. `NULL` removes it. The flag must stay valid until removed.
+///
+/// # Safety
+/// `flag` is null or valid for reads of one `i32` until it is removed on this thread.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hydra_trace_set_cancel(flag: *const i32) {
+    if flag.is_null() {
+        hydra_trace::cancel::set(None);
+        return;
+    }
+    let addr = flag as usize;
+    hydra_trace::cancel::set(Some(Box::new(move || {
+        // SAFETY: the caller keeps the flag valid until it is removed (see above).
+        unsafe { std::ptr::read_volatile(addr as *const i32) != 0 }
+    })));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,6 +252,31 @@ mod tests {
         // SAFETY: big is still valid; nothing is kept any more.
         let again = unsafe { hydra_trace_reply_copy(big.as_mut_ptr(), big.len()) };
         assert_eq!(again, -1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_set_cancel_flag_stops_an_export() {
+        let dir = std::env::temp_dir().join(format!("hydra-native-cancel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let svc = hydra_trace::service::Service::new(&dir);
+        let r = svc.handle("trace_open", br#"{"session":"c"}"#);
+        assert!(String::from_utf8_lossy(&r).contains("\"ok\":true"));
+        let flag = Box::new(1i32);
+        // SAFETY: the flag outlives the request and is removed below.
+        unsafe { hydra_trace_set_cancel(&*flag) };
+        let out = dir.join("exp");
+        let req = format!(
+            r#"{{"session":"c","out":{}}}"#,
+            serde_json::to_string(out.to_str().unwrap()).unwrap()
+        );
+        let reply = String::from_utf8(svc.handle("trace_export", req.as_bytes())).unwrap();
+        // SAFETY: removing the flag.
+        unsafe { hydra_trace_set_cancel(std::ptr::null()) };
+        assert!(reply.contains("cancelled"), "{reply}");
+        assert!(!out.exists());
+        let again = String::from_utf8(svc.handle("trace_export", req.as_bytes())).unwrap();
+        assert!(again.contains("\"ok\":true"), "{again}");
         let _ = std::fs::remove_dir_all(dir);
     }
 

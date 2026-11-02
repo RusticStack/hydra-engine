@@ -131,7 +131,7 @@ final class ReadPlane {
 		}
 	}
 
-	private static Path findLibrary() {
+	static Path findLibrary() {
 		String explicit = System.getProperty("hydra.native.library");
 		if (explicit != null && !explicit.isBlank()) {
 			Path p = Path.of(explicit);

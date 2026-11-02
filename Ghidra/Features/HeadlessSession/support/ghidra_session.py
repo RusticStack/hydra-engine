@@ -1344,6 +1344,73 @@ class _Base:
         """Sends a request without waiting; returns its id (for ``cancel`` or a later wait)."""
         return self._send_request(cmd, fields)
 
+    # ---- semantic trace (protocol 3, capability ``trace``; PROTOCOL-3.md "Trace commands") ----
+    #
+    # Thin, named forms of ``call("trace_*", ...)``: the engine's reply is returned as it is, so
+    # these and the Rust client's ``Session::trace_*`` give the same bytes for the same request.
+    # A writer opens a session with ``trace_open`` and passes the returned ``cap`` to
+    # ``trace_append``, ``trace_mark``, ``trace_close`` and ``trace_resymbolize``; every other
+    # command reads committed snapshots and needs no capability.
+
+    def trace_open(self, session: str | None = None, deadline: float | None = None, **fields):
+        """Creates (``create=True``) or opens a trace session; ``mode="write"`` takes the writer
+        lease (``cap=`` of an earlier grant reclaims it, ``takeover=True`` takes an orphan)."""
+        if session is not None:
+            fields["session"] = session
+        return self.call("trace_open", deadline, **fields)
+
+    def trace_append(self, session: str, cap: str, events, deadline: float | None = None, **fields):
+        """Appends events (TRACE-1 envelopes without ``seq``/``event_id``) as one group commit; the
+        engine answers ``accepted`` and ``rejected`` (a list with the reason of each)."""
+        return self.call("trace_append", deadline, session=session, cap=cap, events=list(events),
+                         **fields)
+
+    def trace_mark(self, session: str, cap: str, label: str, deadline: float | None = None, **fields):
+        """Appends a ``core.marker`` event with ``label``."""
+        return self.call("trace_mark", deadline, session=session, cap=cap, label=label, **fields)
+
+    def trace_query(self, session: str, deadline: float | None = None, **fields):
+        """A bounded page of events (``kinds``, ``resource_key``, ``state_key``, ``corr``,
+        ``process_gen``, ``after``, ``up_to``, ``limit``) or, with ``group_by=``, counts per group."""
+        return self.call("trace_query", deadline, session=session, **fields)
+
+    def trace_explain(self, session: str, event_id: str, deadline: float | None = None, **fields):
+        """The events that lead to (``direction="upstream"``) or follow from an event."""
+        return self.call("trace_explain", deadline, session=session, event_id=event_id, **fields)
+
+    def trace_diff(self, a: str, b: str, deadline: float | None = None, **fields):
+        """Compares two sessions: counts per ``group_by`` or, with ``align=``, aligned entries."""
+        return self.call("trace_diff", deadline, a=a, b=b, **fields)
+
+    def trace_check(self, session: str, assertions: list, deadline: float | None = None, **fields):
+        """Evaluates assertions: each verdict is ``pass``, ``fail`` or ``unknown``. The results are
+        stored in the session only with the writer's ``cap=``."""
+        return self.call("trace_check", deadline, session=session, assertions=list(assertions),
+                         **fields)
+
+    def trace_export(self, session: str, deadline: float | None = None, **fields):
+        """Writes the session as an export folder ``<session>/export/<name>`` (long lane)."""
+        return self.call("trace_export", deadline, session=session, **fields)
+
+    def trace_close(self, session: str, cap: str, deadline: float | None = None, **fields):
+        """Ends the writer's lease; the session stays readable."""
+        return self.call("trace_close", deadline, session=session, cap=cap, **fields)
+
+    def trace_list(self, deadline: float | None = None, **fields):
+        """The sessions under the trace root, with their lease state."""
+        return self.call("trace_list", deadline, **fields)
+
+    def trace_info(self, session: str, deadline: float | None = None, **fields):
+        """One session: revision, events, sources, gaps, interpretations and the lease state."""
+        return self.call("trace_info", deadline, session=session, **fields)
+
+    def trace_resymbolize(self, session: str, cap: str, program: str,
+                          deadline: float | None = None, **fields):
+        """Re-resolves every code address against ``program`` as it stands now: a new
+        interpretation revision (long lane); the observations are not changed."""
+        return self.call("trace_resymbolize", deadline, session=session, cap=cap, program=program,
+                         **fields)
+
     def _send_request(self, cmd: str, fields: dict, abandon: bool = False) -> int:
         with self._lock:
             self._id += 1

@@ -729,7 +729,7 @@ final class Governor {
 		return ProjectFork.fileStore(p.toPath()); // one volume query per volume, not per admission
 	}
 
-	private static void requireDisk(File at, long estimate, String what) throws IOException {
+	static void requireDisk(File at, long estimate, String what) throws IOException {
 		FileStore fs = storeOf(at);
 		long usable = fs.getUsableSpace();
 		long need = estimate + Budgets.diskReserveBytes(fs.getTotalSpace());

@@ -44,6 +44,7 @@ pub mod client;
 pub mod error;
 pub mod json;
 pub mod session;
+pub mod trace;
 pub mod version;
 
 pub use client::{Access, CommentKind, Discard, EditOp};

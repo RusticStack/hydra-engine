@@ -113,6 +113,12 @@ final class Scheduler {
 			case "list", "functions", "decompile", "rename", "comment", "open_program", "switch",
 					"open_project":
 				return new Decision(Lane.QUICK, null);
+			case "trace_open", "trace_append", "trace_mark", "trace_query", "trace_explain",
+					"trace_diff", "trace_check", "trace_export", "trace_close", "trace_list",
+					"trace_info", "trace_resymbolize":
+				// protocol 3 only (TraceCommands refuses a protocol 2 connection): the long lane
+				// takes resymbolize, export and a diff over the quick budget
+				return new Decision(TraceCommands.laneOf(cmd, req), null);
 			default:
 				return null;
 		}

@@ -987,6 +987,33 @@ field replaces the connection's value for that request. With the label:
 request, or `a = s.labelled(client="agent-a", harness="claude-code")`, a view whose `call`,
 `send`, `cancel(target)` and `cancel_all()` all carry the labels (and are `parallel` by default).
 
+## Trace commands
+
+Protocol 3, capability `trace` (`12.3-hydra.6`): twelve commands that record and read semantic traces (`TRACE-1.md`; the field
+tables, the lease and the recovery rules are in `PROTOCOL-3.md` 8.20). A protocol 2 client gets `unknown_command`.
+
+| Command | Fields | What it does |
+|---|---|---|
+| `trace_open` | `session`?, `create`, `mode`, `cap`?, `takeover`, `program`, `modules` | Creates or opens a session; a writer gets the lease and a `cap` (kept only as a SHA-256) and, with `program`, a symbol table. |
+| `trace_append`, `trace_mark` | `session`, `cap`, `events` or `label` | One group commit; readers see a whole batch or none. |
+| `trace_query`, `trace_explain`, `trace_diff`, `trace_check` | `session` (`a`, `b` for a diff), ... | Reads of a pinned snapshot (`up_to`); no lease needed. |
+| `trace_export`, `trace_resymbolize` | `session`, ... | Long lane; cancelable; a cancelled export leaves no folder. |
+| `trace_close`, `trace_list`, `trace_info` | | End the writer, list the sessions, describe one. |
+
+Error codes: `bad_request`, `not_found`, `not_owner`, `busy` (disk reserve), `conflict`, `cancelled`, `unknown_command`, `failed`.
+Limits: a session id is 1 to 64 of `A-Za-z0-9_-`; a request is at most 16 MiB; a query page is at most 1000 rows; a diff of indexes over
+`trace.quickMB` (64) runs in the long lane; a new session needs `diskReserve` plus 16 MB free. Settings: `-Dhydra.trace.root` or
+`-set trace.root` (default `<state>/traces`), `-set trace.quickMB`, `-set trace=false`.
+
+Where each part runs (placement):
+
+| Part | Where | Lane |
+|---|---|---|
+| Parse, validate, lease check | the request thread (`TraceCommands`, `TraceLeases`) | quick |
+| Append, index, query, explain, check, info | Rust (`hydra_trace_request`); the reply bytes are sent unchanged | quick |
+| Export, resymbolize, large diff | Rust, with a native cancel flag the request's monitor sets | long |
+| Function table of a program | Java walks the program once under its shared lock (`TraceSymbols`) and sends it to Rust as data | request thread |
+
 ## Scripts
 
 `script` runs a GhidraScript as headless Ghidra does: `currentProgram`,

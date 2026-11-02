@@ -127,15 +127,16 @@ impl Caller {
     fn close_project_discarding(&mut self, project: &str) -> Result<Value, Error> {
         let deadline = self.deadline;
         self.with(|session| {
-            session.close_project(Some(project), Some(hydra_client::Discard::Discard), deadline)
+            session.close_project(
+                Some(project),
+                Some(hydra_client::Discard::Discard),
+                deadline,
+            )
         })
     }
 
     /// Runs one typed request, re-dialling once when the connection ended between requests.
-    fn with<T>(
-        &mut self,
-        run: impl Fn(&Session) -> Result<T, Error>,
-    ) -> Result<T, Error> {
+    fn with<T>(&mut self, run: impl Fn(&Session) -> Result<T, Error>) -> Result<T, Error> {
         let first = {
             let session = self
                 .session
@@ -182,7 +183,10 @@ pub(crate) fn run(path: &Path) -> Result<(), String> {
     let spec = Spec::read(path)?;
     let options = ConnectOptions {
         client: spec.client.clone().unwrap_or_else(|| spec.name.clone()),
-        harness: spec.harness.clone().unwrap_or_else(|| "bench-rust".to_owned()),
+        harness: spec
+            .harness
+            .clone()
+            .unwrap_or_else(|| "bench-rust".to_owned()),
         ..ConnectOptions::default()
     };
     let session = connect_retry(&spec.endpoint, &options, Duration::from_secs(30))
@@ -204,11 +208,14 @@ pub(crate) fn run(path: &Path) -> Result<(), String> {
         return Err(format!("{}: could not open the project view", spec.name));
     };
 
-    rows.op("list_functions", || list_functions(&mut caller, &program_key));
+    rows.op("list_functions", || {
+        list_functions(&mut caller, &program_key)
+    });
     read_query(&mut rows, &mut caller, &spec, &program_key);
     overlay_round(&mut rows, &mut caller, &spec, &project_id, &program_key);
     if spec.fork {
-        fork_round(&mut rows, &mut caller, &spec, &project_id);    }
+        fork_round(&mut rows, &mut caller, &spec, &project_id);
+    }
     rows.op("close_view", || caller.close_project(&project_id));
     caller.close();
     Ok(())
@@ -239,6 +246,7 @@ fn read_query(rows: &mut Rows, caller: &mut Caller, spec: &Spec, program: &str) 
                 read_script(rows, caller, spec, program, std::slice::from_ref(address));
             }
             ("info", _) => info(rows, caller, program),
+            ("trace_read", PlanArg::One(session)) => trace_read(rows, caller, spec, session),
             _ => {}
         }
     }
@@ -246,13 +254,7 @@ fn read_query(rows: &mut Rows, caller: &mut Caller, spec: &Spec, program: &str) 
 
 /// The benchmark's overlay round: open a view overlay on the shared program, rename and
 /// comment the subject, decompile it through the overlay, drop it.
-fn overlay_round(
-    rows: &mut Rows,
-    caller: &mut Caller,
-    spec: &Spec,
-    project: &str,
-    program: &str,
-) {
+fn overlay_round(rows: &mut Rows, caller: &mut Caller, spec: &Spec, project: &str, program: &str) {
     let Some(subject) = spec.edit.as_deref() else {
         return;
     };
@@ -275,7 +277,9 @@ fn overlay_round(
             kind: CommentKind::Plate,
         },
     ];
-    rows.op("overlay_edit", || caller.apply_overlay(program, &overlay, &ops));
+    rows.op("overlay_edit", || {
+        caller.apply_overlay(program, &overlay, &ops)
+    });
     let key = format!("{}|overlay|{subject}|{tag}", spec.project.name);
     rows.op_hashed(
         "decompile_overlay",
@@ -326,10 +330,7 @@ fn fork_round(rows: &mut Rows, caller: &mut Caller, spec: &Spec, project: &str) 
             .as_deref()
             .ok_or_else(|| Error::BadReply("fork_project has no id".to_owned()))?;
         let opened = caller.open_program_upgrading(&spec.project.program, project_id)?;
-        fork.program_key = opened
-            .get("key")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
+        fork.program_key = opened.get("key").and_then(Value::as_str).map(str::to_owned);
         Ok(reply)
     });
     if forked.is_none() {
@@ -378,7 +379,9 @@ fn fork_round(rows: &mut Rows, caller: &mut Caller, spec: &Spec, project: &str) 
     );
     rows.op("save", || caller.save(fork_key, &format!("bench {tag}")));
     if let Some(project_id) = fork.project_id.clone() {
-        rows.op("fork_close", || caller.close_project_discarding(&project_id));
+        rows.op("fork_close", || {
+            caller.close_project_discarding(&project_id)
+        });
     }
 }
 
@@ -509,6 +512,44 @@ fn decompile_one(
         &row_key,
         || decompile(caller, program, address, spec),
         decompile_projection,
+    );
+}
+
+/// The trace read workload (`PROTOCOL-3.md` "Trace commands"): what an analysis agent asks of a
+/// finished trace session while a writer or other readers are busy. Every request is a quick-lane
+/// read of a committed snapshot, so none waits on another; the three digests are of a closed
+/// session's replies and are stable run to run.
+fn trace_read(rows: &mut Rows, caller: &mut Caller, spec: &Spec, session: &str) {
+    let key = format!("{}|trace|{}", spec.project.name, session);
+    let session_field = || fields([("session", Value::String(session.to_owned()))]);
+    rows.op("trace_info", || caller.call("trace_info", session_field()));
+    let mut page = session_field();
+    page.insert("limit".to_owned(), Value::from(100));
+    rows.op_hashed(
+        "trace_query",
+        &format!("{key}|page"),
+        || caller.call("trace_query", page.clone()),
+        Value::clone,
+    );
+    let mut groups = session_field();
+    groups.insert("group_by".to_owned(), Value::String("kind".to_owned()));
+    rows.op_hashed(
+        "trace_groups",
+        &format!("{key}|groups"),
+        || caller.call("trace_query", groups.clone()),
+        Value::clone,
+    );
+    let mut check = session_field();
+    check.insert(
+        "assertions".to_owned(),
+        serde_json::json!([{"type": "forbidden", "kind": "core.error", "name": "bench-no-errors"}]),
+    );
+    check.insert("persist".to_owned(), Value::Bool(false));
+    rows.op_hashed(
+        "trace_check",
+        &format!("{key}|check"),
+        || caller.call("trace_check", check.clone()),
+        Value::clone,
     );
 }
 

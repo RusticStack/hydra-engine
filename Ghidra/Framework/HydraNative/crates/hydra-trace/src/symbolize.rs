@@ -210,6 +210,9 @@ pub fn resymbolize(
         let mut rows = read.query([])?;
         while let Some(row) = rows.next()? {
             let seq: i64 = row.get(0)?;
+            if seq % 1024 == 0 {
+                crate::cancel::check()?;
+            }
             let pgen: Option<u32> = row.get(1)?;
             let va: Option<i64> = row.get(2)?;
             let stack: String = row.get(3)?;

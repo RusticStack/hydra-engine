@@ -157,4 +157,9 @@ int32_t hydra_trace_request(const uint8_t *cmd, size_t cmd_len, const uint8_t *r
  * out_cap is too small. */
 int64_t hydra_trace_reply_copy(uint8_t *out, size_t out_cap);
 
+/* Cancels trace_export and trace_resymbolize running on this thread: flag points at a native
+ * int32 the caller sets non-zero; the command stops at its next check and answers code
+ * "cancelled", leaving nothing behind. NULL removes the flag. It must stay valid until removed. */
+void hydra_trace_set_cancel(const int32_t *flag);
+
 #endif

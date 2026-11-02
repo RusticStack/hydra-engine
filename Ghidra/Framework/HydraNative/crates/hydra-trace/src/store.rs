@@ -133,6 +133,8 @@ pub enum Error {
     Segment(String),
     Io(std::io::Error),
     Refused(String),
+    /// The request was cancelled (see `cancel`); nothing it did is visible.
+    Cancelled,
 }
 
 impl std::fmt::Display for Error {
@@ -143,6 +145,7 @@ impl std::fmt::Display for Error {
             Error::Segment(e) => write!(f, "segment: {e}"),
             Error::Io(e) => write!(f, "io: {e}"),
             Error::Refused(e) => write!(f, "refused: {e}"),
+            Error::Cancelled => write!(f, "cancelled"),
         }
     }
 }

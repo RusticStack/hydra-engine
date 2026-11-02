@@ -38,12 +38,18 @@ type Handler = Box<dyn FnMut(&Value, &mut ReplyWriter) + Send>;
 struct ReplyWriter(BufWriter<TcpStream>);
 
 impl ReplyWriter {
-    #[expect(clippy::needless_pass_by_value, reason = "the fake builds one value per answer")]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the fake builds one value per answer"
+    )]
     fn response(&mut self, id: &Value, result: Value) {
         self.line(&json!({"id": id, "ok": true, "result": result, "ms": 0}));
     }
 
-    #[expect(clippy::needless_pass_by_value, reason = "the fake builds one value per answer")]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the fake builds one value per answer"
+    )]
     fn error(&mut self, id: &Value, error: Value) {
         self.line(&json!({"id": id, "ok": false, "error": error, "ms": 0}));
     }
@@ -144,10 +150,7 @@ impl Drop for FakeEngine {
     fn drop(&mut self) {
         // Shutting the listener down unblocks an accept thread no client ever joined.
         let _ = self.listener.set_nonblocking(true);
-        let _ = TcpStream::connect(format!(
-            "{}:{}",
-            self.endpoint.host, self.endpoint.port
-        ));
+        let _ = TcpStream::connect(format!("{}:{}", self.endpoint.host, self.endpoint.port));
     }
 }
 
@@ -199,7 +202,10 @@ fn fake_v2_server_is_asked_for_3_and_the_session_says_2() {
     assert_eq!(hellos[0]["token"], json!("x"));
     assert_eq!(session.protocol(), 2);
     assert_eq!(session.hello()["protocol"], json!(2));
-    assert_eq!(session.call("ping", Map::new(), None).unwrap(), json!({"cmd": "ping"}));
+    assert_eq!(
+        session.call("ping", Map::new(), None).unwrap(),
+        json!({"cmd": "ping"})
+    );
     session.close();
     engine.wait_closed(1);
 }
@@ -212,8 +218,15 @@ fn fake_v3_server_answers_3_and_keeps_the_v3_keys() {
     assert_eq!(session.protocol(), 3);
     assert_eq!(session.hello()["protocolMin"], json!(2));
     assert_eq!(session.hello()["protocolMax"], json!(3));
-    assert_eq!(session.call("ping", Map::new(), None).unwrap(), json!({"cmd": "ping"}));
-    let asked: Vec<Value> = engine.hellos().iter().map(|h| h["protocol"].clone()).collect();
+    assert_eq!(
+        session.call("ping", Map::new(), None).unwrap(),
+        json!({"cmd": "ping"})
+    );
+    let asked: Vec<Value> = engine
+        .hellos()
+        .iter()
+        .map(|h| h["protocol"].clone())
+        .collect();
     assert_eq!(asked, vec![json!(3)]);
     session.close();
     engine.wait_closed(1);
@@ -248,15 +261,24 @@ fn non_protocol_lines_and_events_do_not_become_replies() {
             return;
         }
         if request["cmd"] == "decompile" {
-            writer.line(&json!({"event": "progress", "id": id, "message": "Analyzing",
-                                "progress": 1, "maximum": 4}));
+            writer.line(
+                &json!({"event": "progress", "id": id, "message": "Analyzing",
+                                "progress": 1, "maximum": 4}),
+            );
         }
         writer.response(id, json!({"cmd": request["cmd"]}));
     }));
     let session = connect(&engine);
-    assert_eq!(session.call("ping", Map::new(), None).unwrap(), json!({"cmd": "ping"}));
+    assert_eq!(
+        session.call("ping", Map::new(), None).unwrap(),
+        json!({"cmd": "ping"})
+    );
     let events = session.take_events();
-    assert_eq!(events.len(), 1, "the ready event, read before the hello answer");
+    assert_eq!(
+        events.len(),
+        1,
+        "the ready event, read before the hello answer"
+    );
     assert_eq!(events[0]["event"], json!("ready"));
     assert_eq!(
         session.call("decompile", Map::new(), None).unwrap(),
@@ -322,7 +344,13 @@ fn an_ok_false_answer_carries_the_engines_code_message_and_details() {
     let e = session
         .call("info", Map::new(), None)
         .expect_err("busy must be an error");
-    let hydra_client::Error::Session(SessionError { code: c, message, details, trace }) = e else {
+    let hydra_client::Error::Session(SessionError {
+        code: c,
+        message,
+        details,
+        trace,
+    }) = e
+    else {
         panic!("expected a SessionError");
     };
     assert_eq!(c, "busy");
@@ -337,27 +365,32 @@ fn an_ok_false_answer_carries_the_engines_code_message_and_details() {
 fn a_deadline_cancels_the_request_and_the_connection_stays_usable() {
     let answered = Arc::new(AtomicUsize::new(0));
     let seen = Arc::clone(&answered);
-    let engine = FakeEngine::start(Box::new(move |request: &Value, writer: &mut ReplyWriter| {
-        let id = &request["id"];
-        let cmd = request["cmd"].as_str().unwrap_or_default();
-        match cmd {
-            "hello" => writer.response(id, v2_answer(request)),
-            "cancel" => {
-                seen.fetch_add(1, Ordering::SeqCst);
-                writer.response(id, json!({"cancelled": 0}));
+    let engine = FakeEngine::start(Box::new(
+        move |request: &Value, writer: &mut ReplyWriter| {
+            let id = &request["id"];
+            let cmd = request["cmd"].as_str().unwrap_or_default();
+            match cmd {
+                "hello" => writer.response(id, v2_answer(request)),
+                "cancel" => {
+                    seen.fetch_add(1, Ordering::SeqCst);
+                    writer.response(id, json!({"cancelled": 0}));
+                }
+                // The info request is never answered: the client's deadline must fire.
+                "info" => {}
+                _ => writer.response(id, json!({"cmd": cmd})),
             }
-            // The info request is never answered: the client's deadline must fire.
-            "info" => {}
-            _ => writer.response(id, json!({"cmd": cmd})),
-        }
-    }));
+        },
+    ));
     let session = connect(&engine);
     let started = Instant::now();
     let e = session
         .call("info", Map::new(), Some(0.2))
         .expect_err("the deadline must fire");
     let elapsed = started.elapsed();
-    assert!(elapsed >= Duration::from_millis(150), "returned too early: {elapsed:?}");
+    assert!(
+        elapsed >= Duration::from_millis(150),
+        "returned too early: {elapsed:?}"
+    );
     assert_eq!(e.code(), code::DEADLINE_EXCEEDED);
     let details = e.details();
     assert_eq!(details["deadlineS"], json!(0.2));
@@ -378,7 +411,10 @@ fn a_deadline_cancels_the_request_and_the_connection_stays_usable() {
     assert_eq!(cancel["parallel"], json!(true));
     assert_eq!(answered.load(Ordering::SeqCst), 1);
     // The connection is still usable: a new request gets a new id.
-    assert_eq!(session.call("ping", Map::new(), None).unwrap(), json!({"cmd": "ping"}));
+    assert_eq!(
+        session.call("ping", Map::new(), None).unwrap(),
+        json!({"cmd": "ping"})
+    );
     session.close();
     engine.wait_closed(1);
 }
@@ -529,15 +565,18 @@ fn reconnect_dials_a_restarted_endpoint_with_a_new_token() {
     first.wait_closed(1);
 
     // The restarted daemon has a new port and a new token; the old session is replaced.
-    let second = FakeEngine::start_with_token("y", Box::new(|request: &Value, writer: &mut ReplyWriter| {
-        let id = &request["id"];
-        if request["cmd"] == "hello" {
-            assert_eq!(request["token"], json!("y"), "the new endpoint's token");
-            writer.response(id, v2_answer(request));
-        } else {
-            writer.response(id, json!({"cmd": request["cmd"]}));
-        }
-    }));
+    let second = FakeEngine::start_with_token(
+        "y",
+        Box::new(|request: &Value, writer: &mut ReplyWriter| {
+            let id = &request["id"];
+            if request["cmd"] == "hello" {
+                assert_eq!(request["token"], json!("y"), "the new endpoint's token");
+                writer.response(id, v2_answer(request));
+            } else {
+                writer.response(id, json!({"cmd": request["cmd"]}));
+            }
+        }),
+    );
     let session = session
         .reconnect(second.endpoint.clone(), &ConnectOptions::new("cc", "tests"))
         .expect("the restarted daemon accepts the same client");
@@ -600,7 +639,10 @@ fn keep_raw_returns_the_engines_line_byte_for_byte() {
         .call_raw("info", Map::new(), None)
         .expect("an answer");
     let raw = reply.raw.expect("the raw line");
-    assert_eq!(raw, "{\"id\":2,\"ok\":true,\"result\":{\"z\":1, \"a\":2},\"ms\":3}\n");
+    assert_eq!(
+        raw,
+        "{\"id\":2,\"ok\":true,\"result\":{\"z\":1, \"a\":2},\"ms\":3}\n"
+    );
     assert_eq!(reply.value["result"], json!({"z": 1, "a": 2}));
     session.close();
     engine.wait_closed(1);
@@ -620,4 +662,88 @@ fn a_zero_or_negative_deadline_is_refused_before_anything_is_sent() {
     assert_eq!(engine.requests().len(), 1);
     session.close();
     engine.wait_closed(1);
+}
+
+// The trace commands send the fields the Python client's `trace_*` methods send, and return the
+// engine's result unchanged (`daemon_tests.py trace_client_identity` compares the real engine's
+// reply lines of the two clients).
+#[test]
+fn trace_commands_send_the_python_clients_fields() {
+    let engine = FakeEngine::start(hello_or_cmd(v3_answer));
+    let session = connect(&engine);
+    let none = Map::new;
+    let one = |k: &'static str, v: Value| fields([(k, v)]);
+    session
+        .trace_open(Some("s1"), one("create", json!(true)), None)
+        .expect("trace_open");
+    session
+        .trace_append(
+            "s1",
+            "cap_x",
+            vec![json!({"kind": "core.marker"})],
+            none(),
+            None,
+        )
+        .expect("trace_append");
+    session
+        .trace_mark("s1", "cap_x", "phase", none(), None)
+        .expect("trace_mark");
+    session
+        .trace_query("s1", one("limit", json!(7)), None)
+        .expect("trace_query");
+    session
+        .trace_explain("s1", "ev_s1_3", one("direction", json!("downstream")), None)
+        .expect("trace_explain");
+    session
+        .trace_diff("s1", "s2", one("group_by", json!("kind")), None)
+        .expect("trace_diff");
+    session
+        .trace_check(
+            "s1",
+            vec![json!({"type": "forbidden", "kind": "core.error"})],
+            none(),
+            None,
+        )
+        .expect("trace_check");
+    session
+        .trace_export("s1", one("name", json!("all")), None)
+        .expect("trace_export");
+    session
+        .trace_close("s1", "cap_x", none(), None)
+        .expect("trace_close");
+    session.trace_list(none(), None).expect("trace_list");
+    session.trace_info("s1", none(), None).expect("trace_info");
+    let reply = session
+        .trace_resymbolize("s1", "cap_x", "prog.exe", none(), None)
+        .expect("trace_resymbolize");
+    assert_eq!(
+        reply,
+        json!({"cmd": "trace_resymbolize"}),
+        "the result is returned as it is"
+    );
+    let seen: Vec<Value> = engine.requests().into_iter().skip(1).collect();
+    let strip = |v: &Value| {
+        let mut m = v.as_object().expect("a request object").clone();
+        m.remove("id");
+        Value::Object(m)
+    };
+    let want = [
+        json!({"cmd": "trace_open", "session": "s1", "create": true}),
+        json!({"cmd": "trace_append", "session": "s1", "cap": "cap_x", "events": [{"kind": "core.marker"}]}),
+        json!({"cmd": "trace_mark", "session": "s1", "cap": "cap_x", "label": "phase"}),
+        json!({"cmd": "trace_query", "session": "s1", "limit": 7}),
+        json!({"cmd": "trace_explain", "session": "s1", "event_id": "ev_s1_3", "direction": "downstream"}),
+        json!({"cmd": "trace_diff", "a": "s1", "b": "s2", "group_by": "kind"}),
+        json!({"cmd": "trace_check", "session": "s1", "assertions": [{"type": "forbidden", "kind": "core.error"}]}),
+        json!({"cmd": "trace_export", "session": "s1", "name": "all"}),
+        json!({"cmd": "trace_close", "session": "s1", "cap": "cap_x"}),
+        json!({"cmd": "trace_list"}),
+        json!({"cmd": "trace_info", "session": "s1"}),
+        json!({"cmd": "trace_resymbolize", "session": "s1", "cap": "cap_x", "program": "prog.exe"}),
+    ];
+    assert_eq!(seen.len(), want.len());
+    for (got, want) in seen.iter().zip(want.iter()) {
+        assert_eq!(&strip(got), want);
+    }
+    session.close();
 }
