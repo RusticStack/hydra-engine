@@ -11,10 +11,16 @@ example `12.3-hydra.1`); its tag is `v` and the version. Releases are on
 
 ## 12.3-hydra.6
 
-Prepared 2026-11-02 on branch `trace/final-eng`; not tagged and not published. Based on the same
-upstream Ghidra `master` (12.3 DEV) commit as 12.3-hydra.5. This release adds the **semantic trace**:
-a store of observed runtime events from a process you own, queried through the same daemon. Every
-gate result, and every gate that was not met, is in `docs/release-notes-12.3-hydra.6.md`.
+Released 2026-11-02. Based on upstream Ghidra `master` (12.3 DEV) at
+commit `1b9e58a915cf867e106495eaa2a4b18eb4971c9d`, the same upstream commit as 12.3-hydra.3, 12.3-hydra.4
+and 12.3-hydra.5. This release adds the **semantic trace**: a store of observed runtime events from a
+process you own, queried through the same daemon; and it fixes GitHub issues 6 and 7 (`decompile`
+response cap, partial text, fragment-wise decompile, spill to disk). Compatibility: protocol 3 gains the
+`trace` capability and additive `decompile` fields; protocol 2 is unchanged; `minClient` stays `1.0.0`;
+`HydraCpu` ABI 2. Every gate result, and every gate that was not met or not run, is in
+[`docs/release-notes-12.3-hydra.6.md`](docs/release-notes-12.3-hydra.6.md). Every result is for a
+process tree on Windows x64 with JDK 25 on NTFS, from an install assembled locally (not the Gradle/CI
+release zip).
 
 ### Semantic trace
 
@@ -49,11 +55,27 @@ gate result, and every gate that was not met, is in `docs/release-notes-12.3-hyd
 
 ### `decompile`: response cap per query and non-contiguous functions (issues 6 and 7)
 
-- `decompile` takes `maxResultMb` (alias `max_result_mb`, 1 to 1024): a hard ceiling. Absent, the budget is adaptive (was a fixed 50): a quarter of the free physical memory above a 4096 MB floor and an eighth of the free heap, divided by the decompiles in flight, 8 to 1024 MB; the buffer fills page by page and the request `timeout` still bounds a runaway decompile. An overflow reply carries `budget` with those numbers. `offset` pages the text (`next_offset`). Not done: spilling the response to disk, re-checking the budget while reading, a background lane for huge decompiles: the cap on the native decompiler's response buffer. It is not `maxChars`, which only cuts the text of an answer that already fit. A response over the cap now answers `completed:false, truncated:true, bytes_emitted, reason:"response_buffer"` instead of failing with `Response buffer size exceeded`; a timeout is labelled `reason:"timeout"`. Raise the cap for the whole text; the front of the text is returned as `partial` (below).
+- `decompile` takes `maxResultMb` (alias `max_result_mb`, 1 to 1024; `maxResultKb` for a cap below 1 MB): a hard ceiling on the native decompiler's response buffer. It is not `maxChars`, which only cuts the text of an answer that already fit. A response over the cap now answers `completed:false, truncated:true, bytes_emitted, reason:"response_buffer"` instead of failing with `Response buffer size exceeded`; a timeout is labelled `reason:"timeout"`. Absent, the budget is adaptive (it was a fixed 50 MB): a quarter of the free physical memory above a 4096 MB floor and an eighth of the free heap, divided by the decompiles in flight, 8 to 1024 MB (more once a request spills, below); the buffer fills page by page and the request `timeout` still bounds a runaway decompile. An overflow reply carries `budget` with those numbers. `offset` pages the text (`next_offset`). Raise the cap for the whole text; the front of the text is returned as `partial` (below).
 - A function with a non-contiguous (pdata) body that the decompiler cannot flow over (it ran into a pointer table between pieces: `Bad instruction count exceeded`) now decompiles piece by piece: `completed:true, partial:true` with a `fragments` list of `{start, end, class: code|data|unknown, decompiled}`; data pieces are skipped. Whole-body decompiles that succeed are unchanged. Tests: `examples/cc_issues_eng.py`. Details: `PROTOCOL-3.md` 8.21.
 - An overflowed response now also carries the C text it began with (issue 6, second step): additive fields `partial:true`, `c` (cut to `maxChars`), `chars`, `signature` and `cut` (`kind`, `c_recovered`, `c_chars`, `c_lines`, `what` is missing). The text is read token by token from the front of the packed answer (`PartialMarkup`), so it is exactly the first part of the complete text (long comments are not rewrapped, names are not transformed); `completed` stays false and `reason` stays `response_buffer`. A cap that ends before the C markup begins gives `cut.c_recovered:false` and no `c`. Java API: `DecompInterface.setSalvageOverflow` / `takeSalvaged`. Test: `cap_partial` in `examples/cc_issues_eng.py`.
 - A decompile response is no longer bounded by the JVM heap (issue 6, third step; additive, `minClient` unchanged): the first `spillThresholdMb` (default 32; 0 = off) MB of the decompiler's answer stay on the heap and the pages after that are appended to a temporary file `hydra-decompiler-spill/spill-<pid>-...bin` under `java.io.tmpdir`, deleted when the request ends (delete-on-close, plus a sweep of dead processes' files). A spilled answer that completes is not decoded into a tree: the C text window of the request (`offset`, `maxChars`) is read from the file token by token and the reply says `streamed:true` and `spill:{...}` (long comments are not rewrapped, names do not go through the name transformer, not cached; a page request decompiles again). While reading, a guard checks about every MB the free physical memory (`spillHardFloorRamMb`, default 1024 MB), the free disk space against `diskReserve` and a quota; on a trip the answer is the existing structured `completed:false, truncated:true, reason:"response_buffer"` with the front of the C text, plus `limit` (`response_cap`, `free_ram`, `disk_free`, `spill_quota`, `spill_io`), never an exception. With no `maxResultMb` the adaptive budget grows to the threshold plus a quarter of the free disk above the reserve (at most 2000 MB). A request that spills moves from the quick lane to the long lane (`Scheduler.Ticket.moveToLong`). New Java API: `ResponseSpill`, `PackedDecode.setSpill`, `DecompInterface.setResponseSpill`/`takeStreamed`, `PartialMarkup.read(decoder, keep, skip)`. Tests: `examples/cc_issues_eng.py` (`spill`). Details: `PROTOCOL-3.md` 8.21.
 - `DecompInterface.setMaxResultBytes` and `DecompileProcess.setMaxResultBytes` (Java API): a per-use cap in bytes that wins over the options' payload limit.
+
+### Other fixes and changes since the first h6 candidate
+
+- **Revision snapshot** (`73b3a8380a`, listed above): `trace_query` answers from one read snapshot.
+- **Foreign-wait attribution and the single-flight open** (`4599c62c51`, `8d6ff2f647`): an `open_program` that takes the lock while the program is not open counts as single-flight for its whole hold, and so does every read-only `open_program` on the exclusive path (the swap of a warm program to its upgrade-cache copy was the case missed by the first fix); before, waiters behind them were counted as `foreignBlocked` in the window after the program was set. `waits` gains the additive `foreignRecent`, which names recent foreign waits. In the final 18-run bench `foreignBlocked` is 0 in every run.
+- **`ForkIntent.write` retries the rename** against handle holders (found as the `e2a_kill_fork` failure under load).
+- **Trace performance** (lanes `perf-low`, `perf-high`, `perf-mid`): `trace_*` reads and `trace_append` take a raw request path (no per-call shared arena, one progress poller), the native cells are recycled, a request is parsed straight into the command's type; ingest is single-pass (clone-free chain and canon, overlapped segment sync, 16K pages): 1,000,000 events at about 92,000 events/s (60,197 in the first run of the same log, `_logs/perf-mid-final.log`); `trace_info` is O(1) on a live session (incremental relation and symbol counts, `MAX(seq)` count; it was O(session size)); readers are pooled; the `hydra-etw` consumer costs 1.77 us per event against 2.37 (one-pass framing, lock-free callback, cached HMAC state, larger session buffers; 3 interleaved elevated rounds). The ETW kernel PID filter stays opt-in (`--kernel-filter`): the kernel file and registry providers do not apply it.
+- **Tests**: the legacy 12.1.4 fixture copies are re-owned for the running user (the three legacy cases no longer fail on a machine whose user is not `test`); `refcount_leak` waits for a late view release; `first_open_attribution` and the `e9_guarded_threads` beat detection; `chaos_oracle` uses 8 readers again; the R1 hello golden masks the `trace` capability; new `swap_open_attribution`.
+
+### Known limits (see the release notes for the runs)
+
+- Install under test is a local assembly, not a Gradle/CI build of the release zip; the hosted-runner CI was not run.
+- Soak on the final install, an `-Xmx` run, ReFS and other hardware were not run.
+- Protocol-2 and protocol-3 characterization goldens are stale against hydra.5 (the status reply gained `decompileBackend`) and were not re-recorded.
+- Pre-existing and untouched: `fmt` drift in `HeadlessSession/rust` and 14 clippy errors in `Features/Decompiler/rust`.
+- `yield_slots_stress` and `script_modes` fail only under 16-worker load.
 
 ### Test runs for this release
 
