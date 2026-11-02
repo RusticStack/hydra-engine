@@ -74,6 +74,7 @@ fn load(root: &std::path::Path, id: &str, n: u64, seed: u64) -> (Session, f64) {
 fn run(n: u64, rss_limit: u64) {
     let dir = scratch(&format!("n{n}"));
     let (s, rate) = load(&dir, "big", n, 0);
+    println!("loaded in {:.1}s", n as f64 / rate);
     let rss_after_ingest = peak_rss();
     println!(
         "ingest: {n} events, {rate:.0} events/s, peak working set {} MiB",
@@ -172,5 +173,9 @@ fn smoke_50k() {
 #[test]
 #[ignore = "1M events: run with --release -- --ignored"]
 fn one_million_events() {
-    run(1_000_000, 1536 << 20);
+    let n = std::env::var("HYDRA_SCALE_EVENTS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1_000_000);
+    run(n, 1536 << 20);
 }
