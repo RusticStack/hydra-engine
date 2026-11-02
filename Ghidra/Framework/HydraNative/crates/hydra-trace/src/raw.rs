@@ -68,6 +68,12 @@ impl Chain {
         Ok(line)
     }
 
+    /// Continue an existing segment whose last record has hash `head` and which holds `n`
+    /// records (a writer reopening its segment).
+    pub fn resume(head: String, n: u64) -> Self {
+        Self { head, n }
+    }
+
     pub fn head(&self) -> &str {
         &self.head
     }
@@ -127,12 +133,20 @@ fn parse_line(line: &[u8]) -> Option<Map<String, Value>> {
 
 /// Read and verify a whole segment. `segment` is the id its genesis was derived from.
 pub fn scan(data: &[u8], segment: &str) -> Scan {
+    scan_from(data, 0, genesis_hash(segment), 0)
+}
+
+/// Continue a verified scan: `data[start..]` holds records `first_n ..`, the previous record's
+/// hash being `head`. Used by tails, which keep (`valid_end`, `head`, count) between polls. The
+/// returned `records` are only the new ones and `valid_end` is an absolute offset.
+pub fn scan_from(data: &[u8], start: usize, head: String, first_n: u64) -> Scan {
     let mut out = Scan {
         size: data.len(),
-        head: genesis_hash(segment),
+        head,
+        valid_end: start,
         ..Scan::default()
     };
-    let mut cursor = 0usize;
+    let mut cursor = start;
     let mut line_no = 0usize;
     while cursor < data.len() {
         let Some(rel) = data[cursor..].iter().position(|&b| b == b'\n') else {
@@ -159,7 +173,7 @@ pub fn scan(data: &[u8], segment: &str) -> Scan {
             return out;
         };
         let n = record.get("n").and_then(Value::as_u64);
-        if n != Some(out.records.len() as u64) {
+        if n != Some(first_n + out.records.len() as u64) {
             out.damage = Some(Damage::ChainBreak {
                 offset: cursor,
                 n: n.unwrap_or(u64::MAX),

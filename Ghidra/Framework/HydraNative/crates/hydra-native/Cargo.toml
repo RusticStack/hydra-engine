@@ -14,6 +14,9 @@ crate-type = ["cdylib", "rlib"]
 [lints]
 workspace = true
 
+[dependencies]
+hydra-trace = { path = "../hydra-trace" }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true
 
@@ -25,3 +28,6 @@ features = [
 	"Win32_System_SystemInformation",
 	"Win32_System_Threading",
 ]
+
+[dev-dependencies]
+serde_json.workspace = true

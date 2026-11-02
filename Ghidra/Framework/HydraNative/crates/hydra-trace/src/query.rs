@@ -3,7 +3,7 @@
 
 use crate::store::{Result, Store};
 use rusqlite::params;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// Hard bounds. A request above them is clamped and the reply says so (`truncated`).
@@ -191,7 +191,7 @@ pub struct Diff {
     pub gaps_b: u64,
 }
 
-fn lossy_gaps(store: &Store) -> Result<u64> {
+pub fn lossy_gap_count(store: &Store) -> Result<u64> {
     let n: i64 = store.conn().query_row(
         "SELECT COUNT(*) FROM gaps WHERE reason IN ('producer-lost','ring-overflow','read-failure','restart','budget')",
         [],
@@ -212,7 +212,7 @@ pub fn diff(a: &Store, b: &Store, by: &str, kinds: &[String]) -> Result<Diff> {
         .into_iter()
         .map(|g| (g.key.clone(), g))
         .collect();
-    let (gaps_a, gaps_b) = (lossy_gaps(a)?, lossy_gaps(b)?);
+    let (gaps_a, gaps_b) = (lossy_gap_count(a)?, lossy_gap_count(b)?);
     let mut keys: Vec<&String> = ga.keys().chain(gb.keys()).collect();
     keys.sort();
     keys.dedup();
@@ -288,12 +288,22 @@ pub struct CheckResult {
     pub reason: Option<String>,
 }
 
+fn one() -> u32 {
+    1
+}
+
+fn corr_field() -> String {
+    "corr".into()
+}
+
 /// An assertion over a session (spec 14.8). Revisioned by `name` + `rev`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum Assertion {
     /// Every `request` with a correlation id has exactly one `completion` with the same id.
     RequestCompletion {
         name: String,
+        #[serde(default = "one")]
         rev: u32,
         request: String,
         completion: String,
@@ -301,6 +311,7 @@ pub enum Assertion {
     /// `kind` occurs between `min` and `max` times.
     Cardinality {
         name: String,
+        #[serde(default = "one")]
         rev: u32,
         kind: String,
         min: u64,
@@ -309,12 +320,111 @@ pub enum Assertion {
     /// No event of `kind` may occur.
     Forbidden {
         name: String,
+        #[serde(default = "one")]
         rev: u32,
         kind: String,
     },
+    /// Per key, the events of `kinds` occur in the listed order.
+    OrderedTransitions {
+        name: String,
+        #[serde(default = "one")]
+        rev: u32,
+        kinds: Vec<String>,
+        #[serde(default = "corr_field")]
+        key_field: String,
+    },
+    /// Every `from` is followed by a `to` with the same key.
+    RequiredTransition {
+        name: String,
+        #[serde(default = "one")]
+        rev: u32,
+        from: String,
+        to: String,
+        #[serde(default = "corr_field")]
+        key_field: String,
+    },
+    /// No `to` follows a `from` with the same key.
+    ForbiddenTransition {
+        name: String,
+        #[serde(default = "one")]
+        rev: u32,
+        from: String,
+        to: String,
+        #[serde(default = "corr_field")]
+        key_field: String,
+    },
+    /// Events of `kind` carry `role` in payload field `role_field`, and no other.
+    OnlyOnRole {
+        name: String,
+        #[serde(default = "one")]
+        rev: u32,
+        kind: String,
+        role: String,
+        #[serde(default = "role_field")]
+        role_field: String,
+    },
+    /// Within a frame, a write to a state precedes every read of it.
+    WritePrecedesReadInFrame {
+        name: String,
+        #[serde(default = "one")]
+        rev: u32,
+    },
+    /// `kind` occurs at most once in any frame.
+    AtMostOncePerFrame {
+        name: String,
+        #[serde(default = "one")]
+        rev: u32,
+        kind: String,
+    },
+    /// Every frame contains at least one `required` event.
+    NoFrameWithout {
+        name: String,
+        #[serde(default = "one")]
+        rev: u32,
+        required: String,
+    },
+    /// A value written under a key is read back equal.
+    RoundTrip {
+        name: String,
+        #[serde(default = "one")]
+        rev: u32,
+        write_kind: String,
+        read_kind: String,
+        #[serde(default = "corr_field")]
+        key_field: String,
+        #[serde(default = "value_field")]
+        value_field: String,
+    },
 }
 
-fn id_of(store: &Store, seq: i64) -> String {
+fn role_field() -> String {
+    "role".into()
+}
+
+fn value_field() -> String {
+    "value".into()
+}
+
+impl Assertion {
+    pub fn label(&self) -> String {
+        let (name, rev) = match self {
+            Assertion::RequestCompletion { name, rev, .. }
+            | Assertion::Cardinality { name, rev, .. }
+            | Assertion::Forbidden { name, rev, .. }
+            | Assertion::OrderedTransitions { name, rev, .. }
+            | Assertion::RequiredTransition { name, rev, .. }
+            | Assertion::ForbiddenTransition { name, rev, .. }
+            | Assertion::OnlyOnRole { name, rev, .. }
+            | Assertion::WritePrecedesReadInFrame { name, rev, .. }
+            | Assertion::AtMostOncePerFrame { name, rev, .. }
+            | Assertion::NoFrameWithout { name, rev, .. }
+            | Assertion::RoundTrip { name, rev, .. } => (name, rev),
+        };
+        format!("{name}/{rev}")
+    }
+}
+
+pub(crate) fn id_of(store: &Store, seq: i64) -> String {
     format!("ev_{}_{}", store.session(), seq)
 }
 
@@ -322,14 +432,9 @@ fn id_of(store: &Store, seq: i64) -> String {
 /// `Unknown` (never a reassuring pass); the valid part of the trace stays usable.
 pub fn check(store: &Store, assertion: &Assertion) -> Result<CheckResult> {
     let revision = store.revision()?;
-    let gaps = lossy_gaps(store)?;
+    let gaps = lossy_gap_count(store)?;
     let conn = store.conn();
-    let (name, rev) = match assertion {
-        Assertion::RequestCompletion { name, rev, .. }
-        | Assertion::Cardinality { name, rev, .. }
-        | Assertion::Forbidden { name, rev, .. } => (name, rev),
-    };
-    let label = format!("{name}/{rev}");
+    let label = assertion.label();
     let mut result = CheckResult {
         assertion: label,
         revision,
@@ -403,6 +508,7 @@ pub fn check(store: &Store, assertion: &Assertion) -> Result<CheckResult> {
                 Verdict::Fail
             };
         }
+        other => crate::checks::eval(store, other, &mut result)?,
     }
     if let Assertion::RequestCompletion { .. } = assertion {
         result.verdict = if result.checked == 0 {
