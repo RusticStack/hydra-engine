@@ -31,7 +31,9 @@ import com.google.gson.*;
 import ghidra.app.decompiler.*;
 import ghidra.program.model.address.*;
 import ghidra.program.model.listing.*;
+import ghidra.program.model.mem.Memory;
 import ghidra.program.model.symbol.*;
+import ghidra.util.UndefinedFunction;
 
 /**
  * Read-only questions about a program: {@code functions} and {@code decompile}.
@@ -170,6 +172,7 @@ final class QueryCommands {
 			// the locked path's own validation of these fields, so a bad value errors the same way
 			Json.num(req, "timeout", 60, 1, 3600);
 			cap = (int) Json.num(req, "maxChars", DEFAULT_TEXT_CAP, 1, MAX_TEXT_CAP);
+			resultCapBytes(req);
 			a = address(p, Json.str(req, "address"));
 		}
 		catch (SessionException bad) {
@@ -188,11 +191,12 @@ final class QueryCommands {
 		Function f = function(prog, req);
 		int timeout = (int) Json.num(req, "timeout", 60, 1, 3600);
 		int cap = (int) Json.num(req, "maxChars", DEFAULT_TEXT_CAP, 1, MAX_TEXT_CAP);
+		int capBytes = resultCapBytes(req);
 		Client caller = Caller.client();
 		boolean v3 = caller != null && caller.v3();
 		DecompileCache cache = DecompileCache.get();
 		if (cache == null) {
-			return fresh(prog, e, f, timeout, cap, v3, m, null, null);
+			return fresh(prog, e, f, timeout, cap, capBytes, v3, m, null, null);
 		}
 		// goal 4: an unchanged program's result is served from the cache, and N callers of one
 		// function at once share one decompile; the reply is the one a fresh decompile gives
@@ -208,7 +212,7 @@ final class QueryCommands {
 				DecompileCache.Result[] out = new DecompileCache.Result[1];
 				boolean[] fault = { false };
 				try {
-					own[0] = fresh(prog, e, f, timeout, cap, v3, m, out, fault);
+					own[0] = fresh(prog, e, f, timeout, cap, capBytes, v3, m, out, fault);
 				}
 				catch (RuntimeException ex) {
 					if (m.isCancelled()) {
@@ -270,7 +274,7 @@ final class QueryCommands {
 			throw se.rewrap(se.getMessage(), se.details() == null ? null : se.details().deepCopy());
 		}
 		DecompileCache.Result[] out = new DecompileCache.Result[1];
-		JsonObject rep = fresh(prog, e, f, timeout, cap, v3, m, out, null);
+		JsonObject rep = fresh(prog, e, f, timeout, cap, capBytes, v3, m, out, null);
 		if (out[0] != null) {
 			cache.offer(k, out[0], prog::getModificationNumber);
 		}
@@ -307,7 +311,7 @@ final class QueryCommands {
 	 * {@code out} is given) for the cache.
 	 */
 	private JsonObject fresh(Program prog, Decompilers e, Function f, int timeout, int cap,
-			boolean v3, RequestMonitor m, DecompileCache.Result[] out, boolean[] faultOut) {
+			int capBytes, boolean v3, RequestMonitor m, DecompileCache.Result[] out, boolean[] faultOut) {
 		// E9: a function that crashed or hung the native process more than three times in a minute
 		// is refused for ten minutes (the circuit breaker), before a permit or a process is spent
 		long banned = DecompilerGate.Breaker.negativeLeftMs(prog, f);
@@ -327,10 +331,15 @@ final class QueryCommands {
 		// (a hosted result is a completed one; it then takes the same reply path as a process result)
 		// Protocol 2 keeps the hydra.3 process path (its client may kill the decompiler by pid);
 		// a protocol 3 client gets the host backend when it is enabled (the round 2 default).
-		DecompileResults hosted = v3 ? HostDecompileBackend.tryDecompile(prog, e, f, timeout) : null;
+		// A request that names its own response cap takes the process path, which enforces it.
+		DecompileResults hosted =
+			v3 && capBytes == 0 ? HostDecompileBackend.tryDecompile(prog, e, f, timeout) : null;
 		DecompInterface d = hosted != null ? null : e.borrowDecompiler();
 		boolean healthy = false;
 		try {
+			if (d != null && capBytes > 0) {
+				d.setMaxResultBytes(capBytes);
+			}
 			DecompileResults res = hosted != null ? hosted : d.decompileFunction(f, timeout, m);
 			if (m.isCancelled()) {
 				throw cancelled(m);
@@ -343,6 +352,30 @@ final class QueryCommands {
 				boolean timedOut = res != null && res.isTimedOut();
 				Json.put(r, "error", err);
 				Json.put(r, "timedOut", timedOut);
+				if (err != null && err.contains(RESPONSE_OVERFLOW)) {
+					// the engine's response buffer (not max_characters) filled: a structured partial
+					// result, not a fault of the process (the breaker is not tripped)
+					int limit = capBytes > 0 ? capBytes
+							: (d == null ? 50 : d.getOptions().getMaxPayloadMBytes()) << 20;
+					Json.put(r, "truncated", true);
+					Json.put(r, "bytes_emitted", limit);
+					Json.put(r, "reason", "response_buffer");
+					Json.put(r, "max_result_mb", limit % (1 << 20) == 0 ? (Object) (limit >> 20) : (Object) (limit / 1048576.0));
+					Json.put(r, "max_result_bytes", limit);
+					if (faultOut != null) {
+						faultOut[0] = true; // the answer depends on this request's cap: not shared
+					}
+					return r;
+				}
+				if (timedOut) {
+					Json.put(r, "reason", "timeout");
+				}
+				if (d != null && fragmentable(f, err)) {
+					JsonObject fr = fragments(prog, d, f, timeout, cap, m);
+					if (fr != null) {
+						return fr;
+					}
+				}
 				// the native process crashed, hung or timed out (not: the decompiler declined this
 				// function with a message of its own, which is deterministic and harmless)
 				boolean fault = res == null || timedOut || res.failedToStart() ||
@@ -373,9 +406,167 @@ final class QueryCommands {
 		}
 		finally {
 			if (d != null) {
+				if (capBytes > 0) {
+					d.setMaxResultBytes(0);
+				}
 				e.returnDecompiler(d, healthy);
 			}
 		}
+	}
+
+	/** The text of the native decompiler's error when its response buffer is over the cap. */
+	static final String RESPONSE_OVERFLOW = "Response buffer size exceeded";
+	/** Largest per-query response cap, in MB (the buffer is heap: {@code LinkedByteBuffer}). */
+	static final int MAX_RESULT_MB = 512;
+
+	/**
+	 * The per-query cap on the native decompiler's response, in bytes, or 0 for the engine's own
+	 * (50 MB). {@code maxResultMb} (alias {@code max_result_mb}) is whole megabytes from 1 to
+	 * {@value #MAX_RESULT_MB}; {@code maxResultKb} (alias {@code max_result_kb}) is the same in
+	 * kilobytes from 1 and wins when both are given. This is not {@code maxChars}, which cuts the
+	 * text of an answer that already fit.
+	 */
+	static int resultCapBytes(JsonObject req) {
+		String mb = Json.has(req, "maxResultMb") ? "maxResultMb" : "max_result_mb";
+		String kb = Json.has(req, "maxResultKb") ? "maxResultKb" : "max_result_kb";
+		if (Json.has(req, kb)) {
+			return (int) (Json.num(req, kb, 0, 1, MAX_RESULT_MB * 1024L) << 10);
+		}
+		if (Json.has(req, mb)) {
+			return (int) (Json.num(req, mb, 0, 1, MAX_RESULT_MB) << 20);
+		}
+		return 0;
+	}
+
+	/**
+	 * Whether a failed decompile of {@code f} is the one a non-contiguous body gives: the decompiler
+	 * flowed from a fragment into the gap between fragments (a pointer table, not code) and gave up.
+	 */
+	static boolean fragmentable(Function f, String err) {
+		return err != null && f.getBody().getNumAddressRanges() > 1 &&
+			(err.contains("Bad instruction count exceeded") ||
+				err.contains("No pcode could be generated"));
+	}
+
+	/**
+	 * Classifies one fragment of a function body: {@code code} when the listing has an instruction at
+	 * its start; {@code data} when it starts with defined data or is a table of pointers into this
+	 * program's memory; else {@code unknown}.
+	 */
+	static String classify(Program p, AddressRange r) {
+		Listing l = p.getListing();
+		if (l.getInstructionAt(r.getMinAddress()) != null) {
+			return "code";
+		}
+		if (l.getDefinedDataAt(r.getMinAddress()) != null || pointerTable(p, r)) {
+			return "data";
+		}
+		return "unknown";
+	}
+
+	private static boolean pointerTable(Program p, AddressRange r) {
+		int ps = p.getDefaultPointerSize();
+		if (ps != 4 && ps != 8) {
+			return false;
+		}
+		long n = r.getLength() / ps;
+		if (n < 2) {
+			return false;
+		}
+		Memory mem = p.getMemory();
+		AddressSpace space = p.getAddressFactory().getDefaultAddressSpace();
+		try {
+			for (long i = 0; i < Math.min(n, 64); i++) {
+				Address at = r.getMinAddress().add(i * ps);
+				long v = ps == 8 ? mem.getLong(at) : mem.getInt(at) & 0xffffffffL;
+				if (!mem.contains(space.getAddress(v))) {
+					return false;
+				}
+			}
+		}
+		catch (Exception ex) {
+			return false;
+		}
+		return true;
+	}
+
+	/**
+	 * The answer for a function whose non-contiguous body the whole-function decompile could not
+	 * flow over: each fragment is classified and the code ones decompiled on their own (the entry
+	 * fragment as the function, the others as undefined functions at their start), with the
+	 * decompiler allowed enough bad-data stops to end at the gaps. {@code fragments} lists
+	 * {@code {start, end, class, decompiled}} (and {@code chars} or {@code error}); a data
+	 * fragment is skipped. Null when no fragment decompiled (the caller then reports the original
+	 * failure).
+	 */
+	private JsonObject fragments(Program prog, DecompInterface d, Function f, int timeout, int cap,
+			RequestMonitor m) {
+		DecompileOptions o = d.getOptions();
+		int oldBad = o.getMaxBadData();
+		o.setMaxBadData(Math.max(oldBad, 512));
+		d.setOptions(o);
+		long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeout);
+		StringBuilder text = new StringBuilder();
+		String signature = "";
+		JsonArray frs = new JsonArray();
+		int done = 0;
+		try {
+			for (AddressRange r : f.getBody()) {
+				String cls = classify(prog, r);
+				JsonObject fo = Json.of("start", hex(r.getMinAddress()), "end",
+					hex(r.getMaxAddress()), "class", cls, "decompiled", false);
+				frs.add(fo);
+				text.append("/* fragment ").append(hex(r.getMinAddress())).append('-')
+						.append(hex(r.getMaxAddress())).append(" (").append(cls).append(")");
+				if (cls.equals("data")) {
+					text.append(": skipped */\n");
+					continue;
+				}
+				long left = TimeUnit.NANOSECONDS.toSeconds(end - System.nanoTime());
+				if (left < 1 || m.isCancelled()) {
+					Json.put(fo, "error", "not attempted: out of time");
+					text.append(": not attempted */\n");
+					continue;
+				}
+				boolean entry = r.contains(f.getEntryPoint());
+				Function target = entry ? f : new UndefinedFunction(prog, r.getMinAddress());
+				DecompileResults dr = d.decompileFunction(target, (int) left, m);
+				if (dr != null && dr.decompileCompleted()) {
+					String c = dr.getDecompiledFunction().getC();
+					if (entry) {
+						signature = dr.getDecompiledFunction().getSignature();
+					}
+					Json.put(fo, "decompiled", true);
+					Json.put(fo, "chars", c.length());
+					if (cls.equals("unknown")) {
+						Json.put(fo, "class", "code");
+					}
+					text.append(" */\n").append(c).append('\n');
+					done++;
+				}
+				else {
+					String err = dr == null ? "no result" : dr.getErrorMessage();
+					Json.put(fo, "error", err == null ? "failed" : err.strip());
+					text.append(": ").append(dr != null && dr.isTimedOut() ? "timed out" : "failed")
+							.append(" */\n");
+					if (dr == null || dr.isTimedOut() || dr.failedToStart()) {
+						break;
+					}
+				}
+			}
+		}
+		finally {
+			o.setMaxBadData(oldBad);
+		}
+		if (done == 0) {
+			return null;
+		}
+		JsonObject r = reply(f.getName(true), hex(f.getEntryPoint()),
+			new DecompileCache.Result(signature, text.toString(), f.getName(true)), cap);
+		Json.put(r, "partial", true);
+		Json.put(r, "reason", "non_contiguous_body");
+		Json.put(r, "fragments", frs);
+		return r;
 	}
 
 	private static SessionException failed(Function f, String reason, String message,

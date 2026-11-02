@@ -4424,6 +4424,53 @@ type), `not_found` (no such session), `not_owner`, `busy` (disk reserve, or a se
 the engine has no writer open for it), `cancelled`, `unknown_command` (protocol 2), `failed` with `details.reason` `native_missing`,
 `native_call`, `trace_root` or `no_trace_root`, or `details.engineCode` `corrupt`, `io`, `internal`.
 
+### 8.21 Revision 8.17: `decompile` limits and non-contiguous bodies (`12.3-hydra.6`, hydra-engine issues 6 and 7)
+
+Additive; `minClient` and the protocol numbers are unchanged, and a `decompile` that completes as before answers byte for byte as before.
+
+**Per-query response cap (issue 6).** The native decompiler's answer is read into a bounded buffer (`DecompileProcess`, `LinkedByteBuffer`);
+the engine's cap is 50 MB. `decompile` takes `maxResultMb` (alias `max_result_mb`; whole MB, 1 to 512) or `maxResultKb` (alias
+`max_result_kb`; 1 to 524288, wins when both are given). A request with either runs on the process path (the in-process host does not
+enforce a per-request cap) and the decompiler is given back with its default. A value out of range is `bad_request`.
+
+`maxChars` is a different limit: it cuts the C text of an answer that has already fit in the engine's buffer. It cannot help when the
+decompiler's output is larger than the buffer, because the engine fails before the answer is built. `maxResultMb` raises or lowers that
+engine cap; `maxChars` stays the client-side cap on the JSON answer.
+
+When the response exceeds the cap the reply is no longer an `IllegalStateException`-style failure but a structured, non-completed answer
+(protocol 2 and 3 alike, `fault` is not counted by the circuit breaker, the decompiler is replaced):
+
+```json
+{"name":"f","entry":"0x140076fe0","completed":false,"error":"Exception while decompiling 140076fe0: Response buffer size exceeded for: ...",
+ "timedOut":false,"truncated":true,"bytes_emitted":52428800,"reason":"response_buffer","max_result_mb":50,"max_result_bytes":52428800}
+```
+
+`bytes_emitted` is the number of bytes of the decompiler's packed answer the buffer accepted before it filled (the cap). No C text is
+returned: the answer is a nested, packed markup that cannot be decoded from a prefix, and the decompiler builds the whole function's
+p-code before it prints, so there is no "first N statements" or per-block mode in the native process to fall back to. A caller that wants
+more can raise `maxResultMb`. A timeout stays what it was: protocol 3 answers `decompiler_failed` with `details.reason:"timeout"`
+(retryable), protocol 2 a non-completed reply with `timedOut:true` and now also `reason:"timeout"`; the client distinguishes
+`response_buffer`, `timeout` and a crash (`details.reason:"crash"`).
+
+**Non-contiguous bodies (issue 7).** A function whose body is in several pieces (a pdata function with chained unwind fragments) can make
+the decompiler flow from a piece into the data between pieces (a pointer table) and give up with `Bad instruction count exceeded` or
+`No pcode could be generated`. When a decompile fails that way and the body has more than one range, the engine classifies each piece and
+decompiles the code pieces on their own (the piece that holds the entry point as the function, the others as undefined functions at
+their start), with the decompiler allowed enough bad-data stops to end at a gap. The answer is `completed:true` with the C text of the
+pieces in address order, each under a `/* fragment start-end (class) */` comment, and:
+
+```json
+{"completed":true,"partial":true,"reason":"non_contiguous_body","c":"...","chars":1234,"truncated":false,
+ "fragments":[{"start":"0x141f6f9b0","end":"0x141f702c5","class":"code","decompiled":true,"chars":900},
+              {"start":"0x143020450","end":"0x14302047f","class":"data","decompiled":false}]}
+```
+
+`class` is `code` (the listing has an instruction at the start of the piece, or the piece decompiled), `data` (defined data at the start,
+or at least two pointer-sized values that all point into the program's memory; skipped, not decompiled) or `unknown` (not decompiled; an
+`error` says why). A code piece that failed has `decompiled:false` and an `error`. If no piece decompiles, the original failure is
+returned unchanged. `fragments` and `partial` are present only on this path; a decompile that succeeds as a whole is unchanged, and the
+result is not stored in the decompile cache.
+
 ### W0
 
 **X0 (Hydra, L): the oracle, the regression suites and the red table.**

@@ -142,7 +142,7 @@ public class DecompileProcess {
 	private int archId = -1;              // architecture id for decomp process
 	private DecompileCallback callback;   // Callback interface for decompiler
 	private String programSource;		// String describing program for error reports
-	private int maxResultSizeMBYtes = 50; // maximum result size in MBytes to allow from decompiler
+	private int maxResultBytes = 50 << 20; // maximum result size in bytes to allow from decompiler (default 50 MBytes)
 
 	private PackedDecode paramDecoder;			// Decoder to use for queries from the decompiler
 	private PatchPackedEncode resultEncoder;	// Encoder to use for query responses
@@ -529,9 +529,9 @@ public class DecompileProcess {
 					}
 					// Allocate storage buffer for the result, which is generally not tiny. So we
 					// start with any initial allocation of 1024 bytes, also give an absolute upper bound
-					// determined by maxResultSizeMBYtes
+					// determined by maxResultBytes
 					currentResponse = mainResponse;
-					currentResponse.open(maxResultSizeMBYtes << 20, programSource);
+					currentResponse.open(maxResultBytes, programSource);
 					break;
 				case 15:			// This is the end of the main decompiler output
 					if (currentResponse == null) {
@@ -762,7 +762,15 @@ public class DecompileProcess {
 	 * @param maxResultSizeMBytes is the maximum size in megabytes
 	 */
 	public void setMaxResultSize(int maxResultSizeMBytes) {
-		this.maxResultSizeMBYtes = maxResultSizeMBytes;
+		this.maxResultBytes = maxResultSizeMBytes << 20;
+	}
+
+	/**
+	 * Hydra: set the maximum size of the main result in bytes (finer than {@link #setMaxResultSize}).
+	 * @param bytes is the maximum size in bytes, at least 1
+	 */
+	public void setMaxResultBytes(int bytes) {
+		this.maxResultBytes = bytes;
 	}
 
 	/**
