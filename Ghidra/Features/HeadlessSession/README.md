@@ -1424,6 +1424,7 @@ on a machine shared with other heavy work, run one suite at a time or lower `--c
 | Class search cache | This module (`SessionApplicationConfiguration`) | A subclass of the headless configuration seeds `ClassSearcher` through two private fields, reflectively; if they are missing it turns itself off. |
 | Launcher, daemon manager, client | `support/ghidra_session.py` in this module | Platform-agnostic, no shell. The distribution copies a module's `support/` into the install, so it ships with the module. |
 | Anything specific to one client (an MCP server's tools, its stores and checks) | That client | The session is a generic Ghidra front end. Clients call it; they do not contain it. |
+| Semantic trace store: raw segments, ingest, per-session index, query, diff, explain, checks, export (`hydra-trace`, the twelve `trace_*` commands) | This module and `hydra_native` (Rust), served by the daemon | Symbolizing an event needs the open programs and the lock-free read plane, which only the daemon holds, and many readers on one daemon is the engine's core property: readers take no program lock and never wait on a writer or on each other. The trace schema is target- and client-agnostic (`TRACE-1.md`), so it does not break the rule above: no client's hook table, profile, ids or semantics are stored here. Capture orchestration, profiles and the MCP `trace` tool stay in Hydralysis. |
 
 The module needs nothing private from Ghidra beyond three reflective touches
 (`HeadlessScript.setHeadlessInstance`, `ClassSearcher`'s search result, and `ProgramDB`'s
