@@ -278,7 +278,7 @@ pub fn diff_aligned(
     a: &Store,
     b: &Store,
     spec: &AlignSpec,
-    roles: &dyn RoleResolver,
+    roles: &(dyn RoleResolver + Sync),
 ) -> Result<AlignedDiff> {
     validate(spec)?;
     let wants_function = spec.keys.iter().any(|k| k == "function");
@@ -293,8 +293,29 @@ pub fn diff_aligned(
         None => None,
     };
     let map = (!spec.function_map.is_empty()).then_some(&spec.function_map);
-    let sa = scan_side(a, spec, None, interp_a, roles)?;
-    let sb = scan_side(b, spec, map, interp_b, roles)?;
+    // The two sides are independent scans: with two or more compute threads granted, B runs on a
+    // worker with its own read-only handle. Each side is computed alone, so the result does not
+    // depend on the thread count.
+    let b_worker = if crate::workers::compute() >= 2 {
+        b.reader_clone()
+    } else {
+        None
+    };
+    let (sa, sb) = match b_worker {
+        Some(b2) => std::thread::scope(|scope| {
+            let handle = scope.spawn(move || scan_side(&b2, spec, map, interp_b, roles));
+            let sa = scan_side(a, spec, None, interp_a, roles);
+            let sb = handle
+                .join()
+                .unwrap_or_else(|_| Err(Error::Refused("diff worker panicked".into())));
+            (sa, sb)
+        }),
+        None => (
+            scan_side(a, spec, None, interp_a, roles),
+            scan_side(b, spec, map, interp_b, roles),
+        ),
+    };
+    let (sa, sb) = (sa?, sb?);
     let (gaps_a, gaps_b) = (lossy_gap_count(a)?, lossy_gap_count(b)?);
     // A side that was cut by the event budget, or lost data, cannot prove absence.
     let unsure_a = gaps_a > 0 || sa.truncated;

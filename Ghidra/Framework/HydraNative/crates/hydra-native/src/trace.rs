@@ -40,7 +40,20 @@ fn default_root() -> PathBuf {
     std::env::var_os("HYDRA_TRACE_ROOT").map_or_else(|| PathBuf::from("traces"), PathBuf::from)
 }
 
+/// Sizes the trace's worker threads from this process's CPU grants, once.
+fn size_workers() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let info = crate::HydraCpuInfo::detect(None);
+        hydra_trace::workers::configure(
+            info.compute_threads as usize,
+            info.background_threads as usize,
+        );
+    });
+}
+
 fn service() -> &'static Service {
+    size_workers();
     &SERVICE
         .get_or_init(|| {
             let root = default_root();
@@ -64,6 +77,7 @@ pub unsafe extern "C" fn hydra_trace_init(root: *const u8, root_len: usize) -> i
         return TRACE_ERR_UTF8;
     };
     let path = PathBuf::from(text);
+    size_workers();
     let set = SERVICE.get_or_init(|| (path.clone(), Service::new(path.clone())));
     if set.0 == path {
         TRACE_OK
