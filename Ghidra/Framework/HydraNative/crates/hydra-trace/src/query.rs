@@ -56,6 +56,9 @@ pub struct Page {
 pub fn query(store: &Store, filter: &Filter) -> Result<Page> {
     let limit = filter.limit.clamp(1, MAX_LIMIT);
     let conn = store.conn();
+    // The revision, the pin and the rows come from one snapshot: a reply at revision r holds
+    // exactly the events committed by r.
+    let _snapshot = store.read_snapshot()?;
     let revision = store.revision()?;
     let up_to: i64 = match filter.up_to {
         Some(u) => u,
@@ -655,6 +658,78 @@ mod tests {
         )
         .unwrap();
         assert_eq!(second.rows[0].seq, first.rows[29].seq + 1);
+    }
+
+    /// M3 regression: a reply's revision and its rows must come from one snapshot. Before the
+    /// fix the revision, the pin (`MAX(seq)`) and the rows were three statements, each seeing the
+    /// newest commit, so a batch committed between them gave "revision r" with the rows of r+1.
+    #[test]
+    fn a_reply_at_revision_r_holds_exactly_the_events_of_r() {
+        use std::collections::BTreeMap;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, Mutex};
+        let dir = std::env::temp_dir().join(format!("hydra-trace-snap-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("snap.db");
+        let _ = std::fs::remove_file(&path);
+        let mut writer = Store::open(&path, "snap").unwrap();
+        let segment = synth::generate(Recipe::Baseline, 5, 3000).remove(0);
+        let scan = raw::scan(&segment.bytes, &segment.id);
+        let reader = Store::reader(&path, "snap").unwrap();
+        let known: Arc<Mutex<BTreeMap<u64, i64>>> = Arc::new(Mutex::new(BTreeMap::new()));
+        let done = Arc::new(AtomicBool::new(false));
+        let handle = {
+            let (known, done) = (known.clone(), done.clone());
+            std::thread::spawn(move || {
+                for (i, chunk) in scan.records.chunks(2).enumerate() {
+                    let stats = writer.ingest(&segment.id, (i * 2) as u64, chunk).unwrap();
+                    let top: i64 = writer
+                        .conn()
+                        .query_row("SELECT COALESCE(MAX(seq),0) FROM events", [], |r| r.get(0))
+                        .unwrap();
+                    known.lock().unwrap().insert(stats.revision, top);
+                }
+                done.store(true, Ordering::SeqCst);
+            })
+        };
+        let mut seen: Vec<(u64, i64, usize)> = Vec::new();
+        while !done.load(Ordering::SeqCst) {
+            if let Ok(page) = query(
+                &reader,
+                &Filter {
+                    limit: 1000,
+                    ..Filter::default()
+                },
+            ) {
+                seen.push((
+                    page.revision,
+                    page.up_to,
+                    page.rows.len() + usize::from(page.next.is_some()),
+                ));
+            }
+        }
+        handle.join().unwrap();
+        let known = known.lock().unwrap();
+        let mut bad = Vec::new();
+        for (revision, up_to, _) in &seen {
+            if *revision > 0 && known.get(revision) != Some(up_to) {
+                bad.push((*revision, *up_to, known.get(revision).copied()));
+            }
+        }
+        drop(reader);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            seen.len() > 50,
+            "the reader made only {} queries",
+            seen.len()
+        );
+        assert!(
+            bad.is_empty(),
+            "{} of {} replies had a revision that does not match their rows: {:?}",
+            bad.len(),
+            seen.len(),
+            &bad[..bad.len().min(5)]
+        );
     }
 
     #[test]

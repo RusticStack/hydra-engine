@@ -740,6 +740,18 @@ impl Store {
         &self.conn
     }
 
+    /// One read snapshot for a whole answer. Without it every statement of a reply sees its own
+    /// committed state, and a batch committed between the statements gives a reply whose revision
+    /// belongs to one state and whose rows to a later one. `None` when the connection is already
+    /// inside a transaction (that transaction is the snapshot). The snapshot ends when dropped.
+    pub(crate) fn read_snapshot(&self) -> Result<Option<rusqlite::Transaction<'_>>> {
+        if self.conn.is_autocommit() {
+            Ok(Some(self.conn.unchecked_transaction()?))
+        } else {
+            Ok(None)
+        }
+    }
+
     pub(crate) fn conn_mut(&mut self) -> &mut Connection {
         &mut self.conn
     }

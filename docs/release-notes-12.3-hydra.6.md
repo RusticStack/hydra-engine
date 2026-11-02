@@ -1,16 +1,125 @@
-# Hydra Engine 12.3-hydra.6: release notes (draft, non-functional lane)
+# Hydra Engine 12.3-hydra.6: release notes
 
-Draft. This file holds what the non-functional lane (WS-I) measured for the semantic trace. The gates of the other
-workstreams (store, protocol, capture, relations, checks, imports, concurrency) are recorded by their own lanes and
-are **not claimed here**. Nothing in this file has been released, tagged or published.
+Prepared 2026-11-02. **Not tagged, not pushed, not published.** Based on the same upstream Ghidra `master` (12.3 DEV)
+commit as 12.3-hydra.5. This release adds the semantic trace and the `decompile` response cap and fragment-wise decompile of
+issues 6 and 7 (see `CHANGELOG.md`). This file records every gate that was run for the release with its result, the lane
+measurements of the non-functional workstream (sections 1 to 6), and what was not met or not run.
 
-Rule (as in the hydra.5 notes): a claim appears only with the run that produced it. Scope of every result: a process
-tree on Windows x64 with JDK 25 on NTFS, on one shared machine (system requirements in `README.md`). Nothing is stated
-about ReFS, power loss, Linux or macOS.
+Rule (as in the hydra.5 notes): a claim appears only with the run that produced it. Scope of every result: a process tree on
+Windows x64 with JDK 25 on NTFS, on one shared machine (system requirements in `README.md`; other lanes were running on it, which
+is why wall times in the soak differ between runs). Nothing is stated about ReFS, power loss, Linux or macOS.
 
-Evidence (all under `_logs/trace-lnfr/`): `bench/rounds2-report.md` (daemon impact), `mp-report.md` (multi-project soak),
-`bench/aff4-report.md` (4 logical CPUs), `constrained/constrained1.json`, `scale.log`, `daemon_tests_trace.log`.
-Privacy tests: `crates/hydra-trace/tests/privacy.rs` (7 tests, commit 30d1b21a68).
+Evidence: `E:/Projects/Hydra/_logs/trace-final/F/` (gates of section 0), `_logs/trace-final/` (the first gate pass on the
+pre-merge install, same results), `_logs/trace-lnfr/` (sections 1 to 6).
+
+## 0. Release gates of the candidate
+
+Candidate: branch `trace/final-eng` = `trace/integration` (including `trace/issues-eng` 241439c72d) plus the snapshot fix of 0.1.
+The install under test is `C:/dev-overflow/hydra-engines/trace-final/ghidra_12.3_DEV` on NTFS, stamped
+`hydra.version=12.3-hydra.6` (the hello and the golden capture header say `12.3-hydra.6`), made by `_logs/trace-final/build.sh`: a
+copy of the published 12.3-hydra.5 install with the `HeadlessSession.jar` classes recompiled from the tree (javac, JDK 25.0.4),
+`DecompInterface` and `DecompileProcess` in `Decompiler.jar`, `HydraCpu` in `Utility.jar` (ABI 2), the release `hydra_native.dll`
+(with the trace), `hydra-trace.exe`, and `hydra-agent.exe` and `hydra-etw.exe` from `build-install.py`. It is **not** a Gradle or CI
+build of the release zip; the zip and its SHA-256 do not exist yet.
+
+| Gate | Result | Run (under `F/`) |
+|---|---|---|
+| Golden 9.1 (KotOR, 8,616 functions, `production` and `explicit`, standard and raw) | **pass**: 8,616 of 8,616, all rows `ok`, both diffs rc 0, source tree hash `6d8ced78...60df` unchanged, program SHA-256 `0290889e...37e6` | `g91b.out.log`, `g91b-result/` (a first attempt `g91.out.log` reported FAIL only because its copy directory already existed, `copy_rc 1`; rerun on a clean work directory) |
+| `daemon_tests.py`, 268 tests (the 255 of hydra.5 plus 13 trace cases), `run_parallel.py --workers 16 --no-result-cache` | **263 passed, 0 skipped, 3 failed alone, 2 failed only under load, 0 problems**. The 3 are environmental (0.2) and pass (3/3) when the fixture is opened as its owner. The 2 under-load failures (`refcount_leak`, `yield_slots_stress`) passed alone | `daemon.log`, `legacy.log` |
+| Named flaky cases run alone | `cpu_profile_identical`, `e2a_kill_fork`, `e9_decompiler_faults`, `e9_guarded_threads`, `trace_agent_workload`, `trace_client_identity`: **6/6 passed** | `flaky.log` |
+| `client_compat_tests.py` (54 of hydra.5, 2 trace, 2 issues 6/7) | **58/58** | `cc.log` |
+| `contract_tests.py` | **7/7** | `contract.log` |
+| `session_smoke.py` | all smoke checks passed | `smoke.log` |
+| Python and Rust client identity including trace | **pass**: `trace_client_identity` (16 trace requests, reply lines byte-identical between `hydra-agent` and `ghidra_session.py`) and `trace_agent_workload` | `flaky.log` |
+| 16-agent bench, 825 operations, h5 against the candidate, 3 rotated rounds, 6 configurations | **pass**: 412 of 412 reply keys, digest `285b55a2f873abb9` in all 18 runs, `foreignBlocked` 0 and `contended` 0 in all 18 (0 requests waiting), trace digest `c12316d79475b820` in all 6 trace runs, 0 trace errors, 10,000 to 10,200 live events accepted per run | `bench-report.md` (0.4) |
+| Multi-project soak (16 agents, three game programs, Empire at War importing; live capture and 2 trace readers) | **pass**: 818 of 818 operations, 0 errors, 632-key digest `9071602cf75b` in all 3 runs, 0 waited replies, 0 `foreignBlocked`, project trees byte-identical, 3 fork edits re-opened and matching | `mp-report.md` (0.5) |
+| Hydralysis unit suite `tools/run_tests.py -j 4 --strict` | **pass**: 1,996 of 1,996, 0 failed alone, 0 failed under load, 0 task problems | `hy-unit.log` |
+| Hydralysis engine-gated suite (`--integration`, against this install) | **pass**: 1,996 of 1,996, 0 failed alone, 1 failed only under load (`M3Pairing` delay test, passed alone), 0 task problems; includes `M3Concurrency` and `M4Bypass` | `hy-engine.log` |
+| `M3Concurrency` repeated alone | 3 of 3 OK (173 to 195 s each) | `m3-rep*.log` |
+| `cargo test -p hydra-trace`, `clippy -D warnings`, `fmt` | 112 lib tests plus 11 integration tests pass; clippy and fmt clean | `../cargo-test-trace.log`, `../clippy.log` |
+
+### 0.1 Defect found and fixed by the gates: a trace reply could mix two revisions
+
+The M3 concurrency agent (`tests/trace_agent_proc.py`) had reported once, with no cause found, `revision 5 read twice with different
+content`. The cause is real and in the engine: `query::query` read the revision, then `MAX(seq)` for the pin, then the rows as three
+statements on a reader connection, and in WAL mode each statement sees the newest commit. A batch committed between the first two
+gave a reply labelled revision r whose pin and rows belong to r+1. Rows of a given `seq` never change; the revision label was wrong.
+Fix (commit `73b3a8380a`): `Store::read_snapshot` wraps the revision, the pin and the rows (and the lifetimes, groups, symbols and
+decoded branches of `trace_query`) in one deferred read transaction. Regression test
+`query::tests::a_reply_at_revision_r_holds_exactly_the_events_of_r` (a writer committing two-event batches while a reader queries):
+37 of 381 replies mismatched before the fix, 0 after (3 of 3 runs). Other trace commands read `revision` once or take a digest per
+revision; they were not changed.
+
+### 0.2 The three legacy cases are environmental, not regressions
+
+`upgrade_cache`, `legacy_overlay` and `fork_upgrade_from_cache` fail on the published hydra.5 install too. The checked-in fixture
+`examples/fixtures/legacy-12.1.4/legacy.gpr` was saved by a user named `test` (`project.prp` `OWNER=test`), and Ghidra refuses to open a
+project owned by another user (`NotOwnerException: Project is owned by test`) when it builds the upgrade-cache copy. All three pass
+(3 of 3, `legacy.log`) with `GHIDRA_SESSION_VMARGS=-Duser.name=test` for those tests, and with a 12.1.4 project saved by the current user.
+Setting `user.name=test` for the whole suite is not an option (15 other tests then fail because their projects are owned by the real
+user). So on a machine whose user is not `test` the suite is 263 of 268 plus these 3 run separately; the fixture would have to be replaced
+by one saved by the user that runs it, which is a test-data change not made here.
+
+### 0.3 Load-sensitive tests: what was found
+
+All of these pass alone; none failed alone in any run. Only the first has a root cause that is fixed.
+
+- `M3Concurrency` "revision read twice": **root-caused and fixed** (0.1).
+- `e2a_kill_fork` (kill -9 of the fork writer 24 times, then retry): failed under load once; the retry of one killed fork failed with a
+  `fork failed` error whose full text the test truncates at 120 characters, so the cause is **not found**. It passed in 4 of 5 loaded runs
+  and 3 of 3 alone.
+- `e9_guarded_threads` ("timed out waiting for the reaper and the governor to beat"): a heartbeat-timing test that fails when 16 daemons
+  start at once on a loaded machine; **not root-caused**.
+- `trace_agent_workload`: failed under load once with `foreignBlocked` 1 (`shared`, `singleFlightOpen` 2, `contended` 3, lock wait
+  p99 294 ms) while the 4 agents and the writer started together; passed alone 3 of 3 and in the 18-run bench with 0 waiting. **Not
+  root-caused**: whether it is the agents' simultaneous first open of the same program (a legitimate single-flight wait) or a trace
+  request that waited was not established. This is the one item that bears on the "0 requests waiting" claim; the bench and soak
+  numbers above are the evidence for it.
+- `cpu_profile_identical`: passed in every run (suite and alone); no failure was seen in this release's runs.
+- `M3Pairing` delay test (engine-gated, `-j 4`): failed once under load, passed alone; not root-caused.
+- `test_trace_gates4.M4Bypass`: in one first engine-gated run (`-j 4`, before the merge of the issues branches) its `vcall_fixture.exe`
+  child kept running for 30 minutes and held the task's pipes, so the run never completed (I stopped the runner after the other 363 task
+  logs were `OK`). It passed alone (3 of 3 and twice more), and in the final engine-gated run on the merged install. Cause not found;
+  another lane started a daemon suite on the machine during the hang. `mv_memory` was not part of any run listed here.
+
+### 0.4 16-agent bench (medians of 3 rotated rounds)
+
+| | h5 generic | h5 auto | cand generic | cand auto | candtr generic | candtr auto |
+|---|---|---|---|---|---|---|
+| workload wall s | 5.36 | 5.35 | 5.35 | 5.35 | 5.39 | 5.50 |
+| tree CPU s | 19.64 | 20.57 | 20.15 | 20.13 | 28.59 | 27.91 |
+| peak committed MB | 1091 | 1072 | 991 | 1029 | 1025 | 1147 |
+
+`candtr` is the candidate with 4 trace readers (about 250 trace operations per second) and one live capture (about 2,000 events per
+second). Without trace use the candidate equals h5 within noise. Trace use costs about +7.5 to +8.5 tree CPU seconds (+37 % to +42 %) in a
+workload that lasts 5 s.
+
+### 0.5 Multi-project soak (one run without trace, two with 2 trace readers and a live capture)
+
+| | cand | candtr run 1 | candtr run 2 |
+|---|---|---|---|
+| workload wall s | 73.9 | 80.4 | 58.4 |
+| tree CPU s | 193.6 | 299.2 | 269.7 |
+| trace operations | 0 | 6,488 | 6,612 |
+
+The wall times are higher than in the lane's earlier soak (48 to 53 s) because other jobs shared the machine; the run-to-run spread
+means wall time is not a result of this release. Correctness columns are in the gate table.
+
+### 0.6 Not met, not run
+
+- **Overhead on a bare-loop microbenchmark is not met.** Hydralysis `docs/trace-overhead.md`: 0.1 % (16 ms frames) and 1.7 % (200 us
+  frames) are inside the 5 % target; a loop of about 4 us per frame costs 113 % of mean frame time with 678k of 990k hits shed (counted and
+  cited). The 2 % target for sampled mode is not established by any run listed here.
+- **Live `trace_info` is O(session size)**: it is the main trace cost in the soak (section 4). Not fixed.
+- **Daemon CPU cost of trace use is not free** (0.4, 0.5).
+- **The trace reply digest differs from the lane runs** (`91606cf1e287...` in sections 3 and 4, `c12316d79475...` here); it is identical
+  across all 6 bench runs and both soak runs here, so the stability gate holds. Which merged lane changed the reply bytes was not bisected.
+- `test_runtime_scenario_fixture` ("ran 23 tests, N planned") did not reproduce: 1,996 of 1,996 with 0 task problems.
+- Not run for this release: a Gradle or CI build of the release zip, the hosted-runner CI, the protocol-3 characterization suite and the R1
+  hello golden, a memory-limited (`-Xmx`) run, real Frida or ETW capture through the daemon at the benchmark's rate, other hardware, ReFS.
+- Hydralysis `tools/bump_hydra.py --release 12.3-hydra.6` was **not run**: it reads the release zips (`hydra-engine-12.3-hydra.6-win_x86_64.zip`,
+  `hydra-client-12.3-hydra.6.zip`) and pins their SHA-256 and size. Those zips exist only after the release workflow builds them, and
+  pinning a locally assembled zip would pin an artifact that is not the published one. The script itself is local and does not push.
 
 ## 1. What a reader must be told
 
