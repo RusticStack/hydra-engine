@@ -1475,7 +1475,13 @@ tags; X9 an orphan decompiler process that is **suspended** (a busy one exits by
   where the situation exists in v2 (V8, V9).
 - **`health` additions:** `waits.foreignBlocked` (count since start and in the last minute), `governor{views,
   maxViews, heapAfterGcMb, heapState, decompilers, tokens, nativeBudgetMb}`, `leakedWorkers`, `repairs[]`
-  (E8 quarantines and E2a sweeps, each with path and time). The engine knows no lineage; publish queue figures
+  (E8 quarantines and E2a sweeps, each with path and time). `waits.singleFlightOpen` counts the waits of a client
+  for the `open_program` that opens the same program for the first time (one open per program; no trace request is
+  involved, and it is not `foreignBlocked`); the wait counts as single-flight for the whole of that open, also after
+  the opener has set the program object and while it builds its reply (a shared join that finds the program not
+  open yet counts too). Additive: `waits.foreignRecent` lists, newest last, up to 8 recent foreign waits (waiter
+  thread and call path, holder client, command, mode, age, whether the program was open) for diagnosing a non-zero
+  `foreignBlocked`; it is absent while there is none. The engine knows no lineage; publish queue figures
   are Hydralysis's (`status show=queue`).
 - **`status.scheduler`** gains the per-key waiter counts; **replies** gain `waited{queueMs, lockMs, slotMs}` from
   250 ms (D49).

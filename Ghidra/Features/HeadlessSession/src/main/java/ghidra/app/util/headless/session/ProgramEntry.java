@@ -218,12 +218,19 @@ final class ProgramEntry implements Decompilers, DecompilerGate.Pool {
 		final long since = System.currentTimeMillis();
 		final boolean exclusive;
 		final Caller.Identity who;
+		/**
+		 * True when this is an {@code open_program} that took the lock while the program was not
+		 * open yet: the first open, or a join that found nothing to join. For the whole hold,
+		 * also after the opener has set the program object and while it builds its reply.
+		 */
+		final boolean opening;
 		final String thread = Thread.currentThread().getName();
 		int depth = 1;
 		/** Set by the leave of its client when the lock could not be had: the hold is abandoned. */
 		volatile long abandonedSince;
 
-		Hold(Client client, String cmd, boolean exclusive, Caller.Identity who) {
+		Hold(Client client, String cmd, boolean exclusive, Caller.Identity who, boolean opening) {
+			this.opening = opening;
 			this.client = client;
 			this.cmd = cmd;
 			this.exclusive = exclusive;
@@ -360,10 +367,14 @@ final class ProgramEntry implements Decompilers, DecompilerGate.Pool {
 			if (h.client == waiter) {
 				continue;
 			}
-			if (program == null && h.exclusive && "open_program".equals(h.cmd)) {
+			if (h.opening) {
 				result = Math.max(result, Waits.HELD_BY_OPENER);
 			}
 			else {
+				WaitStats.detail(path + ": holder " + h.client.label() + " " + h.cmd +
+					(h.exclusive ? " exclusive" : " shared") + " " +
+					(System.currentTimeMillis() - h.since) + " ms, program " +
+					(program == null ? "null" : "open"));
 				return Waits.HELD_BY_OTHER;
 			}
 		}
@@ -402,7 +413,7 @@ final class ProgramEntry implements Decompilers, DecompilerGate.Pool {
 				h.depth++;
 				return h;
 			}
-			return new Hold(c, cmd, exclusive, who);
+			return new Hold(c, cmd, exclusive, who, program == null && "open_program".equals(cmd));
 		});
 		if (exclusive) {
 			exclusiveHolder = Caller.label(c) + " " + cmd;
