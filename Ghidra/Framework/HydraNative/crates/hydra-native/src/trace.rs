@@ -160,19 +160,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let root = dir.to_str().unwrap();
         // SAFETY: root is a live string.
-        assert_eq!(
-            unsafe { hydra_trace_init(root.as_ptr(), root.len()) },
-            TRACE_OK
-        );
-        // SAFETY: as above, with a different root.
-        assert_eq!(
-            unsafe { hydra_trace_init(b"other".as_ptr(), 5) },
-            TRACE_ERR_STATE
-        );
-        assert_eq!(
-            unsafe { hydra_trace_init(std::ptr::null(), 0) },
-            TRACE_ERR_NULL
-        );
+        let first = unsafe { hydra_trace_init(root.as_ptr(), root.len()) };
+        assert_eq!(first, TRACE_OK);
+        // SAFETY: a live 5 byte string, a different root.
+        let other = unsafe { hydra_trace_init(b"other".as_ptr(), 5) };
+        assert_eq!(other, TRACE_ERR_STATE);
+        // SAFETY: a null root is refused before it is read.
+        let null = unsafe { hydra_trace_init(std::ptr::null(), 0) };
+        assert_eq!(null, TRACE_ERR_NULL);
 
         let ok = |cmd: &str, req: &str| -> serde_json::Value {
             let (rc, out, _) = call(cmd, req, 1 << 20);
@@ -235,11 +230,9 @@ mod tests {
         let n = unsafe { hydra_trace_reply_copy(big.as_mut_ptr(), big.len()) };
         assert_eq!(n as usize, needed);
         assert!(serde_json::from_slice::<serde_json::Value>(&big).is_ok());
-        // SAFETY: as above; nothing is kept any more.
-        assert_eq!(
-            unsafe { hydra_trace_reply_copy(big.as_mut_ptr(), big.len()) },
-            -1
-        );
+        // SAFETY: big is still valid; nothing is kept any more.
+        let again = unsafe { hydra_trace_reply_copy(big.as_mut_ptr(), big.len()) };
+        assert_eq!(again, -1);
         let _ = std::fs::remove_dir_all(dir);
     }
 

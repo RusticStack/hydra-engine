@@ -357,11 +357,7 @@ mod tests {
         )
         .unwrap();
         assert!(map["s"]["preview"].as_str().unwrap().contains("***"));
-        assert!(
-            !map.to_owned()
-                .into_iter()
-                .any(|(_, v)| v.to_string().contains("abcDEF"))
-        );
+        assert!(!map.iter().any(|(_, v)| v.to_string().contains("abcDEF")));
         let _ = std::fs::remove_dir_all(d);
     }
 }

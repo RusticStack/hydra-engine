@@ -150,7 +150,7 @@ pub fn explain(
                 });
                 continue;
             }
-            if !depth_of.contains_key(&other) {
+            if let std::collections::btree_map::Entry::Vacant(slot) = depth_of.entry(other) {
                 if order.len() >= budget.max_events || bytes >= budget.max_bytes {
                     truncated.get_or_insert_with(|| {
                         if order.len() >= budget.max_events {
@@ -167,7 +167,7 @@ pub fn explain(
                     continue;
                 }
                 bytes += 160 + r.relation.len();
-                depth_of.insert(other, depth + 1);
+                slot.insert(depth + 1);
                 order.push(other);
                 queue.push_back(other);
             }

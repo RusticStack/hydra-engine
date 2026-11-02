@@ -290,8 +290,11 @@ pub fn reprocess(
     Ok(stats)
 }
 
+/// `(rev, parent, codec_hash, schema_hash, note)`.
+pub type RevisionRow = (i64, Option<i64>, String, String, String);
+
 /// The decode revisions, oldest first: `(rev, parent, codec_hash, schema_hash, note)`.
-pub fn revisions(store: &Store) -> Result<Vec<(i64, Option<i64>, String, String, String)>> {
+pub fn revisions(store: &Store) -> Result<Vec<RevisionRow>> {
     let mut stmt = store.conn().prepare(
         "SELECT rev,parent,COALESCE(codec_hash,''),COALESCE(schema_hash,''),COALESCE(note,'') FROM interpretations WHERE kind='decode' ORDER BY rev",
     )?;

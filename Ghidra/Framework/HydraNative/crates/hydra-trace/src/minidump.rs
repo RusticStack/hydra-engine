@@ -102,8 +102,10 @@ fn utf16_string(rd: &Rd<'_>, rva: usize) -> Option<String> {
     let len = rd.u32(rva)? as usize;
     let raw = rd.bytes(rva + 4, len.min(2048))?;
     let units: Vec<u16> = raw
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
         .collect();
     Some(String::from_utf16_lossy(&units))
 }

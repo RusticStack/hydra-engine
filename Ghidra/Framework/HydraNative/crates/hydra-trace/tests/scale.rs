@@ -49,10 +49,7 @@ fn event(i: u64, seed: u64) -> Value {
         3 => "app.request",
         _ => "app.completion",
     };
-    let corr = format!(
-        "c{}",
-        (i - i % 5 + if i % 5 == 4 { 0 } else { 0 }) / 5 + seed
-    );
+    let corr = format!("c{}", (i - i % 5) / 5 + seed);
     json!({
         "kind": kind, "source_id": "bench", "source_seq": i, "producer_gen": 1, "clock_domain": "c",
         "t_mono_ns": 1000 + i * 10, "confidence": "exact", "process_id": 7, "thread_id": 1 + i % 8,
