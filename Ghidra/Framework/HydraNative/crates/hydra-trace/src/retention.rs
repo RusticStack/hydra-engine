@@ -97,6 +97,7 @@ pub fn evict(root: &Path, id: &str, reason: &str) -> Result<Value> {
     if !session::index_path(&dir).is_file() {
         return Err(Error::Refused(format!("no session {id}")));
     }
+    session::purge_readers(&dir);
     let (revision, events) = match session::reader(root, id) {
         Ok(s) => (s.revision().unwrap_or(0), s.event_count().unwrap_or(0)),
         Err(_) => (0, 0),
@@ -139,6 +140,7 @@ pub fn evict(root: &Path, id: &str, reason: &str) -> Result<Value> {
     std::fs::rename(&tmp, &path)?;
     // The tombstone is durable; now the data. A failure here leaves a session that is still
     // readable and a tombstone that says it is going: evict again to finish.
+    session::purge_readers(&dir);
     std::fs::remove_dir_all(&dir)?;
     Ok(stone)
 }

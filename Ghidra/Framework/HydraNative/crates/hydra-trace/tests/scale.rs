@@ -236,3 +236,69 @@ fn one_million_events() {
         .unwrap_or(1_000_000);
     run(n, 1536 << 20);
 }
+
+/// What a polling reader costs the daemon: CPU per `trace_info` and `trace_query` call on a
+/// closed session and on a session whose writer is open and appending (200k events). Run with
+/// `cargo test --release --test scale reader_costs -- --ignored --nocapture`.
+#[test]
+#[ignore = "bench: run with --release -- --ignored --nocapture"]
+fn reader_costs() {
+    use hydra_trace::service::Service;
+    let dir = scratch("readers");
+    let svc = Service::new(&dir);
+    let call = |cmd: &str, req: Value| -> Value {
+        serde_json::from_slice(&svc.handle(cmd, &serde_json::to_vec(&req).unwrap())).unwrap()
+    };
+    assert_eq!(call("trace_open", json!({"session": "r"}))["ok"], true);
+    let n = 200_000u64;
+    let mut i = 0;
+    while i < n {
+        let end = (i + 5000).min(n);
+        let events: Vec<Value> = (i..end).map(|k| event(k, 0)).collect();
+        assert_eq!(
+            call("trace_append", json!({"session": "r", "events": events}))["ok"],
+            true
+        );
+        i = end;
+    }
+    let report = |label: &str, cmd: &str, req: Value, rounds: u32, between: &dyn Fn(u32)| {
+        let (mut cpu, mut wall) = (0.0, 0.0);
+        for r in 0..rounds {
+            between(r);
+            let c0 = cpu_secs();
+            let t = Instant::now();
+            let reply = call(cmd, req.clone());
+            wall += t.elapsed().as_secs_f64();
+            cpu += cpu_secs() - c0;
+            assert_eq!(reply["ok"], true, "{reply}");
+        }
+        println!(
+            "{label}: {:.3} ms wall, {:.3} ms cpu per call",
+            wall / f64::from(rounds) * 1000.0,
+            cpu / f64::from(rounds) * 1000.0
+        );
+    };
+    let info = json!({"session": "r"});
+    let query = json!({"session": "r", "kinds": ["app.request"], "limit": 20});
+    let live_appender = |r: u32| {
+        let base = n + u64::from(r) * 50;
+        let events: Vec<Value> = (base..base + 50).map(|k| event(k, 0)).collect();
+        assert_eq!(
+            call("trace_append", json!({"session": "r", "events": events}))["ok"],
+            true
+        );
+    };
+    report(
+        "live info (append between)",
+        "trace_info",
+        info.clone(),
+        100,
+        &live_appender,
+    );
+    report("live query", "trace_query", query.clone(), 300, &|_| {});
+    drop(call("trace_close", json!({"session": "r"})));
+    report("closed info", "trace_info", info, 300, &|_| {});
+    report("closed query", "trace_query", query, 500, &|_| {});
+    drop(svc);
+    let _ = std::fs::remove_dir_all(dir);
+}
