@@ -168,4 +168,55 @@ void hydra_trace_set_cancel(const int32_t *flag);
  * from another thread. NULL removes the cell. It must stay valid until removed. */
 void hydra_trace_set_progress(int64_t *cell);
 
+/*
+ * The byte mover for forks and flushes (src/fastio.rs; Java: HeadlessSession HydraIo): the copy or
+ * hard link of the files of a fork and the flush (FlushFileBuffers / fsync) of a staged tree, on
+ * pooled native threads. Its own ABI version (additive: hydra_native_abi_version() is unchanged).
+ * A job is described by one little-endian blob and polled with hydra_io_wait; the caller never
+ * treats a job as done before it says so. A job that fails or is cancelled has ended too: every
+ * operation it started has ended.
+ *
+ * Flush blob: u32 count, then per record u8 kind (0 owned file, 1 file shared by hard link,
+ * 2 folder), u32 path length, UTF-8 path. Copy blob: u32 count, then per record u8 mode (0 copy,
+ * 1 hard link else copy, 2 create folder), u8 flags (bit 0 flush the copy, bit 1 a source that is
+ * gone is skipped), u64 size, u32 source length, u32 destination length, the two UTF-8 paths.
+ */
+typedef struct HydraIoJob HydraIoJob;
+
+#define HYDRA_IO_RUNNING 0
+#define HYDRA_IO_OK      1
+#define HYDRA_IO_FAILED  2
+
+#define HYDRA_IO_KIND_NONE      0
+#define HYDRA_IO_KIND_NOT_FOUND 1
+#define HYDRA_IO_KIND_EXISTS    2
+#define HYDRA_IO_KIND_IO        3
+#define HYDRA_IO_KIND_CANCELLED 4
+
+/* Copy outcomes, one byte per record: 0 copied, 1 linked, 2 skipped (source gone), 3 copied and
+ * flushed, 4 folder. */
+uint32_t hydra_io_abi_version(void);
+
+/* NULL when the blob is malformed or the pool has no thread; the caller then works in Java. */
+HydraIoJob *hydra_io_flush_start(const uint8_t *blob, uint64_t len, uint32_t threads);
+HydraIoJob *hydra_io_copy_start(const uint8_t *blob, uint64_t len, uint32_t threads);
+
+/* Waits up to timeout_ms; returns HYDRA_IO_RUNNING, HYDRA_IO_OK or HYDRA_IO_FAILED. */
+int32_t hydra_io_wait(const HydraIoJob *job, uint32_t timeout_ms);
+
+/* Bytes of the files done so far (copy jobs). */
+uint64_t hydra_io_progress(const HydraIoJob *job);
+
+/* Stops the job at its next operation; it then ends as failed (KIND_CANCELLED) unless it had ended. */
+void hydra_io_cancel(const HydraIoJob *job);
+
+/* The failure of an ended job: *kind and the UTF-8 message cut to cap; returns its full length. */
+uint64_t hydra_io_error(const HydraIoJob *job, int32_t *kind, uint8_t *out, uint64_t cap);
+
+/* The outcome bytes of an ended copy job, cut to cap; returns their count. */
+uint64_t hydra_io_outcomes(const HydraIoJob *job, uint8_t *out, uint64_t cap);
+
+/* Frees a job; one still running is cancelled and ends on its own. */
+void hydra_io_free(HydraIoJob *job);
+
 #endif

@@ -8,6 +8,7 @@
 
 pub mod classscan;
 pub mod cpuid;
+pub mod fastio;
 pub mod limits;
 pub mod os;
 pub mod profile;

@@ -11,6 +11,8 @@ crates/hydra-native/examples/cpu.rs||GHIDRA||||END|
 crates/hydra-native/src/classscan.rs||GHIDRA||||END|
 crates/hydra-native/src/classscan/tests.rs||GHIDRA||||END|
 crates/hydra-native/src/cpuid.rs||GHIDRA||||END|
+crates/hydra-native/src/fastio.rs||GHIDRA||||END|
+crates/hydra-native/src/fastio/tests.rs||GHIDRA||||END|
 crates/hydra-native/src/lib.rs||GHIDRA||||END|
 crates/hydra-native/src/limits.rs||GHIDRA||||END|
 crates/hydra-native/src/os/linux.rs||GHIDRA||||END|

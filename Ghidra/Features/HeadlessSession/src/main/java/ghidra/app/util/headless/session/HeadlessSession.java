@@ -1138,12 +1138,35 @@ public class HeadlessSession implements GhidraLaunchable {
 						return false;
 					}
 				});
-				boolean pooled = ProjectFork.FLUSH_THREADS == 1 || Thread.getAllStackTraces()
-						.keySet()
-						.stream()
-						.anyMatch(t -> t.getName().equals("fork-flush"));
+				boolean pooled = ProjectFork.FLUSH_THREADS == 1 || HydraIo.get() != null ||
+					Thread.getAllStackTraces()
+							.keySet()
+							.stream()
+							.anyMatch(t -> t.getName().equals("fork-flush"));
 				check("forceTree forces a tree on the flush pool and keeps read-only files read-only",
 					stillRo && pooled);
+				// the Java path (the module off, or Rust unable to take the list) is the same flush
+				HydraIo.suspended = true;
+				try {
+					ProjectFork.forceTree(dir);
+				}
+				finally {
+					HydraIo.suspended = false;
+				}
+				boolean stillRoJava = !WINDOWS_HOST || ro.stream().allMatch(f -> {
+					try {
+						return java.nio.file.Files.readAttributes(f,
+							java.nio.file.attribute.DosFileAttributes.class).isReadOnly();
+					}
+					catch (java.io.IOException e) {
+						return false;
+					}
+				});
+				check("forceTree on the Java flush pool keeps read-only files read-only",
+					stillRoJava && (ProjectFork.FLUSH_THREADS == 1 || Thread.getAllStackTraces()
+							.keySet()
+							.stream()
+							.anyMatch(t -> t.getName().equals("fork-flush"))));
 				java.nio.file.Path gone = rep.resolve("idata/00/missing.db");
 				check("forceFiles reports a file it cannot force once every flush has ended",
 					throwsIo(() -> ProjectFork.forceFiles(List.of(ro.get(0), gone, ro.get(1)))));
