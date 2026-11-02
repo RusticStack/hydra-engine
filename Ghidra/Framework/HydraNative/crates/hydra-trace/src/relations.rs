@@ -119,7 +119,13 @@ pub fn compute(store: &Store, include_temporal: bool) -> Result<Vec<Relation>> {
             by_corr.entry(c).or_default().push(e);
         }
     }
-    for group in by_corr.values() {
+    crate::cancel::check()?;
+    let groups_total = by_corr.len() as u64;
+    for (n, group) in by_corr.values().enumerate() {
+        if n % 1024 == 0 {
+            crate::cancel::check()?;
+            crate::cancel::progress(n as u64, groups_total);
+        }
         let mut requests: Vec<&Ev> = Vec::new();
         let mut stages: Vec<&Ev> = Vec::new();
         let mut completions: Vec<&Ev> = Vec::new();
@@ -468,7 +474,10 @@ pub fn materialize(store: &mut Store) -> Result<usize> {
         let mut ins = tx.prepare_cached(
             "INSERT INTO relations(relation,from_seq,to_seq,basis,status,unresolved) VALUES(?1,?2,?3,?4,?5,?6)",
         )?;
-        for r in &all {
+        for (n, r) in all.iter().enumerate() {
+            if n % 4096 == 0 {
+                crate::cancel::check()?;
+            }
             ins.execute(params![
                 r.relation,
                 r.from_seq,

@@ -50,6 +50,13 @@ def t_trace_client_fields(c):
             ("trace_info", lambda: s.trace_info("s1"), {"session": "s1"}),
             ("trace_resymbolize", lambda: s.trace_resymbolize("s1", "cap", "p.exe"),
              {"session": "s1", "cap": "cap", "program": "p.exe"}),
+            ("trace_reprocess", lambda: s.trace_reprocess("s1", "cap", {"a": {"name": "m", "fields": []}}, kinds=["app.msg"]),
+             {"session": "s1", "cap": "cap", "codecs": {"a": {"name": "m", "fields": []}}, "kinds": ["app.msg"]}),
+            ("trace_relations", lambda: s.trace_relations("s1", "cap"), {"session": "s1", "cap": "cap"}),
+            ("trace_artifact", lambda: s.trace_artifact("s1", "cap", "sc", 8, "00ff"),
+             {"session": "s1", "cap": "cap", "scope": "sc", "max_bytes": 8, "data_hex": "00ff"}),
+            ("trace_evict", lambda: s.trace_evict(session="s1"), {"session": "s1"}),
+            ("trace_bundle", lambda: s.trace_bundle("x/y"), {"path": "x/y"}),
         ]
         for cmd, run, want in calls:
             r = run()

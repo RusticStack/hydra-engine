@@ -113,6 +113,9 @@ pub struct Session {
     preview: PreviewPolicy,
     started: Instant,
     mark_seq: u64,
+    /// The correlation scope keyed ids are derived in: `session:<id>` unless a shared scope
+    /// was asked for explicitly.
+    scope: String,
 }
 
 fn segment_dir(dir: &Path) -> PathBuf {
@@ -160,6 +163,51 @@ fn read_manifest(dir: &Path) -> Vec<Batch> {
         });
     }
     out
+}
+
+/// `session.json` of the session directory `dir` (null when absent).
+pub fn read_session_json(dir: &Path) -> Value {
+    read_meta(dir)
+}
+
+fn read_meta(dir: &Path) -> Value {
+    std::fs::read(dir.join("session.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or(Value::Null)
+}
+
+fn write_session_json(dir: &Path, value: &Value) -> Result<()> {
+    let tmp = dir.join("session.json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec(value)?)?;
+    std::fs::rename(&tmp, dir.join("session.json"))?;
+    Ok(())
+}
+
+fn merge_meta_root(dir: &Path, key: &str, value: Value) -> Result<()> {
+    let mut root = read_meta(dir);
+    if let Some(o) = root.as_object_mut() {
+        o.insert(key.into(), value);
+    }
+    write_session_json(dir, &root)
+}
+
+fn merge_meta(dir: &Path, patch: &Map<String, Value>) -> Result<()> {
+    let mut root = read_meta(dir);
+    let Some(o) = root.as_object_mut() else {
+        return Err(Error::Refused("session.json is damaged".into()));
+    };
+    let meta = o.entry("meta").or_insert_with(|| json!({}));
+    if let Some(m) = meta.as_object_mut() {
+        for (k, v) in patch {
+            if v.is_null() {
+                m.remove(k);
+            } else {
+                m.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    write_session_json(dir, &root)
 }
 
 fn now_unix() -> u64 {
@@ -212,6 +260,10 @@ impl Session {
             preview: PreviewPolicy::default(),
             started: Instant::now(),
             mark_seq: 0,
+            scope: meta
+                .get("scope")
+                .and_then(Value::as_str)
+                .map_or_else(|| format!("session:{id}"), str::to_string),
         };
         let recovery = session.recover()?;
         Ok((session, recovery))
@@ -235,6 +287,53 @@ impl Session {
 
     pub fn artifacts(&self) -> &Artifacts {
         &self.artifacts
+    }
+
+    /// Store a payload artifact (durable before it can be referenced).
+    pub fn put_artifact(&mut self, data: &[u8], spec: &artifact::ArtifactSpec) -> Result<String> {
+        self.artifacts.put(&mut self.store, data, spec, now_unix())
+    }
+
+    /// The correlation scope keyed ids are derived in.
+    pub fn scope(&self) -> &str {
+        &self.scope
+    }
+
+    /// The session metadata persisted next to the segments (`session.json`, key `meta`).
+    pub fn meta(&self) -> Value {
+        read_meta(&self.dir)
+            .get("meta")
+            .cloned()
+            .unwrap_or(Value::Null)
+    }
+
+    /// Merge `patch` (an object) into the persisted session metadata. A null value removes a key.
+    /// Written atomically; it survives a lost index because it is not in the index.
+    pub fn merge_meta(&self, patch: &Map<String, Value>) -> Result<()> {
+        merge_meta(&self.dir, patch)
+    }
+
+    /// Use an explicitly shared correlation scope `name` with the 32-byte `key` (hex): sessions
+    /// opened with the same name and key give the same keyed id to the same value; any other
+    /// scope cannot be linked. A session keeps the scope it first chose.
+    pub fn use_shared_scope(&mut self, name: &str, key_hex: &str) -> Result<()> {
+        let scope = format!("shared:{name}");
+        if name.is_empty() || name.len() > 64 {
+            return Err(Error::Refused(
+                "a shared scope name is 1 to 64 characters".into(),
+            ));
+        }
+        if self.scope != scope && self.store.event_count()? > 0 {
+            return Err(Error::Refused(format!(
+                "this session already has events keyed in scope {}; a shared scope must be chosen when it is created",
+                self.scope
+            )));
+        }
+        let key = corrid::Key::from_hex(key_hex)?;
+        self.ring.install(&scope, key)?;
+        self.scope = scope.clone();
+        merge_meta_root(&self.dir, "scope", Value::String(scope))?;
+        Ok(())
     }
 
     pub fn set_preview(&mut self, policy: PreviewPolicy) {
@@ -342,6 +441,9 @@ impl Session {
                 report.tail_batches += 1;
             }
         }
+        // 3. Decode revisions an index lost (it was rebuilt from the segments): replayed from the
+        //    journal under the revision numbers they had.
+        crate::interp::journal_replay(&mut self.store, &self.dir, Some(&self.artifacts))?;
         Ok(report)
     }
 
@@ -403,7 +505,7 @@ impl Session {
         record.remove("prev");
         let mut keyed = 0;
         if let Some(Value::Object(payload)) = record.get_mut("payload") {
-            let scope = format!("session:{}", self.id);
+            let scope = self.scope.clone();
             keyed = corrid::scrub(payload, &mut self.ring, &scope, self.preview)
                 .map_err(|e| e.to_string())?;
         }
@@ -517,6 +619,13 @@ pub fn reader(root: &Path, id: &str) -> Result<Store> {
     }
     let path = index_path(&root.join(id));
     if !path.exists() {
+        if let Some(t) = crate::retention::tombstone(root, id) {
+            return Err(Error::Refused(format!(
+                "no session {id}: evicted ({}) at revision {}",
+                t["reason"].as_str().unwrap_or("?"),
+                t["revision"]
+            )));
+        }
         return Err(Error::Refused(format!("no session {id}")));
     }
     Store::reader(&path, id)
@@ -599,14 +708,19 @@ pub fn verify(root: &Path, id: &str, options: &Options) -> Result<Verification> 
     }
     let index = Store::reader(&index_path(&dir), id)?;
     let manifest = read_manifest(&dir);
-    let rebuilt = rebuild_with(id, &segments, &manifest, &options_of(&dir, options))?;
-    let (a, b) = (index.digest()?, rebuilt.digest()?);
+    let mut rebuilt = rebuild_with(id, &segments, &manifest, &options_of(&dir, options))?;
+    crate::interp::journal_replay(
+        &mut rebuilt,
+        &dir,
+        Some(&Artifacts::open(artifact::dir_of(&dir))?),
+    )?;
+    let (a, b) = (index.digest_core()?, rebuilt.digest_core()?);
     Ok(Verification {
         session: id.into(),
         segments: checks,
         index_matches_segments: a == b,
-        index_digest: a,
-        rebuilt_digest: b,
+        index_digest: index.digest()?,
+        rebuilt_digest: rebuilt.digest()?,
         revision: index.revision()?,
     })
 }
@@ -636,6 +750,11 @@ pub fn rebuild(root: &Path, id: &str, options: &Options) -> Result<String> {
         );
         store.ingest(&batch.source_id, batch.first_n, &scan.records[from..to])?;
     }
+    crate::interp::journal_replay(
+        &mut store,
+        &dir,
+        Some(&Artifacts::open(artifact::dir_of(&dir))?),
+    )?;
     let digest = store.digest()?;
     drop(store);
     let live = index_path(&dir);

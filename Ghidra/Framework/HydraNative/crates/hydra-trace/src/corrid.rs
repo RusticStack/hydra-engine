@@ -38,6 +38,20 @@ impl Key {
         Self(bytes)
     }
 
+    /// A key from 64 hex digits.
+    pub fn from_hex(text: &str) -> Result<Self> {
+        let text = text.trim();
+        if text.len() != 64 || !text.is_ascii() {
+            return Err(Error::Refused("a scope key is 64 hex digits".into()));
+        }
+        let mut bytes = [0u8; 32];
+        for (i, b) in bytes.iter_mut().enumerate() {
+            *b = u8::from_str_radix(&text[i * 2..i * 2 + 2], 16)
+                .map_err(|_| Error::Refused("a scope key is 64 hex digits".into()))?;
+        }
+        Ok(Self(bytes))
+    }
+
     fn generate() -> Result<Self> {
         let mut bytes = [0u8; 32];
         random_fill(&mut bytes)?;
@@ -156,6 +170,27 @@ impl KeyRing {
             self.keys.insert(scope.to_string(), key);
         }
         Ok(&self.keys[scope])
+    }
+
+    /// Provision `key` for `scope` (a shared scope): a scope that already has a different key is
+    /// refused, so two sessions cannot silently diverge.
+    pub fn install(&mut self, scope: &str, key: Key) -> Result<()> {
+        let path = self.dir.join(file_name(scope));
+        if let Ok(existing) = std::fs::read_to_string(&path) {
+            let same = Key::from_hex(&existing).is_ok_and(|k| k.0 == key.0);
+            if !same {
+                return Err(Error::Refused(format!(
+                    "scope {scope} already has a different key in this session store"
+                )));
+            }
+        } else {
+            let hex: String = key.0.iter().map(|b| format!("{b:02x}")).collect();
+            let tmp = path.with_extension("tmp");
+            std::fs::write(&tmp, hex)?;
+            std::fs::rename(&tmp, &path)?;
+        }
+        self.keys.insert(scope.to_string(), key);
+        Ok(())
     }
 
     /// The keyed id of `value` in `scope`.

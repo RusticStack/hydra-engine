@@ -552,6 +552,125 @@ def t_symbolize(c):
         e9.stop(d)
 
 
+LAYOUT_EVENTS = [
+    ev(0, payload={"layout": "v1"}),
+    ev(1, "app.msg", payload={"bytes": "01000c0064000000e8030000"}),
+    ev(2, payload={"layout": "v2"}),
+    ev(3, "app.msg", payload={"bytes": "0200150064000000e803000001e0e1e2"}),
+]
+
+
+def _codecs(ext):
+    f = lambda n, o, l, t: {"name": n, "offset": o, "len": l, "type": t}    # noqa: E731
+    v2 = [f("type", 0, 2, "u16"), f("length", 2, 2, "u16"), f("id", 4, 4, "u32"), f("amount", 8, 4, "u32"),
+          f("flags", 12, 1, "u8")]
+    if ext:
+        v2.append(f("ext", 13, 3, "hex"))
+    return {"v1": {"name": "m", "fields": v2[:4]}, "v2": {"name": "m", "fields": v2}}
+
+
+def t_reprocess(c):
+    d = c.daemon("tr-reprocess")
+    session = sid("rep")
+    meta = {"scenario": "layouts", "target": {"program": "layouts.exe"}, "limitations": ["demo"]}
+    w, cap, opened = writer(c, d, "w", session, mode="write", meta=meta)
+    r = c.connect(d, "r", "trace", 3)
+    try:
+        w.trace_append(session, cap, LAYOUT_EVENTS)
+        info = r.trace_info(session)
+        dt.check(info.get("digest") is None and info["meta"]["scenario"] == "layouts" and info["scope"] == f"session:{session}",
+                 f"trace_info (O(1)) or its meta: {info}")
+        dt.check(r.trace_info(session, digest=True).get("digest"), "digest on request")
+        first = w.trace_reprocess(session, cap, _codecs(False), kinds=["app.msg"], note="first guess")
+        dt.check(first["stats"]["unconsumed_events"] == 1 and first["stats"]["unconsumed_bytes"] == 3, f"{first}")
+        second = w.trace_reprocess(session, cap, _codecs(True), kinds=["app.msg"], note="ext read")
+        dt.check(second["interp"] == first["interp"] + 1 and second["stats"]["unconsumed_events"] == 0, f"{second}")
+        old = r.trace_query(session, kinds=["app.msg"], decoded=True, decode_interp=first["interp"])
+        new = r.trace_query(session, kinds=["app.msg"], decoded=True)
+        dt.check("_unconsumed" in json.dumps(old["decoded"]) and "e0e1e2" in json.dumps(old["decoded"]),
+                 "the first revision lost the unconsumed bytes")
+        dt.check("_unconsumed" not in json.dumps(new["decoded"]) and '"ext"' in json.dumps(new["decoded"]), f"{new['decoded']}")
+        dt.check(old["rows"] == new["rows"], "the observations changed with the reprocess")
+        rel = w.trace_relations(session, cap, op="materialize")
+        dt.check(r.trace_relations(session, op="status") is not None and rel is not None, f"{rel}")
+        # quota: a session cannot be admitted when the store is over the limit
+        try:
+            r.trace_open(sid("q"), create=True, mode="write", quota_bytes=1)
+            raise dt.Fail("a session was admitted over the quota")
+        except dt.Fail:
+            raise
+        except Exception as e:  # noqa: BLE001
+            dt.check((getattr(e, "details", None) or {}).get("engineCode") == "quota", f"{type(e).__name__}: {e}")
+        # the metadata is persisted: a fresh connection reads it after the lease ended
+        w.trace_close(session, cap)
+        info2 = c.connect(d, "r2", "trace", 3)
+        try:
+            dt.check(info2.trace_info(session)["meta"]["target"] == {"program": "layouts.exe"}, "meta lost on close")
+            ev1 = info2.trace_evict(session=session, reason="test")
+            dt.check(ev1.get("evicted") is not None or ev1.get("session") == session, f"{ev1}")
+            gone = info2.trace_info(session)
+            dt.check("evicted" in json.dumps(gone), f"no tombstone after eviction: {gone}")
+        finally:
+            e9.close_all(info2)
+        return "two explicit revisions (unconsumed bytes kept in the first), observations unchanged, meta persisted, quota refused, evicted with a tombstone"
+    finally:
+        e9.close_all(w, r)
+        e9.stop(d)
+
+
+def t_long_lane(c):
+    d = c.daemon("tr-longlane", engine={"trace.quickMB": "0"})
+    a, b = sid("la"), sid("lb")
+    wa, capa, _ = writer(c, d, "wa", a)
+    wb, capb, _ = writer(c, d, "wb", b)
+    r = c.connect(d, "r", "trace", 3)
+    x = c.connect(d, "x", "trace", 3)
+    try:
+        pad = "p" * 100
+        for w, cap in ((wa, capa), (wb, capb)):
+            for k in range(25):
+                w.trace_append(a if w is wa else b, cap,
+                               [ev(k * 10_000 + i, kind="app.msg" if i % 3 else "core.marker",
+                                   payload={"i": k * 10_000 + i, "pad": pad}) for i in range(10_000)])
+        spec = {"keys": ["kind"]}
+        # the whole job runs in the long lane (indexes are over 0 MB): a quick query is answered at once and
+        # progress is reported
+        rid = x.send("trace_diff", a=a, b=b, align=spec)
+        t = time.perf_counter()
+        q = r.trace_query(a, limit=3)
+        dt.check(len(q["rows"]) == 3 and (time.perf_counter() - t) < 3, "a query waited behind the long diff")
+        res = x.wait(rid)
+        dt.check("aligned" in res, f"{list(res)}")
+        progress = [e for e in x.events if e.get("event") == "progress" and e.get("id") == rid and e.get("maximum", 0) > 0]
+        dt.check(progress, "the long diff reported no progress")
+        # cancel: the diff, a query, and a reprocess
+        cancelled = 0
+        for delay in (0.0, 0.02, 0.05):
+            rid = x.send("trace_diff", a=a, b=b, align=spec)
+            time.sleep(delay)
+            x.call("cancel", target=rid)
+            try:
+                x.wait(rid)
+            except Exception as e:  # noqa: BLE001
+                dt.check(getattr(e, "code", None) == "cancelled", f"{type(e).__name__}: {e}")
+                cancelled += 1
+        dt.check(cancelled >= 1, "no diff was cancelled in the engine")
+        rid = x.send("trace_reprocess", session=a, cap=capa, codecs=_codecs(True), kinds=["app.msg"], bytes_field="nope")
+        x.call("cancel", target=rid)
+        try:
+            x.wait(rid)
+            outcome = "finished"
+        except Exception as e:  # noqa: BLE001
+            dt.check(getattr(e, "code", None) in ("cancelled", "bad_request"), f"{e}")
+            outcome = getattr(e, "code", None)
+        again = x.trace_diff(a, b, align=spec)
+        dt.check("aligned" in again, "the daemon did not recover from the cancels")
+        return f"long-lane diff with {len(progress)} progress events, {cancelled} of 3 cancelled, reprocess cancel {outcome}, a query answered meanwhile"
+    finally:
+        e9.close_all(wa, wb, r, x)
+        e9.stop(d)
+
+
 def t_agent_workload(c):
     agent = _agent()
     if not agent:
@@ -643,6 +762,12 @@ def t_client_identity(c):
             ("trace_diff", {"a": session, "b": other, "group_by": "kind"}),
             ("trace_check", {"session": session, "assertions": [{"type": "cardinality", "kind": "core.resource.open",
                                                                   "min": 1, "max": 99, "name": "n"}]}),
+            ("trace_relations", {"session": session, "op": "status"}),
+            ("trace_reprocess", {"session": session, "cap": cap, "kinds": ["core.resource.open"], "note": "identity",
+                                 "codecs": {"v1": {"name": "m", "fields": [{"name": "a", "offset": 0, "len": 1, "type": "u8"}]}}}),
+            ("trace_query", {"session": session, "kinds": ["core.resource.open"], "decoded": True, "limit": 3}),
+            ("trace_bundle", {"path": "no-such-bundle"}),
+            ("trace_evict", {"session": "nosuchsession"}),
             ("trace_query", {"session": "nope"}),
             ("trace_open", {"session": other, "mode": "read"}),
             ("trace_append", {"session": session, "cap": "wrong", "events": []}),
@@ -686,6 +811,8 @@ TESTS = {
     "trace_cursor": t_cursor,
     "trace_disk_reserve": t_disk_reserve,
     "trace_symbolize": t_symbolize,
+    "trace_reprocess": t_reprocess,
+    "trace_long_lane": t_long_lane,
     "trace_agent_workload": t_agent_workload,
     "trace_client_identity": t_client_identity,
 }

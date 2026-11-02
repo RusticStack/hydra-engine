@@ -66,7 +66,7 @@ impl Codec {
     }
 }
 
-//// A codec in force over `from_seq ..= to_seq` (open ended when `None`).
+/// A codec in force over `from_seq ..= to_seq` (open ended when `None`).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Context {
     pub from_seq: i64,
@@ -279,9 +279,11 @@ fn event_bytes(
         Some(Value::Object(o)) => {
             if let Some(Value::String(id)) = o.get("artifact") {
                 let state: Option<String> = conn
-                    .query_row("SELECT state FROM artifacts WHERE id=?1", params![id], |r| {
-                        r.get(0)
-                    })
+                    .query_row(
+                        "SELECT state FROM artifacts WHERE id=?1",
+                        params![id],
+                        |r| r.get(0),
+                    )
                     .ok();
                 match (state.as_deref(), arts) {
                     (Some("present"), Some(a)) => {
@@ -523,6 +525,56 @@ pub fn decoded(store: &Store, seq: i64, rev: Option<i64>) -> Result<Vec<Decoded>
         .map_err(Into::into)
 }
 
+/// The journal of decode revisions: one line per revision with the resolved request, so an index
+/// that is lost or rebuilt gets the same revisions back under the same numbers.
+pub fn journal_append(dir: &std::path::Path, rev: i64, spec: &Spec) -> Result<()> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("interp.jsonl"))?;
+    writeln!(f, "{}", json!({"rev": rev, "spec": spec}))?;
+    f.sync_data()?;
+    Ok(())
+}
+
+/// Replay the journal into `store`: every journaled revision the store does not have yet.
+/// Returns how many were replayed.
+pub fn journal_replay(
+    store: &mut Store,
+    dir: &std::path::Path,
+    arts: Option<&Artifacts>,
+) -> Result<usize> {
+    let Ok(text) = std::fs::read_to_string(dir.join("interp.jsonl")) else {
+        return Ok(0);
+    };
+    let mut n = 0;
+    for line in text.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            break; // a torn last line
+        };
+        let (Some(rev), Ok(spec)) = (
+            v.get("rev").and_then(Value::as_i64),
+            serde_json::from_value::<Spec>(v.get("spec").cloned().unwrap_or(Value::Null)),
+        ) else {
+            break;
+        };
+        let have: i64 = store
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM interpretations WHERE rev=?1",
+                params![rev],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if have == 0 {
+            reprocess(store, &spec, arts, Some(rev))?;
+            n += 1;
+        }
+    }
+    Ok(n)
+}
+
 /// The decode revisions with what each one found, for `trace_info` and the interpretation
 /// listing: hashes, parent, note, the events it decoded, how many left bytes unconsumed (and
 /// how many bytes), and how many could not be decoded at all.
@@ -530,9 +582,8 @@ pub fn describe(store: &Store) -> Result<Vec<Value>> {
     let conn = store.conn();
     let mut out = Vec::new();
     for (rev, parent, codec_hash, schema_hash, note) in revisions(store)? {
-        let count = |sql: &str| -> i64 {
-            conn.query_row(sql, params![rev], |r| r.get(0)).unwrap_or(0)
-        };
+        let count =
+            |sql: &str| -> i64 { conn.query_row(sql, params![rev], |r| r.get(0)).unwrap_or(0) };
         let (from, to): (Option<i64>, Option<i64>) = conn
             .query_row(
                 "SELECT context_from,context_to FROM interpretations WHERE rev=?1",

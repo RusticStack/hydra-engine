@@ -202,21 +202,36 @@ pub fn require_present_refs(
     store: &Store,
     payload: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<()> {
-    for key in ["artifact", "artifacts"] {
-        let ids: Vec<&str> = match payload.get(key) {
-            Some(serde_json::Value::String(s)) => vec![s.as_str()],
-            Some(serde_json::Value::Array(a)) => a.iter().filter_map(|v| v.as_str()).collect(),
-            _ => continue,
-        };
-        for id in ids {
-            if state(store, id)?.as_deref() != Some("present") {
-                return Err(Error::Refused(format!(
-                    "dangling artifact reference {id}: write the artifact before referencing it"
-                )));
-            }
+    let mut ids: Vec<&str> = Vec::new();
+    collect_refs(payload, &mut ids, 0);
+    for id in ids {
+        if state(store, id)?.as_deref() != Some("present") {
+            return Err(Error::Refused(format!(
+                "dangling artifact reference {id}: write the artifact before referencing it"
+            )));
         }
     }
     Ok(())
+}
+
+/// The artifact ids a payload names, at any depth: `artifact` (an id) and `artifacts` (ids).
+fn collect_refs<'a>(
+    map: &'a serde_json::Map<String, serde_json::Value>,
+    out: &mut Vec<&'a str>,
+    depth: u32,
+) {
+    use serde_json::Value;
+    if depth > 6 {
+        return;
+    }
+    for (key, value) in map {
+        match (key.as_str(), value) {
+            ("artifact", Value::String(s)) => out.push(s),
+            ("artifacts", Value::Array(a)) => out.extend(a.iter().filter_map(Value::as_str)),
+            (_, Value::Object(o)) => collect_refs(o, out, depth + 1),
+            _ => {}
+        }
+    }
 }
 
 pub fn list(store: &Store) -> Result<Vec<ArtifactInfo>> {

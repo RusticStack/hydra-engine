@@ -190,6 +190,10 @@ fn scan_side(
             break;
         }
         side.scanned += 1;
+        if side.scanned.is_multiple_of(4096) {
+            crate::cancel::check()?;
+            crate::cancel::progress(side.scanned, spec.event_budget as u64);
+        }
         let seq: i64 = row.get(0)?;
         let kind: String = row.get(1)?;
         let resource: Option<String> = row.get(2)?;
@@ -337,7 +341,11 @@ pub fn diff_aligned(
     };
     let (sa, sb) = match b_worker {
         Some(b2) => std::thread::scope(|scope| {
-            let handle = scope.spawn(move || scan_side(&b2, spec, map, interp_b, roles));
+            let inherited = crate::cancel::current();
+            let handle = scope.spawn(move || {
+                crate::cancel::inherit(inherited);
+                scan_side(&b2, spec, map, interp_b, roles)
+            });
             let sa = scan_side(a, spec, None, interp_a, roles);
             let sb = handle
                 .join()

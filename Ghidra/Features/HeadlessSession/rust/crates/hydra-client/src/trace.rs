@@ -224,6 +224,95 @@ impl Session {
         self.call("trace_resymbolize", f, deadline)
     }
 
+    /// `trace_reprocess`: decodes event bytes under `codecs` as a new, numbered interpretation
+    /// revision (long lane); `extra` carries `context`, `contexts`, `kinds`, `bytes_field`, `note`.
+    ///
+    /// # Errors
+    /// As [`Session::trace_append`].
+    pub fn trace_reprocess(
+        &self,
+        session: &str,
+        cap: &str,
+        codecs: Value,
+        extra: Map<String, Value>,
+        deadline: Option<f64>,
+    ) -> Result<Value> {
+        let mut f = extra;
+        f.insert("session".to_owned(), text(session));
+        f.insert("cap".to_owned(), text(cap));
+        f.insert("codecs".to_owned(), codecs);
+        self.call("trace_reprocess", f, deadline)
+    }
+
+    /// `trace_relations`: `op` `materialize` (with `cap`; long lane) or `status`.
+    ///
+    /// # Errors
+    /// As [`Session::trace_append`].
+    pub fn trace_relations(
+        &self,
+        session: &str,
+        cap: Option<&str>,
+        extra: Map<String, Value>,
+        deadline: Option<f64>,
+    ) -> Result<Value> {
+        let mut f = extra;
+        f.insert("session".to_owned(), text(session));
+        if let Some(cap) = cap {
+            f.insert("cap".to_owned(), text(cap));
+        }
+        self.call("trace_relations", f, deadline)
+    }
+
+    /// `trace_artifact`: stores a payload artifact (`data_hex`).
+    ///
+    /// # Errors
+    /// As [`Session::trace_append`].
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one parameter per wire field, like the Python method"
+    )]
+    pub fn trace_artifact(
+        &self,
+        session: &str,
+        cap: &str,
+        scope: &str,
+        max_bytes: u64,
+        data_hex: &str,
+        extra: Map<String, Value>,
+        deadline: Option<f64>,
+    ) -> Result<Value> {
+        let mut f = extra;
+        f.insert("session".to_owned(), text(session));
+        f.insert("cap".to_owned(), text(cap));
+        f.insert("scope".to_owned(), text(scope));
+        f.insert("max_bytes".to_owned(), Value::from(max_bytes));
+        f.insert("data_hex".to_owned(), text(data_hex));
+        self.call("trace_artifact", f, deadline)
+    }
+
+    /// `trace_evict`: evicts a closed `session` or, with `to_quota`, the oldest closed ones.
+    ///
+    /// # Errors
+    /// As [`Session::call`].
+    pub fn trace_evict(&self, extra: Map<String, Value>, deadline: Option<f64>) -> Result<Value> {
+        self.call("trace_evict", extra, deadline)
+    }
+
+    /// `trace_bundle`: whether the export folder `path` can still be reproduced from the store.
+    ///
+    /// # Errors
+    /// As [`Session::call`].
+    pub fn trace_bundle(
+        &self,
+        path: &str,
+        extra: Map<String, Value>,
+        deadline: Option<f64>,
+    ) -> Result<Value> {
+        let mut f = extra;
+        f.insert("path".to_owned(), text(path));
+        self.call("trace_bundle", f, deadline)
+    }
+
     fn trace_read(
         &self,
         cmd: &str,
