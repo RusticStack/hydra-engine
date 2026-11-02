@@ -15,6 +15,10 @@ use std::collections::BTreeMap;
 
 const SIGNATURE: u32 = 0x504d_444d; // "MDMP"
 const STREAM_THREADS: u32 = 3;
+const STREAM_MEMORY: u32 = 5;
+const STREAM_MEMORY64: u32 = 9;
+const MAX_MEMORY_BYTES: usize = 256 << 20;
+const MAX_RANGES: usize = 65_536;
 const STREAM_MODULES: u32 = 4;
 const STREAM_EXCEPTION: u32 = 6;
 const STREAM_SYSTEM: u32 = 7;
@@ -71,6 +75,13 @@ pub struct DumpException {
     pub address: u64,
 }
 
+/// Memory the dump carries (thread stacks and, for a dump written with data segments, module data).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MemoryRange {
+    pub base: u64,
+    pub data: Vec<u8>,
+}
+
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct Dump {
     pub timestamp: u32,
@@ -79,6 +90,24 @@ pub struct Dump {
     pub modules: Vec<DumpModule>,
     pub threads: Vec<DumpThread>,
     pub exception: Option<DumpException>,
+    #[serde(skip)]
+    pub memory: Vec<MemoryRange>,
+}
+
+impl Dump {
+    /// `len` bytes at `addr`, when one memory range of the dump holds all of them.
+    pub fn read(&self, addr: u64, len: usize) -> Option<&[u8]> {
+        let end = addr.checked_add(len as u64)?;
+        self.memory.iter().find_map(|r| {
+            let top = r.base.checked_add(r.data.len() as u64)?;
+            if r.base <= addr && end <= top {
+                let at = (addr - r.base) as usize;
+                r.data.get(at..at + len)
+            } else {
+                None
+            }
+        })
+    }
 }
 
 struct Rd<'a>(&'a [u8]);
@@ -170,6 +199,7 @@ pub fn parse(data: &[u8]) -> Result<Dump, DumpError> {
     }
 
     let mut threads = Vec::new();
+    let mut stacks: Vec<(u64, Vec<u8>)> = Vec::new();
     if let Some(&(rva, _)) = streams.get(&STREAM_THREADS) {
         let n = rd.u32(rva).ok_or(DumpError::Truncated("thread list"))?;
         if n > MAX_THREADS {
@@ -193,6 +223,9 @@ pub fn parse(data: &[u8]) -> Result<Dump, DumpError> {
                 _ => (None, None),
             };
             let stack = rd.bytes(stack_rva, stack_size as usize);
+            if let Some(bytes) = stack {
+                stacks.push((stack_base, bytes.to_vec()));
+            }
             let frames = match (stack, rsp) {
                 (Some(stack), Some(rsp)) => scan_stack(stack, stack_base, rsp, rip, &modules),
                 _ => Vec::new(),
@@ -210,6 +243,46 @@ pub fn parse(data: &[u8]) -> Result<Dump, DumpError> {
         }
     }
 
+    let mut memory: Vec<MemoryRange> = Vec::new();
+    let mut total = 0usize;
+    let mut keep = |base: u64, data: Option<&[u8]>| {
+        if let Some(d) = data
+            && memory.len() < MAX_RANGES
+            && total + d.len() <= MAX_MEMORY_BYTES
+            && !d.is_empty()
+        {
+            total += d.len();
+            memory.push(MemoryRange {
+                base,
+                data: d.to_vec(),
+            });
+        }
+    };
+    if let Some(&(rva, _)) = streams.get(&STREAM_MEMORY) {
+        let n = rd.u32(rva).unwrap_or(0) as usize;
+        for i in 0..n.min(MAX_RANGES) {
+            let at = rva + 4 + i * 16;
+            if let (Some(start), Some(size), Some(data_rva)) =
+                (rd.u64(at), rd.u32(at + 8), rd.u32(at + 12))
+            {
+                keep(start, rd.bytes(data_rva as usize, size as usize));
+            }
+        }
+    }
+    if let Some(&(rva, _)) = streams.get(&STREAM_MEMORY64) {
+        let n = rd.u64(rva).unwrap_or(0) as usize;
+        let mut data_at = rd.u64(rva + 8).unwrap_or(0) as usize;
+        for i in 0..n.min(MAX_RANGES) {
+            let at = rva + 16 + i * 16;
+            if let (Some(start), Some(size)) = (rd.u64(at), rd.u64(at + 8)) {
+                keep(start, rd.bytes(data_at, size as usize));
+                data_at = data_at.saturating_add(size as usize);
+            }
+        }
+    }
+    for (base, bytes) in &stacks {
+        keep(*base, Some(bytes));
+    }
     let exception = streams.get(&STREAM_EXCEPTION).and_then(|&(rva, _)| {
         Some(DumpException {
             thread_id: rd.u32(rva)?,
@@ -224,6 +297,7 @@ pub fn parse(data: &[u8]) -> Result<Dump, DumpError> {
         modules,
         threads,
         exception,
+        memory,
     })
 }
 
@@ -352,6 +426,8 @@ impl PatternConfig {
                 "RtlpWaitOnCriticalSection",
                 "RtlAcquireSRWLockExclusive",
                 "RtlSleepConditionVariableCS",
+                "NtWaitForAlertByThreadId",
+                "EnterCriticalSection",
             ]),
             fault_handler_functions: Vec::new(),
             suspend_functions: own(&["SuspendThread", "NtSuspendThread", "NtSuspendProcess"]),
@@ -369,6 +445,9 @@ pub struct Pattern {
     pub frames: Vec<u64>,
     /// Limitation codes that weaken the claim.
     pub limitations: Vec<String>,
+    /// Pattern-specific evidence (for a wait: the lock, its owner and the stack slot that held the lock pointer).
+    #[serde(skip_serializing_if = "Value::is_null")]
+    pub detail: Value,
 }
 
 /// Resolve a frame to a function name through the dump's modules.
@@ -385,6 +464,66 @@ pub fn resolve(dump: &Dump, symbolizer: &dyn Symbolizer, addr: u64) -> Option<St
     match symbolizer.resolve(&module, addr - m.base) {
         Resolution::Symbol { function, .. } => Some(function),
         _ => None,
+    }
+}
+
+struct LockWait {
+    lock: Option<u64>,
+    owner: Option<u32>,
+    evidence: String,
+}
+
+/// The lock a waiting thread waits for, when its stack and the dump's data say so: a word on the stack that points at a
+/// critical section (found in dump memory) whose OwningThread is another thread of the dump and whose recursion count is
+/// positive. One such lock is the answer; several distinct ones are `lock-ambiguous`, none is `lock-owner-unresolved`.
+fn lock_wait(dump: &Dump, th: &DumpThread) -> LockWait {
+    let unresolved = |why: &str| LockWait {
+        lock: None,
+        owner: None,
+        evidence: why.to_string(),
+    };
+    let Some(rsp) = th.rsp else {
+        return unresolved("no stack pointer in the dump");
+    };
+    let top = th.stack_base.saturating_add(u64::from(th.stack_size));
+    let len = (top.saturating_sub(rsp)).min(8192) as usize;
+    let Some(stack) = dump.read(rsp, len) else {
+        return unresolved("the thread's stack is not in the dump");
+    };
+    let mut found: Vec<(u64, u32, u64)> = Vec::new();
+    for (i, word) in stack.as_chunks::<8>().0.iter().enumerate() {
+        let v = u64::from_le_bytes(*word);
+        if !(0x1_0000..=0x7fff_ffff_ffff).contains(&v) || (th.stack_base..top).contains(&v) {
+            continue;
+        }
+        let Some(cs) = dump.read(v, 40) else { continue };
+        let recursion = i32::from_le_bytes(cs[12..16].try_into().unwrap_or([0; 4]));
+        let owning = u64::from_le_bytes(cs[16..24].try_into().unwrap_or([0; 8]));
+        if recursion >= 1
+            && owning != u64::from(th.thread_id)
+            && dump
+                .threads
+                .iter()
+                .any(|t| u64::from(t.thread_id) == owning)
+            && !found.iter().any(|f| f.0 == v)
+        {
+            found.push((v, owning as u32, rsp + i as u64 * 8));
+        }
+    }
+    match found.as_slice() {
+        [] => unresolved("no critical section held by another thread is referenced from the stack"),
+        [(lock, owner, slot)] => LockWait {
+            lock: Some(*lock),
+            owner: Some(*owner),
+            evidence: format!(
+                "stack slot {slot:#x} holds {lock:#x}, a critical section whose OwningThread is {owner}"
+            ),
+        },
+        many => LockWait {
+            lock: None,
+            owner: None,
+            evidence: format!("lock-ambiguous: {} candidate critical sections", many.len()),
+        },
     }
 }
 
@@ -440,30 +579,95 @@ pub fn patterns(
             threads: dump.threads.iter().map(|t| t.thread_id).collect(),
             frames: suspend_frames,
             limitations,
+            detail: Value::Null,
         });
     }
 
-    // N threads waiting at one site
-    let mut waiting: BTreeMap<String, Vec<(u32, u64)>> = BTreeMap::new();
+    // N threads waiting at one site, and who holds what they wait for
+    let mut waiters: Vec<(u32, String, u64)> = Vec::new();
     for th in &dump.threads {
         if let Some((addr, Some(name))) = names(th)
             .into_iter()
             .find(|(_, n)| n.as_ref().is_some_and(|n| cfg.wait_functions.contains(n)))
         {
-            waiting.entry(name).or_default().push((th.thread_id, addr));
+            waiters.push((th.thread_id, name, addr));
         }
     }
-    for (name, who) in waiting {
+    let locks: BTreeMap<u32, LockWait> = dump
+        .threads
+        .iter()
+        .filter(|th| waiters.iter().any(|w| w.0 == th.thread_id))
+        .map(|th| (th.thread_id, lock_wait(dump, th)))
+        .collect();
+    let wait_detail = |who: &[&(u32, String, u64)]| -> Value {
+        Value::Array(
+            who.iter()
+                .map(|w| {
+                    let l = &locks[&w.0];
+                    json!({"thread": w.0, "site": w.1, "frame": w.2, "lock": l.lock,
+                           "owner": l.owner, "evidence": l.evidence})
+                })
+                .collect(),
+        )
+    };
+    let mut by_name: BTreeMap<&str, Vec<&(u32, String, u64)>> = BTreeMap::new();
+    for w in &waiters {
+        by_name.entry(w.1.as_str()).or_default().push(w);
+    }
+    for (name, who) in by_name {
         if who.len() >= 2 {
+            let mut limitations = Vec::new();
+            if who.iter().any(|w| locks[&w.0].owner.is_none()) {
+                limitations.push("lock-owner-unresolved".to_string());
+            }
             out.push(Pattern {
                 pattern: "threads-waiting-on-one-site".into(),
                 summary: format!("{} threads wait in {name}", who.len()),
                 threads: who.iter().map(|w| w.0).collect(),
-                frames: who.iter().map(|w| w.1).collect(),
-                // The lock object is a call argument, which a dump without unwind data cannot
-                // recover, so the owner is not resolvable here.
-                limitations: vec!["lock-owner-unresolved".into()],
+                frames: who.iter().map(|w| w.2).collect(),
+                limitations,
+                detail: wait_detail(&who),
             });
+        }
+    }
+    // a cycle in "waits for a lock that thread X holds"
+    let owner_of: BTreeMap<u32, u32> = locks
+        .iter()
+        .filter_map(|(t, l)| l.owner.map(|o| (*t, o)))
+        .collect();
+    let mut reported: Vec<Vec<u32>> = Vec::new();
+    for start in owner_of.keys() {
+        let mut chain = vec![*start];
+        let mut at = *start;
+        while let Some(next) = owner_of.get(&at) {
+            if *next == *start {
+                let mut key = chain.clone();
+                key.sort_unstable();
+                if !reported.contains(&key) {
+                    reported.push(key);
+                    let who: Vec<&(u32, String, u64)> = chain
+                        .iter()
+                        .filter_map(|t| waiters.iter().find(|w| w.0 == *t))
+                        .collect();
+                    out.push(Pattern {
+                        pattern: "lock-wait-cycle".into(),
+                        summary: format!(
+                            "{} threads each wait for a lock another of them holds",
+                            chain.len()
+                        ),
+                        threads: chain.clone(),
+                        frames: who.iter().map(|w| w.2).collect(),
+                        limitations: Vec::new(),
+                        detail: wait_detail(&who),
+                    });
+                }
+                break;
+            }
+            if chain.contains(next) || chain.len() > waiters.len() {
+                break;
+            }
+            chain.push(*next);
+            at = *next;
         }
     }
 
@@ -484,6 +688,7 @@ pub fn patterns(
                 threads: vec![th.thread_id],
                 frames: hits,
                 limitations: Vec::new(),
+                detail: Value::Null,
             });
         }
     }
@@ -818,6 +1023,114 @@ mod tests {
             .unwrap();
         assert_eq!(fault.threads, vec![4]);
         assert!(!ps.iter().any(|p| p.pattern == "all-threads-suspended"));
+    }
+
+    /// A critical section as the dump's memory holds it: LockCount, RecursionCount and OwningThread are what is read.
+    fn critical_section(owner: u64) -> MemoryRange {
+        let mut data = vec![0u8; 40];
+        data[12..16].copy_from_slice(&1i32.to_le_bytes());
+        data[16..24].copy_from_slice(&owner.to_le_bytes());
+        MemoryRange { base: 0, data }
+    }
+
+    #[test]
+    fn a_lock_wait_cycle_is_found_from_the_stacks_and_the_dump_memory() {
+        let (lock_a, lock_b) = (0x5000_0000u64, 0x5000_0100u64);
+        // thread 1 owns A and waits for B (owned by 2); thread 2 owns B and waits for A; thread 3 waits for nothing it can name
+        let bytes = dump(vec![
+            thread(1, 0, &[BASE + 0x1010, lock_b]),
+            thread(2, 0, &[BASE + 0x1020, lock_a]),
+            thread(3, 0, &[BASE + 0x1030]),
+        ]);
+        let mut d = parse(&bytes).unwrap();
+        d.memory.push(MemoryRange {
+            base: lock_a,
+            ..critical_section(1)
+        });
+        d.memory.push(MemoryRange {
+            base: lock_b,
+            ..critical_section(2)
+        });
+        let sym = table();
+        let ps = patterns(&d, Some(&sym), &PatternConfig::windows());
+        let cycle = ps.iter().find(|p| p.pattern == "lock-wait-cycle").unwrap();
+        assert_eq!(cycle.threads, vec![1, 2]);
+        assert!(cycle.limitations.is_empty());
+        let detail = cycle.detail.as_array().unwrap();
+        assert_eq!(detail[0]["owner"], 2);
+        assert_eq!(detail[0]["lock"], lock_b);
+        assert_eq!(detail[1]["owner"], 1);
+        assert!(
+            detail[0]["evidence"]
+                .as_str()
+                .unwrap()
+                .contains("OwningThread is 2")
+        );
+        // thread 3 is still reported as waiting at the same site, with its owner unresolved
+        let wait = ps
+            .iter()
+            .find(|p| p.pattern == "threads-waiting-on-one-site")
+            .unwrap();
+        assert_eq!(wait.threads, vec![1, 2, 3]);
+        assert!(
+            wait.limitations
+                .contains(&"lock-owner-unresolved".to_string())
+        );
+    }
+
+    #[test]
+    fn two_candidate_locks_on_one_stack_are_ambiguous_not_guessed() {
+        let (lock_a, lock_b) = (0x5000_0000u64, 0x5000_0100u64);
+        let bytes = dump(vec![
+            thread(1, 0, &[BASE + 0x1010, lock_a, lock_b]),
+            thread(2, 0, &[BASE + 0x1020]),
+        ]);
+        let mut d = parse(&bytes).unwrap();
+        d.memory.push(MemoryRange {
+            base: lock_a,
+            ..critical_section(2)
+        });
+        d.memory.push(MemoryRange {
+            base: lock_b,
+            ..critical_section(2)
+        });
+        let ps = patterns(&d, Some(&table()), &PatternConfig::windows());
+        assert!(!ps.iter().any(|p| p.pattern == "lock-wait-cycle"));
+        let wait = ps
+            .iter()
+            .find(|p| p.pattern == "threads-waiting-on-one-site")
+            .unwrap();
+        assert!(
+            wait.detail[0]["evidence"]
+                .as_str()
+                .unwrap()
+                .contains("lock-ambiguous")
+        );
+        assert_eq!(wait.detail[0]["owner"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn dump_memory_is_read_only_inside_one_range() {
+        let d = Dump {
+            timestamp: 0,
+            architecture: 9,
+            process_id: None,
+            modules: Vec::new(),
+            threads: Vec::new(),
+            exception: None,
+            memory: vec![MemoryRange {
+                base: 0x100,
+                data: vec![1, 2, 3, 4],
+            }],
+        };
+        assert_eq!(d.read(0x101, 2), Some(&[2u8, 3][..]));
+        assert_eq!(
+            d.read(0x102, 3),
+            None,
+            "a read that runs past the range is not answered"
+        );
+        assert_eq!(d.read(0xff, 1), None);
+        assert_eq!(d.read(u64::MAX, 8), None);
     }
 
     #[test]

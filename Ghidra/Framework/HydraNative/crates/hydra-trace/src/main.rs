@@ -9,6 +9,9 @@
 //! hydra-trace export <root> <session> <outdir> [--overwrite]
 //! hydra-trace resymbolize <root> <session> <symbols.json> <symbol-revision>
 //!                                                     symbolize every event as a new interpretation revision
+//! hydra-trace dump <file.dmp> [--symbols <symbols.json>] [--source <id>] [--wait <fn>]... [--fault-handler <fn>]...
+//!                                                     read a minidump: modules, symbolized stacks, the spec 15.9 patterns
+//!                                                     with citations, and the events `import` would append
 //! ```
 
 use hydra_trace::export::{self, ExportOptions};
@@ -28,7 +31,8 @@ fn usage() -> ExitCode {
          hydra-trace import <root> <session> <file.jsonl|file.dmp>\n       \
          hydra-trace rebuild <root> <session>\n       \
          hydra-trace export <root> <session> <outdir> [--overwrite]\n       \
-         hydra-trace resymbolize <root> <session> <symbols.json> <symbol-revision>"
+         hydra-trace resymbolize <root> <session> <symbols.json> <symbol-revision>\n       \
+         hydra-trace dump <file.dmp> [--symbols <symbols.json>] [--source <id>] [--wait <fn>]... [--fault-handler <fn>]..."
     );
     ExitCode::from(2)
 }
@@ -260,6 +264,80 @@ fn resymbolize_cmd(root: &str, id: &str, symbols: &str, revision: &str) -> ExitC
     }
 }
 
+/// Read a minidump and print what the importer knows: no session is touched.
+fn dump_cmd(args: &[String]) -> ExitCode {
+    let Some(file) = args.first() else {
+        return usage();
+    };
+    let mut symbols: Option<symbolize::TableSymbolizer> = None;
+    let mut source = "minidump".to_string();
+    let mut cfg = minidump::PatternConfig::windows();
+    let mut i = 1;
+    while i < args.len() {
+        let Some(value) = args.get(i + 1) else {
+            return usage();
+        };
+        match args[i].as_str() {
+            "--symbols" => {
+                symbols = match std::fs::read_to_string(value)
+                    .map_err(|e| e.to_string())
+                    .and_then(|text| serde_json::from_str(&text).map_err(|e| e.to_string()))
+                {
+                    Ok(t) => Some(t),
+                    Err(e) => return fail(format!("{value}: {e}")),
+                }
+            }
+            "--source" => source = value.clone(),
+            "--wait" => cfg.wait_functions.push(value.clone()),
+            "--fault-handler" => cfg.fault_handler_functions.push(value.clone()),
+            _ => return usage(),
+        }
+        i += 2;
+    }
+    let bytes = match std::fs::read(file) {
+        Ok(b) => b,
+        Err(e) => return fail(format!("{file}: {e}")),
+    };
+    let dump = match minidump::parse(&bytes) {
+        Ok(d) => d,
+        Err(e) => return fail(e),
+    };
+    let symbolizer: Option<&dyn symbolize::Symbolizer> =
+        symbols.as_ref().map(|t| t as &dyn symbolize::Symbolizer);
+    let frames: Vec<Value> = dump
+        .threads
+        .iter()
+        .map(|th| {
+            let list: Vec<Value> = th
+                .frames
+                .iter()
+                .map(|&addr| {
+                    let module = dump.modules.iter().find(|m| {
+                        m.base <= addr && addr < m.base.saturating_add(u64::from(m.size))
+                    });
+                    let function = symbolizer.and_then(|s| minidump::resolve(&dump, s, addr));
+                    serde_json::json!({"address": addr, "module": module.map(|m| m.name.clone()),
+                        "rva": module.map(|m| addr - m.base), "function": function})
+                })
+                .collect();
+            serde_json::json!({"thread_id": th.thread_id, "suspend_count": th.suspend_count,
+                               "rip": th.rip, "rsp": th.rsp, "frames": list,
+                               "basis": "return-address candidates found on the stack (inferred)"})
+        })
+        .collect();
+    let patterns = minidump::patterns(&dump, symbolizer, &cfg);
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "dump": dump, "stacks": frames, "patterns": patterns,
+            "events": minidump::to_events(&dump, &source),
+            "symbolized": symbolizer.is_some(),
+        }))
+        .unwrap_or_default()
+    );
+    ExitCode::SUCCESS
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
@@ -275,6 +353,7 @@ fn main() -> ExitCode {
             resymbolize_cmd(&args[1], &args[2], &args[3], &args[4])
         }
         Some("import") if args.len() == 4 => import(&args[1], &args[2], &args[3]),
+        Some("dump") if args.len() >= 2 => dump_cmd(&args[1..]),
         Some("rebuild") if args.len() == 3 => {
             match session::rebuild(Path::new(&args[1]), &args[2], &Options::default()) {
                 Ok(digest) => {
