@@ -12,15 +12,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Build the Rust client and put it where an install can ship it.
+"""Build the Rust client and the ETW consumer and put them where an install can ship them.
 
     python -I build-install.py [--out DIR] [--target-dir DIR] [--install DIR] [--no-build]
     python -I build-install.py --check --install DIR
 
 The engine build never requires the Rust client: with no cargo on PATH (and no CARGO set) this
 script prints why it skipped and exits 0. With cargo it runs a locked release build, copies
-`hydra-agent.exe` and a provenance marker (`hydra-agent.provenance.json`) to `--out`, and, with
-`--install`, into `<install>/Ghidra/Features/HeadlessSession/support/`.
+`hydra-agent.exe` and `hydra-etw.exe` (the ETW consumer of the semantic trace) each with a provenance marker
+(`hydra-agent.provenance.json`, `hydra-etw.provenance.json`) to `--out`, and, with `--install`, into
+`<install>/Ghidra/Features/HeadlessSession/support/`.
 
 The build is `cargo build --release --locked`: `Cargo.lock` pins the one dependency
 (serde_json), `CARGO_INCREMENTAL=0` and a build-directory target keep the source tree clean
@@ -45,6 +46,10 @@ HERE = Path(__file__).resolve().parent
 MODULE = HERE.parent
 BINARY = "hydra-agent.exe" if os.name == "nt" else "hydra-agent"
 MARKER = "hydra-agent.provenance.json"
+ETW_BINARY = "hydra-etw.exe" if os.name == "nt" else "hydra-etw"
+ETW_MARKER = "hydra-etw.provenance.json"
+# (name, binary, marker): every shipped binary has its own provenance marker
+SHIPPED = (("hydra-agent", BINARY, MARKER), ("hydra-etw", ETW_BINARY, ETW_MARKER))
 
 
 def find_cargo():
@@ -100,6 +105,32 @@ def sha256(path):
     return digest.hexdigest()
 
 
+def package_version(name):
+    """`version` of crates/<name>/Cargo.toml (hydra-etw has no version flag)."""
+    try:
+        text = (HERE / "crates" / name / "Cargo.toml").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    match = re.search(r'^version\s*=\s*"([^"]+)"', text, re.M)
+    if match:
+        return match.group(1)
+    if re.search(r'^version\.workspace\s*=\s*true', text, re.M):
+        root = re.search(r'^version\s*=\s*"([^"]+)"', (HERE / "Cargo.toml").read_text(encoding="utf-8"), re.M)
+        return root.group(1) if root else ""
+    return ""
+
+
+def marker_for_etw(binary, cargo, rustc):
+    version = package_version("hydra-etw")
+    dirty = git("status", "--porcelain", "--", str(HERE))
+    return {
+        "name": "hydra-etw", "version": version, "versionLine": "hydra-etw %s" % version, "binary": ETW_BINARY,
+        "bytes": binary.stat().st_size, "sha256": sha256(binary), "built": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "gitCommit": git("rev-parse", "HEAD"), "gitDirty": bool(dirty), "cargo": cargo, "rustc": rustc,
+        "note": "needs an elevated token to start a session; without one it exits 3 and the trace records etw-not-elevated",
+    }
+
+
 def marker_for(binary, cargo, rustc):
     text = version_line(binary, "version")
     match = re.search(r"hydra-agent (\S+) \(client (\S+), protocol (\d+)\)", text)
@@ -124,17 +155,22 @@ def marker_for(binary, cargo, rustc):
 
 def check_install(install):
     support = Path(install) / "Ghidra/Features/HeadlessSession/support"
-    binary, marker_path = support / BINARY, support / MARKER
-    if not binary.is_file() or not marker_path.is_file():
-        print("hydra-agent: not installed in %s (the Python client is the default)" % support)
-        return 1
-    marker = json.loads(marker_path.read_text(encoding="utf-8"))
-    actual = sha256(binary)
-    ok = actual == marker.get("sha256")
-    print("hydra-agent: %s, %s bytes, sha256 %s (%s)" % (
-        marker.get("versionLine") or marker.get("version"), binary.stat().st_size, actual[:16],
-        "matches the marker" if ok else "DOES NOT match the marker"))
-    return 0 if ok else 1
+    status = 0
+    for name, binary_name, marker_name in SHIPPED:
+        binary, marker_path = support / binary_name, support / marker_name
+        if not binary.is_file() or not marker_path.is_file():
+            print("%s: not installed in %s%s" % (name, support, " (the Python client is the default)" if name == "hydra-agent" else ""))
+            status = 1
+            continue
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        actual = sha256(binary)
+        ok = actual == marker.get("sha256")
+        print("%s: %s, %s bytes, sha256 %s (%s)" % (
+            name, marker.get("versionLine") or marker.get("version"), binary.stat().st_size, actual[:16],
+            "matches the marker" if ok else "DOES NOT match the marker"))
+        if not ok:
+            status = 1
+    return status
 
 
 def main(argv=None):
@@ -160,6 +196,7 @@ def main(argv=None):
         return 0
 
     binary = Path(a.target_dir) / "release" / BINARY
+    etw_binary = Path(a.target_dir) / "release" / ETW_BINARY
     if not a.no_build:
         env = dict(os.environ)
         env["CARGO_TARGET_DIR"] = str(a.target_dir)
@@ -173,12 +210,13 @@ def main(argv=None):
         if built.returncode != 0:
             sys.stderr.write(built.stdout + built.stderr)
             return built.returncode
-        if not binary.is_file():
-            print("hydra-agent: cargo succeeded but %s is missing" % binary)
+        for missing in (path for path in (binary, etw_binary) if not path.is_file()):
+            print("cargo succeeded but %s is missing" % missing)
             return 1
-    elif not binary.is_file():
-        print("hydra-agent: --no-build and no binary at %s" % binary)
-        return 1
+    else:
+        for missing in (path for path in (binary, etw_binary) if not path.is_file()):
+            print("--no-build and no binary at %s" % missing)
+            return 1
 
     rustc = find_rustc(cargo)
     marker = marker_for(
@@ -189,6 +227,10 @@ def main(argv=None):
     out.mkdir(parents=True, exist_ok=True)
     shutil.copy2(binary, out / BINARY)
     (out / MARKER).write_text(json.dumps(marker, indent=1) + "\n", encoding="utf-8")
+    etw_marker = marker_for_etw(etw_binary, version_line(cargo, "--version") if cargo else "",
+                                version_line(rustc, "--version") if rustc else "")
+    shutil.copy2(etw_binary, out / ETW_BINARY)
+    (out / ETW_MARKER).write_text(json.dumps(etw_marker, indent=1) + "\n", encoding="utf-8")
     if a.install:
         support = Path(a.install) / "Ghidra/Features/HeadlessSession/support"
         if not (Path(a.install) / "Ghidra/application.properties").is_file():
@@ -197,9 +239,11 @@ def main(argv=None):
         support.mkdir(parents=True, exist_ok=True)
         shutil.copy2(out / BINARY, support / BINARY)
         shutil.copy2(out / MARKER, support / MARKER)
-    print("hydra-agent: %s %s bytes sha256 %s -> %s%s" % (
-        marker["version"], marker["bytes"], marker["sha256"][:16], out,
-        (" and " + str(Path(a.install) / "Ghidra/Features/HeadlessSession/support")) if a.install else ""))
+        shutil.copy2(out / ETW_BINARY, support / ETW_BINARY)
+        shutil.copy2(out / ETW_MARKER, support / ETW_MARKER)
+    where = (" and " + str(Path(a.install) / "Ghidra/Features/HeadlessSession/support")) if a.install else ""
+    print("hydra-agent: %s %s bytes sha256 %s -> %s%s" % (marker["version"], marker["bytes"], marker["sha256"][:16], out, where))
+    print("hydra-etw: %s %s bytes sha256 %s -> %s%s" % (etw_marker["version"], etw_marker["bytes"], etw_marker["sha256"][:16], out, where))
     return 0
 
 

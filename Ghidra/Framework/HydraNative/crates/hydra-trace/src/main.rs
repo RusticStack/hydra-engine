@@ -7,11 +7,14 @@
 //! hydra-trace import <root> <session> <file>          JSONL events, or a minidump (*.dmp)
 //! hydra-trace rebuild <root> <session>                rebuild index.db from the segments
 //! hydra-trace export <root> <session> <outdir> [--overwrite]
+//! hydra-trace resymbolize <root> <session> <symbols.json> <symbol-revision>
+//!                                                     symbolize every event as a new interpretation revision
 //! ```
 
 use hydra_trace::export::{self, ExportOptions};
 use hydra_trace::session::{self, Session};
-use hydra_trace::store::Options;
+use hydra_trace::store::{Options, Store};
+use hydra_trace::symbolize;
 use hydra_trace::{minidump, synth};
 use serde_json::Value;
 use std::path::Path;
@@ -24,7 +27,8 @@ fn usage() -> ExitCode {
          hydra-trace verify <root> <session>\n       \
          hydra-trace import <root> <session> <file.jsonl|file.dmp>\n       \
          hydra-trace rebuild <root> <session>\n       \
-         hydra-trace export <root> <session> <outdir> [--overwrite]"
+         hydra-trace export <root> <session> <outdir> [--overwrite]\n       \
+         hydra-trace resymbolize <root> <session> <symbols.json> <symbol-revision>"
     );
     ExitCode::from(2)
 }
@@ -143,6 +147,39 @@ fn import(root: &str, id: &str, file: &str) -> ExitCode {
     }
 }
 
+/// Symbolize a session's events against a table (`{"modules": {name: {"code": [[start, end]], "functions":
+/// [{"start", "end", "name"}]}}}`, RVAs) as a new interpretation revision and print the counts.
+fn resymbolize_cmd(root: &str, id: &str, symbols: &str, revision: &str) -> ExitCode {
+    let table: symbolize::TableSymbolizer = match std::fs::read_to_string(symbols)
+        .map_err(|e| e.to_string())
+        .and_then(|text| serde_json::from_str(&text).map_err(|e| e.to_string()))
+    {
+        Ok(t) => t,
+        Err(e) => return fail(format!("{symbols}: {e}")),
+    };
+    let index = session::index_path(&Path::new(root).join(id));
+    if !index.exists() {
+        return fail(format!("no session {id} under {root}"));
+    }
+    let mut store = match Store::open(&index, id) {
+        Ok(s) => s,
+        Err(e) => return fail(e),
+    };
+    match symbolize::resymbolize(&mut store, &table, revision) {
+        Ok(rev) => match symbolize::counts(&store, Some(rev)) {
+            Ok(counts) => {
+                println!(
+                    "{}",
+                    serde_json::json!({"interp": rev, "counts": counts})
+                );
+                ExitCode::SUCCESS
+            }
+            Err(e) => fail(e),
+        },
+        Err(e) => fail(e),
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
@@ -154,6 +191,7 @@ fn main() -> ExitCode {
                 verify_segment(&args[1], &args[2])
             }
         }
+        Some("resymbolize") if args.len() == 5 => resymbolize_cmd(&args[1], &args[2], &args[3], &args[4]),
         Some("import") if args.len() == 4 => import(&args[1], &args[2], &args[3]),
         Some("rebuild") if args.len() == 3 => {
             match session::rebuild(Path::new(&args[1]), &args[2], &Options::default()) {
