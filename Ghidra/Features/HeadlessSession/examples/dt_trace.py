@@ -763,7 +763,7 @@ def t_client_identity(c):
             ("trace_check", {"session": session, "assertions": [{"type": "cardinality", "kind": "core.resource.open",
                                                                   "min": 1, "max": 99, "name": "n"}]}),
             ("trace_relations", {"session": session, "op": "status"}),
-            ("trace_reprocess", {"session": session, "cap": cap, "kinds": ["core.resource.open"], "note": "identity",
+            ("trace_reprocess", {"session": session, "cap": "wrong", "kinds": ["core.resource.open"], "note": "identity",
                                  "codecs": {"v1": {"name": "m", "fields": [{"name": "a", "offset": 0, "len": 1, "type": "u8"}]}}}),
             ("trace_query", {"session": session, "kinds": ["core.resource.open"], "decoded": True, "limit": 3}),
             ("trace_bundle", {"path": "no-such-bundle"}),
