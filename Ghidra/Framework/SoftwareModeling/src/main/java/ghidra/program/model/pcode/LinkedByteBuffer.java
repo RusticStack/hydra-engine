@@ -63,11 +63,7 @@ public class LinkedByteBuffer {
 		public final byte getBytePlus1() throws DecoderException {
 			int plus1 = current + 1;
 			if (plus1 == length) {
-				ArrayIter iter = seqIter.next;
-				if (iter == null) {
-					iter = readNextPage(seqIter);
-				}
-				return iter.array[0];
+				return nextOf(seqIter).array[0];
 			}
 			return array[plus1];
 		}
@@ -83,12 +79,7 @@ public class LinkedByteBuffer {
 			if (current != length) {
 				return res;
 			}
-			if (seqIter.next == null) {
-				seqIter = readNextPage(seqIter);
-			}
-			else {
-				seqIter = seqIter.next;
-			}
+			seqIter = nextOf(seqIter);
 			array = seqIter.array;
 			length = seqIter.length;
 			current = 0;
@@ -103,12 +94,7 @@ public class LinkedByteBuffer {
 		public final void advancePosition(int skip) throws DecoderException {
 			while (length - current <= skip) {
 				skip -= (length - current);
-				if (seqIter.next == null) {
-					seqIter = readNextPage(seqIter);
-				}
-				else {
-					seqIter = seqIter.next;
-				}
+				seqIter = nextOf(seqIter);
 				array = seqIter.array;
 				length = seqIter.length;
 				current = 0;
@@ -151,7 +137,7 @@ public class LinkedByteBuffer {
 		 * Set this position to the start of the buffer
 		 */
 		public void setToStart() {
-			array = initialBuffer.array;
+			array = initialBuffer.array;	// Hydra: the first page never leaves the heap
 			length = initialBuffer.length;
 			current = 0;
 			seqIter = initialBuffer;
@@ -165,6 +151,7 @@ public class LinkedByteBuffer {
 		private ArrayIter next;		// The next-node in the list
 		private byte[] array;		// Byte data contained in this page
 		private int length;			// Number of bytes stored in the buffer
+		private long spillOff = -1;	// Hydra: position in the spill file when array was given back
 	}
 
 	public final static int BUFFER_SIZE = 1024;
@@ -216,6 +203,7 @@ public class LinkedByteBuffer {
 	private int currentPos;				// Last byte successfully cached in last page
 	private InputStream asNeededStream = null;	// If non-null, a stream that is read as needed
 	private String description;		// Describes source of bytes for use in error messages
+	private ResponseSpill spill;		// Hydra: where full pages go beyond the heap threshold, or null
 
 	public LinkedByteBuffer(long max, String desc) {
 		this(max, desc, null);
@@ -308,6 +296,7 @@ public class LinkedByteBuffer {
 			if (byteCount == maxCount) {
 				throw new IOException("Response buffer size exceeded for: " + description);
 			}
+			retirePage();	// Hydra: spill / guard
 			// Set up next buffer
 			currentBuffer.next = new ArrayIter();
 			currentBuffer = currentBuffer.next;
@@ -408,6 +397,66 @@ public class LinkedByteBuffer {
 
 		currentBuffer.array[currentPos++] = 0;	// Add pad value
 		currentBuffer.length = currentPos;	// Any bytes after are not in the buffer
+	}
+
+	/**
+	 * Hydra (issue 6): lets pages beyond the spill's threshold leave the heap for a temporary
+	 * file. Only {@link #ingestStreamToNextTerminator} (the decompiler's main response) spills.
+	 * Set before the response is read; the spill's owner closes it after the last read.
+	 * @param s the spill, or null for none
+	 */
+	public void setSpill(ResponseSpill s) {
+		spill = s;
+	}
+
+	/** @return whether any page of this buffer is in a spill file */
+	public boolean spilled() {
+		return spill != null && spill.spilled();
+	}
+
+	/**
+	 * Called when the current page is full and a next one is about to start: the page goes to the
+	 * spill file once the heap threshold is passed, and the guard looks at the machine.
+	 * @throws IOException when the spill refuses (a limit, or the file)
+	 */
+	private void retirePage() throws IOException {
+		if (spill == null) {
+			return;
+		}
+		if (byteCount >= spill.threshold() && currentBuffer != initialBuffer) {
+			ArrayIter full = currentBuffer;
+			full.spillOff = spill.append(full.array, full.length);
+			recycle(full.array);
+			full.array = null;
+		}
+		spill.pageDone(byteCount);
+	}
+
+	/** A page whose bytes are in memory: {@code it} itself, or a copy read back from the spill. */
+	private ArrayIter resolve(ArrayIter it) throws DecoderException {
+		if (it.array != null) {
+			return it;
+		}
+		try {
+			ArrayIter c = new ArrayIter();
+			c.array = new byte[BUFFER_SIZE];
+			c.length = it.length;
+			c.next = it.next;
+			spill.readPage(it.spillOff, c.array, it.length);
+			return c;
+		}
+		catch (IOException e) {
+			throw new DecoderException("spilled response unreadable: " + e.getMessage());
+		}
+	}
+
+	/** The page after {@code it}, read from the stream or the spill file if it is not in memory. */
+	private ArrayIter nextOf(ArrayIter it) throws DecoderException {
+		ArrayIter n = it.next;
+		if (n == null) {
+			return readNextPage(it);
+		}
+		return n.array != null ? n : resolve(n);
 	}
 
 	public Position allocatePosition() {

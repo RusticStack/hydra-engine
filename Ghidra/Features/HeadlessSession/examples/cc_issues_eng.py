@@ -398,8 +398,107 @@ def t_cap_partial(c):
     return "; ".join(notes)
 
 
+def _spill_files(c):
+    d = c.work / "tmp" / "hydra-decompiler-spill"
+    return d, sorted(x.name for x in d.glob("spill-*.bin")) if d.exists() else None
+
+
+def _one(c, name, env, fn):
+    """Runs fn(session) on a fresh daemon started with env, on BIG's fixture project."""
+    gpr = copy_fixture(c, name)
+    out = []
+
+    def run():
+        d = _session(c, True, name)
+        with d.connect("cc-ie", "tests") as s:
+            s.call("open_project", path=str(gpr), writable=False)
+            s.call("open_program", path="/frag.exe", writable=False)
+            out.append(fn(s))
+            s.call("close_program", discard=True)
+            s.call("close_project")
+        d.stop()
+    _with_env(env, run)
+    return out[0]
+
+
+def t_spill(c):
+    """Issue 6, spill to disk: a response past the heap threshold goes to a temporary file, is read
+    back token by token (no tree), is deleted after the request, and the in-flight guard turns a
+    low-RAM, low-disk or over-quota machine into the structured truncated reply."""
+    notes = []
+    # reference text: no spill (a plain daemon), fixture is small
+    ref = _one(c, "ie-sp-ref", {}, lambda s: s.call("decompile", address=BIG, timeout=120))
+    check(ref.get("completed") is True and "streamed" not in ref, "reference decompile is the heap path")
+    whole = _squash(ref["c"])
+
+    # 1. forced spill (8 KB threshold): completes, streamed, same text, paged, cleaned up
+    def forced(s):
+        a = s.call("decompile", address=BIG, timeout=120, maxChars=1000000)
+        pages, off = [], 0
+        while True:
+            pg = s.call("decompile", address=BIG, timeout=120, offset=off, maxChars=3000)
+            pages.append(pg["c"])
+            check(pg["offset"] == off and pg["chars"] == a["chars"] and pg.get("streamed") is True, f"page at {off}")
+            if "next_offset" not in pg:
+                break
+            off = pg["next_offset"]
+        return a, pages
+    a, pages = _one(c, "ie-sp-forced", {"HYDRA_TEST_SPILL_KB": "8"}, forced)
+    sp = a.get("spill") or {}
+    check(a.get("completed") is True and a.get("streamed") is True and a.get("truncated") is False and
+          sp.get("spilled_bytes", 0) > 0 and sp.get("threshold_bytes") == 8192, f"forced spill: { {k: v for k, v in a.items() if k != 'c'} }")
+    check(_squash(a["c"]) == whole, "the streamed text equals the heap path's text (modulo whitespace)")
+    check(a["signature"] == ref["signature"], f"signature {a['signature']!r}")
+    check("".join(pages) == a["c"] and len(pages) > 3, f"{len(pages)} streamed pages reassemble to the text")
+    d, left = _spill_files(c)
+    check(left == [], f"spill files left after the requests: {left} in {d}")
+    notes.append("8 KB threshold: streamed %d chars (%d spilled bytes), %d pages reassemble, no file left" %
+                 (a["chars"], sp["spilled_bytes"], len(pages)))
+
+    # 2. the guard: each limit gives the structured reply, with the front of the text, never an error
+    def guard(env, want, **kw):
+        r = _one(c, "ie-sp-" + want, dict(env, HYDRA_TEST_SPILL_KB="8"),
+                 lambda s: s.call("decompile", address=BIG, timeout=120, **kw))
+        check(r.get("completed") is False and r.get("truncated") is True and r.get("reason") == "response_buffer" and
+              r.get("limit") == want and r.get("timedOut") is False and "guard" in r,
+              f"{want}: { {k: v for k, v in r.items() if k != 'c'} }")
+        check(r.get("partial") is True and whole.startswith(_squash(r["c"])) and 0 < r["chars"] < ref["chars"],
+              f"{want}: partial text is the front of the whole: {r.get('chars')}")
+        check(0 < r["bytes_emitted"] < 4 << 20, f"{want}: bytes_emitted {r['bytes_emitted']}")
+        d, left = _spill_files(c)
+        check(left == [], f"{want}: spill files left: {left}")
+        notes.append("%s: %d of %d chars, %d bytes read" % (want, r["chars"], ref["chars"], r["bytes_emitted"]))
+    guard({"HYDRA_TEST_LIVE_FREE_MB": "100"}, "free_ram")
+    guard({"HYDRA_TEST_SPILL_QUOTA_KB": "32"}, "spill_quota", maxResultKb=200)
+    guard({"HYDRA_TEST_SPILL_QUOTA_KB": "100000", "HYDRA_TEST_DISK_FREE_MB": "100"}, "disk_free")
+
+    # 3. no room on the disk (hook): the response stays on the heap, as before, and completes
+    r = _one(c, "ie-sp-nodisk", {"HYDRA_TEST_SPILL_KB": "8", "HYDRA_TEST_DISK_FREE_MB": "0"},
+             lambda s: s.call("decompile", address=BIG, timeout=120))
+    check(r.get("completed") is True and "streamed" not in r and _squash(r["c"]) == whole, "no disk room: heap path")
+    notes.append("no disk room: heap path, completes")
+
+    # 4. a request ceiling still ends in the cap with the spill in place
+    r = _one(c, "ie-sp-cap", {"HYDRA_TEST_SPILL_KB": "8", "HYDRA_TEST_SPILL_QUOTA_KB": "100000"},
+             lambda s: s.call("decompile", address=BIG, timeout=120, maxResultKb=24))
+    check(r.get("completed") is False and r.get("limit") == "response_cap" and r.get("bytes_emitted") == 24 * 1024 and
+          r.get("partial") is True and whole.startswith(_squash(r["c"])), f"cap with spill: { {k: v for k, v in r.items() if k != 'c'} }")
+    d, left = _spill_files(c)
+    check(left == [], f"cap with spill: files left {left}")
+    notes.append("24 KB ceiling with a spill: response_cap, partial prefix")
+
+    # 5. a stale file of a dead process is swept at the next spill; a live one is left
+    d.mkdir(parents=True, exist_ok=True)
+    dead = d / "spill-999999999-1-1.bin"
+    dead.write_bytes(b"x" * 10)
+    _one(c, "ie-sp-sweep", {"HYDRA_TEST_SPILL_KB": "8"}, lambda s: s.call("decompile", address=BIG, timeout=120))
+    check(not dead.exists(), "a stale spill file of a dead process is swept")
+    notes.append("stale file swept")
+    return "; ".join(notes)
+
+
 TESTS = {"frag_noncontiguous": t_frag_noncontiguous, "cap_overflow": t_cap_overflow,
-         "cap_partial": t_cap_partial, "cap_default": t_cap_default}
+         "cap_partial": t_cap_partial, "cap_default": t_cap_default, "spill": t_spill}
 
 if __name__ == "__main__":
     cc.run_file(__file__)
