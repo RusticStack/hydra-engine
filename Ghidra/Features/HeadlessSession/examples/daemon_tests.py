@@ -1762,6 +1762,68 @@ def t_upgrade_cache(c: Ctx):
     return "; ".join(notes)
 
 
+def t_swap_open_attribution(c: Ctx):
+    """Opens that meet the switch of a warm, unused program to its upgrade cache copy are one
+    single-flight open: nobody's wait is "foreign" (``waits.foreignBlocked`` stays 0).
+
+    The switch holds the program's exclusive lock while the program object is released and opened
+    again; the other clients' opens queue behind it. The hold began while the program was open, so
+    it was not counted as an open (seen as ``foreignBlocked`` 2..11 in the 16-agent bench when the
+    host was loaded enough for the cache build to end during the workload). Needs --legacy-project."""
+    if not c.a.legacy_project:
+        return "skipped (no --legacy-project)"
+    src = pathlib.Path(c.a.legacy_project)
+    src = src.parent if src.suffix == ".gpr" else src
+    legacy = c.work / "legacySwap"
+    clone_tree(src, legacy)
+    own_project(legacy)
+    cache = c.work / "swap-cache"
+    if cache.exists():
+        shutil.rmtree(cache)
+    d = c.daemon("swap", keepWarm=3600, upgradeCacheDir=str(cache))
+    n = 6
+    ss = []
+    try:
+        ss = [d.connect(f"w{i}", "tests") for i in range(n)]
+        for s in ss:
+            s.call("open_project", path=str(legacy))
+        prog = c.a.legacy_program or ss[0].call("list", programsOnly=True)["entries"][0]["path"]
+        first = ss[0].call("open_program", path=prog, wait=1800000)
+        check(first["cacheBuild"] == "started", f"no build started: {first.get('cacheBuild')}")
+        b = wait_build(ss[0], first["cacheBuildInfo"]["id"])
+        check(b["state"] == "ready", f"build failed: {b}")
+        ss[0].call("close_program")
+        before = ss[0].call("status")["waits"]["foreignBlocked"]["total"]
+        res, errs = {}, []
+        bar = threading.Barrier(n)
+
+        def opener(i, s):
+            try:
+                bar.wait(60)
+                res[i] = s.call("open_program", path=prog, wait=600000)
+            except Exception as e:  # noqa: BLE001
+                errs.append(repr(e))
+
+        ths = [threading.Thread(target=opener, args=(i, s)) for i, s in enumerate(ss)]
+        for th in ths:
+            th.start()
+        for th in ths:
+            th.join(300)
+        check(not errs and len(res) == n, f"opens failed: {errs}")
+        check(sum(1 for r in res.values() if r["cachedUpgrade"]) == n,
+              f"not every open is served from the copy: {[r['cachedUpgrade'] for r in res.values()]}")
+        w = ss[0].call("status")["waits"]
+        check(w["foreignBlocked"]["total"] == before,
+              f"an open that met the switch to the cache copy counted as waiting on another: {w}")
+        return (f"{n} simultaneous opens over the switch to the cache copy: foreignBlocked 0, "
+                f"singleFlightOpen {w['singleFlightOpen']}, contended waits {w['contended']}")
+    finally:
+        for s in ss:
+            with contextlib.suppress(Exception):
+                s.close()
+        d.stop()
+
+
 def t_holders(c: Ctx):
     """busy, conflict and not_owner name the holder (client, harness, command, how long) and the
     project or program, and suggest what to do (a fork where a fork is the answer)."""
@@ -3130,7 +3192,7 @@ def _import_write_kill(c: Ctx, fracs, tag=""):
 TESTS = ["two_harnesses", "two_projects", "dll_import", "client_kill", "daemon_restart",
          "fairness", "cancel_all", "import_queue", "import_isolation", "parallel_imports",
          "import_kill", "import_write_kill", "import_readers", "import_speed", "caller_labels",
-         "idle_shutdown", "keep_warm", "stdio", "upgrade_cache", "holders", "fork", "fork_timing",
+         "idle_shutdown", "keep_warm", "stdio", "upgrade_cache", "swap_open_attribution", "holders", "fork", "fork_timing",
          "revisions",
          "refresh_force", "overlays", "overlay_owned", "legacy_overlay", "multi_writer",
          "shared", "edit", "orphan_shutdown", "shared_stress"]
