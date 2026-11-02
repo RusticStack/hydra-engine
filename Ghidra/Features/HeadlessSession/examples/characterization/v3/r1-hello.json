@@ -60,7 +60,7 @@
       "seal": 1,
       "forkAtomic": 1,
       "admission": 1,
-      "trace": 1
+      "trace": "<masked>"
      },
      "limits": {
       "maxQuick": 4,
@@ -150,7 +150,7 @@
       "seal": 1,
       "forkAtomic": 1,
       "admission": 1,
-      "trace": 1
+      "trace": "<masked>"
      },
      "limits": {
       "maxQuick": 4,
