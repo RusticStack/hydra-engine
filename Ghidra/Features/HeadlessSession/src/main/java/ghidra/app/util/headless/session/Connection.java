@@ -161,7 +161,7 @@ final class Connection {
 		try {
 			byte[] line;
 			while (open && (line = readLine()) != null) {
-				handleLine(new String(line, StandardCharsets.UTF_8));
+				handleBytes(line);
 			}
 		}
 		catch (IOException e) {
@@ -258,6 +258,22 @@ final class Connection {
 		return a && b;
 	}
 
+	/**
+	 * One request line. A trace read of an authenticated protocol 3 connection takes the raw path
+	 * ({@link TraceFast}): the line is scanned on its bytes and handed to the engine as it is.
+	 * Everything else is decoded and parsed as ever.
+	 */
+	private void handleBytes(byte[] line) {
+		if (client.authenticated && client.v3() && TraceFast.candidate(line)) {
+			TraceFast.Scanned s = TraceFast.scan(line);
+			if (s != null) {
+				handleRequest(s.req(), line);
+				return;
+			}
+		}
+		handleLine(new String(line, StandardCharsets.UTF_8));
+	}
+
 	private void handleLine(String text) {
 		if (text.isBlank()) {
 			return;
@@ -275,6 +291,11 @@ final class Connection {
 				"not a JSON object: " + e.getMessage()), 0));
 			return;
 		}
+		handleRequest(req, null);
+	}
+
+	/** {@code raw}: the request line when {@code req} is only its light form ({@link TraceFast}). */
+	private void handleRequest(JsonObject req, byte[] raw) {
 		JsonElement id = req.get("id");
 		String cmd = req.has("cmd") && req.get("cmd").isJsonPrimitive()
 				? req.get("cmd").getAsString()
@@ -306,6 +327,7 @@ final class Connection {
 		String key = id == null ? null : id.toString();
 		RequestMonitor m = new RequestMonitor(id, this::send);
 		m.describeAs(cmd, who);
+		m.rawRequest(raw);
 		if (req.has("artifact") && req.get("artifact").isJsonPrimitive()) {
 			m.artifact(req.get("artifact").getAsString());
 		}

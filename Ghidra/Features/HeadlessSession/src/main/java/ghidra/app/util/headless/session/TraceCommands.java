@@ -17,7 +17,6 @@ package ghidra.app.util.headless.session;
 
 import java.io.File;
 import java.io.IOException;
-import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.nio.charset.StandardCharsets;
@@ -272,6 +271,11 @@ final class TraceCommands {
 		}
 		Path root = root();
 		nat.useRoot(root);
+		byte[] line = m.rawRequest();
+		if (line != null) {
+			// a raw trace read (TraceFast): the engine gets the client's own line
+			return passBytes(nat, cmd, line, m);
+		}
 		return switch (cmd) {
 			case "trace_open" -> open(c, nat, root, req, m);
 			case "trace_list" -> list(nat, root, req, m);
@@ -580,49 +584,100 @@ final class TraceCommands {
 
 	/** One engine call: cancellable; success replies are sent as they are. */
 	private JsonElement pass(TraceNative nat, String cmd, JsonObject req, RequestMonitor m) {
-		byte[] reqBytes = req.toString().getBytes(StandardCharsets.UTF_8);
+		return passBytes(nat, cmd, req.toString().getBytes(StandardCharsets.UTF_8), m);
+	}
+
+	/**
+	 * One engine call from the request's bytes: the cancel flag and the progress cell are recycled
+	 * native cells (closing a shared arena per call is a handshake with every thread of the VM),
+	 * and progress is read by one poller for all running calls, not a scheduled task per call.
+	 */
+	private JsonElement passBytes(TraceNative nat, String cmd, byte[] reqBytes,
+			RequestMonitor m) {
 		byte[] reply;
-		try (Arena arena = Arena.ofShared()) {
-			MemorySegment flag = arena.allocate(ValueLayout.JAVA_INT);
-			MemorySegment cell = arena.allocate(16, 8);
-			java.util.concurrent.ScheduledFuture<?> poll = nat.reportsProgress()
-					? PROGRESS.scheduleWithFixedDelay(() -> {
-						try {
-							long total = cell.get(ValueLayout.JAVA_LONG, 8);
-							long done = cell.get(ValueLayout.JAVA_LONG, 0);
-							if (total > 0) {
-								m.setMaximum(total);
-								m.setProgress(done);
-							}
-						}
-						catch (RuntimeException e) {
-							// the call already ended
-						}
-					}, 50, 100, java.util.concurrent.TimeUnit.MILLISECONDS)
-					: null;
-			Runnable hook = () -> {
-				try {
-					flag.set(ValueLayout.JAVA_INT, 0, 1);
-				}
-				catch (RuntimeException e) {
-					// the call already ended
-				}
-			};
-			m.addCancelHook(hook);
+		MemorySegment cells = TraceNative.takeCells();
+		MemorySegment flag = cells.asSlice(0, 4);
+		MemorySegment cell = cells.asSlice(8, 16);
+		Progress watch = nat.reportsProgress() ? Progress.watch(cell, m) : null;
+		Runnable hook = () -> {
 			try {
-				reply = nat.call(cmd, reqBytes, flag, cell);
+				flag.set(ValueLayout.JAVA_INT, 0, 1);
 			}
-			finally {
-				m.removeCancelHook(hook);
-				if (poll != null) {
-					poll.cancel(false);
-				}
+			catch (RuntimeException e) {
+				// the call already ended
 			}
+		};
+		m.addCancelHook(hook);
+		try {
+			reply = nat.call(cmd, reqBytes, flag, cell);
+		}
+		finally {
+			m.removeCancelHook(hook);
+			if (watch != null) {
+				watch.stop();
+			}
+			TraceNative.giveCells(cells);
 		}
 		if (isError(reply)) {
 			throw engineError(cmd, reply, m);
 		}
 		return new ReadPlane.RawJson(reply);
+	}
+
+	/**
+	 * Copies the progress cells of the running engine calls into their request monitors (one
+	 * poller, every 100 ms; a call is first read 50 ms after it started, as the per-call task did).
+	 */
+	private static final class Progress {
+		private static final java.util.Set<Progress> ACTIVE =
+			java.util.concurrent.ConcurrentHashMap.newKeySet();
+		private static boolean polling;
+
+		private final MemorySegment cell;
+		private final RequestMonitor m;
+		private final long since = System.nanoTime();
+
+		private Progress(MemorySegment cell, RequestMonitor m) {
+			this.cell = cell;
+			this.m = m;
+		}
+
+		static Progress watch(MemorySegment cell, RequestMonitor m) {
+			Progress p = new Progress(cell, m);
+			ACTIVE.add(p);
+			synchronized (Progress.class) {
+				if (!polling) {
+					polling = true;
+					PROGRESS.scheduleWithFixedDelay(Progress::poll, 50, 100,
+						java.util.concurrent.TimeUnit.MILLISECONDS);
+				}
+			}
+			return p;
+		}
+
+		void stop() {
+			ACTIVE.remove(this);
+		}
+
+		private static void poll() {
+			long now = System.nanoTime();
+			for (Progress p : ACTIVE) {
+				if (now - p.since < 40_000_000L) {
+					continue;
+				}
+				try {
+					long total = p.cell.get(ValueLayout.JAVA_LONG, 8);
+					long done = p.cell.get(ValueLayout.JAVA_LONG, 0);
+					if (total > 0 && ACTIVE.contains(p)) {
+						p.m.setMaximum(total);
+						p.m.setProgress(done);
+					}
+				}
+				catch (RuntimeException e) {
+					// the call already ended
+				}
+			}
+		}
 	}
 
 	/** The engine writes keys sorted, so an error reply starts with {@code {"error":}. */
