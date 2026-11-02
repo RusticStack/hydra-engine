@@ -110,6 +110,20 @@ fn parse<T: for<'de> Deserialize<'de>>(req: &Value) -> std::result::Result<T, Fa
     Ok(serde_json::from_value(req.clone())?)
 }
 
+/// The request bytes straight into the command's own type: one pass, no intermediate tree and no
+/// clone of it. Whatever this cannot take (not JSON, a duplicate key, a wrong type) is parsed the
+/// long way, `Value` then [`parse`], so the error text and the last-key-wins rule are unchanged.
+fn typed<T: for<'de> Deserialize<'de>>(request: &[u8]) -> std::result::Result<T, Failure> {
+    let bytes: &[u8] = if request.is_empty() { b"{}" } else { request };
+    match serde_json::from_slice::<T>(bytes) {
+        Ok(v) => Ok(v),
+        Err(_) => {
+            let value: Value = serde_json::from_slice(bytes)?;
+            parse(&value)
+        }
+    }
+}
+
 /// Where the sessions of this service live and which writers are open.
 pub struct Service {
     root: PathBuf,
@@ -374,29 +388,27 @@ impl Service {
             ));
         }
         crate::cancel::check()?;
-        let req: Value = if request.is_empty() {
-            json!({})
-        } else {
-            serde_json::from_slice(request)?
-        };
         match command {
-            "trace_open" => self.open(parse(&req)?),
-            "trace_append" => self.append(parse(&req)?),
-            "trace_mark" => self.mark(parse(&req)?),
-            "trace_query" => self.query(parse(&req)?),
-            "trace_explain" => self.explain(parse(&req)?),
-            "trace_diff" => self.diff(parse(&req)?),
-            "trace_check" => self.check(parse(&req)?),
-            "trace_export" => self.export(parse(&req)?),
-            "trace_close" => self.close(parse(&req)?),
-            "trace_list" => self.list(),
-            "trace_info" => self.info(parse(&req)?),
-            "trace_resymbolize" => self.resymbolize(parse(&req)?),
-            "trace_reprocess" => self.reprocess(parse(&req)?),
-            "trace_relations" => self.relations(parse(&req)?),
-            "trace_artifact" => self.artifact(parse(&req)?),
-            "trace_evict" => self.evict(parse(&req)?),
-            "trace_bundle" => self.bundle(parse(&req)?),
+            "trace_open" => self.open(typed(request)?),
+            "trace_append" => self.append(typed(request)?),
+            "trace_mark" => self.mark(typed(request)?),
+            "trace_query" => self.query(typed(request)?),
+            "trace_explain" => self.explain(typed(request)?),
+            "trace_diff" => self.diff(typed(request)?),
+            "trace_check" => self.check(typed(request)?),
+            "trace_export" => self.export(typed(request)?),
+            "trace_close" => self.close(typed(request)?),
+            "trace_list" => {
+                typed::<Value>(request)?; // a body that is not JSON is still refused
+                self.list()
+            }
+            "trace_info" => self.info(typed(request)?),
+            "trace_resymbolize" => self.resymbolize(typed(request)?),
+            "trace_reprocess" => self.reprocess(typed(request)?),
+            "trace_relations" => self.relations(typed(request)?),
+            "trace_artifact" => self.artifact(typed(request)?),
+            "trace_evict" => self.evict(typed(request)?),
+            "trace_bundle" => self.bundle(typed(request)?),
             _ => Err(fail("unknown_command", command)),
         }
     }
