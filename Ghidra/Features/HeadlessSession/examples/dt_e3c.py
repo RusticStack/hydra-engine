@@ -1284,7 +1284,7 @@ def t_chaos_oracle(c):
     rs = []
     O = None
     try:
-        rs = [reader(c, d, gpr, exe, f"cr{i}") for i in range(4)]
+        rs = [reader(c, d, gpr, exe, f"cr{i}") for i in range(8)]
         pid = rs[0].call("project")["id"]
         fn = bl.first_function(rs[0])
         stop = threading.Event()
