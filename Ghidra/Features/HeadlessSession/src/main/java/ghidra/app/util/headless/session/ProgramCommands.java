@@ -118,7 +118,7 @@ final class ProgramCommands {
 		while (true) {
 			ProgramEntry e = p.programs.computeIfAbsent(path, x -> new ProgramEntry(p, x));
 			Lock l = e.acquire(true, Math.max(0, deadline - System.currentTimeMillis()), c,
-				"open_program");
+				"open_program", !writable);
 			boolean retry = false;
 			try {
 				if (p.programs.get(path) != e) {
