@@ -64,8 +64,15 @@ fn load(root: &std::path::Path, id: &str, n: u64, seed: u64) -> (Session, f64) {
     while i < n {
         let end = (i + 10_000).min(n);
         let batch: Vec<Value> = (i..end).map(|k| event(k, seed)).collect();
+        let bt = Instant::now();
         let r = s.append(&batch).unwrap();
         assert_eq!(r.accepted, end - i);
+        if std::env::var_os("HYDRA_SCALE_BATCHES").is_some() {
+            println!(
+                "batch@{end}: {:.0} ev/s",
+                (end - i) as f64 / bt.elapsed().as_secs_f64()
+            );
+        }
         i = end;
     }
     (s, n as f64 / t.elapsed().as_secs_f64())
@@ -129,6 +136,15 @@ fn run(n: u64, rss_limit: u64) {
     );
     assert!(p95 < 250.0, "p95 {p95} ms");
 
+    // Relations are computed on demand from the indexed candidates; report what that costs.
+    let t = Instant::now();
+    let (rels, source) = hydra_trace::relations::current(&store).unwrap();
+    println!(
+        "relations on demand: {} relations ({source}) in {:.2} s",
+        rels.len(),
+        t.elapsed().as_secs_f64()
+    );
+
     // Diff against a smaller second session, inside a fixed event budget, three runs.
     let (b, _) = load(&dir, "other", n / 4, 1);
     drop(b);
@@ -147,6 +163,16 @@ fn run(n: u64, rss_limit: u64) {
         assert_eq!(
             first,
             serde_json::to_string(&diff_aligned_default(&store, &other, &spec).unwrap()).unwrap()
+        );
+    }
+    // Worker threads are sized from the CPU grants; the reply must not depend on them, so a
+    // single-thread grant (generic profile on a small box) equals a wide one (auto profile).
+    for (compute, background) in [(1, 1), (2, 1), (8, 4)] {
+        hydra_trace::workers::configure(compute, background);
+        assert_eq!(
+            first,
+            serde_json::to_string(&diff_aligned_default(&store, &other, &spec).unwrap()).unwrap(),
+            "diff differs with {compute} compute threads"
         );
     }
     let tight = AlignSpec {

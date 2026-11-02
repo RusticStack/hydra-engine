@@ -5,6 +5,7 @@
 pub mod align;
 pub mod artifact;
 pub mod canon;
+mod checkpoint;
 pub mod checks;
 pub mod corrid;
 pub mod explain;
@@ -22,6 +23,7 @@ pub mod session;
 pub mod store;
 pub mod symbolize;
 pub mod synth;
+pub mod workers;
 
 /// The contract version these modules implement.
 pub const SCHEMA: &str = "hydra.trace.event/1";
