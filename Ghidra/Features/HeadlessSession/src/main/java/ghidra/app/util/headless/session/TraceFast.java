@@ -40,14 +40,17 @@ final class TraceFast {
 	}
 
 	private static final Set<String> RAW_COMMANDS =
-		Set.of("trace_query", "trace_explain", "trace_diff", "trace_check");
-	/** Fields Java consumes before or instead of the engine: their presence ends the fast path. */
-	private static final Set<String> JAVA_FIELDS = Set.of("create", "mode", "cap", "takeover",
+		Set.of("trace_query", "trace_explain", "trace_diff", "trace_check", "trace_append");
+	/**
+	 * Fields Java consumes before or instead of the engine: their presence ends the fast path.
+	 * ({@code cap} is the writer's own capability: {@code trace_append} carries it, nothing else here.)
+	 */
+	private static final Set<String> JAVA_FIELDS = Set.of("create", "mode", "takeover",
 		"program", "project", "modules", "background", "name");
 	/** Fields the daemon's generic stages read: they must be scalars. */
 	private static final Set<String> SCALAR_ONLY = Set.of("id", "cmd", "client", "harness",
 		"parallel", "ordered", "artifact", "overlay", "wait", "waitMs", "timeout", "lane", "token",
-		"session", "a", "b", "persist", "deadline", "deadlineMs", "op");
+		"session", "a", "b", "persist", "deadline", "deadlineMs", "op", "cap");
 
 	private TraceFast() {
 	}
@@ -95,6 +98,7 @@ final class TraceFast {
 			}
 			i++;
 			JsonObject req = new JsonObject();
+			boolean eventsArray = false;
 			ws();
 			if (i < b.length && b[i] == '}') {
 				return null;
@@ -120,6 +124,7 @@ final class TraceFast {
 				byte c = b[i];
 				if (c == '{' || c == '[') {
 					// an engine-only structure is not part of the light request
+					eventsArray |= key.equals("events") && c == '[';
 					if (SCALAR_ONLY.contains(key) || !skip()) {
 						return null;
 					}
@@ -161,6 +166,15 @@ final class TraceFast {
 			JsonElement id = req.get("id");
 			if (id != null && !id.isJsonPrimitive()) {
 				return null;
+			}
+			if (req.has("cap") && !cmd.equals("trace_append")) {
+				return null; // a capability on a read: the ordinary path decides
+			}
+			if (cmd.equals("trace_append")) {
+				if (!eventsArray || req.has("events")) {
+					return null; // events must be an array: the ordinary path says so otherwise
+				}
+				req.add("events", new JsonArray()); // stands for the array, which the engine reads
 			}
 			if (cmd.equals("trace_check")) {
 				// the ordinary path tells the engine persist:false; here the client must say so

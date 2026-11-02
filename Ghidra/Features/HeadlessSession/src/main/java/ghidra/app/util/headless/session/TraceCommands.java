@@ -273,7 +273,10 @@ final class TraceCommands {
 		nat.useRoot(root);
 		byte[] line = m.rawRequest();
 		if (line != null) {
-			// a raw trace read (TraceFast): the engine gets the client's own line
+			// a raw trace request (TraceFast): the engine gets the client's own line
+			if (cmd.equals("trace_append")) {
+				return appendRaw(c, nat, root, cmd, req, line, m);
+			}
 			return passBytes(nat, cmd, line, m);
 		}
 		return switch (cmd) {
@@ -385,6 +388,18 @@ final class TraceCommands {
 			out.addProperty("symbolRevision", "r" + r);
 		}
 		return out;
+	}
+
+	/** {@link #write} for a raw {@code trace_append}: the same checks, the bound from the line itself. */
+	private JsonElement appendRaw(Client c, TraceNative nat, Path root, String cmd,
+			JsonObject req, byte[] line, RequestMonitor m) {
+		String session = Json.str(req, "session");
+		if (!Files.isRegularFile(root.resolve(session).resolve("index.db"))) {
+			throw notFound(session);
+		}
+		TraceLeases.require(session, c, Json.str(req, "cap"), cmd);
+		requireDisk(root, 4L * line.length + (1L << 20), cmd);
+		return passBytes(nat, cmd, line, m);
 	}
 
 	/** A command of the writer: {@code trace_append}, {@code trace_mark}, {@code trace_close}. */
