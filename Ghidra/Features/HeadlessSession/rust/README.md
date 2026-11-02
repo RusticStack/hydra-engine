@@ -102,6 +102,10 @@ passes `/Brepro`, so two builds of the same tree produce the same SHA-256 (48947
 `dc06e22e...`). The marker (`hydra-agent.provenance.json`) records the crate and client versions,
 the protocol, the commit, the cargo/rustc versions, the size and the SHA-256.
 
+`hydra-etw` (the ETW consumer of the semantic trace, `crates/hydra-etw`) is built by the same command and installed beside
+it with its own marker (`hydra-etw.provenance.json`); `--check` verifies both. It needs an elevated token to start a session;
+without one it exits 3 and the trace records `etw-not-elevated` as missing coverage.
+
 Every `.rs` file carries the project's Apache-2.0 block header, and every `.toml`/`.md` file the
 `#` form (`README.md`/`PORTING.md` inside an HTML comment); `gradle/support/ip.gradle` treats
 `.rs` as a C-style source and `.toml`/`.md` as `#`-comment sources, so the `ip` task checks the
