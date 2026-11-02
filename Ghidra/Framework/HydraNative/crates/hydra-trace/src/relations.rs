@@ -492,8 +492,64 @@ pub fn materialize(store: &mut Store) -> Result<usize> {
         "INSERT INTO meta(key,value) VALUES('relations_revision',?1) ON CONFLICT(key) DO UPDATE SET value=?1",
         params![revision.to_string()],
     )?;
+    tx.execute(
+        "INSERT INTO meta(key,value) VALUES('relations_count',?1) ON CONFLICT(key) DO UPDATE SET value=?1",
+        params![format!("{}:{revision}", all.len())],
+    )?;
     tx.commit()?;
     Ok(all.len())
+}
+
+/// How many relations there are at the store's revision, and where the number comes from. O(1)
+/// for a session whose writer kept the count (or whose relations are stored); otherwise the
+/// relations are computed.
+pub fn count(store: &Store) -> Result<(u64, &'static str)> {
+    let revision = store.revision()?;
+    let meta = |key: &str| -> Option<String> {
+        store
+            .conn()
+            .query_row("SELECT value FROM meta WHERE key=?1", params![key], |r| {
+                r.get(0)
+            })
+            .ok()
+    };
+    let kept = meta("relations_count").and_then(|v| {
+        let (n, rev) = v.split_once(':')?;
+        (rev == revision.to_string()).then(|| n.parse::<u64>().ok())?
+    });
+    if meta("relations_revision").as_deref() == Some(revision.to_string().as_str()) {
+        let n = match kept {
+            Some(n) => n,
+            None => store
+                .conn()
+                .query_row("SELECT COUNT(*) FROM relations", [], |r| r.get::<_, i64>(0))?
+                as u64,
+        };
+        return Ok((n, "materialized"));
+    }
+    if let Some(n) = kept {
+        return Ok((n, "computed"));
+    }
+    // Computed once per revision of an index, however often it is asked for.
+    static CACHE: std::sync::Mutex<Vec<(String, u64, u64)>> = std::sync::Mutex::new(Vec::new());
+    let path = store.conn().path().unwrap_or_default().to_string();
+    if !path.is_empty()
+        && let Ok(cache) = CACHE.lock()
+        && let Some((_, _, n)) = cache.iter().find(|(p, r, _)| *p == path && *r == revision)
+    {
+        return Ok((*n, "computed"));
+    }
+    let n = compute(store, false)?.len() as u64;
+    if !path.is_empty()
+        && let Ok(mut cache) = CACHE.lock()
+    {
+        cache.retain(|(p, _, _)| *p != path);
+        if cache.len() >= 64 {
+            cache.remove(0);
+        }
+        cache.push((path, revision, n));
+    }
+    Ok((n, "computed"))
 }
 
 /// The relations current at the store's revision: the stored ones when fresh, else computed in

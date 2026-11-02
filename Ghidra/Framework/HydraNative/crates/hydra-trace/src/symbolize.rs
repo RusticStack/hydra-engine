@@ -261,14 +261,19 @@ pub fn counts(store: &Store, interp: Option<i64>) -> Result<Option<SymbolCounts>
         symbol_revision,
         ..SymbolCounts::default()
     };
-    let mut stmt = conn.prepare(
-        "SELECT COALESCE(reason,''), COUNT(*) FROM event_symbols WHERE interp=?1 GROUP BY 1",
-    )?;
-    let rows = stmt.query_map(params![interp], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64))
-    })?;
-    for row in rows {
-        let (reason, n) = row?;
+    let kept: Option<BTreeMap<String, u64>> = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key=?1",
+            params![counts_key(interp)],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+        .and_then(|v| serde_json::from_str(&v).ok());
+    let groups: Vec<(String, u64)> = match kept {
+        Some(map) => map.into_iter().collect(),
+        None => group_counts(conn, interp)?,
+    };
+    for (reason, n) in groups {
         out.total += n;
         match reason.as_str() {
             "" => out.symbolized += n,
@@ -279,6 +284,52 @@ pub fn counts(store: &Store, interp: Option<i64>) -> Result<Option<SymbolCounts>
         }
     }
     Ok(Some(out))
+}
+
+fn counts_key(interp: i64) -> String {
+    format!("symcounts:{interp}")
+}
+
+/// Rows per outcome of one interpretation, read off the rows themselves (O(rows)).
+fn group_counts(conn: &rusqlite::Connection, interp: i64) -> Result<Vec<(String, u64)>> {
+    let mut stmt = conn.prepare(
+        "SELECT COALESCE(reason,''), COUNT(*) FROM event_symbols WHERE interp=?1 GROUP BY 1",
+    )?;
+    let rows = stmt.query_map(params![interp], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64))
+    })?;
+    Ok(rows.collect::<std::result::Result<_, _>>()?)
+}
+
+/// Keep the per-outcome counts of `interp` with the rows, so `counts` is not O(events): add the
+/// batch's `delta` (its rows are already inserted in `tx`). An interpretation that has no count
+/// yet is counted once from its rows.
+pub(crate) fn bump_counts(
+    tx: &rusqlite::Transaction<'_>,
+    interp: i64,
+    delta: &BTreeMap<&'static str, u64>,
+) -> Result<()> {
+    let key = counts_key(interp);
+    let kept: Option<BTreeMap<String, u64>> = tx
+        .query_row("SELECT value FROM meta WHERE key=?1", params![key], |r| {
+            r.get::<_, String>(0)
+        })
+        .ok()
+        .and_then(|v| serde_json::from_str(&v).ok());
+    let map: BTreeMap<String, u64> = match kept {
+        Some(mut map) => {
+            for (reason, n) in delta {
+                *map.entry((*reason).to_string()).or_insert(0) += n;
+            }
+            map
+        }
+        None => group_counts(tx, interp)?.into_iter().collect(),
+    };
+    tx.execute(
+        "INSERT INTO meta(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=?2",
+        params![key, serde_json::to_string(&map)?],
+    )?;
+    Ok(())
 }
 
 /// The newest symbolization interpretation revision.
@@ -310,6 +361,7 @@ pub fn resymbolize(
          VALUES(?1,'symbolization',?2,?3,NULL,NULL,NULL,NULL,'re-symbolization')",
         params![rev, parent, symbol_revision],
     )?;
+    let mut delta: BTreeMap<&'static str, u64> = BTreeMap::new();
     {
         let mut read =
             tx.prepare("SELECT seq,process_gen,va,callstack FROM events ORDER BY seq")?;
@@ -331,7 +383,11 @@ pub fn resymbolize(
             let (function, reason) = resolve_site(symbolizer, module, site);
             let names = resolve_stack(symbolizer, &life, pgen.unwrap_or(0), &stack, seq);
             write.execute(params![rev, seq, function, reason, names])?;
+            *delta.entry(reason.unwrap_or_default()).or_insert(0) += 1;
         }
+    }
+    if !delta.is_empty() {
+        bump_counts(&tx, rev, &delta)?;
     }
     bump_revision(&tx)?;
     tx.commit()?;

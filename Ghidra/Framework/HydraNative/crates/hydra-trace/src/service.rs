@@ -124,6 +124,13 @@ fn typed<T: for<'de> Deserialize<'de>>(request: &[u8]) -> std::result::Result<T,
     }
 }
 
+impl Drop for Service {
+    fn drop(&mut self) {
+        // Idle pooled readers hold index files open; release them with the service.
+        session::purge_readers(&self.root);
+    }
+}
+
 /// Where the sessions of this service live and which writers are open.
 pub struct Service {
     root: PathBuf,
@@ -442,8 +449,9 @@ impl Service {
         f(&mut guard)
     }
 
-    fn reader(&self, session: &str) -> std::result::Result<Store, Failure> {
-        Ok(session::reader(&self.root, session)?)
+    /// A read-only handle, from the pool of idle connections when there is one.
+    fn reader(&self, session: &str) -> std::result::Result<session::PooledStore, Failure> {
+        Ok(session::pooled_reader(&self.root, session)?)
     }
 
     fn open(&self, r: OpenReq) -> Reply {
@@ -797,7 +805,7 @@ impl Service {
             .collect::<std::result::Result<_, _>>()?
         };
         let counts = symbolize::counts(&store, None)?;
-        let rel = relations::current(&store)?;
+        let rel = relations::count(&store)?;
         let open = self
             .writers
             .lock()
@@ -842,7 +850,7 @@ impl Service {
             "interpretations": count("SELECT COUNT(*) FROM interpretations"),
             "decodings": interp::describe(&store)?,
             "symbolization": serde_json::to_value(&counts)?,
-            "relations": {"count": rel.0.len(), "source": rel.1},
+            "relations": {"count": rel.0, "source": rel.1},
             "artifacts": count("SELECT COUNT(*) FROM artifacts"),
             "tombstones": count("SELECT COUNT(*) FROM tombstones"),
             "writer_open": open,

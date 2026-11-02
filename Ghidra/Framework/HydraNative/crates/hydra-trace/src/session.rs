@@ -18,7 +18,7 @@ use crate::corrid::{self, KeyRing, PreviewPolicy};
 use crate::model::Event;
 use crate::raw::{self, Chain, Damage};
 use crate::store::{Batch, Budget, Error, INGEST_SOURCE, Options, Result, Store, rebuild_with};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
@@ -220,6 +220,8 @@ impl Session {
     /// Create the session if it does not exist, open it, and repair whatever an earlier crash
     /// left behind.
     pub fn open(root: &Path, id: &str, options: Options) -> Result<(Self, Recovery)> {
+        // Recovery may replace the index file; no pooled reader may keep the old one open.
+        purge_readers(&root.join(id));
         if !valid_name(id) {
             return Err(Error::Refused(format!("invalid session id {id:?}")));
         }
@@ -345,13 +347,7 @@ impl Session {
     }
 
     fn write_manifest(&mut self, source: &str, first_n: u64, count: u64) -> Result<()> {
-        writeln!(
-            self.manifest,
-            "{}",
-            json!({"source": source, "first_n": first_n, "count": count})
-        )?;
-        self.manifest.sync_data()?;
-        Ok(())
+        write_manifest_line(&mut self.manifest, source, first_n, count)
     }
 
     /// Bring the index and the on-disk truth into agreement after a crash.
@@ -509,8 +505,7 @@ impl Session {
             keyed = corrid::scrub(payload, &mut self.ring, &scope, self.preview)
                 .map_err(|e| e.to_string())?;
         }
-        let event: Event = serde_json::from_value(Value::Object(record.clone()))
-            .map_err(|e| format!("schema: {e}"))?;
+        let event = Event::deserialize(&record).map_err(|e| format!("schema: {e}"))?;
         if !crate::model::kind_is_valid(&event.kind) {
             return Err(format!("unknown kind {}", event.kind));
         }
@@ -550,19 +545,32 @@ impl Session {
         }
         let first_n = writer.chain.count();
         let mut bytes = Vec::with_capacity(records.len() * 256);
-        for record in &records {
+        let mut records = records;
+        for record in &mut records {
             let line = writer
                 .chain
-                .push(record.clone())
+                .push_ref(record)
                 .map_err(|e| Error::Refused(e.to_string()))?;
             bytes.extend_from_slice(&line);
         }
-        // 1. the segment, durable; 2. the manifest line, durable; 3. the index commit.
+        // 1. the segment, durable; 2. the manifest line, durable; 3. the index commit. The two
+        // syncs run on a helper thread while the batch is written into the index transaction,
+        // and the commit waits for them, so the order of durability is unchanged and the sync
+        // latency overlaps the index work.
         writer.file.write_all(&bytes)?;
-        writer.file.sync_data()?;
         let count = records.len() as u64;
-        self.write_manifest(source, first_n, count)?;
-        self.store.ingest(source, first_n, &records)
+        let (file, manifest, store) = (&mut writer.file, &mut self.manifest, &mut self.store);
+        std::thread::scope(|scope| {
+            let durable = scope.spawn(move || -> Result<()> {
+                file.sync_data()?;
+                write_manifest_line(manifest, source, first_n, count)
+            });
+            store.ingest_gated(source, first_n, &records, move || {
+                durable
+                    .join()
+                    .unwrap_or_else(|_| Err(Error::Segment("sync thread panicked".into())))
+            })
+        })
     }
 
     /// Record a named point: an event of kind `core.marker` from the session's own source.
@@ -612,6 +620,16 @@ impl Session {
     }
 }
 
+fn write_manifest_line(manifest: &mut File, source: &str, first_n: u64, count: u64) -> Result<()> {
+    writeln!(
+        manifest,
+        "{}",
+        json!({"source": source, "first_n": first_n, "count": count})
+    )?;
+    manifest.sync_data()?;
+    Ok(())
+}
+
 /// A read-only handle on a session's index.
 pub fn reader(root: &Path, id: &str) -> Result<Store> {
     if !valid_name(id) {
@@ -629,6 +647,108 @@ pub fn reader(root: &Path, id: &str) -> Result<Store> {
         return Err(Error::Refused(format!("no session {id}")));
     }
     Store::reader(&path, id)
+}
+
+/// Idle read-only connections, by index path. A request that needs a reader takes one from here
+/// instead of opening the file, parsing the schema and starting with a cold statement cache; it
+/// goes back when the request ends. Entries are dropped after [`POOL_IDLE`], when the index file
+/// is gone, and by [`purge_readers`], which anything that deletes or replaces an index calls
+/// first (an open handle would block it on Windows).
+type Pool = std::sync::Mutex<HashMap<PathBuf, Vec<(Instant, Store)>>>;
+
+static POOL: std::sync::OnceLock<Pool> = std::sync::OnceLock::new();
+
+const POOL_IDLE: std::time::Duration = std::time::Duration::from_millis(1500);
+const POOL_PER_INDEX: usize = 4;
+
+fn pool() -> &'static Pool {
+    POOL.get_or_init(|| {
+        // The reaper only ever holds the lock briefly and never keeps a connection alive.
+        let _ = std::thread::Builder::new()
+            .name("hydra-trace-reader-pool".into())
+            .spawn(|| {
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    if let Some(p) = POOL.get()
+                        && let Ok(mut map) = p.lock()
+                    {
+                        for list in map.values_mut() {
+                            list.retain(|(at, _)| at.elapsed() < POOL_IDLE);
+                        }
+                        map.retain(|_, list| !list.is_empty());
+                    }
+                }
+            });
+        std::sync::Mutex::new(HashMap::new())
+    })
+}
+
+/// Close every pooled reader of an index under `dir` (a session directory, or a root holding
+/// them). Call before deleting, renaming or replacing index files.
+pub fn purge_readers(dir: &Path) {
+    if let Some(p) = POOL.get()
+        && let Ok(mut map) = p.lock()
+    {
+        map.retain(|path, _| !path.starts_with(dir));
+    }
+}
+
+/// A pooled read-only handle; it derefs to the [`Store`] and goes back to the pool on drop.
+pub struct PooledStore {
+    store: Option<Store>,
+    key: PathBuf,
+}
+
+impl std::ops::Deref for PooledStore {
+    type Target = Store;
+    fn deref(&self) -> &Store {
+        self.store.as_ref().expect("store is present until drop")
+    }
+}
+
+impl std::ops::DerefMut for PooledStore {
+    fn deref_mut(&mut self) -> &mut Store {
+        self.store.as_mut().expect("store is present until drop")
+    }
+}
+
+impl Drop for PooledStore {
+    fn drop(&mut self) {
+        let Some(store) = self.store.take() else {
+            return;
+        };
+        // A connection left inside a transaction, or whose file is gone, is not reused.
+        if !store.is_idle() || !self.key.exists() {
+            return;
+        }
+        if let Ok(mut map) = pool().lock() {
+            let list = map.entry(self.key.clone()).or_default();
+            if list.len() < POOL_PER_INDEX {
+                list.push((Instant::now(), store));
+            }
+        }
+    }
+}
+
+/// [`reader`] from the pool when an idle connection exists.
+pub fn pooled_reader(root: &Path, id: &str) -> Result<PooledStore> {
+    if valid_name(id) {
+        let key = index_path(&root.join(id));
+        if key.exists()
+            && let Ok(mut map) = pool().lock()
+            && let Some((_, store)) = map.get_mut(&key).and_then(Vec::pop)
+        {
+            return Ok(PooledStore {
+                store: Some(store),
+                key,
+            });
+        }
+    }
+    let store = reader(root, id)?;
+    Ok(PooledStore {
+        store: Some(store),
+        key: index_path(&root.join(id)),
+    })
 }
 
 /// Session ids under `root`, sorted.
@@ -729,6 +849,7 @@ pub fn verify(root: &Path, id: &str, options: &Options) -> Result<Verification> 
 /// The old index is kept as `index.db.old` until the new one is complete.
 pub fn rebuild(root: &Path, id: &str, options: &Options) -> Result<String> {
     let dir = root.join(id);
+    purge_readers(&dir);
     let segments = load_segments(&dir)?;
     let manifest = read_manifest(&dir);
     // Write the new index next to the old and swap.
@@ -757,6 +878,7 @@ pub fn rebuild(root: &Path, id: &str, options: &Options) -> Result<String> {
     )?;
     let digest = store.digest()?;
     drop(store);
+    purge_readers(&dir);
     let live = index_path(&dir);
     for ext in ["", "-wal", "-shm"] {
         let from = format!("{}{ext}", live.display());

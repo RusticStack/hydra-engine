@@ -17,28 +17,31 @@ pub fn genesis_hash(segment: &str) -> String {
 }
 
 fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write;
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut s = String::with_capacity(bytes.len() * 2);
     for b in bytes {
-        let _ = write!(s, "{b:02x}");
+        s.push(char::from(DIGITS[usize::from(b >> 4)]));
+        s.push(char::from(DIGITS[usize::from(b & 15)]));
     }
     s
 }
 
 /// The chain hash of `record`: SHA-256 of its canonical JSON without the `hash` field.
 pub fn record_hash(record: &Map<String, Value>) -> Result<String, canon::NotCanonical> {
-    let mut body = record.clone();
-    body.remove("hash");
-    Ok(hex(&Sha256::digest(canon::to_vec(&Value::Object(body))?)))
+    Ok(hex(&Sha256::digest(canon::to_vec_without(record, "hash")?)))
 }
 
 /// Frame `record` (which already has `n`, `prev` and `hash`) as one line.
 pub fn frame(record: &Map<String, Value>) -> Result<Vec<u8>, canon::NotCanonical> {
-    let body = canon::to_vec(&Value::Object(record.clone()))?;
-    let mut line = format!("{:08x} ", crc32fast::hash(&body)).into_bytes();
-    line.extend_from_slice(&body);
+    Ok(line_of(&canon::to_vec(&Value::Object(record.clone()))?))
+}
+
+fn line_of(body: &[u8]) -> Vec<u8> {
+    let mut line = Vec::with_capacity(body.len() + 10);
+    line.extend_from_slice(format!("{:08x} ", crc32fast::hash(body)).as_bytes());
+    line.extend_from_slice(body);
     line.push(b'\n');
-    Ok(line)
+    line
 }
 
 /// Builds a chained segment (the writer side used by the generator, importers and tests; live
@@ -58,14 +61,32 @@ impl Chain {
 
     /// Chain `record`: set `n`, `prev`, `hash`, and return the framed line.
     pub fn push(&mut self, mut record: Map<String, Value>) -> Result<Vec<u8>, canon::NotCanonical> {
-        record.insert("n".into(), Value::from(self.n));
-        record.insert("prev".into(), Value::from(self.head.clone()));
-        let hash = record_hash(&record)?;
-        record.insert("hash".into(), Value::from(hash.clone()));
-        let line = frame(&record)?;
+        self.push_ref(&mut record)
+    }
+
+    /// [`Chain::push`] on a borrowed record, which keeps its own fields: `n` and `prev` are
+    /// added for the hash and taken off again, so the caller need not copy the record.
+    pub fn push_ref(
+        &mut self,
+        record: &mut Map<String, Value>,
+    ) -> Result<Vec<u8>, canon::NotCanonical> {
+        let old_n = record.insert("n".into(), Value::from(self.n));
+        let old_prev = record.insert("prev".into(), Value::from(self.head.clone()));
+        let mut hash = String::new();
+        let result = canon::to_vec_with_string(record, "hash", |body| {
+            hash = hex(&Sha256::digest(body));
+            hash.clone()
+        });
+        for (key, old) in [("n", old_n), ("prev", old_prev)] {
+            match old {
+                Some(v) => record.insert(key.into(), v),
+                None => record.remove(key),
+            };
+        }
+        let body = result?;
         self.head = hash;
         self.n += 1;
-        Ok(line)
+        Ok(line_of(&body))
     }
 
     /// Continue an existing segment whose last record has hash `head` and which holds `n`
@@ -149,7 +170,7 @@ pub fn scan_from(data: &[u8], start: usize, head: String, first_n: u64) -> Scan 
     let mut cursor = start;
     let mut line_no = 0usize;
     while cursor < data.len() {
-        let Some(rel) = data[cursor..].iter().position(|&b| b == b'\n') else {
+        let Some(rel) = memchr::memchr(b'\n', &data[cursor..]) else {
             out.damage = Some(Damage::TornTail {
                 offset: cursor,
                 bytes: data.len() - cursor,
@@ -220,6 +241,33 @@ mod tests {
         (0..count)
             .flat_map(|i| chain.push(rec(&format!("k{i}"))).unwrap())
             .collect()
+    }
+
+    #[test]
+    fn push_matches_the_two_pass_reference_bytes() {
+        let mut chain = Chain::new("s1");
+        let mut reference_head = genesis_hash("s1");
+        for i in 0..20u64 {
+            let mut r = rec(&format!("k{i}"));
+            if i % 3 == 0 {
+                r.insert("payload".into(), json!({"a": "é\"x", "z": [1, -2]}));
+            }
+            if i % 4 == 0 {
+                r.insert("zzz".into(), json!(i));
+            }
+            let mut expected = r.clone();
+            expected.insert("n".into(), Value::from(i));
+            expected.insert("prev".into(), Value::from(reference_head.clone()));
+            let hash = record_hash(&expected).unwrap();
+            expected.insert("hash".into(), Value::from(hash.clone()));
+            let want = frame(&expected).unwrap();
+            let mut borrowed = r.clone();
+            let line = chain.push_ref(&mut borrowed).unwrap();
+            assert_eq!(borrowed, r, "push_ref leaves the record as it was");
+            assert_eq!(line, want, "record {i}");
+            reference_head = hash;
+        }
+        assert_eq!(chain.head(), reference_head);
     }
 
     #[test]

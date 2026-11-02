@@ -9,12 +9,16 @@ use crate::model::{Event, kind_is_valid};
 use crate::raw;
 use crate::symbolize::{self, Symbolizer};
 use rusqlite::{Connection, OpenFlags, params};
+use serde::Deserialize;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::sync::Arc;
 
 pub const SCHEMA_VERSION: i64 = 2;
+
+/// SQLite page size for a new index.
+const PAGE_SIZE: i64 = 16_384;
 
 /// The synthetic source that carries records written by ingest itself.
 pub const INGEST_SOURCE: &str = "hydra-ingest";
@@ -218,15 +222,37 @@ pub struct Store {
     /// The last stored `(producer_gen, source_seq)` per source, so a batch does not rescan the
     /// source's rows to find it. Cleared whenever a batch rolls back.
     last_seen: std::collections::HashMap<String, (u32, u64)>,
+    /// Counts relations as events are stored; only kept for an index that began empty here, so
+    /// it has seen every event. `None` otherwise or after a rollback (readers then compute).
+    relcount: Option<crate::relcount::RelCounter>,
 }
 
 fn event_cost(event: &Event) -> u64 {
-    160 + event.callstack.len() as u64 * 8
-        + event
-            .payload
-            .values()
-            .map(|v| v.to_string().len() as u64)
-            .sum::<u64>()
+    160 + event.callstack.len() as u64 * 8 + event.payload.values().map(json_len).sum::<u64>()
+}
+
+/// The byte length of `v` serialized as compact JSON (what `v.to_string().len()` is), counted
+/// without building the string.
+fn json_len(v: &Value) -> u64 {
+    struct Count(u64);
+    impl std::io::Write for Count {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 += buf.len() as u64;
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    match v {
+        Value::Null => 4,
+        Value::Bool(b) => 4 + u64::from(!*b),
+        _ => {
+            let mut c = Count(0);
+            let _ = serde_json::to_writer(&mut c, v);
+            c.0
+        }
+    }
 }
 
 fn meta_get(conn: &Connection, key: &str) -> Option<String> {
@@ -263,6 +289,7 @@ impl Store {
             sym_interp: None,
             checkpoint: None,
             last_seen: std::collections::HashMap::new(),
+            relcount: None,
         })
     }
 
@@ -274,6 +301,9 @@ impl Store {
     }
 
     fn init(conn: Connection, session: &str) -> Result<Self> {
+        // Larger pages mean fewer, bigger WAL frame writes per commit (each frame is one write
+        // call). Only a new file takes it; an existing index keeps the size it was made with.
+        let _ = conn.pragma_update(None, "page_size", PAGE_SIZE);
         let _ = conn.pragma_update(None, "journal_mode", "WAL");
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         // Indexes on random keys outgrow SQLite's 2 MiB default page cache quickly; a larger cache
@@ -286,6 +316,11 @@ impl Store {
             "INSERT OR IGNORE INTO meta(key,value) VALUES('schema_version',?1),('session',?2),('revision','0'),('ingested_bytes','0')",
             params![SCHEMA_VERSION.to_string(), session],
         )?;
+        let fresh = conn
+            .query_row("SELECT MAX(seq) FROM events", [], |r| {
+                r.get::<_, Option<i64>>(0)
+            })?
+            .is_none();
         let life = Lifetimes::load(&conn)?;
         let budget = Budget {
             max_events: meta_get(&conn, "budget_events").and_then(|v| v.parse().ok()),
@@ -302,7 +337,13 @@ impl Store {
             sym_interp: None,
             checkpoint: None,
             last_seen: std::collections::HashMap::new(),
+            relcount: fresh.then(Default::default),
         })
+    }
+
+    /// True when the connection is not inside a transaction (safe to hand to the next request).
+    pub(crate) fn is_idle(&self) -> bool {
+        self.conn.is_autocommit()
     }
 
     pub fn session(&self) -> &str {
@@ -366,12 +407,26 @@ impl Store {
         first_n: u64,
         records: &[Map<String, Value>],
     ) -> Result<IngestStats> {
-        let result = self.ingest_inner(source_id, first_n, records);
+        self.ingest_gated(source_id, first_n, records, || Ok(()))
+    }
+
+    /// [`Store::ingest`] with a gate that runs after the batch is written to the open
+    /// transaction and before it commits. A failing gate rolls the batch back. A session uses it
+    /// to make the segment durable while the index work runs, and still commits only after.
+    pub fn ingest_gated(
+        &mut self,
+        source_id: &str,
+        first_n: u64,
+        records: &[Map<String, Value>],
+        gate: impl FnOnce() -> Result<()>,
+    ) -> Result<IngestStats> {
+        let result = self.ingest_inner(source_id, first_n, records, gate);
         if result.is_err() {
             // The mirror may be ahead of the rolled-back tables: reload it.
             self.life = Lifetimes::load(&self.conn)?;
             self.sym_interp = None;
             self.last_seen.clear();
+            self.relcount = None;
         }
         result
     }
@@ -381,6 +436,7 @@ impl Store {
         source_id: &str,
         first_n: u64,
         records: &[Map<String, Value>],
+        gate: impl FnOnce() -> Result<()>,
     ) -> Result<IngestStats> {
         let session = self.session.clone();
         let symbolizer = self.options.symbolizer.clone();
@@ -413,6 +469,7 @@ impl Store {
             None
         };
         let mut source_state: Option<String> = None;
+        let mut sym_delta: std::collections::BTreeMap<&'static str, u64> = Default::default();
         {
             let mut insert = tx.prepare_cached(
                 "INSERT INTO events(seq,event_id,source_id,source_seq,producer_gen,kind,clock_domain,t_mono_ns,process_id,
@@ -424,11 +481,8 @@ impl Store {
             )?;
             for (offset, record) in records.iter().enumerate() {
                 let n = first_n + offset as u64;
-                let mut body = record.clone();
-                for chain_field in ["n", "prev", "hash"] {
-                    body.remove(chain_field);
-                }
-                let mut event: Event = match serde_json::from_value(Value::Object(body)) {
+                // The chain fields (`n`, `prev`, `hash`) are not envelope fields and are ignored.
+                let mut event: Event = match Event::deserialize(record) {
                     Ok(e) => e,
                     Err(e) => {
                         reject(&tx, source_id, n, &format!("schema: {e}"))?;
@@ -490,7 +544,10 @@ impl Store {
                         gap.payload.insert("reason".into(), "budget".into());
                         gap.payload
                             .insert("stopped_source".into(), source_id.into());
-                        store_event(&mut insert, &session, next_seq, &gap, None)?;
+                        let (sk, co) = store_event(&mut insert, &session, next_seq, &gap, None)?;
+                        if let Some(rc) = self.relcount.as_mut() {
+                            rc.feed(next_seq, &gap, co.as_deref(), sk.as_deref());
+                        }
                         next_seq += 1;
                     }
                     stats.dropped_budget += 1;
@@ -593,7 +650,11 @@ impl Store {
                     .get("object")
                     .and_then(Value::as_u64)
                     .map(|addr| self.life.object_gen(event.process_gen.unwrap_or(0), addr));
-                store_event(&mut insert, &session, next_seq, &event, object_gen)?;
+                let (state_key, corr) =
+                    store_event(&mut insert, &session, next_seq, &event, object_gen)?;
+                if let Some(rc) = self.relcount.as_mut() {
+                    rc.feed(next_seq, &event, corr.as_deref(), state_key.as_deref());
+                }
                 if let (Some(s), Some(interp)) = (symbolizer.as_deref(), sym_interp) {
                     let site = symbolize::site_of(event.va, &event.callstack);
                     let module = site.and_then(|a| {
@@ -609,12 +670,18 @@ impl Store {
                         next_seq,
                     );
                     sym.execute(params![interp, next_seq, function, reason, stack])?;
+                    *sym_delta.entry(reason.unwrap_or_default()).or_insert(0) += 1;
                 }
                 bytes += cost;
                 last = Some((event.producer_gen, event.source_seq));
                 next_seq += 1;
                 stats.stored += 1;
             }
+        }
+        if let Some(interp) = sym_interp
+            && !sym_delta.is_empty()
+        {
+            symbolize::bump_counts(&tx, interp, &sym_delta)?;
         }
         self.life.end_batch(&tx)?;
         if stats.dropped_budget > 0
@@ -650,6 +717,21 @@ impl Store {
             "UPDATE meta SET value=?1 WHERE key='revision'",
             params![revision.to_string()],
         )?;
+        if self
+            .relcount
+            .as_ref()
+            .is_some_and(|rc| rc.tracked() > crate::relcount::MAX_TRACKED)
+        {
+            self.relcount = None;
+        }
+        if let Some(rc) = &self.relcount {
+            // The relation count at this revision, committed with the batch it belongs to.
+            tx.execute(
+                "INSERT INTO meta(key,value) VALUES('relations_count',?1) ON CONFLICT(key) DO UPDATE SET value=?1",
+                params![format!("{}:{revision}", rc.total())],
+            )?;
+        }
+        gate()?;
         tx.commit()?;
         if let Some(l) = last {
             self.last_seen.insert(source_id.to_string(), l);
@@ -732,8 +814,10 @@ impl Store {
     pub fn event_count(&self) -> Result<u64> {
         Ok(self
             .conn
-            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get::<_, i64>(0))?
-            as u64)
+            // Events are only appended, numbered from 1 without holes: the last number is the count.
+            .query_row("SELECT COALESCE(MAX(seq),0) FROM events", [], |r| {
+                r.get::<_, i64>(0)
+            })? as u64)
     }
 
     pub(crate) fn conn(&self) -> &Connection {
@@ -839,7 +923,7 @@ fn store_event(
     seq: i64,
     event: &Event,
     object_gen: Option<Option<u32>>,
-) -> Result<()> {
+) -> Result<(Option<String>, Option<String>)> {
     let (resource_key, state_key, corr) = keys(event, object_gen);
     insert.execute(params![
         seq,
@@ -863,10 +947,10 @@ fn store_event(
         state_key,
         corr,
         serde_json::to_string(&event.callstack)?,
-        serde_json::to_string(&Value::Object(event.payload.clone()))?,
+        serde_json::to_string(&event.payload)?,
         event.t_wall_ns.map(|v| v as i64),
     ])?;
-    Ok(())
+    Ok((state_key, corr))
 }
 
 fn reject(tx: &rusqlite::Transaction<'_>, source_id: &str, n: u64, reason: &str) -> Result<()> {

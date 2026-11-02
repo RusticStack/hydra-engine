@@ -37,6 +37,28 @@ fn peak_rss() -> u64 {
     }
 }
 
+#[cfg(windows)]
+fn cpu_secs() -> f64 {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+    let z = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let (mut c, mut e, mut k, mut u) = (z, z, z, z);
+    // SAFETY: the pseudo handle is valid and the out pointers are live locals.
+    unsafe { GetProcessTimes(GetCurrentProcess(), &mut c, &mut e, &mut k, &mut u) };
+    let t = |f: FILETIME| {
+        ((u64::from(f.dwHighDateTime) << 32) | u64::from(f.dwLowDateTime)) as f64 / 1e7
+    };
+    t(k) + t(u)
+}
+
+#[cfg(not(windows))]
+fn cpu_secs() -> f64 {
+    0.0
+}
+
 #[cfg(not(windows))]
 fn peak_rss() -> u64 {
     0
@@ -80,7 +102,12 @@ fn load(root: &std::path::Path, id: &str, n: u64, seed: u64) -> (Session, f64) {
 
 fn run(n: u64, rss_limit: u64) {
     let dir = scratch(&format!("n{n}"));
+    let cpu0 = cpu_secs();
     let (s, rate) = load(&dir, "big", n, 0);
+    println!(
+        "ingest cpu: {:.1} s (includes bench event construction)",
+        cpu_secs() - cpu0
+    );
     println!("loaded in {:.1}s", n as f64 / rate);
     let rss_after_ingest = peak_rss();
     println!(
@@ -138,11 +165,13 @@ fn run(n: u64, rss_limit: u64) {
 
     // Relations are computed on demand from the indexed candidates; report what that costs.
     let t = Instant::now();
+    let c0 = cpu_secs();
     let (rels, source) = hydra_trace::relations::current(&store).unwrap();
     println!(
-        "relations on demand: {} relations ({source}) in {:.2} s",
+        "relations on demand: {} relations ({source}) in {:.2} s wall, {:.2} s cpu",
         rels.len(),
-        t.elapsed().as_secs_f64()
+        t.elapsed().as_secs_f64(),
+        cpu_secs() - c0
     );
 
     // Diff against a smaller second session, inside a fixed event budget, three runs.
@@ -155,9 +184,11 @@ fn run(n: u64, rss_limit: u64) {
         ..AlignSpec::default()
     };
     let t = Instant::now();
+    let c0 = cpu_secs();
     let first =
         serde_json::to_string(&diff_aligned_default(&store, &other, &spec).unwrap()).unwrap();
     let secs = t.elapsed().as_secs_f64();
+    println!("aligned diff cpu {:.2} s", cpu_secs() - c0);
     println!("aligned diff: {secs:.2} s, {} bytes of reply", first.len());
     for _ in 0..2 {
         assert_eq!(
@@ -204,4 +235,70 @@ fn one_million_events() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(1_000_000);
     run(n, 1536 << 20);
+}
+
+/// What a polling reader costs the daemon: CPU per `trace_info` and `trace_query` call on a
+/// closed session and on a session whose writer is open and appending (200k events). Run with
+/// `cargo test --release --test scale reader_costs -- --ignored --nocapture`.
+#[test]
+#[ignore = "bench: run with --release -- --ignored --nocapture"]
+fn reader_costs() {
+    use hydra_trace::service::Service;
+    let dir = scratch("readers");
+    let svc = Service::new(&dir);
+    let call = |cmd: &str, req: Value| -> Value {
+        serde_json::from_slice(&svc.handle(cmd, &serde_json::to_vec(&req).unwrap())).unwrap()
+    };
+    assert_eq!(call("trace_open", json!({"session": "r"}))["ok"], true);
+    let n = 200_000u64;
+    let mut i = 0;
+    while i < n {
+        let end = (i + 5000).min(n);
+        let events: Vec<Value> = (i..end).map(|k| event(k, 0)).collect();
+        assert_eq!(
+            call("trace_append", json!({"session": "r", "events": events}))["ok"],
+            true
+        );
+        i = end;
+    }
+    let report = |label: &str, cmd: &str, req: Value, rounds: u32, between: &dyn Fn(u32)| {
+        let (mut cpu, mut wall) = (0.0, 0.0);
+        for r in 0..rounds {
+            between(r);
+            let c0 = cpu_secs();
+            let t = Instant::now();
+            let reply = call(cmd, req.clone());
+            wall += t.elapsed().as_secs_f64();
+            cpu += cpu_secs() - c0;
+            assert_eq!(reply["ok"], true, "{reply}");
+        }
+        println!(
+            "{label}: {:.3} ms wall, {:.3} ms cpu per call",
+            wall / f64::from(rounds) * 1000.0,
+            cpu / f64::from(rounds) * 1000.0
+        );
+    };
+    let info = json!({"session": "r"});
+    let query = json!({"session": "r", "kinds": ["app.request"], "limit": 20});
+    let live_appender = |r: u32| {
+        let base = n + u64::from(r) * 50;
+        let events: Vec<Value> = (base..base + 50).map(|k| event(k, 0)).collect();
+        assert_eq!(
+            call("trace_append", json!({"session": "r", "events": events}))["ok"],
+            true
+        );
+    };
+    report(
+        "live info (append between)",
+        "trace_info",
+        info.clone(),
+        100,
+        &live_appender,
+    );
+    report("live query", "trace_query", query.clone(), 300, &|_| {});
+    drop(call("trace_close", json!({"session": "r"})));
+    report("closed info", "trace_info", info, 300, &|_| {});
+    report("closed query", "trace_query", query, 500, &|_| {});
+    drop(svc);
+    let _ = std::fs::remove_dir_all(dir);
 }
