@@ -15,7 +15,16 @@ use std::collections::{BTreeMap, HashMap};
 /// The most events scanned per side unless the request says otherwise.
 pub const DEFAULT_EVENT_BUDGET: usize = 2_000_000;
 
-const KEYS: [&str; 6] = ["kind", "resource", "function", "role", "process", "phase"];
+const KEYS: [&str; 7] = [
+    "kind", "resource", "state", "function", "role", "process", "phase",
+];
+/// A key component `payload:<field>` compares one payload field's value (a keyed id stays a keyed id).
+const PAYLOAD_PREFIX: &str = "payload:";
+
+fn payload_field(key: &str) -> Option<&str> {
+    key.strip_prefix(PAYLOAD_PREFIX)
+        .filter(|f| !f.is_empty() && f.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
+}
 
 fn default_keys() -> Vec<String> {
     vec!["kind".into(), "resource".into()]
@@ -31,7 +40,8 @@ pub struct AlignSpec {
     /// Event kinds to compare; empty means all.
     #[serde(default)]
     pub kinds: Vec<String>,
-    /// Key components in order, from `kind`, `resource`, `function`, `role`, `process`, `phase`.
+    /// Key components in order, from `kind`, `resource`, `state` (the state key without its process
+    /// generation), `function`, `role`, `process`, `phase`, or `payload:<field>`.
     #[serde(default = "default_keys")]
     pub keys: Vec<String>,
     /// Payload field the default role resolver reads.
@@ -148,9 +158,15 @@ fn scan_side(
         Some(_) => return Err(Error::Refused("role_field must be [A-Za-z0-9_]+".into())),
         None => "NULL".to_string(),
     };
+    let fields: String = spec
+        .keys
+        .iter()
+        .filter_map(|k| payload_field(k))
+        .map(|f| format!(", CAST(json_extract(e.payload,'$.{f}') AS TEXT)"))
+        .collect();
     let mut sql = format!(
         "SELECT e.seq,e.kind,e.resource_key,COALESCE(e.process_gen,0),
-                CASE WHEN e.kind='core.marker' THEN e.payload END, s.function, {role_expr}
+                CASE WHEN e.kind='core.marker' THEN e.payload END, s.function, {role_expr}, e.state_key{fields}
          FROM events e LEFT JOIN event_symbols s ON s.interp=?1 AND s.seq=e.seq"
     );
     if !spec.kinds.is_empty() {
@@ -181,6 +197,7 @@ fn scan_side(
         let marker: Option<String> = row.get(4)?;
         let function: Option<String> = row.get(5)?;
         let field: Option<String> = row.get(6)?;
+        let state: Option<String> = row.get(7)?;
         let next_ordinal = ordinals.len() as u32 + 1;
         let ordinal = if pgen == 0 {
             0
@@ -222,11 +239,28 @@ fn scan_side(
         };
         let mut ambiguous = false;
         let mut key = String::new();
+        let mut payload_index = 8;
         for (i, component) in spec.keys.iter().enumerate() {
             if i > 0 {
                 key.push('|');
             }
+            if payload_field(component).is_some() {
+                let value: Option<String> = row.get(payload_index)?;
+                payload_index += 1;
+                key.push_str(&format!(
+                    "{}={}",
+                    &component[PAYLOAD_PREFIX.len()..],
+                    value.as_deref().unwrap_or("-")
+                ));
+                continue;
+            }
             match component.as_str() {
+                // the state key's leading process generation is session-local: dropped
+                "state" => key.push_str(
+                    state
+                        .as_deref()
+                        .map_or("-", |k| k.split_once(':').map_or(k, |(_, rest)| rest)),
+                ),
                 "kind" => key.push_str(&kind),
                 "resource" => key.push_str(resource.as_deref().unwrap_or("-")),
                 "function" => key.push_str(mapped.unwrap_or("-")),
@@ -264,7 +298,7 @@ fn validate(spec: &AlignSpec) -> Result<()> {
         return Err(Error::Refused("an alignment needs at least one key".into()));
     }
     for k in &spec.keys {
-        if !KEYS.contains(&k.as_str()) {
+        if !KEYS.contains(&k.as_str()) && payload_field(k).is_none() {
             return Err(Error::Refused(format!(
                 "unknown alignment key {k}; use one of {KEYS:?}"
             )));
@@ -371,6 +405,8 @@ pub fn diff_aligned(
         normalizations.push(match k.as_str() {
             "kind" => "kind: event kind, as recorded".to_string(),
             "resource" => "resource: the logical resource key".to_string(),
+            "state" => "state: the state key without its session-local process generation".to_string(),
+            k if payload_field(k).is_some() => format!("{k}: the value of that payload field"),
             "function" => format!(
                 "function: symbolized at interpretation revision {} (a) and {} (b); B names mapped through {} verified map entries",
                 interp_a.map_or("none".into(), |i| i.to_string()),

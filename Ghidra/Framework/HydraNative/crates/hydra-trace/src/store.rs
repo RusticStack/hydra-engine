@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS interpretations(
   rev INTEGER PRIMARY KEY, kind TEXT NOT NULL, parent INTEGER, symbol_revision TEXT, codec_hash TEXT,
   schema_hash TEXT, context_from INTEGER, context_to INTEGER, note TEXT);
 CREATE TABLE IF NOT EXISTS event_symbols(
-  interp INTEGER NOT NULL, seq INTEGER NOT NULL, function TEXT, reason TEXT, PRIMARY KEY(interp, seq)) WITHOUT ROWID;
+  interp INTEGER NOT NULL, seq INTEGER NOT NULL, function TEXT, reason TEXT, stack TEXT, PRIMARY KEY(interp, seq)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS interp_fields(
   interp INTEGER NOT NULL, seq INTEGER NOT NULL, field TEXT NOT NULL, value TEXT NOT NULL,
   byte_off INTEGER, byte_len INTEGER, PRIMARY KEY(interp, seq, field)) WITHOUT ROWID;
@@ -412,7 +412,7 @@ impl Store {
                  corr,callstack,payload,t_wall_ns) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)",
             )?;
             let mut sym = tx.prepare_cached(
-                "INSERT INTO event_symbols(interp,seq,function,reason) VALUES(?1,?2,?3,?4)",
+                "INSERT INTO event_symbols(interp,seq,function,reason,stack) VALUES(?1,?2,?3,?4,?5)",
             )?;
             for (offset, record) in records.iter().enumerate() {
                 let n = first_n + offset as u64;
@@ -593,7 +593,14 @@ impl Store {
                             .find_module(event.process_gen.unwrap_or(0), a, next_seq)
                     });
                     let (function, reason) = symbolize::resolve_site(s, module, site);
-                    sym.execute(params![interp, next_seq, function, reason])?;
+                    let stack = symbolize::resolve_stack(
+                        s,
+                        &self.life,
+                        event.process_gen.unwrap_or(0),
+                        &event.callstack,
+                        next_seq,
+                    );
+                    sym.execute(params![interp, next_seq, function, reason, stack])?;
                 }
                 bytes += cost;
                 last = Some((event.producer_gen, event.source_seq));

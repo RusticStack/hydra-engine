@@ -164,6 +164,9 @@ struct QueryReq {
     /// Pin: only events with `seq <= up_to` (a first page answers its own `up_to`).
     #[serde(default)]
     up_to: Option<i64>,
+    /// `processes`, `threads`, `modules` or `objects`: the lifetime table instead of events.
+    #[serde(default)]
+    lifetimes: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -366,6 +369,14 @@ impl Service {
 
     fn query(&self, r: QueryReq) -> Reply {
         let store = self.reader(&r.session)?;
+        if let Some(what) = &r.lifetimes {
+            let Some(rows) = query::lifetimes(&store, what)? else {
+                return Err(fail("refused", format!("no lifetime table {what}")));
+            };
+            return Ok(
+                json!({"revision": store.revision()?, "lifetimes": what, "rows": rows, "gaps": gaps_of(&store)?}),
+            );
+        }
         if let Some(by) = &r.group_by {
             if query::group_column(by).is_none() {
                 return Err(fail("refused", format!("cannot group by {by}")));
@@ -397,18 +408,24 @@ impl Service {
             };
             let mut syms = Vec::new();
             for row in &page.rows {
-                let (function, reason): (Option<String>, Option<String>) = match interp {
-                    Some(i) => store
-                        .conn()
-                        .query_row(
-                            "SELECT function,reason FROM event_symbols WHERE interp=?1 AND seq=?2",
-                            rusqlite::params![i, row.seq],
-                            |x| Ok((x.get(0)?, x.get(1)?)),
-                        )
-                        .unwrap_or((None, Some("no-symbol".into()))),
-                    None => (None, None),
-                };
-                syms.push(json!({"seq": row.seq, "function": function, "reason": reason}));
+                let (function, reason, stack): (Option<String>, Option<String>, Option<String>) =
+                    match interp {
+                        Some(i) => store
+                            .conn()
+                            .query_row(
+                                "SELECT function,reason,stack FROM event_symbols WHERE interp=?1 AND seq=?2",
+                                rusqlite::params![i, row.seq],
+                                |x| Ok((x.get(0)?, x.get(1)?, x.get(2)?)),
+                            )
+                            .unwrap_or((None, Some("no-symbol".into()), None)),
+                        None => (None, None, None),
+                    };
+                let stack: Value = stack
+                    .and_then(|t| serde_json::from_str(&t).ok())
+                    .unwrap_or(Value::Null);
+                syms.push(
+                    json!({"seq": row.seq, "function": function, "reason": reason, "stack": stack}),
+                );
             }
             out["symbols"] = json!({"interp": interp, "rows": syms});
         }
