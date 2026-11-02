@@ -278,6 +278,14 @@ version: `12.3-hydra.1`, `12.3-hydra.2`, then `12.4-hydra.1`. The tag is `v` and
    engine and run `session_smoke.py` against that install (not the source tree), and run the
    packaged client's `python ghidra_session.py version`, which must print the release.
 
+Before step 4, run the IP check, which takes seconds where the release build's `ip` task takes
+minutes: `python tools/ip_check.py` (or `--changed-since <last tag>` to check only what changed).
+It fails with `module | file | reason` for any file without an IP (a header, or an entry in the
+module's `certification.manifest`), any IP with no matching `licenses/` file, and any
+`MODULE FILE INFO` licence name that does not match one. New files need an IP header or a
+manifest entry in their module; `tools/` is not a module, so `tools/ip_check.py` carries its own
+`# IP: GHIDRA` header.
+
 Releases are Windows-only, like CI. The build matrix in `release.yml` takes more platforms
 (`ubuntu-latest` as `linux_x86_64` and `macos-latest` as `mac_arm_64` passed in a dry run), but
 their test steps then need PE files as test inputs, which their runners do not have; a platform
