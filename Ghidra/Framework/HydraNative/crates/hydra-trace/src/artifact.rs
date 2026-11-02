@@ -116,6 +116,11 @@ impl Artifacts {
         Ok(id)
     }
 
+    /// The bytes of an artifact file, whose state the caller has already checked.
+    pub fn read_file(&self, id: &str) -> Result<Vec<u8>> {
+        Ok(std::fs::read(self.path(id))?)
+    }
+
     /// The bytes of a present artifact. An evicted one is an error that names the limitation.
     pub fn read(&self, store: &Store, id: &str) -> Result<Vec<u8>> {
         match state(store, id)?.as_deref() {

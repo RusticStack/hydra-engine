@@ -4,6 +4,7 @@
 //! A corrected codec or a newly learned layout is a new revision. Old revisions stay readable
 //! and queries can pin one.
 
+use crate::artifact::Artifacts;
 use crate::canon;
 use crate::store::{Error, Result, Store};
 use rusqlite::params;
@@ -65,11 +66,14 @@ impl Codec {
     }
 }
 
-/// A codec in force over `from_seq ..= to_seq` (open ended when `None`).
+//// A codec in force over `from_seq ..= to_seq` (open ended when `None`).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Context {
     pub from_seq: i64,
     pub to_seq: Option<i64>,
+    /// The name the layout is known by in the request (the key of the codec table).
+    #[serde(default)]
+    pub layout: String,
     pub codec: Codec,
 }
 
@@ -88,6 +92,65 @@ pub struct ReprocessStats {
     pub decoded: u64,
     pub no_context: u64,
     pub short_payload: u64,
+    /// Events whose bytes are not all covered by the codec in force: nothing is dropped, the
+    /// rest is recorded as a `_unconsumed` field with its byte range.
+    pub unconsumed_events: u64,
+    pub unconsumed_bytes: u64,
+    /// Events whose bytes could not be read (an evicted or missing artifact, bad hex).
+    pub bytes_unavailable: u64,
+}
+
+/// How the contexts of a trace are found: the events of `marker_kind` say which layout is in
+/// force from them on, by the value of their payload field `field` (mapped through `map` when
+/// given, else used as the layout name). `initial` is in force before the first marker.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextRule {
+    #[serde(default = "default_marker_kind")]
+    pub marker_kind: String,
+    #[serde(default = "default_marker_field")]
+    pub field: String,
+    #[serde(default)]
+    pub initial: Option<String>,
+    #[serde(default)]
+    pub map: BTreeMap<String, String>,
+}
+
+fn default_marker_kind() -> String {
+    "core.marker".into()
+}
+
+fn default_marker_field() -> String {
+    "layout".into()
+}
+
+impl Default for ContextRule {
+    fn default() -> Self {
+        Self {
+            marker_kind: default_marker_kind(),
+            field: default_marker_field(),
+            initial: None,
+            map: BTreeMap::new(),
+        }
+    }
+}
+
+/// What to decode and how (one interpretation revision).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Spec {
+    pub contexts: Vec<Context>,
+    /// Event kinds to decode (all events that carry bytes when empty).
+    #[serde(default)]
+    pub kinds: Vec<String>,
+    /// The payload field that holds the bytes: a hex string, or an object that names a payload
+    /// artifact (`{"artifact": "art_..."}`). Default `bytes`.
+    #[serde(default)]
+    pub bytes_field: Option<String>,
+    #[serde(default)]
+    pub note: String,
+    /// Only events with `seq <= up_to` (set at the time of the request so a replay decodes the
+    /// same events).
+    #[serde(default)]
+    pub up_to: Option<i64>,
 }
 
 fn parse_hex(s: &str) -> Option<Vec<u8>> {
@@ -139,28 +202,49 @@ fn signed(ty: &str, v: u64, width: usize) -> Value {
     }
 }
 
-/// The contexts a trace declares itself: each `core.marker` event with a `layout` payload field
-/// starts the codec of that name, until the next such marker. `codecs` maps layout names to
-/// codecs; a marker naming an unknown layout leaves its interval without a codec (the events in
-/// it stay undecoded and are counted).
-pub fn contexts_from_markers(
+/// The contexts a trace declares itself under `rule`: each marker event says which layout is in
+/// force until the next marker. `codecs` maps layout names to codecs; a marker naming an
+/// unknown layout leaves its interval without a codec (the events in it stay undecoded and are
+/// counted). The `initial` layout covers everything before the first marker.
+pub fn contexts_from_rule(
     store: &Store,
     codecs: &BTreeMap<String, Codec>,
+    rule: &ContextRule,
 ) -> Result<Vec<Context>> {
-    let mut stmt = store.conn().prepare(
-        "SELECT seq, payload FROM events WHERE kind='core.marker' AND payload LIKE '%\"layout\"%' ORDER BY seq",
-    )?;
-    let marks: Vec<(i64, String)> = stmt
-        .query_map([], |r| {
-            let payload: String = r.get(1)?;
-            let layout = serde_json::from_str::<Value>(&payload)
-                .ok()
-                .and_then(|v| v.get("layout").and_then(Value::as_str).map(str::to_string))
-                .unwrap_or_default();
-            Ok((r.get(0)?, layout))
-        })?
-        .collect::<std::result::Result<_, _>>()?;
+    let mut stmt = store
+        .conn()
+        .prepare("SELECT seq, payload FROM events WHERE kind=?1 ORDER BY seq")?;
+    let mut marks: Vec<(i64, String)> = Vec::new();
+    let rows = stmt.query_map(params![rule.marker_kind], |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (seq, payload) = row?;
+        let Some(value) = serde_json::from_str::<Value>(&payload)
+            .ok()
+            .and_then(|v| v.get(&rule.field).cloned())
+        else {
+            continue;
+        };
+        let key = match value {
+            Value::String(s) => s,
+            Value::Null => continue,
+            other => other.to_string(),
+        };
+        let layout = rule.map.get(&key).cloned().unwrap_or(key);
+        marks.push((seq, layout));
+    }
     let mut out = Vec::new();
+    if let Some(initial) = &rule.initial
+        && let Some(codec) = codecs.get(initial)
+    {
+        out.push(Context {
+            from_seq: 0,
+            to_seq: marks.first().map(|(s, _)| s - 1),
+            layout: initial.clone(),
+            codec: codec.clone(),
+        });
+    }
     for (i, (seq, layout)) in marks.iter().enumerate() {
         let Some(codec) = codecs.get(layout) else {
             continue;
@@ -168,23 +252,71 @@ pub fn contexts_from_markers(
         out.push(Context {
             from_seq: *seq,
             to_seq: marks.get(i + 1).map(|(next, _)| next - 1),
+            layout: layout.clone(),
             codec: codec.clone(),
         });
     }
     Ok(out)
 }
 
-/// Decode the `bytes` (hex string) payload field of every event of `kinds` under `contexts`, as a
-/// new interpretation revision. Earlier revisions are left as they were.
+/// The contexts of `core.marker` events with a `layout` payload field (the default rule).
+pub fn contexts_from_markers(
+    store: &Store,
+    codecs: &BTreeMap<String, Codec>,
+) -> Result<Vec<Context>> {
+    contexts_from_rule(store, codecs, &ContextRule::default())
+}
+
+/// The bytes of an event: a hex string, or the artifact an object names.
+fn event_bytes(
+    payload: &Value,
+    field: &str,
+    conn: &rusqlite::Connection,
+    arts: Option<&Artifacts>,
+) -> std::result::Result<Vec<u8>, &'static str> {
+    match payload.get(field) {
+        Some(Value::String(s)) => parse_hex(s).ok_or("bad-hex"),
+        Some(Value::Object(o)) => {
+            if let Some(Value::String(id)) = o.get("artifact") {
+                let state: Option<String> = conn
+                    .query_row("SELECT state FROM artifacts WHERE id=?1", params![id], |r| {
+                        r.get(0)
+                    })
+                    .ok();
+                match (state.as_deref(), arts) {
+                    (Some("present"), Some(a)) => {
+                        a.read_file(id).map_err(|_| "artifact-unreadable")
+                    }
+                    (Some("present"), None) => Err("artifact-unreadable"),
+                    (Some(_), _) => Err("artifact-evicted"),
+                    (None, _) => Err("artifact-unknown"),
+                }
+            } else if let Some(Value::String(s)) = o.get("bytes") {
+                parse_hex(s).ok_or("bad-hex")
+            } else {
+                Err("no-bytes")
+            }
+        }
+        _ => Err("no-bytes"),
+    }
+}
+
+/// Decode the bytes of every selected event under `spec.contexts`, as a new interpretation
+/// revision (`rev_override` only when a journal is replayed). Earlier revisions are left as they
+/// were; the observations are never touched. Nothing is dropped: bytes the codec does not cover
+/// are recorded as `_unconsumed`, a short payload as `_error`, and the layout in force as
+/// `_layout`.
 pub fn reprocess(
     store: &mut Store,
-    contexts: &[Context],
-    kinds: &[String],
-    note: &str,
+    spec: &Spec,
+    arts: Option<&Artifacts>,
+    rev_override: Option<i64>,
 ) -> Result<ReprocessStats> {
+    let contexts = &spec.contexts;
     if contexts.is_empty() {
         return Err(Error::Refused("no context to interpret under".into()));
     }
+    let field = spec.bytes_field.clone().unwrap_or_else(|| "bytes".into());
     let combined = json!(
         contexts
             .iter()
@@ -212,43 +344,76 @@ pub fn reprocess(
         )
         .ok()
         .flatten();
-    let rev: i64 = tx.query_row(
-        "SELECT COALESCE(MAX(rev),0)+1 FROM interpretations",
-        [],
-        |r| r.get(0),
-    )?;
+    let rev: i64 = match rev_override {
+        Some(r) => r,
+        None => tx.query_row(
+            "SELECT COALESCE(MAX(rev),0)+1 FROM interpretations",
+            [],
+            |r| r.get(0),
+        )?,
+    };
     tx.execute(
         "INSERT INTO interpretations(rev,kind,parent,symbol_revision,codec_hash,schema_hash,context_from,context_to,note)
          VALUES(?1,'decode',?2,NULL,?3,?4,?5,?6,?7)",
-        params![rev, parent, sha(&combined), schema, from, to, note],
+        params![rev, parent, sha(&combined), schema, from, to, spec.note],
     )?;
     let mut stats = ReprocessStats {
         revision: rev,
         ..ReprocessStats::default()
     };
     {
-        let mut sql =
-            String::from("SELECT seq, payload FROM events WHERE payload LIKE '%\"bytes\"%'");
-        if !kinds.is_empty() {
+        let mut sql = String::from("SELECT seq, payload FROM events WHERE payload LIKE ?");
+        let mut args: Vec<String> = vec![format!("%\"{}\"%", field.replace('%', ""))];
+        if !spec.kinds.is_empty() {
             sql.push_str(&format!(
                 " AND kind IN ({})",
-                vec!["?"; kinds.len()].join(",")
+                vec!["?"; spec.kinds.len()].join(",")
             ));
+            args.extend(spec.kinds.iter().cloned());
+        }
+        if let Some(up_to) = spec.up_to {
+            sql.push_str(&format!(" AND seq <= {up_to}"));
         }
         sql.push_str(" ORDER BY seq");
+        let total: i64 = tx
+            .query_row(
+                &format!("SELECT COUNT(*) FROM ({sql})"),
+                rusqlite::params_from_iter(args.iter()),
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
         let mut read = tx.prepare(&sql)?;
         let mut write = tx.prepare_cached(
             "INSERT INTO interp_fields(interp,seq,field,value,byte_off,byte_len) VALUES(?1,?2,?3,?4,?5,?6)",
         )?;
-        let mut rows = read.query(rusqlite::params_from_iter(kinds.iter()))?;
+        let mut rows = read.query(rusqlite::params_from_iter(args.iter()))?;
+        let mut done = 0u64;
         while let Some(row) = rows.next()? {
+            if done.is_multiple_of(256) {
+                crate::cancel::check()?;
+                crate::cancel::progress(done, total as u64);
+            }
+            done += 1;
             let seq: i64 = row.get(0)?;
             let payload: String = row.get(1)?;
-            let Some(bytes) = serde_json::from_str::<Value>(&payload)
-                .ok()
-                .and_then(|v| v.get("bytes").and_then(Value::as_str).and_then(parse_hex))
-            else {
+            let Ok(payload) = serde_json::from_str::<Value>(&payload) else {
                 continue;
+            };
+            let bytes = match event_bytes(&payload, &field, &tx, arts) {
+                Ok(b) => b,
+                Err("no-bytes") => continue,
+                Err(reason) => {
+                    write.execute(params![
+                        rev,
+                        seq,
+                        "_error",
+                        json!(reason).to_string(),
+                        None::<i64>,
+                        None::<i64>
+                    ])?;
+                    stats.bytes_unavailable += 1;
+                    continue;
+                }
             };
             let Some(ctx) = contexts
                 .iter()
@@ -258,14 +423,41 @@ pub fn reprocess(
                 stats.no_context += 1;
                 continue;
             };
+            write.execute(params![
+                rev,
+                seq,
+                "_layout",
+                json!({"layout": ctx.layout, "codec": ctx.codec.name,
+                       "codec_hash": ctx.codec.codec_hash()})
+                .to_string(),
+                None::<i64>,
+                None::<i64>
+            ])?;
             let mut short = false;
+            let mut consumed = 0usize;
             for f in &ctx.codec.fields {
                 match decode_field(f, &bytes) {
                     Some(v) => {
+                        consumed = consumed.max((f.offset + f.len) as usize);
                         write.execute(params![rev, seq, f.name, v.to_string(), f.offset, f.len])?;
                     }
                     None => short = true,
                 }
+            }
+            if bytes.len() > consumed {
+                let rest = &bytes[consumed..];
+                write.execute(params![
+                    rev,
+                    seq,
+                    "_unconsumed",
+                    json!({"hex": rest.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                           "len": rest.len()})
+                    .to_string(),
+                    consumed as i64,
+                    rest.len() as i64
+                ])?;
+                stats.unconsumed_events += 1;
+                stats.unconsumed_bytes += rest.len() as u64;
             }
             if short {
                 write.execute(params![
@@ -281,6 +473,7 @@ pub fn reprocess(
                 stats.decoded += 1;
             }
         }
+        crate::cancel::progress(total as u64, total as u64);
     }
     tx.execute(
         "UPDATE meta SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) WHERE key='revision'",
@@ -330,6 +523,35 @@ pub fn decoded(store: &Store, seq: i64, rev: Option<i64>) -> Result<Vec<Decoded>
         .map_err(Into::into)
 }
 
+/// The decode revisions with what each one found, for `trace_info` and the interpretation
+/// listing: hashes, parent, note, the events it decoded, how many left bytes unconsumed (and
+/// how many bytes), and how many could not be decoded at all.
+pub fn describe(store: &Store) -> Result<Vec<Value>> {
+    let conn = store.conn();
+    let mut out = Vec::new();
+    for (rev, parent, codec_hash, schema_hash, note) in revisions(store)? {
+        let count = |sql: &str| -> i64 {
+            conn.query_row(sql, params![rev], |r| r.get(0)).unwrap_or(0)
+        };
+        let (from, to): (Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT context_from,context_to FROM interpretations WHERE rev=?1",
+                params![rev],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap_or((None, None));
+        out.push(json!({
+            "rev": rev, "parent": parent, "codec_hash": codec_hash, "schema_hash": schema_hash,
+            "note": note, "context_from": from, "context_to": to,
+            "events": count("SELECT COUNT(DISTINCT seq) FROM interp_fields WHERE interp=?1 AND field='_layout'"),
+            "unconsumed_events": count("SELECT COUNT(*) FROM interp_fields WHERE interp=?1 AND field='_unconsumed'"),
+            "unconsumed_bytes": count("SELECT COALESCE(SUM(byte_len),0) FROM interp_fields WHERE interp=?1 AND field='_unconsumed'"),
+            "errors": count("SELECT COUNT(*) FROM interp_fields WHERE interp=?1 AND field='_error'"),
+        }));
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,6 +585,16 @@ mod tests {
                 },
             ),
         ])
+    }
+
+    fn run(store: &mut Store, contexts: &[Context], note: &str) -> ReprocessStats {
+        let spec = Spec {
+            contexts: contexts.to_vec(),
+            kinds: vec!["app.msg".into()],
+            note: note.into(),
+            ..Spec::default()
+        };
+        reprocess(store, &spec, None, None).unwrap()
     }
 
     fn trace() -> Store {
@@ -421,7 +653,7 @@ mod tests {
         let contexts = contexts_from_markers(&store, &codecs()).unwrap();
         assert_eq!(contexts.len(), 2);
         assert_eq!(contexts[0].to_seq, Some(2));
-        let stats = reprocess(&mut store, &contexts, &["app.msg".into()], "initial").unwrap();
+        let stats = run(&mut store, &contexts, "initial");
         assert_eq!((stats.decoded, stats.short_payload), (2, 1));
         let a = decoded(&store, 2, None).unwrap();
         assert_eq!(
@@ -467,17 +699,11 @@ mod tests {
         let mut store = trace();
         let mut codecs = codecs();
         let first = contexts_from_markers(&store, &codecs).unwrap();
-        let r1 = reprocess(&mut store, &first, &["app.msg".into()], "initial").unwrap();
+        let r1 = run(&mut store, &first, "initial");
         // The first guess was wrong: hp is big endian in layout A.
         codecs.get_mut("A").unwrap().fields[1].endian = Some("be".into());
         let second = contexts_from_markers(&store, &codecs).unwrap();
-        let r2 = reprocess(
-            &mut store,
-            &second,
-            &["app.msg".into()],
-            "A.hp is big endian",
-        )
-        .unwrap();
+        let r2 = run(&mut store, &second, "A.hp is big endian");
         assert_eq!(r2.revision, r1.revision + 1);
         let old = decoded(&store, 2, Some(r1.revision)).unwrap();
         let new = decoded(&store, 2, Some(r2.revision)).unwrap();
@@ -508,7 +734,7 @@ mod tests {
         let mut only_a = codecs();
         only_a.remove("B");
         let ctx = contexts_from_markers(&store, &only_a).unwrap();
-        let stats = reprocess(&mut store, &ctx, &["app.msg".into()], "A only").unwrap();
+        let stats = run(&mut store, &ctx, "A only");
         assert_eq!(stats.decoded, 1);
         assert_eq!(stats.no_context, 2);
     }
