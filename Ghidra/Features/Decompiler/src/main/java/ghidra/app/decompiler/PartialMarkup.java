@@ -44,6 +44,7 @@ public final class PartialMarkup {
 
 	private final StringBuilder text = new StringBuilder();
 	private final int keep;
+	private final long skip;
 	private long totalChars;
 	private long tokens;
 	private long lines = 1;
@@ -56,8 +57,9 @@ public final class PartialMarkup {
 	private boolean protoDone;
 	private String cutReason = "";
 
-	private PartialMarkup(int keep) {
+	private PartialMarkup(int keep, long skip) {
 		this.keep = keep;
+		this.skip = skip;
 	}
 
 	/** The recovered C text, at most the {@code keep} characters asked for. */
@@ -103,7 +105,16 @@ public final class PartialMarkup {
 	 * @return what was read; never null, empty when the cut fell before the C markup
 	 */
 	public static PartialMarkup read(Decoder decoder, int keep) {
-		PartialMarkup p = new PartialMarkup(Math.max(0, keep));
+		return read(decoder, keep, 0);
+	}
+
+	/**
+	 * As {@link #read(Decoder, int)}, holding the window of the text that starts at character
+	 * {@code skip}: every character is counted ({@link #chars()}), only the window is kept.
+	 * Used to answer a paged request from a response too large to build as a tree.
+	 */
+	public static PartialMarkup read(Decoder decoder, int keep, long skip) {
+		PartialMarkup p = new PartialMarkup(Math.max(0, keep), Math.max(0, skip));
 		try {
 			decoder.openElement(ELEM_DOC);
 			int functions = 0;
@@ -201,10 +212,12 @@ public final class PartialMarkup {
 	}
 
 	private void append(String s) {
+		long start = totalChars;
 		totalChars += s.length();
-		int room = keep - text.length();
-		if (room > 0) {
-			text.append(s, 0, Math.min(room, s.length()));
+		long from = Math.max(start, skip);
+		long to = Math.min(totalChars, skip + keep);
+		if (to > from) {
+			text.append(s, (int) (from - start), (int) (to - start));
 		}
 	}
 }

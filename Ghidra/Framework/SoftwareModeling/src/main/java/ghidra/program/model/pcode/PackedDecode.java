@@ -242,6 +242,22 @@ public class PackedDecode implements Decoder, Closeable {
 		inStream = null;
 	}
 
+	/**
+	 * Hydra (issue 6): lets the response being read spill full pages to a temporary file once it
+	 * passes the spill's threshold. Call after {@link #open}; the owner closes the spill.
+	 * @param spill the spill, or null for none
+	 */
+	public void setSpill(ResponseSpill spill) {
+		if (inStream != null) {
+			inStream.setSpill(spill);
+		}
+	}
+
+	/** @return whether part of the response being decoded is in a spill file */
+	public boolean isSpilled() {
+		return inStream != null && inStream.spilled();
+	}
+
 	@Override
 	public void ingestStreamToNextTerminator(InputStream stream) throws IOException {
 		inStream.ingestStreamToNextTerminator(stream);

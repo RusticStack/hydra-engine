@@ -224,6 +224,8 @@ public class HeadlessSession implements GhidraLaunchable {
 		// 8.13: what a killed publisher left in a directory this state directory forked into is
 		// swept before the daemon is ready (a .rep without its .gpr, a staging folder, a sidecar .tmp)
 		ForkSweeper.sweepAtStart();
+		// issue 6: the spill files of a decompiler response that a killed daemon left behind
+		ghidra.program.model.pcode.ResponseSpill.sweepStale(QueryCommands.spillDir());
 		Runtime.getRuntime().addShutdownHook(new Thread(this::removeEndpoint, "session-exit"));
 
 		Connection stdio = null;
