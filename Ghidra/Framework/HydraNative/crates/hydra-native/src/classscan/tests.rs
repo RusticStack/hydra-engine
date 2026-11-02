@@ -108,10 +108,7 @@ fn temp_jar(name: &str, bytes: &[u8]) -> std::path::PathBuf {
 #[test]
 fn extension_point_matches_a_literal_suffix() {
     let got = extension_point("a/b/FooPlugin.class", &["Plugin"]);
-    assert_eq!(
-        got,
-        Some(("a.b.FooPlugin".to_owned(), "Plugin".to_owned()))
-    );
+    assert_eq!(got, Some(("a.b.FooPlugin".to_owned(), "Plugin".to_owned())));
 }
 
 #[test]
@@ -179,7 +176,10 @@ fn extension_point_no_suffix_no_hit() {
 
 #[test]
 fn shortest_suffix_prefers_the_shorter_one() {
-    assert_eq!(shortest_suffix("ABPlugin", &["Plugin", "BPlugin"]), Some("Plugin"));
+    assert_eq!(
+        shortest_suffix("ABPlugin", &["Plugin", "BPlugin"]),
+        Some("Plugin")
+    );
     assert_eq!(shortest_suffix("ABPlugin", &["BPlugin"]), Some("BPlugin"));
     assert_eq!(shortest_suffix("ABPlugin", &[]), None);
     assert_eq!(shortest_suffix("ABPlugin", &["Other"]), None);
@@ -202,8 +202,16 @@ fn scan_jars_reads_the_central_directory_in_order() {
     assert_eq!(
         hits,
         vec![
-            Hit { jar: 0, name: "a.OnePlugin".to_owned(), suffix: "Plugin".to_owned() },
-            Hit { jar: 0, name: "a.TwoPlugin".to_owned(), suffix: "Plugin".to_owned() },
+            Hit {
+                jar: 0,
+                name: "a.OnePlugin".to_owned(),
+                suffix: "Plugin".to_owned()
+            },
+            Hit {
+                jar: 0,
+                name: "a.TwoPlugin".to_owned(),
+                suffix: "Plugin".to_owned()
+            },
         ]
     );
     std::fs::remove_file(jar).ok();
@@ -238,7 +246,10 @@ fn scan_jars_reads_zip64() {
 #[test]
 fn scan_jars_fails_on_a_file_that_is_not_a_zip() {
     let jar = temp_jar("notzip.jar", b"this is not a zip file at all");
-    assert_eq!(scan_jars(&[jar.as_path()], &["Plugin"]), Err(ScanError::BadZip));
+    assert_eq!(
+        scan_jars(&[jar.as_path()], &["Plugin"]),
+        Err(ScanError::BadZip)
+    );
     std::fs::remove_file(jar).ok();
 }
 
@@ -249,7 +260,10 @@ fn scan_jars_fails_on_a_truncated_central_directory() {
     let n = bytes.len();
     bytes[n - 6..n - 2].copy_from_slice(&0xffff_0000u32.to_le_bytes());
     let jar = temp_jar("truncated.jar", &bytes);
-    assert_eq!(scan_jars(&[jar.as_path()], &["Plugin"]), Err(ScanError::BadZip));
+    assert_eq!(
+        scan_jars(&[jar.as_path()], &["Plugin"]),
+        Err(ScanError::BadZip)
+    );
     std::fs::remove_file(jar).ok();
 }
 
@@ -257,13 +271,19 @@ fn scan_jars_fails_on_a_truncated_central_directory() {
 fn scan_jars_fails_on_a_missing_file() {
     let missing = std::env::temp_dir().join("hydra-classscan-does-not-exist.jar");
     std::fs::remove_file(&missing).ok();
-    assert_eq!(scan_jars(&[missing.as_path()], &["Plugin"]), Err(ScanError::BadZip));
+    assert_eq!(
+        scan_jars(&[missing.as_path()], &["Plugin"]),
+        Err(ScanError::BadZip)
+    );
 }
 
 #[test]
 fn scan_jars_fails_on_a_non_utf8_entry_name() {
     let jar = temp_jar("latin1.jar", &zip(&[(b"a/F\xffPlugin.class", b"")]));
-    assert_eq!(scan_jars(&[jar.as_path()], &["Plugin"]), Err(ScanError::NotUtf8));
+    assert_eq!(
+        scan_jars(&[jar.as_path()], &["Plugin"]),
+        Err(ScanError::NotUtf8)
+    );
     std::fs::remove_file(jar).ok();
 }
 
@@ -278,7 +298,12 @@ fn abi_round_trip_encodes_the_hits() {
     suffixes.push(0);
     // SAFETY: both buffers are valid for their lengths.
     let scan = unsafe {
-        hydra_cs_scan(paths.as_ptr(), paths.len() as u64, suffixes.as_ptr(), suffixes.len() as u64)
+        hydra_cs_scan(
+            paths.as_ptr(),
+            paths.len() as u64,
+            suffixes.as_ptr(),
+            suffixes.len() as u64,
+        )
     };
     assert!(!scan.is_null());
     // SAFETY: `scan` comes from hydra_cs_scan above.
@@ -304,7 +329,12 @@ fn abi_reports_failures_as_null() {
     let suffixes = b"Plugin\0";
     // SAFETY: both buffers are valid for their lengths.
     let scan = unsafe {
-        hydra_cs_scan(paths.as_ptr(), paths.len() as u64, suffixes.as_ptr(), suffixes.len() as u64)
+        hydra_cs_scan(
+            paths.as_ptr(),
+            paths.len() as u64,
+            suffixes.as_ptr(),
+            suffixes.len() as u64,
+        )
     };
     assert!(scan.is_null());
     // SAFETY: null is a valid argument to free.

@@ -324,7 +324,10 @@ pub unsafe extern "C" fn hydra_cs_scan(
         return std::ptr::null_mut();
     };
     let paths: Vec<&Path> = paths.iter().map(Path::new).collect();
-    match scan_jars(&paths, &suffixes).ok().and_then(|hits| ClassScan::of(&hits)) {
+    match scan_jars(&paths, &suffixes)
+        .ok()
+        .and_then(|hits| ClassScan::of(&hits))
+    {
         Some(scan) => Box::into_raw(Box::new(scan)),
         None => std::ptr::null_mut(),
     }
