@@ -239,6 +239,7 @@ fn read_query(rows: &mut Rows, caller: &mut Caller, spec: &Spec, program: &str) 
                 read_script(rows, caller, spec, program, std::slice::from_ref(address));
             }
             ("info", _) => info(rows, caller, program),
+            ("trace_read", PlanArg::One(session)) => trace_read(rows, caller, spec, session),
             _ => {}
         }
     }
@@ -509,6 +510,43 @@ fn decompile_one(
         &row_key,
         || decompile(caller, program, address, spec),
         decompile_projection,
+    );
+}
+
+/// The trace read workload (`PROTOCOL-3.md` "Trace commands"): what an analysis agent asks of a
+/// finished trace session while a writer or other readers are busy. Every request is a quick-lane
+/// read of a committed snapshot, so none waits on another; the three digests are of a closed
+/// session's replies and are stable run to run.
+fn trace_read(rows: &mut Rows, caller: &mut Caller, spec: &Spec, session: &str) {
+    let key = format!("{}|trace|{}", spec.project.name, session);
+    let session_field = || fields([("session", Value::String(session.to_owned()))]);
+    rows.op("trace_info", || caller.call("trace_info", session_field()));
+    let mut page = session_field();
+    page.insert("limit".to_owned(), Value::from(100));
+    rows.op_hashed(
+        "trace_query",
+        &format!("{key}|page"),
+        || caller.call("trace_query", page.clone()),
+        Value::clone,
+    );
+    let mut groups = session_field();
+    groups.insert("group_by".to_owned(), Value::String("kind".to_owned()));
+    rows.op_hashed(
+        "trace_groups",
+        &format!("{key}|groups"),
+        || caller.call("trace_query", groups.clone()),
+        Value::clone,
+    );
+    let mut check = session_field();
+    check.insert(
+        "assertion".to_owned(),
+        serde_json::json!({"type": "forbidden", "kind": "core.error", "name": "bench-no-errors"}),
+    );
+    rows.op_hashed(
+        "trace_check",
+        &format!("{key}|check"),
+        || caller.call("trace_check", check.clone()),
+        Value::clone,
     );
 }
 

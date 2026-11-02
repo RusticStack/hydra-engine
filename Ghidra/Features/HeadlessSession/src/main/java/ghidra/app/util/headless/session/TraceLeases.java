@@ -247,7 +247,10 @@ final class TraceLeases {
 		return l == null ? 0 : l.producerGen;
 	}
 
-	/** The state of a lease for {@code trace_info} and {@code trace_list} (never the capability). */
+	/**
+	 * The state of a lease for {@code trace_info} and {@code trace_list}: never the capability and
+	 * never a time, so the same state gives the same reply bytes.
+	 */
 	static synchronized JsonObject describe(String session, Path dir) {
 		Lease l = LEASES.get(session);
 		if (l == null) {
@@ -262,8 +265,7 @@ final class TraceLeases {
 			return Json.of("state", "none");
 		}
 		return alive(l)
-				? Json.of("state", "held", "holder", l.ownerLabel, "producerGen", l.producerGen,
-					"sinceMs", System.currentTimeMillis() - l.since)
+				? Json.of("state", "held", "holder", l.ownerLabel, "producerGen", l.producerGen)
 				: Json.of("state", "orphan", "producerGen", l.producerGen);
 	}
 

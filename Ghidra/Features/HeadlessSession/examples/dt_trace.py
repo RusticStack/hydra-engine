@@ -34,6 +34,8 @@
   with ``busy``/``capacity``/``disk``, and creates nothing.
 * ``trace_symbolize``: addresses resolve to functions at a pinned revision; unresolved ones keep a
   reason; a rename plus ``trace_resymbolize`` is a new revision and the observations are unchanged.
+* ``trace_agent_workload``: four ``hydra-agent`` processes run the ``trace_read`` workload while a
+  writer appends; every row is ok and no request waited on another (needs ``HYDRA_AGENT``).
 * ``trace_client_identity``: the Python and the Rust client send and receive the same bytes
   (needs ``HYDRA_AGENT``, the path of ``hydra-agent.exe``).
 """
@@ -532,6 +534,69 @@ def t_symbolize(c):
         e9.stop(d)
 
 
+def t_agent_workload(c):
+    agent = _agent()
+    if not agent:
+        return "skipped: HYDRA_AGENT (the path of hydra-agent.exe) is not set"
+    exe = e9.fixture_args(c)
+    g = c.copy_fixture("trAgent")
+    d = c.daemon("tr-agent")
+    session = sid("agent")
+    w, cap, _ = writer(c, d, "w", session)
+    procs = []
+    try:
+        w.trace_append(session, cap, [ev(i, "core.resource.open") for i in range(200)])
+        w.trace_close(session, cap)
+        w2 = c.connect(d, "w2", "trace", 3)
+        live = sid("agentlive")
+        cap2 = w2.trace_open(live, create=True)["lease"]["cap"]
+        rows = []
+        for i in range(4):
+            spec = {"name": f"trace-agent-{i}", "endpoint": str(Path(str(c.state)) / "tr-agent.json"),
+                    "rows": str(c.work / f"trace-agent-{i}.jsonl"),
+                    "project": {"name": "fx", "gpr": str(g), "program": "/" + exe},
+                    "hot": [], "fresh": [], "reads": [], "harness": "trace-bench",
+                    "plan": [{"op": "info"}, {"op": "trace_read", "arg": session},
+                             {"op": "trace_read", "arg": live}, {"op": "trace_read", "arg": session}]}
+            sp = c.work / f"trace-agent-{i}.json"
+            sp.write_text(json.dumps(spec))
+            rows.append(Path(spec["rows"]))
+            procs.append(subprocess.Popen([agent, "agent", "--spec", str(sp)], stdout=subprocess.PIPE,
+                                          stderr=subprocess.PIPE, text=True))
+        k = 0
+        while any(p.poll() is None for p in procs) and k < 400:
+            w2.trace_append(live, cap2, [ev(k * 10 + j) for j in range(10)])
+            k += 1
+            time.sleep(0.01)
+        outs = [p.communicate(timeout=120) for p in procs]
+        dt.check(all(p.returncode == 0 for p in procs), f"agent exit codes {[p.returncode for p in procs]}: {outs[0][1][-300:]}")
+        done = {}
+        for r in rows:
+            for ln in r.read_text().splitlines():
+                row = json.loads(ln)
+                if row["op"].startswith("trace_"):
+                    dt.check(row["ok"] is True, f"{row}")
+                    done[row["op"]] = done.get(row["op"], 0) + 1
+        dt.check(done.get("trace_query") == 8 * 1 + 0 or done.get("trace_query", 0) >= 12, f"{done}")
+        shas = {}
+        for r in rows:
+            for ln in r.read_text().splitlines():
+                row = json.loads(ln)
+                if row.get("key", "").endswith(f"trace|{session}|page"):
+                    shas.setdefault(row["key"], set()).add(row["sha"])
+        dt.check(all(len(v) == 1 for v in shas.values()) and shas, f"the closed session's page differs between agents: {shas}")
+        st = w.call("status")
+        dt.check(blocked(st) == 0, f"a request waited on another: {st['waits']}")
+        return f"4 agents x 3 trace_read rounds while a writer appended {k} batches: {done}; one digest per page; foreignBlocked 0"
+    finally:
+        for p in procs:
+            with contextlib.suppress(Exception):
+                if p.poll() is None:
+                    p.kill()
+        e9.close_all(w)
+        e9.stop(d)
+
+
 def _agent():
     p = os.environ.get("HYDRA_AGENT")
     return p if p and Path(p).is_file() else None
@@ -583,7 +648,8 @@ def t_client_identity(c):
             proc.stdin.flush()
             rs_lines.append(_MS.sub("", _ID.sub("{", proc.stdout.readline().rstrip("\r\n"))))
         diff = [(i, requests[i][0]) for i in range(len(requests)) if py_lines[i] != rs_lines[i]]
-        dt.check(not diff, f"Python and Rust replies differ for {diff}: {py_lines[diff[0][0]][:300]} | {rs_lines[diff[0][0]][:300]}")
+        if diff:
+            dt.check(False, f"Python and Rust replies differ for {diff}: {py_lines[diff[0][0]][:300]} | {rs_lines[diff[0][0]][:300]}")
         return f"{len(requests)} trace requests: reply lines byte-identical between the Python and the Rust client"
     finally:
         if proc is not None:
@@ -604,6 +670,7 @@ TESTS = {
     "trace_cursor": t_cursor,
     "trace_disk_reserve": t_disk_reserve,
     "trace_symbolize": t_symbolize,
+    "trace_agent_workload": t_agent_workload,
     "trace_client_identity": t_client_identity,
 }
 

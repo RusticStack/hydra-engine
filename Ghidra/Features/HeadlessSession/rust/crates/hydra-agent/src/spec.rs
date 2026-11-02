@@ -30,7 +30,8 @@ use serde_json::Value;
 /// One step of the read/query work, in the order the driver chose.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PlanItem {
-    /// `decompile_hot`, `decompile_fresh`, `read_script` or `info`.
+    /// `decompile_hot`, `decompile_fresh`, `read_script`, `info` or `trace_read` (the trace read
+    /// workload over the session named by `arg`).
     pub(crate) op: String,
     /// The step's argument: an address, four addresses, or nothing.
     pub(crate) arg: PlanArg,
@@ -41,7 +42,7 @@ pub(crate) struct PlanItem {
 pub(crate) enum PlanArg {
     /// No argument (`info`).
     None,
-    /// One address (`decompile_hot`, `decompile_fresh`).
+    /// One address (`decompile_hot`, `decompile_fresh`) or one trace session id (`trace_read`).
     One(String),
     /// Several addresses (`read_script`, four at a time as the benchmark does).
     Many(Vec<String>),
@@ -312,6 +313,20 @@ mod tests {
             ])
         );
         assert_eq!(spec.plan[2].arg, PlanArg::None);
+    }
+
+    #[test]
+    fn a_trace_read_step_names_its_session() {
+        let spec = Spec::from_value(&json!({
+            "name": "a",
+            "endpoint": "e.json",
+            "rows": "r.jsonl",
+            "project": {"name": "p", "gpr": "g", "program": "x"},
+            "plan": [{"op": "info"}, {"op": "trace_read", "arg": "tbench0001"}]
+        }))
+        .expect("spec");
+        assert_eq!(spec.plan[1].op, "trace_read");
+        assert_eq!(spec.plan[1].arg, PlanArg::One("tbench0001".to_owned()));
     }
 
     #[test]

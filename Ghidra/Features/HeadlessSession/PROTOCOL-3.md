@@ -4332,6 +4332,61 @@ the publish order of D41, the flush-before-rename rule of E12 (A38) and the repl
   default this amendment no longer makes; it is not a measurement of (a)-(d) alone.
   `<hydra-perf>/fork/forkbench-*.json`.
 
+### 8.20 Revision 8.16: the trace commands (capability `trace`, `12.3-hydra.6`, WS-C)
+
+Twelve protocol 3 commands that record and read **semantic traces** (`TRACE-1.md`). Capability `trace`=1 is advertised only when the
+`hydra_native` library loads and `-set trace=false` was not given; `minClient` stays `1.0.0`. A protocol 2 connection (the stock 1.0.0
+client) gets `unknown_command` for every `trace_*` name and keeps working. The commands are routed by `TraceCommands` to the Rust side
+(`hydra_trace_call`: request bytes in, reply bytes out) and the reply goes back through the direct-reply path as it came, so the
+Python and the Rust client see the same reply line (`daemon_tests.py trace_client_identity`).
+
+| Command | Fields | Reply (`result`) | Lane |
+|---|---|---|---|
+| `trace_open` | `session`? (a new id when `create`), `create`=false, `mode`=`read`\|`write` (default `write` with `create`, else `read`), `cap`?, `takeover`=false, `name`?, `program`?, `project`?, `modules`? [names], `moduleBase`?, `profile`? | `session`, `created`, `revision`, `events`, `lease` {`role`, `producerGen`, `cap` (only when a new capability is issued), `holder`, `reclaimed`, `tookOver`}, `symbols` {`revision`, `program`, `modification`, `functions`, `moduleBase`, `modules`}, `recovered` {`reindexed`, `tornTailBytes`} when a writer open repaired the session | quick |
+| `trace_append` | `session`, `cap`, `events` [TRACE-1 envelopes without `seq`, `event_id`, `static` or `revision`] | `appended`, `rejected`, `rejectedEvents` [{`index`, `reason`}], `stored`, `events`, `symbolized`, `unresolved`, `gapsFound`, `producerGen`, `revision`. One group commit: a reader sees all of a batch or none of it. | quick |
+| `trace_mark` | `session`, `cap`, `label`, `payload`? | as `trace_append` for one `core.marker` | quick |
+| `trace_query` | `session`, `kinds`?, `resource`?, `state`?, `corr`?, `process_gen`?, `after`?, `upTo`?, `limit`=100 (max 10000), `group_by`? | `highWater`, `upTo`, `rows`, `returned`, `next`, `truncated`; with `group_by` the counts per group. The first page pins `upTo` (the high-water mark); passing it back with `after` pages a stable snapshot while the writer goes on. | quick |
+| `trace_explain` | `session`, `event`, `direction`=`upstream`\|`downstream` | the events linked to `event` and the relations | quick |
+| `trace_diff` | `session`, `other`, `by`?, `kinds`?, `budget` {`events`, `bytes`}?, `background`=false | the aligned difference, byte-deterministic for the same two snapshots | quick; **long** when `budget.events` is above `trace.quickEvents` or `background:true` |
+| `trace_check` | `session`, `assertion` {`type`, `kind`, `min`, `max`, `name`, ...} | `verdict` `pass`, `fail` or `unknown` (a gap makes it `unknown`, never `pass`), with the evidence | quick |
+| `trace_export` | `session`, `name`?, `kinds`? | `events`, the JSONL file under the session's `export/` folder; a cancelled export leaves no file | **long** |
+| `trace_close` | `session`, `cap` | the writer ends its writing; the session stays readable and the capability stays valid (the lease becomes an orphan) | quick |
+| `trace_list` | | `count`, `sessions` [{`session`, `name`, `revision`, `events`, `closed`, `lease`}] | quick |
+| `trace_info` | `session` | `revision`, `events`, `segments` [{`source`, `records`, `clean`}], `interpretations`, `lease` (`held` with `holder` and `producerGen`, `orphan`, `none`; never a capability or a time) | quick |
+| `trace_resymbolize` | `session`, `cap`, `program`, `modules`?, `moduleBase`? | a new interpretation revision: `revision`, `symbolized`, `unresolved`; the raw segment is not touched | **long** |
+
+**Writer lease.** A session has one writer. `trace_open` with `create` (or `mode:"write"` on an orphaned session) grants the lease and
+returns a 128-bit capability, `cap`; the engine keeps only its SHA-256 (`lease.json`). Writing commands carry `cap` and must come from the
+connection that holds the lease; anything else is `not_owner` (`details`: `session`, `holder`, `orphan`, `producerGen`, `suggest`
+`read`, `takeover` or `open`). A producer that reconnects opens with its `cap`: the lease moves to the new connection and `producerGen`
+goes up by one, so events of the old generation are rejected. When the holder's connection ends the lease is an **orphan**: its `cap`
+holder may reclaim it, anyone may `takeover:true` (a new `cap`, a new generation, the old `cap` worthless); a live holder is never taken
+over. After a daemon restart every lease is an orphan. Reads never need the lease.
+
+**Recovery.** The raw segments (`seg-<source>.trace`, hash-chained) are written before the index commits. A writer open cuts a torn tail
+and re-indexes the records the index does not have (`recovered`). A reader of a session whose writer died sees the committed rows only.
+
+**Symbolization.** `trace_open` (with `program`) and `trace_resymbolize` build an immutable VA to function table of the program as it
+stands (read under the program's shared lock; `symbols.revision` is the interpretation revision, `modification` the program's
+modification number). The engine resolves a code address through a callback into that table at the pinned revision. An address that
+does not resolve keeps `function:null` and a reason (module unknown, not code, no symbol, revision unknown). `modules` limits the
+modules that are resolved; `moduleBase` rebases a module's addresses.
+
+**Store and limits.** The store root is `-Dhydra.trace.root`, else `-set trace.root=<dir>`, else `<state>/traces`. `-set trace.quickEvents`
+(default 250000) is the diff budget above which a diff runs in the long lane; `-set trace=false` disables the commands. A new session
+and `trace_resymbolize` need `diskReserve` plus 16 MB free on the store's volume, else `busy` with `details.reason:"capacity"` and
+`details.resource:"disk"` (reads and appends to an existing session are still served). A session id is 1 to 64 of `A-Za-z0-9_-`. A
+cancelled request (`cancel`, a timeout, a dead client) stops inside the engine (a native flag it polls) and answers `cancelled`.
+
+**Error codes** (the engine's own code is kept in `details.engineCode` when it is mapped): `bad_request` (shape, floats in payloads, a
+producer-set `seq`), `not_found` (no such session or event), `not_owner`, `busy` (disk reserve), `conflict` (the session exists),
+`cancelled`, `unknown_command` (protocol 2), `failed` with `details.reason` `native_missing`, `engine_reply`, `lease_record` or
+`no_trace_root`.
+
+**Status of the Rust engine.** `crates/hydra-native/src/trace_abi.rs` is the contract implementation lane L-proto wrote on the
+`hydra-trace` crate so the protocol could be tested end to end; the `hydra_trace_*` function names, the context JSON and the reply
+shapes in `include/hydra_native.h` are the ABI the production engine keeps.
+
 ### W0
 
 **X0 (Hydra, L): the oracle, the regression suites and the red table.**

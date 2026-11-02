@@ -621,3 +621,74 @@ fn a_zero_or_negative_deadline_is_refused_before_anything_is_sent() {
     session.close();
     engine.wait_closed(1);
 }
+
+// The trace commands send the fields the Python client's `trace_*` methods send, and return the
+// engine's result unchanged (`daemon_tests.py trace_client_identity` compares the real engine's
+// reply lines of the two clients).
+#[test]
+fn trace_commands_send_the_python_clients_fields() {
+    let engine = FakeEngine::start(hello_or_cmd(v3_answer));
+    let session = connect(&engine);
+    let none = Map::new;
+    let one = |k: &'static str, v: Value| fields([(k, v)]);
+    session
+        .trace_open(Some("s1"), one("create", json!(true)), None)
+        .expect("trace_open");
+    session
+        .trace_append("s1", "cap_x", vec![json!({"kind": "core.marker"})], none(), None)
+        .expect("trace_append");
+    session
+        .trace_mark("s1", "cap_x", "phase", none(), None)
+        .expect("trace_mark");
+    session
+        .trace_query("s1", one("limit", json!(7)), None)
+        .expect("trace_query");
+    session
+        .trace_explain("s1", "ev_s1_3", one("direction", json!("downstream")), None)
+        .expect("trace_explain");
+    session
+        .trace_diff("s1", "s2", one("by", json!("kind")), None)
+        .expect("trace_diff");
+    session
+        .trace_check("s1", json!({"type": "forbidden", "kind": "core.error"}), none(), None)
+        .expect("trace_check");
+    session
+        .trace_export("s1", one("name", json!("all")), None)
+        .expect("trace_export");
+    session
+        .trace_close("s1", "cap_x", none(), None)
+        .expect("trace_close");
+    session.trace_list(none(), None).expect("trace_list");
+    session
+        .trace_info("s1", none(), None)
+        .expect("trace_info");
+    let reply = session
+        .trace_resymbolize("s1", "cap_x", "prog.exe", none(), None)
+        .expect("trace_resymbolize");
+    assert_eq!(reply, json!({"cmd": "trace_resymbolize"}), "the result is returned as it is");
+    let seen: Vec<Value> = engine.requests().into_iter().skip(1).collect();
+    let strip = |v: &Value| {
+        let mut m = v.as_object().expect("a request object").clone();
+        m.remove("id");
+        Value::Object(m)
+    };
+    let want = [
+        json!({"cmd": "trace_open", "session": "s1", "create": true}),
+        json!({"cmd": "trace_append", "session": "s1", "cap": "cap_x", "events": [{"kind": "core.marker"}]}),
+        json!({"cmd": "trace_mark", "session": "s1", "cap": "cap_x", "label": "phase"}),
+        json!({"cmd": "trace_query", "session": "s1", "limit": 7}),
+        json!({"cmd": "trace_explain", "session": "s1", "event": "ev_s1_3", "direction": "downstream"}),
+        json!({"cmd": "trace_diff", "session": "s1", "other": "s2", "by": "kind"}),
+        json!({"cmd": "trace_check", "session": "s1", "assertion": {"type": "forbidden", "kind": "core.error"}}),
+        json!({"cmd": "trace_export", "session": "s1", "name": "all"}),
+        json!({"cmd": "trace_close", "session": "s1", "cap": "cap_x"}),
+        json!({"cmd": "trace_list"}),
+        json!({"cmd": "trace_info", "session": "s1"}),
+        json!({"cmd": "trace_resymbolize", "session": "s1", "cap": "cap_x", "program": "prog.exe"}),
+    ];
+    assert_eq!(seen.len(), want.len());
+    for (got, want) in seen.iter().zip(want.iter()) {
+        assert_eq!(&strip(got), want);
+    }
+    session.close();
+}
