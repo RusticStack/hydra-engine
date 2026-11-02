@@ -104,9 +104,11 @@ fn props_buffer(name: &[u16]) -> Vec<u8> {
     p.Wnode.Flags = WNODE_FLAG_TRACED_GUID;
     p.Wnode.ClientContext = 1; // QueryPerformanceCounter ticks
     p.LogFileMode = EVENT_TRACE_REAL_TIME_MODE;
-    p.BufferSize = 256;
-    p.MinimumBuffers = 8;
-    p.MaximumBuffers = 64;
+    // 512 KiB buffers, 8 MiB to start and 64 MiB at most: a burst of file or registry events fills a buffer in
+    // milliseconds, and a lost buffer is a counted gap, so the headroom is larger than the 16 MiB it used to be.
+    p.BufferSize = 512;
+    p.MinimumBuffers = 16;
+    p.MaximumBuffers = 128;
     p.FlushTimer = 1;
     p.LoggerNameOffset = u32::try_from(header).unwrap_or(0);
     // SAFETY: the buffer holds at least one EVENT_TRACE_PROPERTIES; a `Vec<u8>` is not aligned for it, so write unaligned.
@@ -227,8 +229,6 @@ pub(crate) struct Event<'a> {
     record: &'a EVENT_RECORD,
 }
 
-static CALLBACK: std::sync::Mutex<Option<Callback>> = std::sync::Mutex::new(None);
-
 unsafe extern "system" fn on_record(record: *mut EVENT_RECORD) {
     // SAFETY: ETW passes a valid record for the duration of the call.
     let r = unsafe { &*record };
@@ -248,24 +248,27 @@ unsafe extern "system" fn on_record(record: *mut EVENT_RECORD) {
         ticks: u64::try_from(h.TimeStamp).unwrap_or(0),
         record: r,
     };
-    if let Ok(mut slot) = CALLBACK.lock()
-        && let Some(cb) = slot.as_mut()
-    {
-        cb(&ev);
+    let context = r.UserContext.cast::<Callback>();
+    if !context.is_null() {
+        // SAFETY: `UserContext` is the `&mut Callback` that `consume` stored in `EVENT_TRACE_LOGFILEW::Context`. The
+        // callback lives in `consume`'s frame for the whole `ProcessTrace` call, and ETW runs this function only on
+        // the thread inside that call, one event at a time, so no other reference to it exists.
+        let callback = unsafe { &mut *context };
+        callback(&ev);
     }
 }
 
-/// Open the real-time trace `name` and run `ProcessTrace` on the calling thread until the session stops.
-/// Returns the `ProcessTrace` status, or the `OpenTrace` error.
-pub(crate) fn consume(name: &str, callback: Callback) -> Result<u32, u32> {
+/// Open the real-time trace `name` and run `ProcessTrace` on the calling thread until the session stops. The callback
+/// is dropped (and with it any channel sender it owns) when this returns. Returns the `ProcessTrace` status, or the
+/// `OpenTrace` error.
+pub(crate) fn consume(name: &str, mut callback: Callback) -> Result<u32, u32> {
     let mut wname = wide(name);
-    if let Ok(mut slot) = CALLBACK.lock() {
-        *slot = Some(callback);
-    }
     // SAFETY: a zeroed EVENT_TRACE_LOGFILEW is valid; the fields set are the documented ones for a real-time consumer.
+    // `callback` outlives `ProcessTrace`, which is the only place `Context` is read back (see `on_record`).
     unsafe {
         let mut log: EVENT_TRACE_LOGFILEW = std::mem::zeroed();
         log.LoggerName = wname.as_mut_ptr();
+        log.Context = (&raw mut callback).cast();
         log.Anonymous1.ProcessTraceMode = PROCESS_TRACE_MODE_REAL_TIME
             | PROCESS_TRACE_MODE_EVENT_RECORD
             | PROCESS_TRACE_MODE_RAW_TIMESTAMP;
@@ -277,13 +280,6 @@ pub(crate) fn consume(name: &str, callback: Callback) -> Result<u32, u32> {
         let status = ProcessTrace(&raw const handle, 1, ptr::null(), ptr::null());
         CloseTrace(handle);
         Ok(status)
-    }
-}
-
-/// Drop the callback (and the channel sender it owns) so the writer can finish.
-pub(crate) fn clear_callback() {
-    if let Ok(mut slot) = CALLBACK.lock() {
-        *slot = None;
     }
 }
 
