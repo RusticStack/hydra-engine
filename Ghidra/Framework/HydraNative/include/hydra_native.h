@@ -24,7 +24,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define HYDRA_NATIVE_ABI_VERSION 1
+#define HYDRA_NATIVE_ABI_VERSION 2
 
 #define HYDRA_OK            0
 #define HYDRA_ERR_NULL     -1 /* out is NULL */
@@ -124,5 +124,37 @@ uint64_t hydra_cs_len(const HydraCsScan *s);
 uint64_t hydra_cs_copy(const HydraCsScan *s, uint8_t *out, uint64_t len);
 
 void hydra_cs_free(HydraCsScan *s);
+
+/*
+ * The semantic trace (src/trace.rs, crate hydra-trace; Java: HeadlessSession TraceCommands).
+ * Every trace_* command is one call: request bytes in (JSON), reply bytes out (JSON). Java routes
+ * the bytes and parses nothing but the command name. Added in hydra_native ABI 2.
+ *
+ * Commands: trace_open, trace_append, trace_mark, trace_query, trace_explain, trace_diff,
+ * trace_check, trace_export, trace_close, trace_list, trace_info, trace_resymbolize.
+ */
+#define HYDRA_TRACE_OK            0
+#define HYDRA_TRACE_ERR_NULL     -1 /* a required pointer is NULL */
+#define HYDRA_TRACE_ERR_UTF8     -3 /* the root or command is not UTF-8 */
+#define HYDRA_TRACE_ERR_STATE    -4 /* hydra_trace_init with a different root after first use */
+#define HYDRA_TRACE_ERR_BUFFER   -5 /* out_cap too small: *out_len is the size needed */
+
+/* Sets the directory sessions live in. Optional: the first request otherwise uses the
+ * HYDRA_TRACE_ROOT environment variable, or "traces" in the working directory. */
+int32_t hydra_trace_init(const uint8_t *root, size_t root_len);
+
+/*
+ * Runs one command. The reply (always JSON, {"ok":true,...} or {"ok":false,"error":{...}}) is
+ * written to out[0..*out_len] and HYDRA_TRACE_OK returned. When out_cap is too small nothing
+ * is written, *out_len is the size needed, and HYDRA_TRACE_ERR_BUFFER is returned: the reply is
+ * kept on the calling thread and hydra_trace_reply_copy fetches it without running the command
+ * again.
+ */
+int32_t hydra_trace_request(const uint8_t *cmd, size_t cmd_len, const uint8_t *req,
+	size_t req_len, uint8_t *out, size_t out_cap, size_t *out_len);
+
+/* Copies the kept reply of this thread into out; returns its length, or -1 if none is kept or
+ * out_cap is too small. */
+int64_t hydra_trace_reply_copy(uint8_t *out, size_t out_cap);
 
 #endif

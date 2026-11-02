@@ -13,13 +13,14 @@ pub mod os;
 pub mod profile;
 pub mod readplane;
 pub mod topology;
+pub mod trace;
 
 use cpuid::CpuId;
 use limits::Limits;
 use topology::Topology;
 
 /// The version of the C ABI below. It changes whenever a function or `HydraCpuInfo` changes.
-pub const ABI_VERSION: u32 = 1;
+pub const ABI_VERSION: u32 = 2;
 
 /// `hydra_cpu_query` succeeded.
 pub const OK: i32 = 0;

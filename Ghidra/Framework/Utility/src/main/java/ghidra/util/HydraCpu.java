@@ -61,7 +61,7 @@ public final class HydraCpu {
 	static final String LIBRARY = "hydra_native";
 
 	// The C ABI: include/hydra_native.h in module HydraNative
-	static final int ABI_VERSION = 1;
+	static final int ABI_VERSION = 2;
 	static final long INFO_SIZE = 224;
 	private static final int OK = 0;
 
