@@ -7,7 +7,7 @@ use crate::store::{Result, Store};
 use rusqlite::params;
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap};
 
 pub const RELATIONS: &[&str] = &[
     "call-return",
@@ -37,6 +37,8 @@ struct Ev {
     seq: i64,
     kind: String,
     corr: Option<String>,
+    clock: String,
+    t: i64,
     pgen: i64,
     thread: i64,
     tgen: i64,
@@ -71,7 +73,7 @@ fn rel(
 
 fn load_candidates(store: &Store) -> Result<Vec<Ev>> {
     let mut stmt = store.conn().prepare(
-        "SELECT seq,kind,corr,COALESCE(process_gen,0),COALESCE(thread_id,0),COALESCE(thread_gen,0),state_key,payload
+        "SELECT seq,kind,corr,clock_domain,t_mono_ns,COALESCE(process_gen,0),COALESCE(thread_id,0),COALESCE(thread_gen,0),state_key,payload
          FROM events
          WHERE corr IS NOT NULL
             OR kind IN ('core.function.enter','core.function.exit','core.state.write','core.state.read')
@@ -80,15 +82,17 @@ fn load_candidates(store: &Store) -> Result<Vec<Ev>> {
          ORDER BY seq",
     )?;
     let rows = stmt.query_map([], |r| {
-        let payload: String = r.get(7)?;
+        let payload: String = r.get(9)?;
         Ok(Ev {
             seq: r.get(0)?,
             kind: r.get(1)?,
             corr: r.get(2)?,
-            pgen: r.get(3)?,
-            thread: r.get(4)?,
-            tgen: r.get(5)?,
-            state_key: r.get(6)?,
+            clock: r.get(3)?,
+            t: r.get(4)?,
+            pgen: r.get(5)?,
+            thread: r.get(6)?,
+            tgen: r.get(7)?,
+            state_key: r.get(8)?,
             payload: serde_json::from_str::<Value>(&payload)
                 .ok()
                 .and_then(|v| v.as_object().cloned())
@@ -106,7 +110,9 @@ pub fn compute(store: &Store, include_temporal: bool) -> Result<Vec<Relation>> {
     let events = load_candidates(store)?;
     let mut out: Vec<Relation> = Vec::new();
 
-    // request-completion by correlation id (FIFO within an id).
+    // request-completion by correlation id. The roles decide the pairing, never arrival order: the
+    // producers of a request and of its completion are different threads whose batches reach the
+    // collector in any order (TRACE-1 section 7). Within a role the clock decides (FIFO).
     let mut by_corr: BTreeMap<&str, Vec<&Ev>> = BTreeMap::new();
     for e in &events {
         if let Some(c) = &e.corr {
@@ -114,49 +120,94 @@ pub fn compute(store: &Store, include_temporal: bool) -> Result<Vec<Relation>> {
         }
     }
     for group in by_corr.values() {
-        let mut pending: VecDeque<i64> = VecDeque::new();
+        let mut requests: Vec<&Ev> = Vec::new();
+        let mut stages: Vec<&Ev> = Vec::new();
+        let mut completions: Vec<&Ev> = Vec::new();
         for e in group {
-            if completion_like(&e.kind) {
-                match pending.pop_front() {
-                    Some(req) if pending.is_empty() => {
-                        out.push(rel(
-                            "request-completion",
-                            req,
-                            Some(e.seq),
-                            &["corr"],
-                            "supported",
-                            &[],
-                        ));
-                    }
-                    Some(req) => out.push(rel(
-                        "request-completion",
-                        req,
-                        Some(e.seq),
-                        &["corr", "fifo-order"],
-                        "inferred",
-                        &["ambiguous-pairing"],
-                    )),
-                    None => out.push(rel(
-                        "request-completion",
-                        e.seq,
-                        None,
-                        &["corr"],
-                        "unresolved",
-                        &["missing-request"],
-                    )),
-                }
+            if e.payload.get("stage").is_some() {
+                stages.push(e);
+            } else if completion_like(&e.kind) {
+                completions.push(e);
             } else {
-                pending.push_back(e.seq);
+                requests.push(e);
             }
         }
-        for req in pending {
+        let by_clock = |v: &mut Vec<&Ev>| {
+            v.sort_by(|a, b| (&a.clock, a.t, a.seq).cmp(&(&b.clock, b.t, b.seq)))
+        };
+        by_clock(&mut requests);
+        by_clock(&mut stages);
+        by_clock(&mut completions);
+        for (i, done) in completions.iter().enumerate() {
+            match requests.get(i) {
+                Some(req) if requests.len() - i == 1 => out.push(rel(
+                    "request-completion",
+                    req.seq,
+                    Some(done.seq),
+                    &["corr"],
+                    "supported",
+                    &[],
+                )),
+                Some(req) => out.push(rel(
+                    "request-completion",
+                    req.seq,
+                    Some(done.seq),
+                    &["corr", "fifo-order"],
+                    "inferred",
+                    &["ambiguous-pairing"],
+                )),
+                None => out.push(rel(
+                    "request-completion",
+                    done.seq,
+                    None,
+                    &["corr"],
+                    "unresolved",
+                    &["missing-request"],
+                )),
+            }
+        }
+        for req in requests.iter().skip(completions.len()) {
             out.push(rel(
                 "request-completion",
-                req,
+                req.seq,
                 None,
                 &["corr"],
                 "unresolved",
                 &["missing-completion"],
+            ));
+        }
+        // The work between them: each stage follows the previous stage (or the request) of the id.
+        let mut previous = requests.first().map(|r| r.seq);
+        let sure = requests.len() <= 1;
+        for stage in &stages {
+            match previous {
+                Some(from) => out.push(rel(
+                    "request-completion",
+                    from,
+                    Some(stage.seq),
+                    &["corr", "stage"],
+                    if sure { "supported" } else { "inferred" },
+                    if sure { &[] } else { &["ambiguous-pairing"] },
+                )),
+                None => out.push(rel(
+                    "request-completion",
+                    stage.seq,
+                    None,
+                    &["corr", "stage"],
+                    "unresolved",
+                    &["missing-request"],
+                )),
+            }
+            previous = Some(stage.seq);
+        }
+        if let (Some(last), Some(done)) = (stages.last(), completions.first()) {
+            out.push(rel(
+                "request-completion",
+                last.seq,
+                Some(done.seq),
+                &["corr", "stage"],
+                if sure { "supported" } else { "inferred" },
+                if sure { &[] } else { &["ambiguous-pairing"] },
             ));
         }
     }
@@ -256,17 +307,25 @@ pub fn compute(store: &Store, include_temporal: bool) -> Result<Vec<Relation>> {
             by_token.entry(t.to_string()).or_default().push(e);
         }
     }
-    for group in by_token.values() {
+    for group in by_token.values_mut() {
+        // The sender is the side whose clock says so, not the batch that reached the collector
+        // first. Events of different clock domains cannot be ordered: the edge says so.
+        group.sort_by(|a, b| (&a.clock, a.t, a.seq).cmp(&(&b.clock, b.t, b.seq)));
         for pair in group.windows(2) {
             let (a, b) = (pair[0], pair[1]);
             if (a.pgen, a.thread, a.tgen) != (b.pgen, b.thread, b.tgen) {
+                let same_clock = a.clock == b.clock;
                 out.push(rel(
                     "async-handoff",
                     a.seq,
                     Some(b.seq),
                     &["handoff-token"],
-                    "supported",
-                    &[],
+                    if same_clock { "supported" } else { "inferred" },
+                    if same_clock {
+                        &[]
+                    } else {
+                        &["clock-uncalibrated"]
+                    },
                 ));
             }
         }
@@ -544,6 +603,71 @@ mod tests {
         let reasons: Vec<_> = all.iter().flat_map(|r| r.unresolved.clone()).collect();
         assert!(reasons.contains(&"missing-completion".to_string()));
         assert!(reasons.contains(&"missing-request".to_string()));
+    }
+
+    #[test]
+    fn a_completion_that_arrives_before_its_request_still_pairs_and_stages_chain() {
+        // The batches of two producers reach the collector in any order: the completion is ingested
+        // first, yet it pairs with its own request, and the stages between them chain by id.
+        let worker = |e: &mut crate::model::Event| {
+            e.source_id = "worker".into();
+            e.thread_id = Some(2);
+        };
+        let mut store = Store::memory("r").unwrap();
+        // the worker's batch is committed first; the main thread's request arrives later
+        let first = vec![
+            ev(
+                "app.handle",
+                1,
+                8,
+                json!({"corr": "x", "stage": "handle"}),
+                worker,
+            ),
+            ev(
+                "app.result",
+                2,
+                8,
+                json!({"corr": "x", "stage": "store"}),
+                worker,
+            ),
+            ev("app.complete", 3, 8, json!({"corr": "x"}), worker),
+        ];
+        store.ingest("worker", 0, &records(first)).unwrap();
+        let later = vec![
+            ev("app.request", 1, 8, json!({"corr": "x"}), |_| {}),
+            ev("app.request", 2, 8, json!({"corr": "lost"}), |_| {}),
+        ];
+        store.ingest("s", 0, &records(later)).unwrap();
+        let all = compute(&store, false).unwrap();
+        let rc: Vec<_> = all
+            .iter()
+            .filter(|r| r.relation == "request-completion")
+            .collect();
+        let seq_of = |kind: &str, corr: &str| -> i64 {
+            store
+                .conn()
+                .query_row(
+                    "SELECT seq FROM events WHERE kind=?1 AND corr=?2",
+                    params![kind, corr],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        let (req, handle, result, done) = (
+            seq_of("app.request", "x"),
+            seq_of("app.handle", "x"),
+            seq_of("app.result", "x"),
+            seq_of("app.complete", "x"),
+        );
+        let has = |from: i64, to: i64| {
+            rc.iter()
+                .any(|r| r.from_seq == from && r.to_seq == Some(to) && r.status == "supported")
+        };
+        assert!(has(req, done) && has(req, handle) && has(handle, result) && has(result, done));
+        let lost = seq_of("app.request", "lost");
+        assert!(rc.iter().any(|r| r.from_seq == lost
+            && r.to_seq.is_none()
+            && r.unresolved == ["missing-completion"]));
     }
 
     #[test]

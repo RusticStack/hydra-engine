@@ -164,6 +164,9 @@ struct QueryReq {
     /// Pin: only events with `seq <= up_to` (a first page answers its own `up_to`).
     #[serde(default)]
     up_to: Option<i64>,
+    /// `processes`, `threads`, `modules` or `objects`: the lifetime table instead of events.
+    #[serde(default)]
+    lifetimes: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -366,6 +369,14 @@ impl Service {
 
     fn query(&self, r: QueryReq) -> Reply {
         let store = self.reader(&r.session)?;
+        if let Some(what) = &r.lifetimes {
+            let Some(rows) = query::lifetimes(&store, what)? else {
+                return Err(fail("refused", format!("no lifetime table {what}")));
+            };
+            return Ok(
+                json!({"revision": store.revision()?, "lifetimes": what, "rows": rows, "gaps": gaps_of(&store)?}),
+            );
+        }
         if let Some(by) = &r.group_by {
             if query::group_column(by).is_none() {
                 return Err(fail("refused", format!("cannot group by {by}")));

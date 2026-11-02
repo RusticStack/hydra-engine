@@ -33,6 +33,11 @@ pub struct Row {
     pub t_mono_ns: i64,
     pub process_id: Option<i64>,
     pub thread_id: Option<i64>,
+    /// Session-local generations (TRACE-1 section 7); absent when the producer gave none and no
+    /// start was observed.
+    pub process_gen: Option<i64>,
+    pub thread_gen: Option<i64>,
+    pub module_instance: Option<i64>,
     pub payload: String,
 }
 
@@ -57,7 +62,7 @@ pub fn query(store: &Store, filter: &Filter) -> Result<Page> {
         None => conn.query_row("SELECT COALESCE(MAX(seq),0) FROM events", [], |r| r.get(0))?,
     };
     let mut sql = String::from(
-        "SELECT seq,event_id,kind,source_id,t_mono_ns,process_id,thread_id,payload FROM events WHERE seq>?1 AND seq<=?2",
+        "SELECT seq,event_id,kind,source_id,t_mono_ns,process_id,thread_id,process_gen,thread_gen,module_instance,payload FROM events WHERE seq>?1 AND seq<=?2",
     );
     let mut args: Vec<rusqlite::types::Value> = vec![filter.after.into(), up_to.into()];
     if !filter.kinds.is_empty() {
@@ -91,7 +96,10 @@ pub fn query(store: &Store, filter: &Filter) -> Result<Page> {
                 t_mono_ns: r.get(4)?,
                 process_id: r.get(5)?,
                 thread_id: r.get(6)?,
-                payload: r.get(7)?,
+                process_gen: r.get(7)?,
+                thread_gen: r.get(8)?,
+                module_instance: r.get(9)?,
+                payload: r.get(10)?,
             })
         })?
         .collect::<std::result::Result<_, _>>()?;
@@ -109,6 +117,74 @@ pub fn query(store: &Store, filter: &Filter) -> Result<Page> {
         up_to,
         truncated: filter.limit > MAX_LIMIT,
     })
+}
+
+/// The lifetime tables (TRACE-1 section 7): one object per observed lifetime of an address,
+/// process generations, thread generations and module instances. `what` is `processes`,
+/// `threads`, `modules` or `objects`; anything else is refused.
+pub fn lifetimes(store: &Store, what: &str) -> Result<Option<Vec<serde_json::Value>>> {
+    let (sql, names): (&str, &[&str]) = match what {
+        "processes" => (
+            "SELECT pid,gen,start_seq,end_seq,end_reason,resolved FROM processes ORDER BY pid,gen",
+            &[
+                "pid",
+                "gen",
+                "start_seq",
+                "end_seq",
+                "end_reason",
+                "resolved",
+            ],
+        ),
+        "threads" => (
+            "SELECT pgen,tid,gen,start_seq,end_seq,resolved FROM threads ORDER BY pgen,tid,gen",
+            &["pgen", "tid", "gen", "start_seq", "end_seq", "resolved"],
+        ),
+        "modules" => (
+            "SELECT inst,pgen,name,build,base,size,load_seq,unload_seq FROM module_instances ORDER BY inst",
+            &[
+                "inst",
+                "pgen",
+                "name",
+                "build",
+                "base",
+                "size",
+                "load_seq",
+                "unload_seq",
+            ],
+        ),
+        "objects" => (
+            "SELECT pgen,addr,gen,type,create_seq,destroy_seq,resolved FROM objects ORDER BY pgen,addr,gen",
+            &[
+                "pgen",
+                "addr",
+                "gen",
+                "type",
+                "create_seq",
+                "destroy_seq",
+                "resolved",
+            ],
+        ),
+        _ => return Ok(None),
+    };
+    let mut stmt = store.conn().prepare(sql)?;
+    let rows = stmt.query_map([], |r| {
+        let mut o = serde_json::Map::new();
+        for (i, name) in names.iter().enumerate() {
+            let v: rusqlite::types::Value = r.get(i)?;
+            o.insert(
+                (*name).into(),
+                match v {
+                    rusqlite::types::Value::Null => serde_json::Value::Null,
+                    rusqlite::types::Value::Integer(n) => n.into(),
+                    rusqlite::types::Value::Real(f) => f.into(),
+                    rusqlite::types::Value::Text(t) => t.into(),
+                    rusqlite::types::Value::Blob(_) => serde_json::Value::Null,
+                },
+            );
+        }
+        Ok(serde_json::Value::Object(o))
+    })?;
+    Ok(Some(rows.collect::<std::result::Result<_, _>>()?))
 }
 
 /// A group of events with a representative first event.

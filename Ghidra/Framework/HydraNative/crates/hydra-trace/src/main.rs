@@ -168,10 +168,7 @@ fn resymbolize_cmd(root: &str, id: &str, symbols: &str, revision: &str) -> ExitC
     match symbolize::resymbolize(&mut store, &table, revision) {
         Ok(rev) => match symbolize::counts(&store, Some(rev)) {
             Ok(counts) => {
-                println!(
-                    "{}",
-                    serde_json::json!({"interp": rev, "counts": counts})
-                );
+                println!("{}", serde_json::json!({"interp": rev, "counts": counts}));
                 ExitCode::SUCCESS
             }
             Err(e) => fail(e),
@@ -191,7 +188,9 @@ fn main() -> ExitCode {
                 verify_segment(&args[1], &args[2])
             }
         }
-        Some("resymbolize") if args.len() == 5 => resymbolize_cmd(&args[1], &args[2], &args[3], &args[4]),
+        Some("resymbolize") if args.len() == 5 => {
+            resymbolize_cmd(&args[1], &args[2], &args[3], &args[4])
+        }
         Some("import") if args.len() == 4 => import(&args[1], &args[2], &args[3]),
         Some("rebuild") if args.len() == 3 => {
             match session::rebuild(Path::new(&args[1]), &args[2], &Options::default()) {
