@@ -9,18 +9,53 @@ example `12.3-hydra.1`); its tag is `v` and the version. Releases are on
 
 ## Unreleased
 
+## 12.3-hydra.6
+
+Prepared 2026-11-02 on branch `trace/final-eng`; not tagged and not published. Based on the same
+upstream Ghidra `master` (12.3 DEV) commit as 12.3-hydra.5. This release adds the **semantic trace**:
+a store of observed runtime events from a process you own, queried through the same daemon. Every
+gate result, and every gate that was not met, is in `docs/release-notes-12.3-hydra.6.md`.
+
+### Semantic trace
+
+- **Contract.** `Ghidra/Features/HeadlessSession/TRACE-1.md` (envelope, core kinds, resource and state
+  identity, generations, clock domains, sources and coverage, relations, interpretations, assertions, the
+  raw-segment framing, limitation codes) and the JSON Schemas in `trace-schema/`. `PROTOCOL-3.md` gains
+  the `trace` capability. Nothing about protocol 2 changed (it gets `unknown_command` for `trace_*`);
+  `minClient` stays `1.0.0`.
+- **`hydra-trace` crate** (in `hydra_native`, plus a `hydra-trace.exe` CLI): a SQLite store with raw
+  segments (CRC and hash chain, torn-tail repair, rebuild equals the original), group-commit ingest,
+  process/thread/module generations, symbolization against the sealed read plane, bounded queries with
+  stable cursors, relations built from correlation and never from timestamps alone, `explain`, aligned
+  `diff`, three-valued assertions, interpretations (decode revisions), payload artifacts with export
+  gating and eviction tombstones, JSONL export, minidump import and the keyed-ID privacy model.
+- **Protocol 3 commands** `trace_open`, `trace_append`, `trace_mark`, `trace_query`, `trace_explain`,
+  `trace_diff`, `trace_check`, `trace_export`, `trace_close`, `trace_list`, `trace_info`,
+  `trace_resymbolize`: Java routes, Rust answers. One writer lease per session (owner capability,
+  producer generation, takeover after a writer kill); readers never wait for the writer.
+- **Clients.** `trace_*` in `ghidra_session.py` and in the Rust `hydra-client`; `hydra-agent` has a trace
+  read workload; `hydra-etw` (new, packaged like `hydra-agent`) is the ETW consumer and refuses cleanly
+  without elevation.
+- **Fix found by the release gates.** A trace reply took its revision, its pin (`MAX(seq)`) and its rows
+  from three separate statements, each seeing the newest commit. A batch committed between them gave a
+  reply labelled revision r with the rows of r+1 (37 of 381 replies in the regression test
+  `query::tests::a_reply_at_revision_r_holds_exactly_the_events_of_r`). `trace_query` now answers from one
+  read snapshot.
+- **`HydraCpu` ABI.** `hydra_native` reports ABI 2; the Java side (`HydraCpu.ABI_VERSION`) matches. An
+  install must carry both (the Utility jar and the library).
+- Privacy tests, benchmarks (`--trace-readers`, `--cpu-profile`, `--affinity`, `trace_bench_rounds.py`,
+  `trace_constrained.py`) and the README "System requirements" (minimum, reference, recommended, optional
+  capabilities, support matrix, constrained behaviour).
+
 ### `decompile`: response cap per query and non-contiguous functions (issues 6 and 7)
 
 - `decompile` takes `maxResultMb` (alias `max_result_mb`, 1 to 512, default today's 50): the cap on the native decompiler's response buffer. It is not `maxChars`, which only cuts the text of an answer that already fit. A response over the cap now answers `completed:false, truncated:true, bytes_emitted, reason:"response_buffer"` instead of failing with `Response buffer size exceeded`; a timeout is labelled `reason:"timeout"`. No partial C text is returned (the packed answer cannot be decoded from a prefix and the decompiler has no per-block mode); raise the cap instead.
 - A function with a non-contiguous (pdata) body that the decompiler cannot flow over (it ran into a pointer table between pieces: `Bad instruction count exceeded`) now decompiles piece by piece: `completed:true, partial:true` with a `fragments` list of `{start, end, class: code|data|unknown, decompiled}`; data pieces are skipped. Whole-body decompiles that succeed are unchanged. Tests: `examples/cc_issues_eng.py`. Details: `PROTOCOL-3.md` 8.21.
 - `DecompInterface.setMaxResultBytes` and `DecompileProcess.setMaxResultBytes` (Java API): a per-use cap in bytes that wins over the options' payload limit.
 
-### Semantic trace: non-functional measurements (draft)
+### Test runs for this release
 
-- Privacy tests for the trace (`hydra-trace` `tests/privacy.rs`): secrets absent from replies, index, WAL, segments, exports and CLI output; keyed ids stable per scope and unlinkable across sessions and installs; payload artifacts excluded from export unless authorized; evicted artifacts leave a tombstone; the retention budget accounts for every event.
-- Benchmarks: `multiagent_bench.py` and `multiproj_bench.py` take `--trace-readers`, `--cpu-profile`; `multiagent_bench.py` also `--affinity`; `trace_bench_rounds.py` runs and reports interleaved rounds; `trace_constrained.py` runs the disk and event-budget refusals.
-- Measured: with 4 trace readers and a live capture the 16-agent run shows 0 waits and unchanged core replies; tree CPU rises by about 9 s (+45 %) in the 5 s workload, and `trace_info` on a live session costs O(session size). Details and what was not run: `docs/release-notes-12.3-hydra.6.md`.
-- README: "System requirements" (minimum, reference, recommended, optional capabilities, support matrix, constrained behaviour); module README: a row for the trace store in "Why each part lives where it does".
+See `docs/release-notes-12.3-hydra.6.md` section 2 and `.github/local-test-record.json`.
 
 ## 12.3-hydra.5
 

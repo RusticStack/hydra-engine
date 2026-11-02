@@ -1,16 +1,22 @@
 {
-  "release": "12.3-hydra.6 (draft, non-functional lane only)",
-  "testedCommit": "30d1b21a68423645f7fff3071ec3916772d8841a",
+  "release": "12.3-hydra.6 (prepared, not tagged or published)",
+  "testedCommit": "9875e54c76f23d6d6e45c9defd32f944a8eadd16",
   "date": "2026-11-02",
-  "machine": "Windows 11 Pro 10.0.26300, i7-13700KF 24 logical processors, 47.79 GiB RAM, NTFS (C:, D:, E:), power plan Balanced, JDK 25.0.5+8 Temurin, Python 3.15.2, Rust 1.99.1; machine shared with other lanes",
-  "install": "source-built candidate (javac classes and hydra_native.dll from branch trace/l-nfr-eng on a copy of the published 12.3-hydra.5 install), release stamp dev",
+  "machine": "Windows 11 Pro 10.0.26300, i7-13700KF 24 logical processors, NTFS (C:, D:, E:), JDK 25.0.4.1 Temurin, Python 3.15, Rust 1.99; machine shared with other lanes",
+  "install": "copy of the published 12.3-hydra.5 install with HeadlessSession/Decompiler/Utility jar classes recompiled from the tree, release hydra_native.dll, hydra-trace/hydra-agent/hydra-etw, stamped hydra.version=12.3-hydra.6 (_logs/trace-final/build.sh); not a Gradle/CI build of the release zip",
   "suites": {
-    "hydra-trace tests/privacy.rs": "7/7 passed in release (commit 30d1b21a68)",
-    "daemon_tests.py (trace_*)": "11/11 passed (_logs/trace-lnfr/daemon_tests_trace.log)",
-    "scale.rs (ignored, 1M events)": "passed: ingest 18,981 events/s, query p50 0.02 ms, peak 1,229 MiB (_logs/trace-lnfr/scale.log)",
-    "multiagent_bench.py via trace_bench_rounds.py": "18 runs: 412 reply keys, digest 285b55a2f873abb9, 0 waits, trace digest 91606cf1e287 in 12 trace runs (_logs/trace-lnfr/bench/rounds2-report.md); 9 runs at 4 logical CPUs (bench/aff4-report.md)",
-    "multiproj_bench.py": "12 rotated runs: 818/818 core operations, 0 errors, 632-key digest 9071602cf75b, 0 waits, project trees byte-identical (_logs/trace-lnfr/mp-report.md)",
-    "trace_constrained.py": "disk and budget scenarios: every assertion held (_logs/trace-lnfr/constrained/constrained1.json)",
-    "not run": "contract_tests.py, client_compat_tests.py, full daemon_tests.py, session_smoke.py: not run by this lane"
+    "golden 9.1": "8616/8616 on production and explicit, standard and raw (_logs/trace-final/F/g91b.out.log)",
+    "daemon_tests.py": "268 tests via run_parallel.py --workers 16 --no-result-cache: 263 passed, 0 skipped, 3 failed alone (upgrade_cache, legacy_overlay, fork_upgrade_from_cache: the checked-in 12.1.4 fixture is owned by user 'test'; 3/3 pass with GHIDRA_SESSION_VMARGS=-Duser.name=test), 2 failed only under load (passed alone), 0 problems (F/daemon.log, F/legacy.log)",
+    "flaky cases alone": "cpu_profile_identical, e2a_kill_fork, e9_decompiler_faults, e9_guarded_threads, trace_agent_workload, trace_client_identity: 6/6 (F/flaky.log); root causes of the load failures other than M3Concurrency not found, see docs/release-notes-12.3-hydra.6.md 0.3",
+    "client_compat_tests.py": "58/58 (F/cc.log)",
+    "contract_tests.py": "7/7 (F/contract.log)",
+    "session_smoke.py": "all smoke checks passed (F/smoke.log)",
+    "multiagent bench (trace_bench_rounds.py)": "18 runs: 412 reply keys, digest 285b55a2f873abb9, foreignBlocked 0, contended 0; trace digest c12316d79475b820 in 6/6 trace runs (F/bench-report.md)",
+    "multiproj_bench.py": "3 runs: 818/818 operations, 0 errors, 632-key digest 9071602cf75b, 0 waits, trees byte-identical (F/mp-report.md)",
+    "hydra-trace cargo test/clippy/fmt": "112 lib + 11 integration tests pass, clippy -D warnings and fmt clean",
+    "M3Concurrency": "snapshot bug fixed (73b3a8380a) with a red/green regression test; 3/3 repeated runs OK (F/m3-rep*.log)",
+    "Hydralysis suites (against this install)": "unit 1996/1996; engine-gated 1996/1996, 1 failed only under load (M3Pairing delay, passed alone) (F/hy-unit.log, F/hy-engine.log)",
+    "not met": "overhead on a bare-loop microbenchmark (113 %); live trace_info O(session size); trace CPU +39 to +42 % in the 5 s bench workload",
+    "not run": "Gradle/CI release build, hosted-runner CI, protocol-3 characterization and R1 hello golden, -Xmx run, real Frida/ETW capture through the daemon at bench rate, ReFS, other hardware"
   }
 }
