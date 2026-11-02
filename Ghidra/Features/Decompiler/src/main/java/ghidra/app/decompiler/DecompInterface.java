@@ -87,6 +87,8 @@ import ghidra.util.task.TaskMonitor;
  */
 public class DecompInterface {
 
+	private int maxResultBytesOverride; // Hydra: see setMaxResultBytes
+
 	public static class EncodeDecodeSet {
 		public OverlayAddressSpace overlay;		// Active overlay space or null
 		public CachedEncoder mainQuery;		// Encoder for main query to decompiler process
@@ -397,7 +399,7 @@ public class DecompInterface {
 		if (options != null) {
 			baseEncodingSet.mainQuery.clear();
 			options.encode(baseEncodingSet.mainQuery, this);
-			decompProcess.setMaxResultSize(options.getMaxPayloadMBytes());
+			applyMaxResult();
 			decompProcess.sendCommand1Param("setOptions", baseEncodingSet.mainQuery,
 				stringResponse);
 			if (!stringResponse.toString().equals("t")) {
@@ -760,6 +762,29 @@ public class DecompInterface {
 	}
 
 	/**
+	 * Hydra: a per-use cap on the main result in bytes, which wins over the options'
+	 * {@code getMaxPayloadMBytes} until reset with 0. The cap survives a process restart and a
+	 * later {@link #setOptions}. A result over the cap fails the decompile with
+	 * {@code Response buffer size exceeded}.
+	 * @param bytes the cap in bytes, or 0 for the options' payload limit
+	 */
+	public synchronized void setMaxResultBytes(int bytes) {
+		maxResultBytesOverride = Math.max(0, bytes);
+		if (decompProcess != null) {
+			applyMaxResult();
+		}
+	}
+
+	private void applyMaxResult() {
+		if (maxResultBytesOverride > 0) {
+			decompProcess.setMaxResultBytes(maxResultBytesOverride);
+		}
+		else if (options != null) {
+			decompProcess.setMaxResultSize(options.getMaxPayloadMBytes());
+		}
+	}
+
+	/**
 	 * Set the object controlling the list of global options
 	 * used by the decompiler. Ideally this is called once,
 	 * before the openProgram call is made. But it can be
@@ -788,7 +813,7 @@ public class DecompInterface {
 			verifyProcess();
 			baseEncodingSet.mainQuery.clear();
 			options.encode(baseEncodingSet.mainQuery, this);
-			decompProcess.setMaxResultSize(options.getMaxPayloadMBytes());
+			applyMaxResult();
 			decompProcess.sendCommand1Param("setOptions", baseEncodingSet.mainQuery,
 				stringResponse);
 			return stringResponse.toString().equals("t");

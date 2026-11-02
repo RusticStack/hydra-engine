@@ -9,6 +9,12 @@ example `12.3-hydra.1`); its tag is `v` and the version. Releases are on
 
 ## Unreleased
 
+### `decompile`: response cap per query and non-contiguous functions (issues 6 and 7)
+
+- `decompile` takes `maxResultMb` (alias `max_result_mb`, 1 to 512, default today's 50): the cap on the native decompiler's response buffer. It is not `maxChars`, which only cuts the text of an answer that already fit. A response over the cap now answers `completed:false, truncated:true, bytes_emitted, reason:"response_buffer"` instead of failing with `Response buffer size exceeded`; a timeout is labelled `reason:"timeout"`. No partial C text is returned (the packed answer cannot be decoded from a prefix and the decompiler has no per-block mode); raise the cap instead.
+- A function with a non-contiguous (pdata) body that the decompiler cannot flow over (it ran into a pointer table between pieces: `Bad instruction count exceeded`) now decompiles piece by piece: `completed:true, partial:true` with a `fragments` list of `{start, end, class: code|data|unknown, decompiled}`; data pieces are skipped. Whole-body decompiles that succeed are unchanged. Tests: `examples/cc_issues_eng.py`. Details: `PROTOCOL-3.md` 8.21.
+- `DecompInterface.setMaxResultBytes` and `DecompileProcess.setMaxResultBytes` (Java API): a per-use cap in bytes that wins over the options' payload limit.
+
 ### Semantic trace: non-functional measurements (draft)
 
 - Privacy tests for the trace (`hydra-trace` `tests/privacy.rs`): secrets absent from replies, index, WAL, segments, exports and CLI output; keyed ids stable per scope and unlinkable across sessions and installs; payload artifacts excluded from export unless authorized; evicted artifacts leave a tombstone; the retention budget accounts for every event.
