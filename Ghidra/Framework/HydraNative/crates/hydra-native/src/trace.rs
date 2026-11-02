@@ -164,6 +164,29 @@ pub unsafe extern "C" fn hydra_trace_set_cancel(flag: *const i32) {
     })));
 }
 
+/// Installs a progress cell for the next requests on this thread: two native `int64` the long
+/// commands write `(done, total)` into (total 0 when unknown); the caller reads them from another
+/// thread. `NULL` removes it. The cell must stay valid until removed.
+///
+/// # Safety
+/// `cell` is null or valid for writes of two `i64` until it is removed on this thread.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hydra_trace_set_progress(cell: *mut i64) {
+    if cell.is_null() {
+        hydra_trace::cancel::set_progress(None);
+        return;
+    }
+    let addr = cell as usize;
+    hydra_trace::cancel::set_progress(Some(Box::new(move |done, total| {
+        let p = addr as *mut i64;
+        // SAFETY: the caller keeps the cell valid until it is removed (see above).
+        unsafe {
+            std::ptr::write_volatile(p.add(1), total as i64);
+            std::ptr::write_volatile(p, done as i64);
+        }
+    })));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,6 +266,11 @@ mod tests {
         ok(
             "trace_resymbolize",
             r#"{"session":"abi","symbols":{"modules":{}},"symbol_revision":"r"}"#,
+        );
+        ok("trace_relations", r#"{"session":"abi"}"#);
+        ok(
+            "trace_reprocess",
+            r#"{"session":"abi","codecs":{"a":{"name":"m","fields":[]}},"contexts":[{"from_seq":0,"layout":"a"}]}"#,
         );
         ok("trace_close", r#"{"session":"abi"}"#);
 

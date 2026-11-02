@@ -4334,7 +4334,7 @@ the publish order of D41, the flush-before-rename rule of E12 (A38) and the repl
 
 ### 8.20 Revision 8.16: the trace commands (capability `trace`, `12.3-hydra.6`, WS-C)
 
-Twelve protocol 3 commands that record and read **semantic traces** (`TRACE-1.md`). Capability `trace`=1 is advertised only when the
+Seventeen protocol 3 commands that record and read **semantic traces** (`TRACE-1.md`). Capability `trace`=1 is advertised only when the
 `hydra_native` library has the trace functions and `-set trace=false` was not given; `minClient` stays `1.0.0`. A protocol 2 connection
 (the stock 1.0.0 client) gets `unknown_command` for every `trace_*` name and keeps working.
 
@@ -4359,6 +4359,37 @@ program, the **disk reserve**, the **lane**, the **cancel** flag and the **store
 | `trace_list` | | `sessions` [{`session`, `revision`, `events`, `writer_open`, `lease`}], `count` | quick |
 | `trace_info` | `session` | `revision`, `events`, `sources`, `gaps`, `rejects`, `stopped`, `budget`, `interpretations`, `symbolization`, `relations`, `writer_open`, `digest`, `lease` (`held` with `holder` and `producerGen`, `orphan`, `none`; never a capability or a time), `symbolRevision`? | quick |
 | `trace_resymbolize` | `session`, `cap`, `program`, `project`?, `modules`? | `interp` (the new interpretation), `counts`, `revision`, `symbols` (as in `trace_open`); the raw observations are not touched | **long** |
+| `trace_reprocess` | `session`, `cap`, `codecs` {layout name: {`name`, `fields` [{`name`, `offset`, `len`, `type` (`u8`..`u64`, `i8`..`i64`, `hex`, `ascii`), `endian`?}]}}, then one of `context` {`marker_kind`=`core.marker`, `field`=`layout`, `initial`?, `map`?} or `contexts` [{`from_seq`, `to_seq`?, `layout`}], `kinds`?, `bytes_field`=`bytes`, `note`?, `up_to`? | `interp` (the new, numbered interpretation revision), `stats` {`events`, `decoded`, `unconsumed_events`, `unconsumed_bytes`, `bytes_unavailable`, `errors`}, `revision`. A corrected codec is a **new** revision; earlier ones stay readable (`trace_query` `decoded:true` with `decode_interp`), the observations are never changed. Bytes no field of the codec covers are kept and shown as `_unconsumed` {`hex`, `len`, `byte_off`, `byte_len`}; a layout that is unknown or an artifact that was evicted is an `_error` row, never a guess. Bytes come from the event payload (`bytes_field`, a hex string) or from a stored artifact (`{"artifact": id}`). The revision is also written to `interp.jsonl` so `verify`/`rebuild` replay it under the same number | **long** (progress, cancel) |
+| `trace_relations` | `session`, `op`=`materialize`\|`status`, `cap` (materialize) | `status` {`materialized_revision`, `current_revision`, `stale`}; `materialize` stores the relations of the current revision so a later read does not recompute them | `materialize` **long** (progress, cancel), `status` quick |
+| `trace_artifact` | `session`, `cap`, `scope`, `max_bytes`, `data_hex` | `artifact` (an id), `size`, `sha256`; stores payload bytes privately in the session, durable before any event may reference the id | quick |
+| `trace_evict` | `session` (a closed session) or `to_quota`=true, `reason`? | `evicted` [{`session`, `bytes`, `reason`, `at`}]; each writes a tombstone `<root>/.tombstones/<id>.json` and removes the session. `busy` for a session with an open lease holder, `to_quota` evicts the oldest closed ones until the store fits `trace.quotaMB` | **long** |
+| `trace_bundle` | `path` (an export folder) | `reproducible`, `reasons` [`session-evicted`, `bundle-damaged`, `revision-not-reached`, `session-unknown`]. An export is reproducible only while its session is present and has reached the exported revision | quick |
+
+**Revision 8.16 additions (gates M0/M1/M2).**
+
+* **Session metadata.** `trace_open` takes `meta` (an object: profile `id` and `sha256`, `scope`, `limitations`, `target`, `capture`,
+  `scenario`, ...). The engine writes it to `session.json` (atomically, a `null` value removes a key; a later `trace_open` with `meta`
+  merges), and `trace_info` returns it as `meta`. It survives a reopen, a close and a daemon restart.
+* **`trace_info` is O(1).** It no longer computes the whole-store digest. `digest` is returned only for `{"digest":true}` and is cached
+  per revision; the digest of a session is unchanged by this (it covers events and the interpretations except the symbolization ones).
+  `trace_info` also returns `scope`, `meta` and `decodings` (one entry per reprocess revision: `interp`, `note`, hashes, `events`,
+  `unconsumed`, `errors`).
+* **Correlation scope.** Correlation keys are keyed HMACs. The default scope is `session:<id>`: the same value in two sessions gives
+  two keys nobody can link. `trace_open` takes `shared_scope` {`name`, `key` (64 hex digits, provisioned out of band)}: the session then
+  uses scope `shared:<name>` and sessions that ask for the same name and key correlate with each other, and only with each other. It is
+  refused when the session already has events in another scope, and a different key for a name already installed is refused.
+* **Retention.** `trace_open` takes `quota_bytes`; the store is also bounded by `-set trace.quotaMB` (0 or unset: no quota). A new session
+  that would exceed the quota is refused as `failed` with `details.engineCode:"quota"` (the message names the closed sessions that `trace_evict` could remove);
+  appends re-check the quota at most every two seconds. `trace_list` returns `evicted`, `quota_bytes` and `store_bytes`; `trace_info`
+  and `trace_open` of an evicted session answer with its tombstone, never a silent empty session.
+* **Query.** `trace_query` takes `decoded` (true: the rows carry the decoded fields of the current or `decode_interp` revision).
+* **Progress and cancel.** A cancel flag and a progress cell (two `int64`: done, total) are passed to the native call
+  (`hydra_trace_set_progress`); Java forwards the cell to the request's progress events every 250 ms. `trace_diff` (aligned, over
+  `trace.quickMB` or `background`), `trace_query`, `trace_reprocess`, `trace_relations`, `trace_export` and `trace_resymbolize` stop at
+  their next check and answer `cancelled`; a cancelled reprocess/materialize commits nothing.
+* **CLI import.** `hydra-trace import <store> <session> <file.jsonl>` streams the file in chunks and prints `accepted`, `rejected`,
+  `dropped_budget`, `lines`, `outcome` (`clean`, `empty`, `torn_tail`, `corrupt`), `damage_line`, `peak_working_set`; exit 0 clean,
+  1 rejected events, 3 torn or corrupt, 4 empty.
 
 **Writer lease.** A session has one writer. `trace_open` with `create` (or `mode:"write"` on an orphaned session) grants the lease and
 returns a 128-bit capability, `cap`; the daemon keeps only its SHA-256 (`lease.json`). Writing commands carry `cap` and must come from the

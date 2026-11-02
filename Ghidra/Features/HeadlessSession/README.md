@@ -989,7 +989,7 @@ request, or `a = s.labelled(client="agent-a", harness="claude-code")`, a view wh
 
 ## Trace commands
 
-Protocol 3, capability `trace` (`12.3-hydra.6`): twelve commands that record and read semantic traces (`TRACE-1.md`; the field
+Protocol 3, capability `trace` (`12.3-hydra.6`): seventeen commands that record and read semantic traces (`TRACE-1.md`; the field
 tables, the lease and the recovery rules are in `PROTOCOL-3.md` 8.20). A protocol 2 client gets `unknown_command`.
 
 | Command | Fields | What it does |
@@ -998,6 +998,8 @@ tables, the lease and the recovery rules are in `PROTOCOL-3.md` 8.20). A protoco
 | `trace_append`, `trace_mark` | `session`, `cap`, `events` or `label` | One group commit; readers see a whole batch or none. |
 | `trace_query`, `trace_explain`, `trace_diff`, `trace_check` | `session` (`a`, `b` for a diff), ... | Reads of a pinned snapshot (`up_to`); no lease needed. |
 | `trace_export`, `trace_resymbolize` | `session`, ... | Long lane; cancelable; a cancelled export leaves no folder. |
+| `trace_reprocess`, `trace_relations` (`materialize`), `trace_evict` | `session`, `cap`, ... | Long lane; progress events and cancel; `trace_reprocess` decodes event bytes under a codec table as a new numbered interpretation revision (bytes no field covers stay visible as `_unconsumed`); see PROTOCOL-3.md 8.20. |
+| `trace_artifact`, `trace_bundle` | `session`, `cap`, `data_hex` / `path` | Store payload bytes privately in a session; ask whether an export folder is still reproducible after eviction. |
 | `trace_close`, `trace_list`, `trace_info` | | End the writer, list the sessions, describe one. |
 
 Error codes: `bad_request`, `not_found`, `not_owner`, `busy` (disk reserve), `conflict`, `cancelled`, `unknown_command`, `failed`.
@@ -1424,6 +1426,7 @@ on a machine shared with other heavy work, run one suite at a time or lower `--c
 | Class search cache | This module (`SessionApplicationConfiguration`) | A subclass of the headless configuration seeds `ClassSearcher` through two private fields, reflectively; if they are missing it turns itself off. |
 | Launcher, daemon manager, client | `support/ghidra_session.py` in this module | Platform-agnostic, no shell. The distribution copies a module's `support/` into the install, so it ships with the module. |
 | Anything specific to one client (an MCP server's tools, its stores and checks) | That client | The session is a generic Ghidra front end. Clients call it; they do not contain it. |
+| Semantic trace store: raw segments, ingest, per-session index, query, diff, explain, checks, export (`hydra-trace`, the seventeen `trace_*` commands) | This module and `hydra_native` (Rust), served by the daemon | Symbolizing an event needs the open programs and the lock-free read plane, which only the daemon holds, and many readers on one daemon is the engine's core property: readers take no program lock and never wait on a writer or on each other. The trace schema is target- and client-agnostic (`TRACE-1.md`), so it does not break the rule above: no client's hook table, profile, ids or semantics are stored here. Capture orchestration, profiles and the MCP `trace` tool stay in Hydralysis. |
 
 The module needs nothing private from Ghidra beyond three reflective touches
 (`HeadlessScript.setHeadlessInstance`, `ClassSearcher`'s search result, and `ProgramDB`'s

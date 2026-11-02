@@ -668,6 +668,10 @@ fn a_zero_or_negative_deadline_is_refused_before_anything_is_sent() {
 // engine's result unchanged (`daemon_tests.py trace_client_identity` compares the real engine's
 // reply lines of the two clients).
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one request per command, in the order the wire lists them"
+)]
 fn trace_commands_send_the_python_clients_fields() {
     let engine = FakeEngine::start(hello_or_cmd(v3_answer));
     let session = connect(&engine);
@@ -721,6 +725,27 @@ fn trace_commands_send_the_python_clients_fields() {
         json!({"cmd": "trace_resymbolize"}),
         "the result is returned as it is"
     );
+    session
+        .trace_reprocess(
+            "s1",
+            "cap_x",
+            json!({"a": {"name": "m", "fields": []}}),
+            one("kinds", json!(["app.msg"])),
+            None,
+        )
+        .expect("trace_reprocess");
+    session
+        .trace_relations("s1", Some("cap_x"), none(), None)
+        .expect("trace_relations");
+    session
+        .trace_artifact("s1", "cap_x", "sc", 8, "00ff", none(), None)
+        .expect("trace_artifact");
+    session
+        .trace_evict(one("session", json!("s1")), None)
+        .expect("trace_evict");
+    session
+        .trace_bundle("x/y", none(), None)
+        .expect("trace_bundle");
     let seen: Vec<Value> = engine.requests().into_iter().skip(1).collect();
     let strip = |v: &Value| {
         let mut m = v.as_object().expect("a request object").clone();
@@ -740,6 +765,11 @@ fn trace_commands_send_the_python_clients_fields() {
         json!({"cmd": "trace_list"}),
         json!({"cmd": "trace_info", "session": "s1"}),
         json!({"cmd": "trace_resymbolize", "session": "s1", "cap": "cap_x", "program": "prog.exe"}),
+        json!({"cmd": "trace_reprocess", "session": "s1", "cap": "cap_x", "codecs": {"a": {"name": "m", "fields": []}}, "kinds": ["app.msg"]}),
+        json!({"cmd": "trace_relations", "session": "s1", "cap": "cap_x"}),
+        json!({"cmd": "trace_artifact", "session": "s1", "cap": "cap_x", "scope": "sc", "max_bytes": 8, "data_hex": "00ff"}),
+        json!({"cmd": "trace_evict", "session": "s1"}),
+        json!({"cmd": "trace_bundle", "path": "x/y"}),
     ];
     assert_eq!(seen.len(), want.len());
     for (got, want) in seen.iter().zip(want.iter()) {

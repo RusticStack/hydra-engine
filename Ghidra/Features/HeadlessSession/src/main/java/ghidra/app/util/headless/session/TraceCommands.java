@@ -58,7 +58,8 @@ final class TraceCommands {
 	/** The twelve commands, in the order PROTOCOL-3.md lists them. */
 	static final List<String> COMMANDS = List.of("trace_open", "trace_append", "trace_mark",
 		"trace_query", "trace_explain", "trace_diff", "trace_check", "trace_export", "trace_close",
-		"trace_list", "trace_info", "trace_resymbolize");
+		"trace_list", "trace_info", "trace_resymbolize", "trace_reprocess", "trace_relations",
+		"trace_artifact", "trace_evict", "trace_bundle");
 
 	static boolean isTrace(String cmd) {
 		return cmd.startsWith("trace_") && COMMANDS.contains(cmd);
@@ -67,6 +68,13 @@ final class TraceCommands {
 	private static final Pattern SESSION_ID = Pattern.compile("[A-Za-z0-9_-]{1,64}");
 	private static final Pattern EXPORT_NAME = Pattern.compile("[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}");
 	private static final SecureRandom RANDOM = new SecureRandom();
+	/** Reads the progress cell of a running engine command into its request monitor. */
+	private static final java.util.concurrent.ScheduledExecutorService PROGRESS =
+		java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+			Thread t = new Thread(r, "trace-progress");
+			t.setDaemon(true);
+			return t;
+		});
 	/** A diff of sessions whose indexes together exceed {@code trace.quickMB} megabytes runs in the long lane. */
 	static final int DEFAULT_QUICK_MB = 64;
 	/** The room a new session needs before it is created. */
@@ -93,6 +101,7 @@ final class TraceCommands {
 	static void validateSettings() {
 		Settings.bool(TraceNative.SETTING, true);
 		Settings.integer("trace.quickMB", DEFAULT_QUICK_MB);
+		Settings.integer("trace.quotaMB", 0);
 	}
 
 	/**
@@ -102,8 +111,12 @@ final class TraceCommands {
 	 */
 	static Scheduler.Lane laneOf(String cmd, JsonObject req) {
 		switch (cmd) {
-			case "trace_resymbolize", "trace_export":
+			case "trace_resymbolize", "trace_export", "trace_reprocess", "trace_evict":
 				return Scheduler.Lane.LONG;
+			case "trace_relations":
+				return req != null && "status".equals(Json.str(req, "op", null))
+						? Scheduler.Lane.QUICK
+						: Scheduler.Lane.LONG;
 			case "trace_diff": {
 				if (req == null) {
 					return Scheduler.Lane.QUICK;
@@ -168,6 +181,16 @@ final class TraceCommands {
 			sessionId(Json.str(req, "a"));
 			sessionId(Json.str(req, "b"));
 		}
+		else if (cmd.equals("trace_evict")) {
+			if (Json.has(req, "session")) {
+				sessionId(Json.str(req, "session"));
+			}
+			return;
+		}
+		else if (cmd.equals("trace_bundle")) {
+			Json.str(req, "path");
+			return;
+		}
 		else if (Json.has(req, "session")) {
 			sessionId(Json.str(req, "session"));
 		}
@@ -195,7 +218,8 @@ final class TraceCommands {
 				Json.str(req, "cap");
 				Json.str(req, "label");
 			}
-			case "trace_close", "trace_resymbolize" -> Json.str(req, "cap");
+			case "trace_close", "trace_resymbolize", "trace_reprocess", "trace_artifact" ->
+				Json.str(req, "cap");
 			case "trace_export" -> {
 				if (Json.has(req, "out")) {
 					throw SessionException.badRequest(true,
@@ -252,7 +276,12 @@ final class TraceCommands {
 			case "trace_open" -> open(c, nat, root, req, m);
 			case "trace_list" -> list(nat, root, req, m);
 			case "trace_info" -> info(nat, root, req, m);
-			case "trace_append", "trace_mark" -> write(c, nat, root, cmd, req, m, false);
+			case "trace_append", "trace_mark", "trace_reprocess", "trace_artifact" ->
+				write(c, nat, root, cmd, req, m, false);
+			case "trace_relations" -> "status".equals(Json.str(req, "op", null))
+					? pass(nat, cmd, engineRequest(req), m)
+					: write(c, nat, root, cmd, req, m, false);
+			case "trace_evict" -> evict(nat, root, req, m);
 			case "trace_close" -> write(c, nat, root, cmd, req, m, true);
 			case "trace_resymbolize" -> resymbolize(c, nat, root, req, m);
 			case "trace_check" -> check(c, nat, req, m);
@@ -301,6 +330,10 @@ final class TraceCommands {
 					: null;
 			JsonObject er = engineRequest(req);
 			er.addProperty("session", session);
+			long quotaMB = Settings.integer("trace.quotaMB", 0);
+			if (quotaMB > 0 && !er.has("quota_bytes")) {
+				er.addProperty("quota_bytes", quotaMB << 20);
+			}
 			if (table != null) {
 				er.add("symbols", table.symbols());
 				er.addProperty("symbol_revision", table.symbolRevision());
@@ -407,6 +440,25 @@ final class TraceCommands {
 			er.addProperty("persist", false);
 		}
 		return pass(nat, "trace_check", er, m);
+	}
+
+	/** Evicts closed sessions (a tombstone each); the leases of the evicted ones are dropped. */
+	private JsonElement evict(TraceNative nat, Path root, JsonObject req, RequestMonitor m) {
+		String session = Json.str(req, "session", null);
+		if (session != null && TraceLeases.describe(session, root.resolve(session))
+				.has("holder")) {
+			throw new SessionException(SessionException.BUSY,
+				"session " + session + " has a writer lease: close it first",
+				Json.of("reason", "busy", "session", session));
+		}
+		JsonElement out = pass(nat, "trace_evict", engineRequest(req), m);
+		JsonObject o = parse(out);
+		if (o.has("evicted") && o.get("evicted").isJsonArray()) {
+			for (JsonElement e : o.getAsJsonArray("evicted")) {
+				TraceLeases.forget(e.getAsJsonObject().get("session").getAsString());
+			}
+		}
+		return out;
 	}
 
 	private JsonElement export(TraceNative nat, Path root, JsonObject req, RequestMonitor m) {
@@ -532,6 +584,22 @@ final class TraceCommands {
 		byte[] reply;
 		try (Arena arena = Arena.ofShared()) {
 			MemorySegment flag = arena.allocate(ValueLayout.JAVA_INT);
+			MemorySegment cell = arena.allocate(16, 8);
+			java.util.concurrent.ScheduledFuture<?> poll = nat.reportsProgress()
+					? PROGRESS.scheduleWithFixedDelay(() -> {
+						try {
+							long total = cell.get(ValueLayout.JAVA_LONG, 8);
+							long done = cell.get(ValueLayout.JAVA_LONG, 0);
+							if (total > 0) {
+								m.setMaximum(total);
+								m.setProgress(done);
+							}
+						}
+						catch (RuntimeException e) {
+							// the call already ended
+						}
+					}, 50, 100, java.util.concurrent.TimeUnit.MILLISECONDS)
+					: null;
 			Runnable hook = () -> {
 				try {
 					flag.set(ValueLayout.JAVA_INT, 0, 1);
@@ -542,10 +610,13 @@ final class TraceCommands {
 			};
 			m.addCancelHook(hook);
 			try {
-				reply = nat.call(cmd, reqBytes, flag);
+				reply = nat.call(cmd, reqBytes, flag, cell);
 			}
 			finally {
 				m.removeCancelHook(hook);
+				if (poll != null) {
+					poll.cancel(false);
+				}
 			}
 		}
 		if (isError(reply)) {

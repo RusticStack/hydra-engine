@@ -98,56 +98,139 @@ fn verify_session(root: &str, id: &str) -> ExitCode {
     }
 }
 
+#[cfg(windows)]
+fn peak_working_set() -> u64 {
+    use windows_sys::Win32::System::ProcessStatus::{
+        GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    // SAFETY: a zeroed counters struct with cb set is the documented input; the pseudo handle of
+    // the current process is always valid.
+    unsafe {
+        let mut c: PROCESS_MEMORY_COUNTERS = std::mem::zeroed();
+        c.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+        if GetProcessMemoryInfo(GetCurrentProcess(), &mut c, c.cb) != 0 {
+            c.PeakWorkingSetSize as u64
+        } else {
+            0
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn peak_working_set() -> u64 {
+    0
+}
+
+/// Tallies of one import.
+#[derive(Default)]
+struct Tally {
+    accepted: u64,
+    rejected: usize,
+    dropped: u64,
+}
+
+fn append_chunk(s: &mut Session, chunk: &[Value], t: &mut Tally) -> Result<(), String> {
+    let r = s.append(chunk).map_err(|e| e.to_string())?;
+    t.accepted += r.accepted;
+    t.rejected += r.rejected.len();
+    t.dropped += r.dropped_budget;
+    for rej in r.rejected.iter().take(5) {
+        eprintln!("rejected #{}: {}", rej.index, rej.reason);
+    }
+    Ok(())
+}
+
+/// Import a JSONL file (or a minidump) into a session. A JSONL file is streamed line by line in
+/// chunks, so memory stays flat however large it is. The outcome is reported, never guessed:
+/// `clean`, `empty`, `torn_tail` (the last line has no newline and is not valid) or `corrupt` (a
+/// bad line with more after it). The valid prefix is kept in every case; the exit code is 0 for
+/// clean, 1 for rejected events, 3 for a torn tail or corruption, 4 for an empty file.
 fn import(root: &str, id: &str, file: &str) -> ExitCode {
-    let bytes = match std::fs::read(file) {
-        Ok(b) => b,
-        Err(e) => return fail(format!("{file}: {e}")),
-    };
-    let events: Vec<Value> = if file.ends_with(".dmp") {
-        match minidump::parse(&bytes) {
-            Ok(d) => minidump::to_events(&d, "minidump"),
-            Err(e) => return fail(e),
-        }
-    } else {
-        let mut out = Vec::new();
-        for (i, line) in String::from_utf8_lossy(&bytes).lines().enumerate() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            match serde_json::from_str::<Value>(line) {
-                Ok(v) => out.push(v),
-                Err(e) => return fail(format!("{file}:{}: {e}", i + 1)),
-            }
-        }
-        out
-    };
     let (mut s, recovery) = match Session::open(Path::new(root), id, Options::default()) {
         Ok(x) => x,
         Err(e) => return fail(e),
     };
-    let (mut accepted, mut rejected, mut dropped) = (0u64, 0usize, 0u64);
-    for chunk in events.chunks(session::MAX_EVENTS_PER_APPEND) {
-        match s.append(chunk) {
-            Ok(r) => {
-                accepted += r.accepted;
-                rejected += r.rejected.len();
-                dropped += r.dropped_budget;
-                for rej in r.rejected.iter().take(5) {
-                    eprintln!("rejected #{}: {}", rej.index, rej.reason);
+    let mut tally = Tally::default();
+    let (mut lines, mut outcome, mut damage_line, mut reason) =
+        (0u64, "clean", None::<u64>, String::new());
+    if file.ends_with(".dmp") {
+        let bytes = match std::fs::read(file) {
+            Ok(b) => b,
+            Err(e) => return fail(format!("{file}: {e}")),
+        };
+        let events = match minidump::parse(&bytes) {
+            Ok(d) => minidump::to_events(&d, "minidump"),
+            Err(e) => return fail(e),
+        };
+        lines = events.len() as u64;
+        for chunk in events.chunks(session::MAX_EVENTS_PER_APPEND) {
+            if let Err(e) = append_chunk(&mut s, chunk, &mut tally) {
+                return fail(e);
+            }
+        }
+    } else {
+        use std::io::BufRead;
+        let f = match std::fs::File::open(file) {
+            Ok(f) => f,
+            Err(e) => return fail(format!("{file}: {e}")),
+        };
+        let mut reader = std::io::BufReader::with_capacity(1 << 20, f);
+        let mut chunk: Vec<Value> = Vec::with_capacity(session::MAX_EVENTS_PER_APPEND);
+        let mut buf = String::new();
+        loop {
+            buf.clear();
+            let n = match reader.read_line(&mut buf) {
+                Ok(n) => n,
+                Err(e) => return fail(format!("{file}: {e}")),
+            };
+            if n == 0 {
+                break;
+            }
+            let ends_clean = buf.ends_with('\n');
+            let text = buf.trim();
+            if text.is_empty() {
+                continue;
+            }
+            lines += 1;
+            match serde_json::from_str::<Value>(text) {
+                Ok(v) => chunk.push(v),
+                Err(e) => {
+                    outcome = if ends_clean { "corrupt" } else { "torn_tail" };
+                    damage_line = Some(lines);
+                    reason = e.to_string();
+                    break;
                 }
             }
-            Err(e) => return fail(e),
+            if chunk.len() == session::MAX_EVENTS_PER_APPEND {
+                if let Err(e) = append_chunk(&mut s, &chunk, &mut tally) {
+                    return fail(e);
+                }
+                chunk.clear();
+            }
+        }
+        if !chunk.is_empty()
+            && let Err(e) = append_chunk(&mut s, &chunk, &mut tally)
+        {
+            return fail(e);
+        }
+        if lines == 0 {
+            outcome = "empty";
         }
     }
     println!(
         "{}",
-        serde_json::json!({"accepted": accepted, "rejected": rejected, "dropped_budget": dropped,
-                           "recovered_batches": recovery.replayed_batches + recovery.tail_batches})
+        serde_json::json!({"accepted": tally.accepted, "rejected": tally.rejected,
+            "dropped_budget": tally.dropped, "lines": lines, "outcome": outcome,
+            "damage_line": damage_line, "reason": reason,
+            "peak_working_set": peak_working_set(),
+            "recovered_batches": recovery.replayed_batches + recovery.tail_batches})
     );
-    if rejected == 0 {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::from(1)
+    match outcome {
+        "empty" => ExitCode::from(4),
+        "torn_tail" | "corrupt" => ExitCode::from(3),
+        _ if tally.rejected > 0 => ExitCode::from(1),
+        _ => ExitCode::SUCCESS,
     }
 }
 

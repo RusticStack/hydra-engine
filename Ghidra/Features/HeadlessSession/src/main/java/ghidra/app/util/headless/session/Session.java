@@ -564,7 +564,8 @@ final class Session {
 				case "seal_project" -> Seals.sealProject(this, c, req);
 				case "trace_open", "trace_append", "trace_mark", "trace_query", "trace_explain",
 						"trace_diff", "trace_check", "trace_export", "trace_close", "trace_list",
-						"trace_info", "trace_resymbolize" -> traceCmds.run(c, cmd, req, m);
+						"trace_info", "trace_resymbolize", "trace_reprocess", "trace_relations",
+						"trace_artifact", "trace_evict", "trace_bundle" -> traceCmds.run(c, cmd, req, m);
 				case "prepare_upgrade" -> projectCmds.prepareUpgrade(c, req, m);
 				case "refresh", "reopen" -> projectCmds.refresh(c, req, m);
 				case "close_project" -> projectCmds.closeProject(c, req);

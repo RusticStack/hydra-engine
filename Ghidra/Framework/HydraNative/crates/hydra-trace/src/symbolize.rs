@@ -87,6 +87,93 @@ impl Symbolizer for TableSymbolizer {
     }
 }
 
+/// A [`TableSymbolizer`] with each module's functions sorted by start, so a lookup is a binary
+/// search instead of a scan of every function. The answer is the one the table gives: when ranges
+/// overlap, the function listed first wins.
+#[derive(Debug, Default)]
+pub struct IndexedSymbolizer {
+    modules: BTreeMap<String, IndexedModule>,
+}
+
+#[derive(Debug, Default)]
+struct IndexedModule {
+    code: Vec<(u64, u64)>,
+    /// `(start, end, original index)` sorted by `(start, index)`.
+    ranges: Vec<(u64, u64, usize)>,
+    /// `max_end[i]` is the largest end among `ranges[..=i]`: a backward walk stops when it is
+    /// not above the address.
+    max_end: Vec<u64>,
+    names: Vec<(String, Option<String>)>,
+}
+
+impl From<TableSymbolizer> for IndexedSymbolizer {
+    fn from(table: TableSymbolizer) -> Self {
+        let modules = table
+            .modules
+            .into_iter()
+            .map(|(name, m)| {
+                let mut ranges: Vec<(u64, u64, usize)> = m
+                    .functions
+                    .iter()
+                    .enumerate()
+                    .map(|(i, f)| (f.start, f.end, i))
+                    .collect();
+                ranges.sort_unstable_by_key(|&(s, _, i)| (s, i));
+                let mut max_end = Vec::with_capacity(ranges.len());
+                let mut top = 0;
+                for &(_, e, _) in &ranges {
+                    top = top.max(e);
+                    max_end.push(top);
+                }
+                let names = m
+                    .functions
+                    .into_iter()
+                    .map(|f| (f.name, f.type_name))
+                    .collect();
+                (
+                    name,
+                    IndexedModule {
+                        code: m.code,
+                        ranges,
+                        max_end,
+                        names,
+                    },
+                )
+            })
+            .collect();
+        Self { modules }
+    }
+}
+
+impl Symbolizer for IndexedSymbolizer {
+    fn resolve(&self, module: &ModuleRef<'_>, rva: u64) -> Resolution {
+        let Some(table) = self.modules.get(module.name) else {
+            return Resolution::NoSymbol;
+        };
+        if !table.code.is_empty() && !table.code.iter().any(|&(s, e)| s <= rva && rva < e) {
+            return Resolution::NotCode;
+        }
+        let upper = table.ranges.partition_point(|&(s, _, _)| s <= rva);
+        let mut best: Option<usize> = None;
+        for i in (0..upper).rev() {
+            if table.max_end[i] <= rva {
+                break;
+            }
+            let (_, e, idx) = table.ranges[i];
+            if rva < e && best.is_none_or(|b| idx < b) {
+                best = Some(idx);
+            }
+        }
+        match best {
+            Some(i) => Resolution::Symbol {
+                function: table.names[i].0.clone(),
+                type_name: table.names[i].1.clone(),
+            },
+            None => Resolution::NoSymbol,
+        }
+    }
+}
+
 /// The code address to symbolize for an event: the site, else the innermost return address.
 pub fn site_of(va: Option<u64>, callstack: &[u64]) -> Option<u64> {
     va.or_else(|| callstack.first().copied())
@@ -310,5 +397,53 @@ mod tests {
             resolve_site(&t, Some(&m), Some(0x40_0150)).0.as_deref(),
             Some("Foo")
         );
+    }
+
+    #[test]
+    fn the_indexed_symbolizer_answers_exactly_like_the_table() {
+        let mut t = TableSymbolizer::default();
+        let f = |s: u64, e: u64, n: &str| FunctionRange {
+            start: s,
+            end: e,
+            name: n.into(),
+            type_name: None,
+        };
+        // unsorted, a nested range listed after its parent, a gap, a one byte function
+        t.modules.insert(
+            "m.dll".into(),
+            ModuleTable {
+                code: vec![(0, 0x900)],
+                functions: vec![
+                    f(0x400, 0x500, "mid"),
+                    f(0x100, 0x300, "outer"),
+                    f(0x150, 0x200, "inner"),
+                    f(0x700, 0x701, "one"),
+                ],
+            },
+        );
+        let reference = t.clone();
+        let fast = IndexedSymbolizer::from(t);
+        let m = ModInst {
+            inst: 1,
+            pgen: 1,
+            name: "m.dll".into(),
+            build: None,
+            base: 0,
+            size: 0x2000,
+            load_seq: 1,
+            unload_seq: None,
+        };
+        let module = ModuleRef {
+            name: &m.name,
+            build: None,
+            instance: 1,
+        };
+        for rva in 0..0xA00u64 {
+            assert_eq!(
+                fast.resolve(&module, rva),
+                reference.resolve(&module, rva),
+                "{rva:#x}"
+            );
+        }
     }
 }

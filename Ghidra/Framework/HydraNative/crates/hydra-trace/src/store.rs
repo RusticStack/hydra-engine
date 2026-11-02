@@ -154,6 +154,12 @@ impl std::error::Error for Error {}
 
 impl From<rusqlite::Error> for Error {
     fn from(e: rusqlite::Error) -> Self {
+        if matches!(
+            &e,
+            rusqlite::Error::SqliteFailure(f, _) if f.code == rusqlite::ErrorCode::OperationInterrupted
+        ) {
+            return Error::Cancelled;
+        }
         Error::Sql(e)
     }
 }
@@ -247,6 +253,8 @@ impl Store {
     /// A read-only handle on an existing index; it sees committed snapshots only.
     pub fn reader(path: &Path, session: &str) -> Result<Self> {
         let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        // A query, group, diff or check in progress stops at the next check after a cancel.
+        conn.progress_handler(4096, Some(crate::cancel::cancelled as fn() -> bool));
         Ok(Self {
             conn,
             session: session.into(),
@@ -681,11 +689,28 @@ impl Store {
     /// A SHA-256 over every stored table in a canonical order: two indexes with the same digest
     /// hold the same evidence.
     pub fn digest(&self) -> Result<String> {
+        self.digest_of(false)
+    }
+
+    /// The digest of what the segments determine: everything but symbolization (derived from a
+    /// program, not from the segments). Decode revisions are included; they are replayed from the
+    /// journal when an index is rebuilt.
+    pub fn digest_core(&self) -> Result<String> {
+        self.digest_of(true)
+    }
+
+    fn digest_of(&self, core: bool) -> Result<String> {
         let mut hasher = Sha256::new();
         for (table, order) in DIGEST_TABLES {
-            let mut stmt = self
-                .conn
-                .prepare(&format!("SELECT * FROM {table} ORDER BY {order}"))?;
+            if core && *table == "event_symbols" {
+                continue;
+            }
+            let select = if core && *table == "interpretations" {
+                "SELECT * FROM interpretations WHERE kind<>'symbolization'".to_string()
+            } else {
+                format!("SELECT * FROM {table}")
+            };
+            let mut stmt = self.conn.prepare(&format!("{select} ORDER BY {order}"))?;
             let columns = stmt.column_count();
             let mut rows = stmt.query([])?;
             hasher.update(table.as_bytes());
