@@ -52,6 +52,8 @@ pub(crate) struct Shared {
     pub shutdown: AtomicBool,
     /// Requests the front answered itself.
     pub native_replies: AtomicU64,
+    /// Every connected client, so that starting the backend can attach all of them.
+    pub clients: Mutex<Vec<Arc<Core>>>,
 }
 
 impl Shared {
@@ -146,6 +148,28 @@ fn id_of<'a>(m: &[Member<'a>]) -> Option<&'a str> {
     json_scan::get(m, "id").filter(|v| *v != "null")
 }
 
+/// One client as the rest of the front sees it: shared so that whichever thread starts the backend
+/// can attach every client that is still detached (the JVM's `status.clients`, `shutdown` check and
+/// release logic must see every connected client, not only the ones that have asked for Ghidra yet).
+#[derive(Debug)]
+pub(crate) struct Core {
+    id: u64,
+    protocol: u8,
+    /// The first (authenticating) hello, replayed to the backend on attach.
+    hello: String,
+    /// Where replies to the client go; the client's backend pump writes through a clone of it.
+    writer: Mutex<TcpStream>,
+    link: Mutex<Link>,
+}
+
+/// Whether a client has a backend connection.
+#[derive(Debug)]
+enum Link {
+    Detached,
+    /// The write side of the client's backend connection.
+    Attached(TcpStream),
+}
+
 /// Serves one client until it leaves.
 pub(crate) fn serve(shared: &Arc<Shared>, stream: TcpStream) {
     shared.open_clients.fetch_add(1, Ordering::SeqCst);
@@ -153,15 +177,11 @@ pub(crate) fn serve(shared: &Arc<Shared>, stream: TcpStream) {
     shared.open_clients.fetch_sub(1, Ordering::SeqCst);
 }
 
-/// One connection's front-side state.
+/// One connection's reader side.
 struct Client<'a> {
     shared: &'a Arc<Shared>,
     reader: BufReader<TcpStream>,
     writer: TcpStream,
-    /// The first (authenticating) hello, replayed to the backend on attach.
-    hello: String,
-    protocol: u8,
-    id: u64,
 }
 
 /// Why a client attaches: its authenticating hello still needs the backend's reply (`Hello`, with
@@ -178,6 +198,81 @@ enum Native {
     NeedsBackend,
 }
 
+/// Connects `core` to the backend (starting it when needed) with its hello replayed; returns the
+/// backend's reply to that hello.
+fn connect_backend(
+    shared: &Shared,
+    core: &Core,
+) -> io::Result<(backend::Endpoint, TcpStream, String)> {
+    let ep = shared.backend.ensure()?;
+    let (s, reply) = backend::open_authenticated(&ep, &core.hello)?;
+    Ok((ep, s, reply))
+}
+
+/// Starts the pump that carries the backend's lines to the client and counts the client as
+/// attached. Returns the write side for the client's own lines.
+fn link_up(shared: &Shared, core: &Core, stream: TcpStream) -> io::Result<TcpStream> {
+    let mut to_client = core
+        .writer
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .try_clone()?;
+    let closer = to_client.try_clone()?;
+    let from = stream.try_clone()?;
+    std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(move || {
+            let mut r = BufReader::with_capacity(32 * 1024, from);
+            let _ = io::copy(&mut r, &mut to_client);
+            let _ = closer.shutdown(Shutdown::Both);
+        })?;
+    shared.backend.attach_inc();
+    Ok(stream)
+}
+
+/// Attaches every client that is still detached (the backend is up now): the JVM then knows all
+/// of them, as it would have if each had connected to it directly.
+fn attach_all(shared: &Arc<Shared>, except: &Arc<Core>) {
+    let all: Vec<Arc<Core>> = shared
+        .clients
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    for c in all {
+        if Arc::ptr_eq(&c, except) {
+            continue;
+        }
+        // a client that is mid-request holds its link: it attaches itself when it next asks
+        let Ok(mut link) = c.link.try_lock() else {
+            continue;
+        };
+        if matches!(*link, Link::Detached)
+            && let Ok((_, s, _)) = connect_backend(shared, &c)
+            && let Ok(w) = link_up(shared, &c, s)
+        {
+            *link = Link::Attached(w);
+        }
+    }
+}
+
+/// Removes a client that left and closes its backend connection.
+fn leave(shared: &Shared, core: &Arc<Core>) {
+    shared
+        .clients
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .retain(|c| !Arc::ptr_eq(c, core));
+    let mut link = core
+        .link
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Link::Attached(s) = &*link {
+        let _ = s.shutdown(Shutdown::Both);
+        shared.backend.attach_dec();
+    }
+    *link = Link::Detached;
+}
+
 impl<'a> Client<'a> {
     fn new(shared: &'a Arc<Shared>, stream: TcpStream) -> io::Result<Self> {
         stream.set_nodelay(true)?;
@@ -185,9 +280,6 @@ impl<'a> Client<'a> {
             shared,
             writer: stream.try_clone()?,
             reader: BufReader::with_capacity(16 * 1024, stream),
-            hello: String::new(),
-            protocol: 2,
-            id: 0,
         })
     }
 
@@ -218,11 +310,11 @@ impl<'a> Client<'a> {
         }
     }
 
-    /// The first request must be `hello` with the token (`Connection.authenticate`). `Ok(false)`:
-    /// refused, the connection is to be closed.
-    fn authenticate(&mut self, buf: &mut Vec<u8>) -> io::Result<bool> {
+    /// The first request must be `hello` with the token (`Connection.authenticate`). `Ok(None)`:
+    /// refused or gone, the connection is to be closed.
+    fn authenticate(&mut self, buf: &mut Vec<u8>) -> io::Result<Option<Arc<Core>>> {
         let Some(text) = self.next_request(buf)? else {
-            return Ok(false);
+            return Ok(None);
         };
         let m = json_scan::split_object(&text).ok_or_else(|| io::Error::other("unparsable"))?;
         let cmd = json_scan::get(&m, "cmd")
@@ -234,49 +326,79 @@ impl<'a> Client<'a> {
         if cmd != "hello" || !constant_time_eq(&supplied, &self.shared.token) {
             let msg = "the first request must be {\"cmd\":\"hello\",\"token\":...} with the token from the endpoint file";
             self.send(&error_reply(id_of(&m), "unauthorized", msg, None))?;
-            return Ok(false);
+            return Ok(None);
         }
-        self.protocol = identity::requested_protocol(&m);
-        self.id = self.shared.next_client.fetch_add(1, Ordering::SeqCst);
-        self.hello = text;
-        Ok(true)
+        let core = Arc::new(Core {
+            id: self.shared.next_client.fetch_add(1, Ordering::SeqCst),
+            protocol: identity::requested_protocol(&m),
+            hello: text,
+            writer: Mutex::new(self.writer.try_clone()?),
+            link: Mutex::new(Link::Detached),
+        });
+        self.shared
+            .clients
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(Arc::clone(&core));
+        Ok(Some(core))
     }
 
     fn run(mut self) -> io::Result<()> {
         let mut buf = Vec::new();
-        if !self.authenticate(&mut buf)? {
+        let Some(core) = self.authenticate(&mut buf)? else {
             return Ok(());
-        }
-        let hello = self.hello.clone();
-        let first =
-            json_scan::split_object(&hello).ok_or_else(|| io::Error::other("hello vanished"))?;
+        };
+        let result = self.serve_core(&core, &mut buf);
+        leave(self.shared, &core);
+        let _ = self.writer.shutdown(Shutdown::Both);
+        result
+    }
+
+    fn serve_core(&mut self, core: &Arc<Core>, buf: &mut Vec<u8>) -> io::Result<()> {
+        let shared = self.shared;
+        let first = json_scan::split_object(&core.hello)
+            .ok_or_else(|| io::Error::other("hello vanished"))?;
         let first_id = id_of(&first).map(str::to_owned);
         // Cold and cached: answer the hello here and leave the JVM down.
-        let cached = if self.shared.backend.running() {
+        let cached = if shared.backend.running() {
             None
         } else {
-            self.shared.identity()
+            shared.identity()
         };
         let Some(identity) = cached else {
-            return self.attach(Entry::Hello(first_id.as_deref()));
+            return self.attach_and_pipe(core, Entry::Hello(first_id.as_deref()));
         };
-        let result = identity.hello_result(self.protocol, &self.shared.live(self.id));
+        let result = identity.hello_result(core.protocol, &shared.live(core.id));
         self.send(&ok_reply(first_id.as_deref(), &result))?;
-        self.shared.native_replies.fetch_add(1, Ordering::Relaxed);
+        shared.native_replies.fetch_add(1, Ordering::Relaxed);
 
         // Detached: only what needs no JVM is answered here; the first other request attaches.
-        while let Some(text) = self.next_request(&mut buf)? {
-            match self.answer_natively(&text)? {
+        while let Some(text) = self.next_request(buf)? {
+            let linked = {
+                let link = core
+                    .link
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                match &*link {
+                    Link::Attached(s) => Some(s.try_clone()?),
+                    Link::Detached => None,
+                }
+            };
+            if let Some(s) = linked {
+                self.pipe(s, Some(text));
+                return Ok(());
+            }
+            match self.answer_natively(core, &text)? {
                 Native::Answered => {}
                 Native::Stop => return Ok(()),
-                Native::NeedsBackend => return self.attach(Entry::Request(text)),
+                Native::NeedsBackend => return self.attach_and_pipe(core, Entry::Request(text)),
             }
         }
         Ok(())
     }
 
     /// Answers one detached request without the JVM, if it can.
-    fn answer_natively(&mut self, text: &str) -> io::Result<Native> {
+    fn answer_natively(&mut self, core: &Core, text: &str) -> io::Result<Native> {
         let m = json_scan::split_object(text).ok_or_else(|| io::Error::other("unparsable"))?;
         let id = id_of(&m);
         let cmd = json_scan::get(&m, "cmd")
@@ -293,7 +415,7 @@ impl<'a> Client<'a> {
                     return Ok(Native::NeedsBackend);
                 };
                 // a later hello never changes the connection's protocol (PROTOCOL-3.md 3.1)
-                let result = ident.hello_result(self.protocol, &shared.live(self.id));
+                let result = ident.hello_result(core.protocol, &shared.live(core.id));
                 self.send(&ok_reply(id, &result))?;
             }
             "shutdown" => {
@@ -316,22 +438,17 @@ impl<'a> Client<'a> {
         Ok(Native::Answered)
     }
 
-    /// Connects this client to the backend (starting it when needed) and pipes both directions until
-    /// either side closes. `hello_id`: the first hello still waits for its reply (`Some`, holding its
-    /// id); `pending`: the request that triggered the attach, forwarded first.
-    fn attach(mut self, entry: Entry<'_>) -> io::Result<()> {
+    /// Connects this client to the backend (starting it when needed), attaches the other detached
+    /// clients, and pipes. `hello`: the first hello still waits for its reply (`Some`, holding its
+    /// request id); `pending`: the request that triggered the attach, forwarded first.
+    fn attach_and_pipe(&mut self, core: &Arc<Core>, entry: Entry<'_>) -> io::Result<()> {
         let shared = self.shared;
         let answer_hello = matches!(entry, Entry::Hello(_));
         let (hello_id, pending) = match entry {
             Entry::Hello(id) => (id, None),
             Entry::Request(text) => (None, Some(text)),
         };
-        let hello = self.hello.clone();
-        let connected = shared.backend.ensure().and_then(|ep| {
-            let (s, reply) = backend::open_authenticated(&ep, &hello)?;
-            Ok((ep, s, reply))
-        });
-        let (ep, backend_stream, reply) = match connected {
+        let (ep, stream, reply) = match connect_backend(shared, core) {
             Ok(t) => t,
             Err(e) => {
                 let msg = format!("the engine backend is not available: {e}");
@@ -339,7 +456,7 @@ impl<'a> Client<'a> {
             }
         };
         if answer_hello {
-            let patched = identity::patch_hello_reply(&reply, &shared.live(self.id))
+            let patched = identity::patch_hello_reply(&reply, &shared.live(core.id))
                 .unwrap_or_else(|| reply.clone());
             self.send(&patched)?;
             // learn the identity for the next cold start
@@ -350,19 +467,20 @@ impl<'a> Client<'a> {
                 shared.learn(ident);
             }
         }
-        let _guard = shared.backend.attach();
-        let mut to_backend = backend_stream.try_clone()?;
-        let mut to_client = self.writer.try_clone()?;
-        let closer_client = self.writer.try_clone()?;
-        let closer_backend = backend_stream.try_clone()?;
-        let down = std::thread::Builder::new()
-            .stack_size(256 * 1024)
-            .spawn(move || {
-                let mut r = BufReader::with_capacity(32 * 1024, backend_stream);
-                let _ = io::copy(&mut r, &mut to_client);
-                let _ = closer_client.shutdown(Shutdown::Both);
-            })?;
+        let write_side = link_up(shared, core, stream)?;
+        *core
+            .link
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Link::Attached(write_side.try_clone()?);
+        attach_all(shared, core);
+        self.pipe(write_side, pending);
+        Ok(())
+    }
 
+    /// Carries the client's lines to the backend until the client or the backend goes away.
+    fn pipe(&mut self, mut to_backend: TcpStream, pending: Option<String>) {
+        let shared = self.shared;
         let mut buf = Vec::new();
         let mut next = pending.map(String::into_bytes);
         while let Some(mut out) =
@@ -380,10 +498,6 @@ impl<'a> Client<'a> {
                 break;
             }
         }
-        let _ = closer_backend.shutdown(Shutdown::Both);
-        let _ = down.join();
-        let _ = self.writer.shutdown(Shutdown::Both);
-        Ok(())
     }
 }
 

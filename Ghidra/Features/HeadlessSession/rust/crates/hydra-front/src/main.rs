@@ -192,6 +192,7 @@ fn run() -> Result<(), String> {
         open_clients: AtomicUsize::new(0),
         shutdown: AtomicBool::new(false),
         native_replies: AtomicU64::new(0),
+        clients: Mutex::new(Vec::new()),
     });
 
     let endpoint_text = if let Some(ident) = &cached {
@@ -264,11 +265,20 @@ fn maintain(
     idle_timeout: u64,
 ) -> ! {
     let mut no_clients = 0u64;
+    let mut asked_ticks = 0u32;
     loop {
         std::thread::sleep(Duration::from_millis(250));
         let running = shared.backend.running();
-        if shared.shutdown.load(Ordering::SeqCst) && !running {
-            break;
+        if shared.shutdown.load(Ordering::SeqCst) {
+            if !running {
+                break;
+            }
+            // the JVM refused (`conflict`): a shutdown that did not happen must not end the front later
+            asked_ticks += 1;
+            if asked_ticks > 40 {
+                shared.shutdown.store(false, Ordering::SeqCst);
+                asked_ticks = 0;
+            }
         }
         if running
             && backend_idle_s > 0

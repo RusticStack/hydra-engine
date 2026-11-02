@@ -180,10 +180,16 @@ impl Backend {
         })
     }
 
-    /// Counts a client as attached until the guard drops.
-    pub(crate) fn attach(&self) -> AttachGuard<'_> {
+    /// Counts a client as attached to the backend.
+    pub(crate) fn attach_inc(&self) {
         self.attached.fetch_add(1, Ordering::SeqCst);
-        AttachGuard { backend: self }
+    }
+
+    /// A client left the backend.
+    pub(crate) fn attach_dec(&self) {
+        if self.attached.fetch_sub(1, Ordering::SeqCst) == 1 {
+            self.mark_idle();
+        }
     }
 
     /// Stops the backend with a protocol `shutdown`, then kills it if it lingers. Safe to call
@@ -213,20 +219,6 @@ impl Backend {
         }
         g.ep = None;
         let _ = fs::remove_file(&self.endpoint_file);
-    }
-}
-
-/// While alive, one client counts as attached to the backend.
-#[derive(Debug)]
-pub(crate) struct AttachGuard<'a> {
-    backend: &'a Backend,
-}
-
-impl Drop for AttachGuard<'_> {
-    fn drop(&mut self) {
-        if self.backend.attached.fetch_sub(1, Ordering::SeqCst) == 1 {
-            self.backend.mark_idle();
-        }
     }
 }
 

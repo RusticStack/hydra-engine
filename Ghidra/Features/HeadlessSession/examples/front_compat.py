@@ -164,6 +164,20 @@ def vectors(ep, jvm=True):
     return out
 
 
+def idle_client_visible(ep):
+    """Two clients say hello; only the first asks for Ghidra. ``status`` must list both: the JVM has
+    to know a client that has not asked for anything yet (its clients list, its shutdown check)."""
+    a, b = Conn(ep), Conn(ep)
+    a.hello(protocol=3)
+    b.call({"id": 1, "cmd": "hello", "token": ep["token"], "client": "idle-b", "protocol": 3})
+    st = a.call({"id": 2, "cmd": "status"})["result"]
+    names = sorted(c["name"] for c in st["clients"])
+    stop = b.call({"id": 3, "cmd": "shutdown"})  # b is a client of a daemon with another client: conflict
+    a.close()
+    b.close()
+    return [names, stop.get("ok"), (stop.get("error") or {}).get("code")]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ghidra", required=True)
@@ -190,6 +204,8 @@ def main():
         for (n, d), (_, f) in zip(direct, cold):
             check(n + " (cold front)", d, f)
         check("no JVM started by hello/ping/refusals", False, jvm_running(state, "front"))
+        check("status lists a client that has not asked for Ghidra yet; shutdown sees it",
+              idle_client_visible(endpoint(state, "direct")), idle_client_visible(endpoint(state, "front")))
         # 2. warm: a Ghidra-bound request attaches (starts the JVM); then the same vectors
         c = Conn(endpoint(state, "front"))
         c.hello(protocol=3)
