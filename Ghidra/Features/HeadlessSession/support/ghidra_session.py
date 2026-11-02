@@ -1912,7 +1912,7 @@ class _WrappedProc(_PidProc):
     def pid(self):
         if self._jvm is None:
             for p, name in _children_of(self.wrapper_pid):
-                if name.lower() == "java.exe":
+                if name.lower() in ("java.exe", "hydra-front.exe"):
                     self._jvm = p
         return self._jvm or self.wrapper_pid
 
@@ -2249,6 +2249,20 @@ def find_duplicate(install: "Install", state: Path, instance: str) -> dict | Non
 
 # ---- the shared daemon ----------------------------------------------------------------------
 
+def front_door_argv(argv: list[str], info: dict, environ=None) -> list[str]:
+    """PROTOTYPE (h7): with ``GHIDRA_SESSION_FRONT`` naming a ``hydra-front`` binary, the daemon's
+    command is the front door followed by the JVM command line it starts lazily (FRONT-DOOR.md).
+    ``GHIDRA_SESSION_FRONT_OPTS`` carries its options (``--lazy``, ``--backend-idle-s N``). Unset,
+    or naming a file that does not exist, the JVM is started directly as before."""
+    env = os.environ if environ is None else environ
+    front = env.get("GHIDRA_SESSION_FRONT")
+    if not front or not Path(front).is_file():
+        return argv
+    info["front"] = front
+    opts = env.get("GHIDRA_SESSION_FRONT_OPTS", "").split()
+    return [front, *opts, "--", *argv]
+
+
 class Daemon:
     """The per-user daemon of one instance: ``<state>/<instance>.json`` (endpoint),
     ``<instance>.lock`` (held by the JVM for its whole life), ``<instance>.start.lock`` (held by
@@ -2547,6 +2561,7 @@ class Daemon:
         for d in cfg.get("scriptPath") or []:
             args += ["-scriptPath", d]
         argv, info = launch.command(args)
+        argv = front_door_argv(argv, info)
         log = self.log_file
         log.parent.mkdir(parents=True, exist_ok=True)
         with contextlib.suppress(OSError):
