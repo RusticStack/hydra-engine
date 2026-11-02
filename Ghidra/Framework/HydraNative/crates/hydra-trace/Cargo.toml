@@ -25,6 +25,7 @@ hmac.workspace = true
 crc32fast.workspace = true
 rusqlite.workspace = true
 memmap2.workspace = true
+memchr = "2"
 
 [target.'cfg(windows)'.dependencies.windows-sys]
 workspace = true

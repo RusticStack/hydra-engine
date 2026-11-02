@@ -9,12 +9,16 @@ use crate::model::{Event, kind_is_valid};
 use crate::raw;
 use crate::symbolize::{self, Symbolizer};
 use rusqlite::{Connection, OpenFlags, params};
+use serde::Deserialize;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::sync::Arc;
 
 pub const SCHEMA_VERSION: i64 = 2;
+
+/// SQLite page size for a new index.
+const PAGE_SIZE: i64 = 16_384;
 
 /// The synthetic source that carries records written by ingest itself.
 pub const INGEST_SOURCE: &str = "hydra-ingest";
@@ -222,11 +226,31 @@ pub struct Store {
 
 fn event_cost(event: &Event) -> u64 {
     160 + event.callstack.len() as u64 * 8
-        + event
-            .payload
-            .values()
-            .map(|v| v.to_string().len() as u64)
-            .sum::<u64>()
+        + event.payload.values().map(json_len).sum::<u64>()
+}
+
+/// The byte length of `v` serialized as compact JSON (what `v.to_string().len()` is), counted
+/// without building the string.
+fn json_len(v: &Value) -> u64 {
+    struct Count(u64);
+    impl std::io::Write for Count {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 += buf.len() as u64;
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    match v {
+        Value::Null => 4,
+        Value::Bool(b) => 4 + u64::from(!*b),
+        _ => {
+            let mut c = Count(0);
+            let _ = serde_json::to_writer(&mut c, v);
+            c.0
+        }
+    }
 }
 
 fn meta_get(conn: &Connection, key: &str) -> Option<String> {
@@ -274,6 +298,9 @@ impl Store {
     }
 
     fn init(conn: Connection, session: &str) -> Result<Self> {
+        // Larger pages mean fewer, bigger WAL frame writes per commit (each frame is one write
+        // call). Only a new file takes it; an existing index keeps the size it was made with.
+        let _ = conn.pragma_update(None, "page_size", PAGE_SIZE);
         let _ = conn.pragma_update(None, "journal_mode", "WAL");
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         // Indexes on random keys outgrow SQLite's 2 MiB default page cache quickly; a larger cache
@@ -366,7 +393,20 @@ impl Store {
         first_n: u64,
         records: &[Map<String, Value>],
     ) -> Result<IngestStats> {
-        let result = self.ingest_inner(source_id, first_n, records);
+        self.ingest_gated(source_id, first_n, records, || Ok(()))
+    }
+
+    /// [`Store::ingest`] with a gate that runs after the batch is written to the open
+    /// transaction and before it commits. A failing gate rolls the batch back. A session uses it
+    /// to make the segment durable while the index work runs, and still commits only after.
+    pub fn ingest_gated(
+        &mut self,
+        source_id: &str,
+        first_n: u64,
+        records: &[Map<String, Value>],
+        gate: impl FnOnce() -> Result<()>,
+    ) -> Result<IngestStats> {
+        let result = self.ingest_inner(source_id, first_n, records, gate);
         if result.is_err() {
             // The mirror may be ahead of the rolled-back tables: reload it.
             self.life = Lifetimes::load(&self.conn)?;
@@ -381,6 +421,7 @@ impl Store {
         source_id: &str,
         first_n: u64,
         records: &[Map<String, Value>],
+        gate: impl FnOnce() -> Result<()>,
     ) -> Result<IngestStats> {
         let session = self.session.clone();
         let symbolizer = self.options.symbolizer.clone();
@@ -424,11 +465,8 @@ impl Store {
             )?;
             for (offset, record) in records.iter().enumerate() {
                 let n = first_n + offset as u64;
-                let mut body = record.clone();
-                for chain_field in ["n", "prev", "hash"] {
-                    body.remove(chain_field);
-                }
-                let mut event: Event = match serde_json::from_value(Value::Object(body)) {
+                // The chain fields (`n`, `prev`, `hash`) are not envelope fields and are ignored.
+                let mut event: Event = match Event::deserialize(record) {
                     Ok(e) => e,
                     Err(e) => {
                         reject(&tx, source_id, n, &format!("schema: {e}"))?;
@@ -650,6 +688,7 @@ impl Store {
             "UPDATE meta SET value=?1 WHERE key='revision'",
             params![revision.to_string()],
         )?;
+        gate()?;
         tx.commit()?;
         if let Some(l) = last {
             self.last_seen.insert(source_id.to_string(), l);
@@ -863,7 +902,7 @@ fn store_event(
         state_key,
         corr,
         serde_json::to_string(&event.callstack)?,
-        serde_json::to_string(&Value::Object(event.payload.clone()))?,
+        serde_json::to_string(&event.payload)?,
         event.t_wall_ns.map(|v| v as i64),
     ])?;
     Ok(())

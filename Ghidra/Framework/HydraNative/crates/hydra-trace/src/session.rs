@@ -18,7 +18,7 @@ use crate::corrid::{self, KeyRing, PreviewPolicy};
 use crate::model::Event;
 use crate::raw::{self, Chain, Damage};
 use crate::store::{Batch, Budget, Error, INGEST_SOURCE, Options, Result, Store, rebuild_with};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
@@ -345,13 +345,7 @@ impl Session {
     }
 
     fn write_manifest(&mut self, source: &str, first_n: u64, count: u64) -> Result<()> {
-        writeln!(
-            self.manifest,
-            "{}",
-            json!({"source": source, "first_n": first_n, "count": count})
-        )?;
-        self.manifest.sync_data()?;
-        Ok(())
+        write_manifest_line(&mut self.manifest, source, first_n, count)
     }
 
     /// Bring the index and the on-disk truth into agreement after a crash.
@@ -509,8 +503,7 @@ impl Session {
             keyed = corrid::scrub(payload, &mut self.ring, &scope, self.preview)
                 .map_err(|e| e.to_string())?;
         }
-        let event: Event = serde_json::from_value(Value::Object(record.clone()))
-            .map_err(|e| format!("schema: {e}"))?;
+        let event = Event::deserialize(&record).map_err(|e| format!("schema: {e}"))?;
         if !crate::model::kind_is_valid(&event.kind) {
             return Err(format!("unknown kind {}", event.kind));
         }
@@ -550,19 +543,32 @@ impl Session {
         }
         let first_n = writer.chain.count();
         let mut bytes = Vec::with_capacity(records.len() * 256);
-        for record in &records {
+        let mut records = records;
+        for record in &mut records {
             let line = writer
                 .chain
-                .push(record.clone())
+                .push_ref(record)
                 .map_err(|e| Error::Refused(e.to_string()))?;
             bytes.extend_from_slice(&line);
         }
-        // 1. the segment, durable; 2. the manifest line, durable; 3. the index commit.
+        // 1. the segment, durable; 2. the manifest line, durable; 3. the index commit. The two
+        // syncs run on a helper thread while the batch is written into the index transaction,
+        // and the commit waits for them, so the order of durability is unchanged and the sync
+        // latency overlaps the index work.
         writer.file.write_all(&bytes)?;
-        writer.file.sync_data()?;
         let count = records.len() as u64;
-        self.write_manifest(source, first_n, count)?;
-        self.store.ingest(source, first_n, &records)
+        let (file, manifest, store) = (&mut writer.file, &mut self.manifest, &mut self.store);
+        std::thread::scope(|scope| {
+            let durable = scope.spawn(move || -> Result<()> {
+                file.sync_data()?;
+                write_manifest_line(manifest, source, first_n, count)
+            });
+            store.ingest_gated(source, first_n, &records, move || {
+                durable
+                    .join()
+                    .unwrap_or_else(|_| Err(Error::Segment("sync thread panicked".into())))
+            })
+        })
     }
 
     /// Record a named point: an event of kind `core.marker` from the session's own source.
@@ -610,6 +616,16 @@ impl Session {
         }
         Ok(reply)
     }
+}
+
+fn write_manifest_line(manifest: &mut File, source: &str, first_n: u64, count: u64) -> Result<()> {
+    writeln!(
+        manifest,
+        "{}",
+        json!({"source": source, "first_n": first_n, "count": count})
+    )?;
+    manifest.sync_data()?;
+    Ok(())
 }
 
 /// A read-only handle on a session's index.

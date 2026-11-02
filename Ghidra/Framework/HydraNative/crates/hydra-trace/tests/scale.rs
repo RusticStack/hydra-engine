@@ -37,6 +37,28 @@ fn peak_rss() -> u64 {
     }
 }
 
+#[cfg(windows)]
+fn cpu_secs() -> f64 {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+    let z = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let (mut c, mut e, mut k, mut u) = (z, z, z, z);
+    // SAFETY: the pseudo handle is valid and the out pointers are live locals.
+    unsafe { GetProcessTimes(GetCurrentProcess(), &mut c, &mut e, &mut k, &mut u) };
+    let t = |f: FILETIME| {
+        ((u64::from(f.dwHighDateTime) << 32) | u64::from(f.dwLowDateTime)) as f64 / 1e7
+    };
+    t(k) + t(u)
+}
+
+#[cfg(not(windows))]
+fn cpu_secs() -> f64 {
+    0.0
+}
+
 #[cfg(not(windows))]
 fn peak_rss() -> u64 {
     0
@@ -80,7 +102,12 @@ fn load(root: &std::path::Path, id: &str, n: u64, seed: u64) -> (Session, f64) {
 
 fn run(n: u64, rss_limit: u64) {
     let dir = scratch(&format!("n{n}"));
+    let cpu0 = cpu_secs();
     let (s, rate) = load(&dir, "big", n, 0);
+    println!(
+        "ingest cpu: {:.1} s (includes bench event construction)",
+        cpu_secs() - cpu0
+    );
     println!("loaded in {:.1}s", n as f64 / rate);
     let rss_after_ingest = peak_rss();
     println!(
@@ -138,11 +165,13 @@ fn run(n: u64, rss_limit: u64) {
 
     // Relations are computed on demand from the indexed candidates; report what that costs.
     let t = Instant::now();
+    let c0 = cpu_secs();
     let (rels, source) = hydra_trace::relations::current(&store).unwrap();
     println!(
-        "relations on demand: {} relations ({source}) in {:.2} s",
+        "relations on demand: {} relations ({source}) in {:.2} s wall, {:.2} s cpu",
         rels.len(),
-        t.elapsed().as_secs_f64()
+        t.elapsed().as_secs_f64(),
+        cpu_secs() - c0
     );
 
     // Diff against a smaller second session, inside a fixed event budget, three runs.
@@ -155,9 +184,11 @@ fn run(n: u64, rss_limit: u64) {
         ..AlignSpec::default()
     };
     let t = Instant::now();
+    let c0 = cpu_secs();
     let first =
         serde_json::to_string(&diff_aligned_default(&store, &other, &spec).unwrap()).unwrap();
     let secs = t.elapsed().as_secs_f64();
+    println!("aligned diff cpu {:.2} s", cpu_secs() - c0);
     println!("aligned diff: {secs:.2} s, {} bytes of reply", first.len());
     for _ in 0..2 {
         assert_eq!(
