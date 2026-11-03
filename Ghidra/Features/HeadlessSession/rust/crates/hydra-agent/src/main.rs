@@ -42,6 +42,7 @@ use std::process::ExitCode;
 const USAGE: &str = "usage:
   hydra-agent agent --spec <spec.json>
   hydra-agent call --endpoint <endpoint.json> [--client NAME] [--harness NAME] [--keep-raw]
+                   [--session-py <ghidra_session.py> [--ghidra <install>]]   (the full daemon behind a hydra-lite one)
   hydra-agent probe --endpoint <endpoint.json> [--client NAME] [--harness NAME]
   hydra-agent version";
 
@@ -95,11 +96,34 @@ fn run_call(args: &[String]) -> ExitCode {
     } else {
         call::KeepRaw::Drop
     };
+    let full: Option<std::sync::Arc<dyn hydra_client::FullDaemon>> =
+        match option(args, "--session-py") {
+            Some(py) => {
+                match hydra_client::PythonLauncher::for_endpoint_file(
+                    std::path::Path::new(&py),
+                    std::path::Path::new(&path),
+                ) {
+                    Ok(launcher) => {
+                        let launcher = match option(args, "--ghidra") {
+                            Some(g) => launcher.with_ghidra(std::path::Path::new(&g)),
+                            None => launcher,
+                        };
+                        Some(std::sync::Arc::new(launcher))
+                    }
+                    Err(e) => {
+                        eprintln!("hydra-agent call: {e}");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+            None => None,
+        };
     call::run(
         std::path::Path::new(&path),
         option(args, "--client").as_deref().unwrap_or("rust-call"),
         option(args, "--harness").as_deref().unwrap_or("diff"),
         raw,
+        full,
     )
 }
 

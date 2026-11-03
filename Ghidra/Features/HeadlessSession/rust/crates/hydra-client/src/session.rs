@@ -21,7 +21,7 @@
 //! delivered whole, and, when [`ConnectOptions::keep_raw`] is set, byte for byte beside its
 //! parsed value; that is what the differential harness compares.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Shutdown, TcpStream};
 use std::path::Path;
@@ -34,6 +34,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Map, Value};
 
 use crate::error::{Error, Result, SessionError};
+use crate::lite::{FullDaemon, LiteMode, STATE_COMMANDS, USE_FULL_DAEMON};
 use crate::version::{CLIENT_VERSION, PROTOCOL, check_compatible};
 
 /// How long a `hello` may take at most (Python's `HELLO_DEADLINE_S`).
@@ -119,6 +120,11 @@ pub struct ConnectOptions {
     pub hello_deadline: Option<f64>,
     /// Keep each answer's raw line beside its parsed value (`call_raw`/the `call` command).
     pub keep_raw: bool,
+    /// Where to find the full daemon when the daemon dialled is a `hydra-lite` one (its endpoint
+    /// file says `"lite": true`) and answers `use_full_daemon`; `None`: the refusal is returned.
+    pub full_daemon: Option<Arc<dyn FullDaemon>>,
+    /// `HYDRA_LITE`: with [`LiteMode::Only`] a refusal is returned even when `full_daemon` is set.
+    pub lite_mode: LiteMode,
 }
 
 impl Default for ConnectOptions {
@@ -129,6 +135,8 @@ impl Default for ConnectOptions {
             check: true,
             hello_deadline: None,
             keep_raw: false,
+            full_daemon: None,
+            lite_mode: LiteMode::Off,
         }
     }
 }
@@ -142,6 +150,20 @@ impl ConnectOptions {
             harness: harness.into(),
             ..Self::default()
         }
+    }
+
+    /// Lets the session move to the full daemon that `daemon` finds when a lite daemon refuses.
+    #[must_use]
+    pub fn with_full_daemon(mut self, daemon: Arc<dyn FullDaemon>) -> Self {
+        self.full_daemon = Some(daemon);
+        self
+    }
+
+    /// Sets the `HYDRA_LITE` mode.
+    #[must_use]
+    pub fn with_lite_mode(mut self, mode: LiteMode) -> Self {
+        self.lite_mode = mode;
+        self
     }
 }
 
@@ -172,12 +194,39 @@ struct State {
 /// The callback every progress event is handed to.
 type EventHandler = Arc<dyn Fn(&Value) + Send + Sync>;
 
+/// A request that succeeded and changed what the lite daemon holds for the session.
+struct Journaled {
+    cmd: String,
+    fields: Map<String, Value>,
+    /// The project id the daemon gave (`open_project`).
+    project: Option<String>,
+}
+
+/// What a session on a `hydra-lite` daemon keeps to be able to move to the full daemon.
+#[derive(Default)]
+struct Lite {
+    /// The full daemon; taken (set to `None`) when the move starts, so it is tried once.
+    full: Option<Arc<dyn FullDaemon>>,
+    /// Armed at connect: the endpoint is a lite one and the caller gave a [`FullDaemon`].
+    armed: bool,
+    journal: Vec<Journaled>,
+    /// The requests sent and not answered yet.
+    requests: BTreeMap<u64, (String, Map<String, Value>)>,
+    /// Project ids of the lite daemon -> those the full daemon gave the same projects.
+    idmap: HashMap<String, String>,
+    /// The endpoint of the full daemon, once the session lives there.
+    moved_to: Option<Endpoint>,
+}
+
 struct Inner {
     stream: Mutex<TcpStream>,
     state: Mutex<State>,
+    lite: Mutex<Lite>,
     next_id: AtomicU64,
     keep_raw: bool,
     on_event: Mutex<Option<EventHandler>>,
+    client: String,
+    harness: String,
 }
 
 /// Locks a mutex, ignoring a poison: a panic in one caller must not end the session for the
@@ -242,9 +291,12 @@ impl Session {
                 closed: false,
                 protocol_error: None,
             }),
+            lite: Mutex::new(Lite::default()),
             next_id: AtomicU64::new(0),
             keep_raw: options.keep_raw,
             on_event: Mutex::new(None),
+            client: options.client.clone(),
+            harness: options.harness.clone(),
         });
         let reader_inner = Arc::clone(&inner);
         let reader = thread::Builder::new()
@@ -272,6 +324,14 @@ impl Session {
             Ok(hello) => hello,
             Err(e) => {
                 session.close();
+                // a lite daemon whose workers are all busy refuses the connection itself
+                if let Error::Session(refusal) = &e
+                    && refusal.code == USE_FULL_DAEMON
+                    && !options.lite_mode.returns_refusals()
+                    && let Some(full) = options.full_daemon.clone()
+                {
+                    return Self::connect(full.endpoint()?, options);
+                }
                 return Err(e);
             }
         };
@@ -287,7 +347,29 @@ impl Session {
             .filter(|p| *p == 2 || *p == 3)
             .unwrap_or(PROTOCOL);
         session.hello = hello;
+        let lite_endpoint = session.endpoint.value.get("lite") == Some(&Value::Bool(true));
+        if lite_endpoint && !options.lite_mode.returns_refusals() && options.full_daemon.is_some() {
+            let mut lite = lock(&session.inner.lite);
+            lite.full.clone_from(&options.full_daemon);
+            lite.armed = true;
+        }
         Ok(session)
+    }
+
+    /// True once this session has moved from a `hydra-lite` daemon to the full daemon.
+    #[must_use]
+    pub fn failed_over(&self) -> bool {
+        lock(&self.inner.lite).moved_to.is_some()
+    }
+
+    /// The endpoint the session talks to now: the one it dialled, or the full daemon's after a
+    /// move.
+    #[must_use]
+    pub fn current_endpoint(&self) -> Endpoint {
+        lock(&self.inner.lite)
+            .moved_to
+            .clone()
+            .unwrap_or_else(|| self.endpoint.clone())
     }
 
     /// The `hello` answer.
@@ -348,16 +430,22 @@ impl Session {
 
     fn send_inner(&self, cmd: &str, fields: Map<String, Value>, mode: SendMode) -> Result<u64> {
         let rid = self.inner.next_id.fetch_add(1, Ordering::SeqCst) + 1;
-        let mut request = Map::new();
-        request.insert("id".to_owned(), Value::from(rid));
-        request.insert("cmd".to_owned(), Value::String(cmd.to_owned()));
-        request.extend(fields);
         if mode == SendMode::Abandoned {
             lock(&self.inner.state).abandoned.insert(rid);
         }
-        let mut line = serde_json::to_string(&Value::Object(request))?;
-        line.push('\n');
+        // The stream lock is held from the bookkeeping to the write, so a move to the full daemon
+        // (which sends again whatever is in `requests`, under the same lock) neither misses this
+        // request nor sends it twice.
         let mut stream = lock(&self.inner.stream);
+        let fields = {
+            let mut lite = lock(&self.inner.lite);
+            let fields = remap(&lite.idmap, fields);
+            if lite.armed {
+                lite.requests.insert(rid, (cmd.to_owned(), fields.clone()));
+            }
+            fields
+        };
+        let line = request_line(rid, cmd, fields)?;
         stream.write_all(line.as_bytes())?;
         stream.flush()?;
         Ok(rid)
@@ -453,10 +541,14 @@ impl Session {
                 }
                 st.abandoned.insert(rid);
                 drop(st);
+                lock(&self.inner.lite).requests.remove(&rid);
                 let cancel = self
                     .send_inner(
                         "cancel",
-                        fields([("target", Value::from(rid)), ("parallel", Value::Bool(true))]),
+                        fields([
+                            ("target", Value::from(rid)),
+                            ("parallel", Value::Bool(true)),
+                        ]),
                         SendMode::Abandoned,
                     )
                     .ok();
@@ -480,10 +572,9 @@ impl Session {
         let rid = self.send(cmd, fields)?;
         let response = self.wait(rid, deadline)?;
         if response.get("ok") == Some(&Value::Bool(true)) {
-            response
-                .get("result")
-                .cloned()
-                .ok_or_else(|| Error::BadReply(format!("the answer to request {rid} has no result")))
+            response.get("result").cloned().ok_or_else(|| {
+                Error::BadReply(format!("the answer to request {rid} has no result"))
+            })
         } else {
             Err(answer_error(&response))
         }
@@ -582,7 +673,8 @@ impl Labelled<'_> {
                 .or_insert_with(|| Value::String(harness.clone()));
         }
         if self.parallel {
-            out.entry("parallel".to_owned()).or_insert(Value::Bool(true));
+            out.entry("parallel".to_owned())
+                .or_insert(Value::Bool(true));
         }
         out
     }
@@ -650,7 +742,8 @@ fn check_deadline(deadline: Option<f64>) -> Result<()> {
 
 /// A request's field map from pairs; a tiny helper so call sites read like the Python kwargs.
 #[must_use]
-pub fn fields(pairs: impl IntoIterator<Item = (&'static str, Value)>) -> Map<String, Value> {    pairs
+pub fn fields(pairs: impl IntoIterator<Item = (&'static str, Value)>) -> Map<String, Value> {
+    pairs
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value))
         .collect()
@@ -668,6 +761,54 @@ fn answer_error(response: &Value) -> Error {
     Error::Session(SessionError::from_error_object(&error))
 }
 
+/// The request line for `rid`: `{"id", "cmd", ...fields}` and a newline.
+fn request_line(rid: u64, cmd: &str, fields: Map<String, Value>) -> Result<String> {
+    let mut request = Map::new();
+    request.insert("id".to_owned(), Value::from(rid));
+    request.insert("cmd".to_owned(), Value::String(cmd.to_owned()));
+    request.extend(fields);
+    let mut line = serde_json::to_string(&Value::Object(request))?;
+    line.push('\n');
+    Ok(line)
+}
+
+/// `fields` with the project ids of the lite daemon replaced by the full daemon's (`program`
+/// `p1:/a.exe` and `project`).
+fn remap(idmap: &HashMap<String, String>, mut fields: Map<String, Value>) -> Map<String, Value> {
+    if idmap.is_empty() {
+        return fields;
+    }
+    for key in ["program", "project"] {
+        let Some(Value::String(text)) = fields.get(key) else {
+            continue;
+        };
+        let (head, rest) = text
+            .split_once(':')
+            .map_or((text.as_str(), None), |(h, r)| (h, Some(r)));
+        if let Some(new) = idmap.get(head) {
+            let replaced = rest.map_or_else(|| new.clone(), |r| format!("{new}:{r}"));
+            fields.insert(key.to_owned(), Value::String(replaced));
+        }
+    }
+    fields
+}
+
+fn is_refusal(object: &Map<String, Value>) -> bool {
+    object.get("ok") == Some(&Value::Bool(false))
+        && object
+            .get("error")
+            .and_then(|e| e.get("code"))
+            .and_then(Value::as_str)
+            == Some(USE_FULL_DAEMON)
+}
+
+/// What `handle_line` made of a line.
+enum Handled {
+    Done,
+    /// A lite daemon refused request `id`; the object is its answer.
+    Refused(u64, Map<String, Value>),
+}
+
 fn reader_loop(inner: &Arc<Inner>, stream: TcpStream) {
     let mut reader = BufReader::new(stream);
     let mut line = Vec::new();
@@ -677,10 +818,18 @@ fn reader_loop(inner: &Arc<Inner>, stream: TcpStream) {
             Ok(0) | Err(_) => break,
             Ok(_) => {
                 let text = String::from_utf8_lossy(&line);
-                if let Err(problem) = handle_line(inner, text.as_ref()) {
-                    let mut state = lock(&inner.state);
-                    state.protocol_error = Some(problem);
-                    break;
+                match handle_line(inner, text.as_ref()) {
+                    Ok(Handled::Done) => {}
+                    Ok(Handled::Refused(id, refusal)) => {
+                        if let Some(moved) = fail_over(inner, id, refusal) {
+                            reader = moved;
+                        }
+                    }
+                    Err(problem) => {
+                        let mut state = lock(&inner.state);
+                        state.protocol_error = Some(problem);
+                        break;
+                    }
                 }
             }
         }
@@ -688,11 +837,207 @@ fn reader_loop(inner: &Arc<Inner>, stream: TcpStream) {
     close_state(inner);
 }
 
-fn handle_line(inner: &Arc<Inner>, line: &str) -> std::result::Result<(), String> {
+/// Hands an answer to its waiter (or keeps it until the caller waits).
+fn deliver(inner: &Arc<Inner>, id: u64, object: Map<String, Value>, raw: Option<String>) {
+    let mut state = lock(&inner.state);
+    if state.abandoned.remove(&id) {
+        drop(state);
+        lock(&inner.lite).requests.remove(&id);
+        return;
+    }
+    let arrival = Arrival {
+        value: Value::Object(object),
+        raw,
+    };
+    if let Some(waiter) = state.waiters.remove(&id) {
+        drop(state);
+        // The waiter may have given up between its last check and this line; then the answer
+        // is unwanted.
+        let _ = waiter.send(arrival);
+    } else {
+        state.arrived.insert(id, arrival);
+    }
+}
+
+/// An answer arrived on a connection that may be lite: forget the request, and keep it for the
+/// replay when it changed what the daemon holds for this session.
+fn note(inner: &Arc<Inner>, id: u64, object: &Map<String, Value>) {
+    let mut lite = lock(&inner.lite);
+    if !lite.armed {
+        return;
+    }
+    let Some((cmd, fields)) = lite.requests.remove(&id) else {
+        return;
+    };
+    if object.get("ok") == Some(&Value::Bool(true)) && STATE_COMMANDS.contains(&cmd.as_str()) {
+        let project = (cmd == "open_project")
+            .then(|| {
+                object
+                    .get("result")
+                    .and_then(|r| r.get("id"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .flatten();
+        lite.journal.push(Journaled {
+            cmd,
+            fields,
+            project,
+        });
+    }
+}
+
+/// Reads protocol lines from `reader` until the answer to `rid` (a line with `ok`); events, which
+/// carry the id of their request but no `ok`, and other lines are skipped. `None` when the connection ends first.
+fn read_answer(reader: &mut BufReader<TcpStream>, rid: u64) -> Option<Map<String, Value>> {
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if reader.read_line(&mut line).ok()? == 0 {
+            return None;
+        }
+        if let Ok(Value::Object(object)) = serde_json::from_str::<Value>(line.trim_start())
+            && object.get("id").and_then(Value::as_u64) == Some(rid)
+            && object.contains_key("ok")
+        {
+            return Some(object);
+        }
+    }
+}
+
+/// Sends one request on a connection that nobody else reads yet and waits for its answer.
+fn ask(
+    stream: &mut TcpStream,
+    reader: &mut BufReader<TcpStream>,
+    rid: u64,
+    cmd: &str,
+    fields: Map<String, Value>,
+) -> std::result::Result<Value, String> {
+    let line = request_line(rid, cmd, fields).map_err(|e| e.to_string())?;
+    stream
+        .write_all(line.as_bytes())
+        .and_then(|()| stream.flush())
+        .map_err(|e| format!("{cmd}: {e}"))?;
+    let answer = read_answer(reader, rid).ok_or_else(|| format!("{cmd}: the connection ended"))?;
+    if answer.get("ok") == Some(&Value::Bool(true)) {
+        Ok(answer.get("result").cloned().unwrap_or(Value::Null))
+    } else {
+        Err(format!(
+            "{cmd}: {}",
+            answer
+                .get("error")
+                .map_or_else(|| "refused".to_owned(), Value::to_string)
+        ))
+    }
+}
+
+/// The lite daemon refused request `id` (`refusal` is its answer). Connects to the full daemon,
+/// opens there again what this session had opened, swaps the connection under the session and
+/// sends again every request that has no answer. Runs on the reader thread. Returns the reader
+/// of the new connection, or `None` when the move failed; the refusal is then the answer, with
+/// `details.failover` saying why.
+fn fail_over(
+    inner: &Arc<Inner>,
+    id: u64,
+    mut refusal: Map<String, Value>,
+) -> Option<BufReader<TcpStream>> {
+    let (full, journal) = {
+        let mut lite = lock(&inner.lite);
+        let full = lite.full.take();
+        lite.armed = false;
+        let journal: Vec<(String, Map<String, Value>, Option<String>)> = lite
+            .journal
+            .iter()
+            .map(|j| (j.cmd.clone(), j.fields.clone(), j.project.clone()))
+            .collect();
+        (full, journal)
+    };
+    match move_to_full(inner, full, &journal) {
+        Ok(reader) => Some(reader),
+        Err(why) => {
+            lock(&inner.lite).requests.remove(&id);
+            if let Some(Value::Object(error)) = refusal.get_mut("error") {
+                let details = error
+                    .entry("details")
+                    .or_insert_with(|| Value::Object(Map::new()));
+                if let Value::Object(details) = details {
+                    details.insert("failover".to_owned(), Value::String(why));
+                }
+            }
+            deliver(inner, id, refusal, None);
+            None
+        }
+    }
+}
+
+fn move_to_full(
+    inner: &Arc<Inner>,
+    full: Option<Arc<dyn FullDaemon>>,
+    journal: &[(String, Map<String, Value>, Option<String>)],
+) -> std::result::Result<BufReader<TcpStream>, String> {
+    let full = full.ok_or_else(|| "no full daemon is configured".to_owned())?;
+    let endpoint = full.endpoint().map_err(|e| e.to_string())?;
+    let mut stream = TcpStream::connect(endpoint.socket_address()).map_err(|e| e.to_string())?;
+    stream.set_nodelay(true).map_err(|e| e.to_string())?;
+    let mut reader = BufReader::new(stream.try_clone().map_err(|e| e.to_string())?);
+    let mut next = 0_u64;
+    let mut step = || {
+        next += 1;
+        next
+    };
+    ask(
+        &mut stream,
+        &mut reader,
+        step(),
+        "hello",
+        fields([
+            ("token", Value::String(endpoint.token.clone())),
+            ("client", Value::String(inner.client.clone())),
+            ("harness", Value::String(inner.harness.clone())),
+            ("clientVersion", Value::String(CLIENT_VERSION.to_owned())),
+            ("protocol", Value::from(PROTOCOL)),
+        ]),
+    )?;
+    let mut idmap: HashMap<String, String> = HashMap::new();
+    for (cmd, request, old_project) in journal {
+        let mut request = remap(&idmap, request.clone());
+        request.remove("token");
+        let result = ask(&mut stream, &mut reader, step(), cmd, request)?;
+        if let (Some(old), Some(new)) = (old_project, result.get("id").and_then(Value::as_str))
+            && old != new
+        {
+            idmap.insert(old.clone(), new.to_owned());
+        }
+    }
+    let abandoned = lock(&inner.state).abandoned.clone();
+    let write_half = stream.try_clone().map_err(|e| e.to_string())?;
+    let mut current = lock(&inner.stream);
+    let mut lite = lock(&inner.lite);
+    lite.idmap = idmap;
+    let pending: Vec<(u64, String, Map<String, Value>)> = lite
+        .requests
+        .iter()
+        .filter(|(rid, _)| !abandoned.contains(rid))
+        .map(|(rid, (cmd, request))| (*rid, cmd.clone(), remap(&lite.idmap, request.clone())))
+        .collect();
+    let old = std::mem::replace(&mut *current, write_half);
+    let _ = old.shutdown(Shutdown::Both);
+    lite.moved_to = Some(endpoint);
+    for (rid, cmd, request) in pending {
+        let wire = request_line(rid, &cmd, request).map_err(|e| e.to_string())?;
+        current
+            .write_all(wire.as_bytes())
+            .and_then(|()| current.flush())
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(reader)
+}
+
+fn handle_line(inner: &Arc<Inner>, line: &str) -> std::result::Result<Handled, String> {
     let trimmed = line.trim_start();
     if trimmed.is_empty() || !trimmed.starts_with('{') {
         // Not protocol (a JVM message on stdout); ignore, as the Python client does.
-        return Ok(());
+        return Ok(Handled::Done);
     }
     let value: Value = serde_json::from_str(line)
         .map_err(|e| format!("a reply line is not valid JSON: {e}: {}", line.trim()))?;
@@ -706,41 +1051,28 @@ fn handle_line(inner: &Arc<Inner>, line: &str) -> std::result::Result<(), String
         let mut state = lock(&inner.state);
         state.events.push(Value::Object(object));
         drop(state);
-        return Ok(());
+        return Ok(Handled::Done);
     }
-    let Some(id) = object.get("id").and_then(Value::as_u64) else {
+    let id = match object.get("id").and_then(Value::as_u64) {
+        Some(id) => id,
+        // The acceptor of a full hydra-lite daemon answers before it reads a line, so its
+        // refusal has no id: it is the answer to the first request.
+        None if is_refusal(&object) => 1,
         // The Python client keeps such a line under `_pending[None]`, where it can never be
         // matched; ignoring it is the same from every caller's point of view.
-        return Ok(());
+        None => return Ok(Handled::Done),
     };
     let raw = if inner.keep_raw {
         Some(line.to_owned())
     } else {
         None
     };
-    let mut state = lock(&inner.state);
-    if state.abandoned.remove(&id) {
-        return Ok(());
+    if is_refusal(&object) && lock(&inner.lite).armed {
+        return Ok(Handled::Refused(id, object));
     }
-    if let Some(waiter) = state.waiters.remove(&id) {
-        let arrival = Arrival {
-            value: Value::Object(object),
-            raw,
-        };
-        drop(state);
-        if waiter.send(arrival).is_err() {
-            // The waiter gave up between its last check and this line; the answer is unwanted.
-        }
-        return Ok(());
-    }
-    state.arrived.insert(
-        id,
-        Arrival {
-            value: Value::Object(object),
-            raw,
-        },
-    );
-    Ok(())
+    note(inner, id, &object);
+    deliver(inner, id, object, raw);
+    Ok(Handled::Done)
 }
 
 fn close_state(inner: &Arc<Inner>) {

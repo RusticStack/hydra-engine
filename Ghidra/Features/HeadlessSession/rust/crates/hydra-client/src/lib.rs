@@ -43,6 +43,7 @@
 pub mod client;
 pub mod error;
 pub mod json;
+pub mod lite;
 pub mod session;
 pub mod trace;
 pub mod version;
@@ -50,6 +51,7 @@ pub mod version;
 pub use client::{Access, CommentKind, Discard, EditOp};
 pub use error::{Error, Result, SessionError};
 pub use json::{decompile_projection, digest, python_dumps, sha256_hex};
+pub use lite::{FullDaemon, LiteMode, PythonLauncher, USE_FULL_DAEMON, full_instance};
 pub use session::{ConnectOptions, Endpoint, Labelled, Reply, Session, fields};
 pub use version::{
     CLIENT_VERSION, PROTOCOL, PROTOCOL_MIN, check_compatible, check_endpoint, engine_protocols,
