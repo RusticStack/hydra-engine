@@ -698,12 +698,20 @@ DEFAULTS = {
     "minHeap": "64m",        # -Xms: the heap starts small and grows as the work needs (to maxHeap);
                              # G1 gives the unused part back after an idle periodic collection
     "gc": "g1",              # g1 | zgc | parallel | default (the JDK's choice)
-    "gcTimeRatio": 0,        # G1: -XX:GCTimeRatio n (heap grows when GC takes over 1/(1+n) of the
-                             # time; the JDK's 12 grows it at 8 %); 0: the JDK's. Opt-in: 4 kept
-                             # less heap but showed no CPU gain in the bench (see gc_args)
+    "gcTimeRatio": 4,        # G1: -XX:GCTimeRatio n (heap grows when GC takes over 1/(1+n) of the
+                             # time; the JDK's 12 grows it at 8 %, 4 at 20 %); 0: the JDK's. Default 4:
+                             # peak committed -11 %, mean -9 % in the multi-agent bench, no more CPU
+                             # (JVM-FLOOR.md)
     "jitThreads": -1,        # -XX:CICompilerCount; -1: the JDK's choice (from the CPUs the JVM may
                              # use; about 12 with 24); 0: a quarter of the CPUs this process may
                              # use, 2..4; n: n (at least 2). Opt-in (see jit_thread_args)
+    "jitTier4Scale": 4,      # C2 (the optimising JIT) waits for n times the JDK's invocation / loop counts
+                             # before it compiles a method (-XX:Tier4*Threshold); 1: the JDK's. Default 4:
+                             # -16 % process-tree CPU and -20 % JVM CPU in the multi-agent bench, the
+                             # p99 of decompiles -35 %, import+analysis of KotOR no slower (see JVM-FLOOR.md)
+    "gcThreads": 0,          # G1 -XX:ParallelGCThreads; 0: the JDK's up to 8 CPUs, above that max(4, CPUs/4)
+                             # (the JDK's 18 with 24 CPUs cost 19 MB of GC structures at idle and compete with
+                             # the agents for the CPUs); -1: the JDK's; n: n
     "vmargs": [],            # extra JVM options, appended last
     "tmpdir": None,          # java.io.tmpdir: where Ghidra keeps unsaved database buffers
     "mode": "fast",          # fast (app class loader, AOT-capable) | standard (GhidraClassLoader)
@@ -740,6 +748,8 @@ ENV_MAP = {
     "GHIDRA_SESSION_MAXMEM": ("maxHeap", str),
     "GHIDRA_SESSION_GC": ("gc", str),
     "GHIDRA_SESSION_JIT_THREADS": ("jitThreads", int),
+    "GHIDRA_SESSION_JIT_TIER4_SCALE": ("jitTier4Scale", int),
+    "GHIDRA_SESSION_GC_THREADS": ("gcThreads", int),
     "GHIDRA_SESSION_TMPDIR": ("tmpdir", str),
     "GHIDRA_SESSION_MODE": ("mode", str),
     "GHIDRA_SESSION_AOT": ("aot", str),
@@ -921,19 +931,61 @@ class Launch:
             # set (G1's defaults, 40/70, let it stay 70 % free): with many daemons and agents on one
             # machine the committed memory is what runs out (multi-agent benchmark, minHeap 128m
             # and these ratios: mean committed -32 %, peak -18 %, the same replies).
-            # GCTimeRatio (opt-in, gcTimeRatio): the JDK's 12 grows the heap whenever GC takes
-            # more than 8 % of the time; 4 stays nearer what is live but showed no CPU gain in
-            # the multi-agent bench, so the default is the JDK's.
+            # GCTimeRatio (gcTimeRatio, default 4): the JDK's 12 grows the heap whenever GC takes
+            # more than 8 % of the time, which with a daemon's small live set (about 100 MB) lets
+            # the heap run to 3-5 times it; 4 stays nearer what is live. Measured over 6 interleaved
+            # rounds of the multi-agent bench (16 agents): peak committed 1016 -> 900 MB, mean
+            # 769 -> 701 MB, the same tree CPU, decompile p99 -20 % (2 behaves alike; capping the
+            # young generation instead, G1MaxNewSizePercent, doubled the peak). The free ratios
+            # 10 / 25 (were 15 / 40) end the run with 148 instead of 176 MB committed.
+            # MarkStackSize 1m (8 MB): G1 commits the whole concurrent-mark stack at start (4M
+            # entries, 32 MB of commit charge the idle daemon never touches); the stack grows by
+            # itself should a mark overflow it. Peak -4 %, mean -7 % (6 rounds).
             ratio = int(self.cfg.get("gcTimeRatio") or 0)
             return ["-XX:+UseG1GC", "-XX:+UseStringDeduplication",
-                    "-XX:G1PeriodicGCInterval=300000", "-XX:MinHeapFreeRatio=15",
-                    "-XX:MaxHeapFreeRatio=40"] + (
-                        [f"-XX:GCTimeRatio={ratio}"] if ratio > 0 else [])
+                    "-XX:G1PeriodicGCInterval=300000", "-XX:MinHeapFreeRatio=10",
+                    "-XX:MaxHeapFreeRatio=25", "-XX:MarkStackSize=1m"] + (
+                        [f"-XX:GCTimeRatio={ratio}"] if ratio > 0 else []) + self.gc_thread_args()
         if gc == "zgc":
             return ["-XX:+UseZGC", "-XX:ZUncommitDelay=300"]
         if gc == "parallel":
             return ["-XX:+UseParallelGC"]
         return []
+
+    def gc_thread_args(self) -> list[str]:
+        """``-XX:ParallelGCThreads`` of G1. The JDK starts 8 + 5/8 of the CPUs above 8 (13 with 16,
+        18 with 24); each GC worker holds its own queues and buffers (19 MB less G1 structures at
+        idle with 4 instead of 13, native memory tracking), and a pause is short for the live sets
+        of a daemon, so the workers only compete with the agents for the CPUs. Up to 8 CPUs the
+        JDK's count is kept (small machines), above that max(4, CPUs / 4); ``gcThreads`` -1 is the
+        JDK's, n is n. ConcGCThreads follows (the JDK derives it from this count)."""
+        n = int(self.cfg.get("gcThreads") or 0)
+        if n < 0:
+            return []
+        if n == 0:
+            cpus = granted_cpus()
+            if cpus <= 8:
+                return []
+            n = max(4, cpus // 4)
+        return [f"-XX:ParallelGCThreads={n}"]
+
+    def jit_tier_args(self) -> list[str]:
+        """C2 starts compiling a method after 5000 invocations (15000 with its loops; the JDK's
+        ``Tier4*Threshold``); ``jitTier4Scale`` n multiplies these by n so that C2 (about 9 of the
+        16 s of JVM CPU of the multi-agent bench, most of it spent on code run a few thousand times
+        during start-up) only compiles what stays hot, while C1 still compiles everything early.
+        Unlike ``-XX:TieredStopAtLevel=1`` (rejected: import+analysis 35-60 % slower) the hot paths
+        of a long analysis still reach C2. Not added when the caller's JVM options set
+        ``TieredStopAtLevel`` or ``CompileThresholdScaling`` (theirs would conflict), and a
+        ``-XX:Tier4...`` option of theirs comes later and wins."""
+        n = int(self.cfg.get("jitTier4Scale") or 1)
+        if n <= 1:
+            return []
+        if any(a.startswith(("-XX:TieredStopAtLevel", "-XX:CompileThresholdScaling"))
+               for a in self.cfg.get("vmargs") or []):
+            return []
+        return [f"-XX:Tier4InvocationThreshold={5000 * n}", f"-XX:Tier4MinInvocationThreshold={600 * n}",
+                f"-XX:Tier4CompileThreshold={15000 * n}", f"-XX:Tier4BackEdgeThreshold={40000 * n}"]
 
     def jit_thread_args(self) -> list[str]:
         """``-XX:CICompilerCount``: the JDK sizes its JIT compiler threads from all the machine's
@@ -1166,6 +1218,7 @@ class Launch:
         vm += self.gc_args()
         vm += self.jit_args(vm)
         vm += self.jit_thread_args()
+        vm += self.jit_tier_args()
         # stdout is the protocol channel; the JVM's own log (an AOT cache that does not match,
         # GC warnings) goes to stdout unless told otherwise.
         vm += ["-Xlog:disable", "-Xlog:all=warning:stderr", "-Djava.awt.headless=true"]

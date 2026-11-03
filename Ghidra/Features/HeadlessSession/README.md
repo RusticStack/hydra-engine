@@ -162,9 +162,11 @@ Lowest to highest: defaults, `<state>/config.json`, environment, command-line op
 | `java` | `GHIDRA_SESSION_JAVA_HOME` | discovered | JDK home. |
 | `maxHeap` | `GHIDRA_SESSION_MAXMEM` | a quarter of RAM, 2-31 GiB | `-Xmx`. G1 only takes what it needs and returns idle memory. |
 | `minHeap` | | `64m` | `-Xms`: the heap starts small and grows as the work needs (G1 returns the unused part when idle). |
-| `gc` | `GHIDRA_SESSION_GC` | `g1` | `g1` (with string deduplication, periodic uncommit and `MinHeapFreeRatio=15`/`MaxHeapFreeRatio=40`), `zgc`, `parallel`, `default`. |
-| `gcTimeRatio` | | `0` | G1 `-XX:GCTimeRatio`; `0`: the JDK's (12). `4` keeps the heap nearer what is live, at more GC time; opt-in (no CPU gain measured). |
+| `gc` | `GHIDRA_SESSION_GC` | `g1` | `g1` (with string deduplication, periodic uncommit and `MinHeapFreeRatio=10`/`MaxHeapFreeRatio=25`, `GCTimeRatio=4`, `MarkStackSize=1m`), `zgc`, `parallel`, `default`. |
+| `gcTimeRatio` | | `4` | G1 `-XX:GCTimeRatio`: the heap grows when GC takes over 1/(1+n) of the time; `0`: the JDK's (12). 4 keeps the heap nearer what is live: peak committed -11 %, mean -9 % in the multi-agent bench, no more CPU (`JVM-FLOOR.md`). |
 | `jitThreads` | `GHIDRA_SESSION_JIT_THREADS` | `-1` | `-XX:CICompilerCount`; `-1`: the JDK's choice; `0`: a quarter of the CPUs this process may use (its affinity), 2 to 4; `n`: n. Opt-in: fewer compiler threads slow warm-up under load. |
+| `jitTier4Scale` | `GHIDRA_SESSION_JIT_TIER4_SCALE` | `4` | C2 compiles a method after n times the JDK's invocation and loop counts (`-XX:Tier4*Threshold`); C1 is unchanged; `1`: the JDK's. Measured: 22.3 -> 18.7 process-tree CPU s and 15.9 -> 12.5 JVM CPU s in the multi-agent bench, decompile p99 -35 %, import+analysis of KotOR no slower (`JVM-FLOOR.md`). Not added when `vmargs` set `TieredStopAtLevel` or `CompileThresholdScaling`. |
+| `gcThreads` | `GHIDRA_SESSION_GC_THREADS` | `0` | G1 `-XX:ParallelGCThreads`; `0`: the JDK's up to 8 CPUs, above that max(4, CPUs / 4); `-1`: the JDK's; `n`: n. Fewer workers hold less GC memory (19 MB at idle with 4 instead of 13) and leave the CPUs to the agents. |
 | `vmargs` | `GHIDRA_SESSION_VMARGS` (space-separated) | `[]` | Extra JVM options, last. |
 | `tmpdir` | `GHIDRA_SESSION_TMPDIR` | the JVM's | `java.io.tmpdir`: where Ghidra keeps unsaved database buffers. Put it on a fast disk with room. |
 | `mode` | `GHIDRA_SESSION_MODE` | `fast` | `fast` or `standard` (above). |

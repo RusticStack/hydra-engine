@@ -143,10 +143,19 @@ class DaemonJvmOptions(unittest.TestCase):
         self.assertEqual(opt(self.argv(), "-Xms"), ["64m"])
         self.assertEqual(opt(self.argv(minHeap="1g"), "-Xms"), ["1g"])
 
-    def test_g1_time_ratio_is_opt_in(self):
-        self.assertEqual(opt(self.argv(), "-XX:GCTimeRatio="), [])
-        self.assertEqual(opt(self.argv(gcTimeRatio=4), "-XX:GCTimeRatio="), ["4"])
+    def test_g1_time_ratio_default_is_four(self):
+        self.assertEqual(opt(self.argv(), "-XX:GCTimeRatio="), ["4"])
+        self.assertEqual(opt(self.argv(gcTimeRatio=2), "-XX:GCTimeRatio="), ["2"])
+        self.assertEqual(opt(self.argv(gcTimeRatio=0), "-XX:GCTimeRatio="), [])
         self.assertEqual(opt(self.argv(gc="zgc"), "-XX:GCTimeRatio="), [])
+
+    def test_g1_free_ratios(self):
+        argv = self.argv()
+        self.assertEqual(opt(argv, "-XX:MinHeapFreeRatio="), ["10"])
+        self.assertEqual(opt(argv, "-XX:MaxHeapFreeRatio="), ["25"])
+        self.assertEqual(opt(argv, "-XX:G1PeriodicGCInterval="), ["300000"])
+        self.assertEqual(opt(argv, "-XX:MarkStackSize="), ["1m"])
+        self.assertEqual(opt(self.argv(gc="zgc"), "-XX:MarkStackSize="), [])
 
     def test_jit_threads_default_is_the_jdks(self):
         with mock.patch.object(gs, "granted_cpus", return_value=24):
@@ -158,6 +167,40 @@ class DaemonJvmOptions(unittest.TestCase):
                 self.assertEqual(opt(self.argv(jitThreads=0), "-XX:CICompilerCount="), [want], cpus)
         self.assertEqual(opt(self.argv(jitThreads=6), "-XX:CICompilerCount="), ["6"])
         self.assertEqual(opt(self.argv(jitThreads=-1), "-XX:CICompilerCount="), [])
+
+    def test_c2_waits_for_four_times_the_jdks_counts_by_default(self):
+        argv = self.argv()
+        self.assertEqual(opt(argv, "-XX:Tier4InvocationThreshold="), ["20000"])
+        self.assertEqual(opt(argv, "-XX:Tier4MinInvocationThreshold="), ["2400"])
+        self.assertEqual(opt(argv, "-XX:Tier4CompileThreshold="), ["60000"])
+        self.assertEqual(opt(argv, "-XX:Tier4BackEdgeThreshold="), ["160000"])
+        self.assertEqual(opt(self.argv(jitTier4Scale=2), "-XX:Tier4InvocationThreshold="), ["10000"])
+        for off in (1, 0):
+            self.assertEqual(opt(self.argv(jitTier4Scale=off), "-XX:Tier4InvocationThreshold="), [], off)
+
+    def test_tier_scale_steps_aside_for_the_callers_tiering(self):
+        for a in ("-XX:TieredStopAtLevel=1", "-XX:CompileThresholdScaling=0.5"):
+            self.assertEqual(opt(self.argv(vmargs=[a]), "-XX:Tier4InvocationThreshold="), [], a)
+        argv = self.argv(vmargs=["-XX:Tier4InvocationThreshold=7000"])
+        self.assertEqual(opt(argv, "-XX:Tier4InvocationThreshold=")[-1], "7000")
+
+    def test_tier_scale_from_the_environment(self):
+        with mock.patch.dict(os.environ, {"GHIDRA_SESSION_JIT_TIER4_SCALE": "1"}):
+            cfg = gs.load_config(self.root / "nostate")
+        self.assertEqual(cfg["jitTier4Scale"], 1)
+
+    def test_g1_gc_threads_follow_the_granted_cpus(self):
+        for cpus, want in ((1, []), (4, []), (8, []), (12, ["4"]), (16, ["4"]), (24, ["6"]), (64, ["16"])):
+            with mock.patch.object(gs, "granted_cpus", return_value=cpus):
+                self.assertEqual(opt(self.argv(), "-XX:ParallelGCThreads="), want, cpus)
+
+    def test_gc_threads_setting(self):
+        with mock.patch.object(gs, "granted_cpus", return_value=24):
+            self.assertEqual(opt(self.argv(gcThreads=-1), "-XX:ParallelGCThreads="), [])
+            self.assertEqual(opt(self.argv(gcThreads=3), "-XX:ParallelGCThreads="), ["3"])
+            self.assertEqual(opt(self.argv(gc="zgc"), "-XX:ParallelGCThreads="), [])
+            argv = self.argv(vmargs=["-XX:ParallelGCThreads=12"])
+            self.assertEqual(opt(argv, "-XX:ParallelGCThreads=")[-1], "12")
 
     def test_caller_vmargs_come_last(self):
         argv = self.argv(vmargs=["-XX:CICompilerCount=8", "-Xms2g"])

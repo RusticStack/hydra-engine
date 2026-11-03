@@ -169,6 +169,13 @@ class Proc:
         m.cb = ctypes.sizeof(m)
         return m.PrivateUsage if K32.K32GetProcessMemoryInfo(self.h, ctypes.byref(m), m.cb) else 0
 
+    def working_set(self) -> int:
+        """Resident bytes (WorkingSetSize): the number a collector that maps its heap more than once (ZGC) is judged by,
+        since its private bytes undercount."""
+        m = PMCEX()
+        m.cb = ctypes.sizeof(m)
+        return m.WorkingSetSize if K32.K32GetProcessMemoryInfo(self.h, ctypes.byref(m), m.cb) else 0
+
 
 def category(p: Proc, own: int) -> str:
     if p.pid == own:
@@ -234,16 +241,19 @@ class Sampler(threading.Thread):
         self.scan()
         by = {}
         detail = []
+        ws = 0
         with self.lock:
             for p in self.procs.values():
                 if p.alive():
                     c = category(p, self.own)
                     mb = p.private()
                     by[c] = by.get(c, 0) + mb
+                    if c != "bench":
+                        ws += p.working_set()
                     detail.append((p.name, p.pid, round(mb / 2**20, 1)))
         total = sum(v for k, v in by.items() if k != "bench")
         detail.sort(key=lambda d: -d[2])
-        self.samples.append((time.perf_counter(), total, by, detail[:4]))
+        self.samples.append((time.perf_counter(), total, by, detail[:4], ws))
 
     def run(self):
         while not self.stop_evt.is_set():
@@ -273,7 +283,8 @@ class Sampler(threading.Thread):
         return {"samples": len(win), "peak_mb": round(peak[1] / 2**20, 1), "mean_mb": round(statistics.mean(s[1] for s in win) / 2**20, 1),
                 "peak_by_mb": {k: round(v / 2**20, 1) for k, v in peak[2].items()},
                 "peak_java_mb": round(max(s[2].get("java", 0) for s in win) / 2**20, 1),
-                "peak_detail": peak[3] if len(peak) > 3 else []}
+                "peak_detail": peak[3] if len(peak) > 3 else [],
+                "peak_ws_mb": round(max(s[4] for s in win) / 2**20, 1), "mean_ws_mb": round(statistics.mean(s[4] for s in win) / 2**20, 1)}
 
 
 def cpu_delta(a: dict, b: dict) -> dict:
