@@ -29,7 +29,7 @@ built from this repository's sources here. Build the classpath from every jar un
 (not the `-src` ones), then:
 
     javac -cp "$CP" -d out OracleProgram.java
-    java -cp "out;$CP" OracleProgram <ghidra install dir> <db.gbf> > testdata/oracleprog-<name>.txt
+    java -cp "out;$CP" OracleProgram <ghidra install dir> <db.gbf> 2>/dev/null | grep -v -E "^(INFO|WARN|ERROR|DEBUG) " > testdata/oracleprog-<name>.txt
 
 It opens the file with `OpenMode.IMMUTABLE` and prints the language, address spaces, memory blocks
 with their parts, and every symbol row by id. Log lines (stderr) are dropped.

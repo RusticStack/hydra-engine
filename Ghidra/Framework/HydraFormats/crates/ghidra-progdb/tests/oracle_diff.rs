@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use ghidra_fmt_gbf::BufferFile;
-use ghidra_progdb::{AddressSpaces, ProgramDb, SpaceDef};
+use ghidra_progdb::{AddressSpaces, ProgramDb, RefKind, SpaceDef};
 
 fn fixture(dir: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -143,11 +143,141 @@ fn check(dir: &str) {
                 && !l.starts_with("default_space=")
         })
         .collect();
+    got.extend(listing_lines(&db));
     let got_refs: Vec<&str> = got.iter().map(String::as_str).collect();
-    assert_eq!(got_refs.len(), want.len());
-    for (g, w) in got_refs.iter().zip(&want) {
-        assert_eq!(g, w);
+    for (i, (g, w)) in got_refs.iter().zip(&want).enumerate() {
+        assert_eq!(g, w, "line {i}");
     }
+    assert_eq!(got_refs.len(), want.len());
+}
+
+fn esc(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+}
+
+fn ref_line(tag: &str, r: &ghidra_progdb::Reference) -> String {
+    let extra = match r.kind {
+        RefKind::Offset(o) => format!(" offset={o}"),
+        RefKind::Shifted(s) => format!(" shift={s}"),
+        _ => String::new(),
+    };
+    format!(
+        "{tag} from={} to={} type={} op={} src={} primary={} sym={} kind={}{extra}",
+        r.from,
+        r.to,
+        r.ref_type_name(),
+        r.op_index,
+        r.source.name(),
+        r.primary,
+        r.symbol_id.unwrap_or(-1),
+        r.kind.class_name()
+    )
+}
+
+/// Sort by key (stable) and append the lines, like the oracle's `emit`.
+fn emit(out: &mut Vec<String>, mut rows: Vec<(String, String)>) {
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    out.extend(rows.into_iter().map(|r| r.1));
+}
+
+fn listing_lines(db: &ProgramDb<BufferFile>) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut fns = db.functions().unwrap();
+    fns.sort_by_key(|f| f.id);
+    out.push(format!("functions={}", fns.len()));
+    for f in &fns {
+        let entry = f
+            .entry
+            .as_ref()
+            .map_or("null".to_owned(), |a| a.to_string());
+        if let Some(t) = f.thunk_target {
+            out.push(format!("func id={} entry={entry} thunk={t}", f.id));
+        } else {
+            out.push(format!(
+                "func id={} entry={entry} thunk=-1 vararg={} inline={} noreturn={} custom={} cc={} purge={} sigsrc={}",
+                f.id,
+                f.has_var_args(),
+                f.is_inline(),
+                f.has_no_return(),
+                f.has_custom_storage(),
+                f.calling_convention,
+                f.stack_purge,
+                f.signature_source().unwrap().name()
+            ));
+        }
+    }
+
+    let mut rows = Vec::new();
+    for (owner, refs) in db.references_from().unwrap() {
+        for r in &refs {
+            rows.push((owner.to_string(), ref_line("ref", r)));
+        }
+    }
+    out.push(format!("ref_sources={}", rows.len()));
+    emit(&mut out, rows);
+
+    let spaces = db.address_map().spaces();
+    let mut rows = Vec::new();
+    for (owner, refs) in db.references_to().unwrap() {
+        // getReferencesTo is not supported for stack and register addresses
+        if let ghidra_progdb::Address::Space { space, .. } = &owner
+            && (*space == spaces.stack_space || *space == spaces.register_space)
+        {
+            continue;
+        }
+        for r in &refs {
+            rows.push((owner.to_string(), ref_line("toref", r)));
+        }
+    }
+    out.push(format!("ref_destinations={}", rows.len()));
+    emit(&mut out, rows);
+
+    let rows: Vec<(String, String)> = db
+        .instructions()
+        .unwrap()
+        .iter()
+        .map(|i| (i.address.to_string(), format!("inst addr={}", i.address)))
+        .collect();
+    out.push(format!("instructions={}", rows.len()));
+    emit(&mut out, rows);
+
+    let rows: Vec<(String, String)> = db
+        .data()
+        .unwrap()
+        .iter()
+        .map(|d| {
+            (
+                d.address.to_string(),
+                format!("data addr={} type={}", d.address, d.datatype_id),
+            )
+        })
+        .collect();
+    out.push(format!("data={}", rows.len()));
+    emit(&mut out, rows);
+
+    let mut rows = Vec::new();
+    for (addr, c) in db.comments().unwrap() {
+        let kinds = [
+            ("EOL", &c.eol),
+            ("PRE", &c.pre),
+            ("POST", &c.post),
+            ("PLATE", &c.plate),
+            ("REPEATABLE", &c.repeatable),
+        ];
+        for (ordinal, (name, text)) in kinds.iter().enumerate() {
+            if let Some(t) = text {
+                rows.push((
+                    format!("{addr} {ordinal}"),
+                    format!("comment addr={addr} kind={name} text=[{}]", esc(t)),
+                ));
+            }
+        }
+    }
+    out.push(format!("comments={}", rows.len()));
+    emit(&mut out, rows);
+    out
 }
 
 #[test]

@@ -12,7 +12,10 @@
 
 mod addrmap;
 mod error;
+mod functions;
+mod listing;
 mod memory;
+mod references;
 mod symbols;
 
 use std::collections::BTreeMap;
@@ -23,7 +26,10 @@ use ghidra_fmt_gbf::BufferStore;
 
 pub use addrmap::{Address, AddressMap, AddressSpaces, SpaceDef};
 pub use error::ProgError;
+pub use functions::Function;
+pub use listing::{Comments, DataRow, InstructionRow};
 pub use memory::{MemoryBlock, SubBlock, SubBlockKind};
+pub use references::{RefKind, Reference, ref_type_name};
 pub use symbols::{SourceType, Symbol};
 
 /// Result type of this crate.
@@ -119,7 +125,26 @@ impl<S: BufferStore> ProgramDb<S> {
         };
         expect("Memory Blocks", &[3])?;
         expect("Sub Memory Blocks", &[3])?;
-        expect("Symbols", &[4, 5])
+        expect("Symbols", &[4, 5])?;
+        // listing tables are created on demand, so they may be absent
+        let optional = |name: &str, versions: &[i32]| -> Result<()> {
+            match self.db.table(name) {
+                Ok(t) if !versions.contains(&t.schema().version()) => {
+                    Err(ProgError::UnsupportedTableVersion {
+                        table: name.into(),
+                        version: t.schema().version(),
+                    })
+                }
+                _ => Ok(()),
+            }
+        };
+        optional("Function Data", &[3])?;
+        optional("Thunk Functions", &[0])?;
+        optional("FROM REFS", &[0])?;
+        optional("TO REFS", &[1])?;
+        optional("Instructions", &[1])?;
+        optional("Data", &[0])?;
+        optional("Comments", &[1])
     }
 
     /// The underlying database (for raw table access).
@@ -165,6 +190,42 @@ impl<S: BufferStore> ProgramDb<S> {
     /// Every record of the symbol table in id order.
     pub fn symbols(&self) -> Result<Vec<Symbol>> {
         symbols::read_symbols(&self.db, &self.address_map)
+    }
+
+    /// Every function (row of "Function Data") in id order.
+    pub fn functions(&self) -> Result<Vec<Function>> {
+        let addresses = self
+            .symbols()?
+            .into_iter()
+            .filter(|s| s.symbol_type == 5)
+            .map(|s| (s.id, s.address))
+            .collect();
+        functions::read_functions(&self.db, &addresses)
+    }
+
+    /// Every "FROM REFS" row in key order: the from address and its references.
+    pub fn references_from(&self) -> Result<Vec<(Address, Vec<Reference>)>> {
+        references::read_table(&self.db, &self.address_map, "FROM REFS", true)
+    }
+
+    /// Every "TO REFS" row in key order: the to address and the references to it.
+    pub fn references_to(&self) -> Result<Vec<(Address, Vec<Reference>)>> {
+        references::read_table(&self.db, &self.address_map, "TO REFS", false)
+    }
+
+    /// Rows of "Instructions" in key order.
+    pub fn instructions(&self) -> Result<Vec<InstructionRow>> {
+        listing::read_instructions(&self.db, &self.address_map)
+    }
+
+    /// Rows of "Data" in key order.
+    pub fn data(&self) -> Result<Vec<DataRow>> {
+        listing::read_data(&self.db, &self.address_map)
+    }
+
+    /// Rows of "Comments" in key order.
+    pub fn comments(&self) -> Result<Vec<(Address, Comments)>> {
+        listing::read_comments(&self.db, &self.address_map)
     }
 }
 

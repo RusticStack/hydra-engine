@@ -26,7 +26,7 @@ pub enum SourceType {
 }
 
 impl SourceType {
-    fn from_storage_id(id: u8) -> Result<Self> {
+    pub(crate) fn from_storage_id(id: u8) -> Result<Self> {
         Ok(match id {
             0 => Self::Analysis,
             1 => Self::UserDefined,

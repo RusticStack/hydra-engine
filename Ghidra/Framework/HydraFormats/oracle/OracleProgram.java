@@ -17,6 +17,11 @@ import ghidra.program.model.mem.MemoryBlockSourceInfo;
 import ghidra.program.model.symbol.SourceType;
 import ghidra.program.model.symbol.Symbol;
 import ghidra.util.task.TaskMonitor;
+import ghidra.program.model.address.AddressIterator;
+import ghidra.program.model.address.AddressSetView;
+import ghidra.program.model.listing.*;
+import ghidra.program.model.symbol.*;
+import ghidra.program.model.data.DataType;
 
 /**
  * Program-level oracle for the ghidra-progdb differential tests. Opens a Program database
@@ -96,7 +101,118 @@ public class OracleProgram {
                 + s.getSymbolType().getID() + " source=" + src.name() + " primary="
                 + s.isPrimary() + " pinned=" + s.isPinned());
         }
+        dumpListing(p);
         p.release(OracleProgram.class);
         System.exit(0);
+    }
+
+    static String esc(String s) {
+        return s.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r");
+    }
+
+    static void emit(List<String[]> rows) {
+        rows.sort(Comparator.comparing((String[] r) -> r[0]));
+        for (String[] r : rows) {
+            System.out.println(r[1]);
+        }
+    }
+
+    static String refLine(String tag, Reference r) {
+        String extra = r instanceof OffsetReference o ? " offset=" + o.getOffset()
+            : r instanceof ShiftedReference sh ? " shift=" + sh.getShift() : "";
+        return tag + " from=" + addr(r.getFromAddress()) + " to=" + addr(r.getToAddress())
+            + " type=" + r.getReferenceType().getName() + " op=" + r.getOperandIndex() + " src="
+            + r.getSource().name() + " primary=" + r.isPrimary() + " sym=" + r.getSymbolID()
+            + " kind=" + r.getClass().getSimpleName() + extra;
+    }
+
+    static void dumpListing(ProgramDB p) throws Exception {
+        // functions (thunks print only their link, the rest delegates to the thunked function)
+        List<Function> fns = new ArrayList<>();
+        for (FunctionIterator it = p.getFunctionManager().getFunctions(true); it.hasNext();) {
+            fns.add(it.next());
+        }
+        // getFunctions leaves out functions in the external space
+        for (FunctionIterator it = p.getFunctionManager().getExternalFunctions(); it.hasNext();) {
+            fns.add(it.next());
+        }
+        fns.sort(Comparator.comparingLong(Function::getID));
+        System.out.println("functions=" + fns.size());
+        for (Function f : fns) {
+            if (f.isThunk()) {
+                System.out.println("func id=" + f.getID() + " entry=" + addr(f.getEntryPoint())
+                    + " thunk=" + f.getThunkedFunction(false).getID());
+            }
+            else {
+                System.out.println("func id=" + f.getID() + " entry=" + addr(f.getEntryPoint())
+                    + " thunk=-1 vararg=" + f.hasVarArgs() + " inline=" + f.isInline()
+                    + " noreturn=" + f.hasNoReturn() + " custom=" + f.hasCustomVariableStorage()
+                    + " cc=" + f.getCallingConventionName() + " purge=" + f.getStackPurgeSize()
+                    + " sigsrc=" + f.getSignatureSource().name());
+            }
+        }
+        ghidra.program.model.address.AddressSet all = new ghidra.program.model.address.AddressSet();
+        for (AddressSpace sp : p.getAddressFactory().getAllAddressSpaces()) {
+            if (sp.isMemorySpace() || sp.isExternalSpace()) {
+                all.add(sp.getMinAddress(), sp.getMaxAddress());
+            }
+        }
+        ReferenceManager rm = p.getReferenceManager();
+        List<String[]> rows = new ArrayList<>();
+        for (AddressIterator it = rm.getReferenceSourceIterator(all, true); it
+            .hasNext();) {
+            Address from = it.next();
+            for (Reference r : rm.getReferencesFrom(from)) {
+                rows.add(new String[] { addr(from), refLine("ref", r) });
+            }
+        }
+        for (Reference r : rm.getReferencesFrom(Address.EXT_FROM_ADDRESS)) {
+            rows.add(new String[] { addr(Address.EXT_FROM_ADDRESS), refLine("ref", r) });
+        }
+        System.out.println("ref_sources=" + rows.size());
+        emit(rows);
+        rows = new ArrayList<>();
+        for (AddressIterator it = rm.getReferenceDestinationIterator(all, true); it
+            .hasNext();) {
+            Address to = it.next();
+            if (to.isStackAddress() || to.isRegisterAddress()) {
+                continue;
+            }
+            for (ReferenceIterator ri = rm.getReferencesTo(to); ri.hasNext();) {
+                rows.add(new String[] { addr(to), refLine("toref", ri.next()) });
+            }
+        }
+        System.out.println("ref_destinations=" + rows.size());
+        emit(rows);
+        Listing l = p.getListing();
+        rows = new ArrayList<>();
+        for (InstructionIterator it = l.getInstructions(true); it.hasNext();) {
+            Address at = it.next().getAddress();
+            rows.add(new String[] { addr(at), "inst addr=" + addr(at) });
+        }
+        System.out.println("instructions=" + rows.size());
+        emit(rows);
+        rows = new ArrayList<>();
+        for (DataIterator it = l.getDefinedData(true); it.hasNext();) {
+            Data d = it.next();
+            rows.add(new String[] { addr(d.getAddress()), "data addr=" + addr(d.getAddress())
+                + " type=" + p.getDataTypeManager().getID(d.getDataType()) });
+        }
+        System.out.println("data=" + rows.size());
+        emit(rows);
+        rows = new ArrayList<>();
+        for (AddressIterator it = l.getCommentAddressIterator(all, true); it
+            .hasNext();) {
+            Address at = it.next();
+            for (CommentType t : CommentType.values()) {
+                String c = l.getComment(t, at);
+                if (c != null) {
+                    rows.add(new String[] { addr(at) + " " + t.ordinal(),
+                        "comment addr=" + addr(at) + " kind=" + t.name() + " text=[" + esc(c) + "]" });
+                }
+            }
+        }
+        System.out.println("comments=" + rows.size());
+        emit(rows);
     }
 }
