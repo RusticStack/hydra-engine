@@ -25,6 +25,10 @@ publish.workspace = true
 name = "hydra_client"
 path = "src/lib.rs"
 
+[[bin]]
+name = "hydra"
+path = "src/bin/hydra/main.rs"
+
 [dependencies]
 serde_json = { workspace = true }
 
