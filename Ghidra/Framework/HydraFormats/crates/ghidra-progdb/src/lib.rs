@@ -19,6 +19,7 @@ mod memory;
 mod memread;
 mod references;
 mod symbols;
+mod symtab;
 
 use std::collections::BTreeMap;
 
@@ -35,6 +36,7 @@ pub use memory::{MemoryBlock, SubBlock, SubBlockKind};
 pub use memread::{ByteMappingScheme, Memory};
 pub use references::{RefKind, Reference, ref_type_name};
 pub use symbols::{SourceType, Symbol};
+pub use symtab::SymbolTable;
 
 /// Result type of this crate.
 pub type Result<T> = std::result::Result<T, ProgError>;
@@ -191,6 +193,11 @@ impl<S: BufferStore> ProgramDb<S> {
     /// Memory blocks in memory map order (sorted by start address).
     pub fn memory_blocks(&self) -> Result<Vec<MemoryBlock>> {
         memory::read_blocks(&self.db, &self.address_map)
+    }
+
+    /// The symbols indexed for the `SymbolManager` queries (see [`SymbolTable`]).
+    pub fn symbol_table(&self) -> Result<SymbolTable> {
+        SymbolTable::build(&self.db, &self.address_map, self.symbols()?)
     }
 
     /// The bytes of the program (`Memory.getBytes` and friends).

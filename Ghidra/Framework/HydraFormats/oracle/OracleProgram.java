@@ -104,6 +104,7 @@ public class OracleProgram {
         }
         dumpListing(p);
         dumpMemory(p);
+        dumpSymbolQueries(p);
         p.release(OracleProgram.class);
         System.exit(0);
     }
@@ -155,6 +156,139 @@ public class OracleProgram {
                 System.out.println("memread before-start skipped");
             }
         }
+    }
+
+    static String ids(java.util.Collection<? extends Symbol> list) {
+        StringBuilder sb = new StringBuilder();
+        for (Symbol s : list) {
+            if (sb.length() > 0) {
+                sb.append(',');
+            }
+            sb.append(s.getID());
+        }
+        return sb.toString();
+    }
+
+    static void dumpSymbolQueries(ProgramDB p) throws Exception {
+        SymbolTable st = p.getSymbolTable();
+        long maxId = p.getDBHandle().getTable("Symbols").getMaxKey();
+        List<Symbol> syms = new ArrayList<>();
+        for (long id = 1; id <= maxId; id++) {
+            Symbol s = st.getSymbol(id);
+            if (s != null) {
+                syms.add(s);
+            }
+        }
+        // names Java computes for default functions and parameters
+        List<String[]> rows = new ArrayList<>();
+        for (Symbol s : syms) {
+            int t = s.getSymbolType().getID();
+            if (s.getSource() == SourceType.DEFAULT && (t == 5 || t == 6)) {
+                rows.add(new String[] { String.format("%020d", s.getID()),
+                    "symname id=" + s.getID() + " name=[" + esc(s.getName()) + "]" });
+            }
+        }
+        System.out.println("symnames=" + rows.size());
+        emit(rows);
+        // symbols at each distinct symbol address, and the primary symbol there
+        rows = new ArrayList<>();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (Symbol s : syms) {
+            Address at = s.getAddress();
+            if (at.isStackAddress() || at.isRegisterAddress() || at.isVariableAddress()
+                || !seen.add(addr(at))) {
+                continue;
+            }
+            Symbol[] list = st.getSymbols(at);
+            StringBuilder sb = new StringBuilder();
+            for (Symbol x : list) {
+                if (sb.length() > 0) {
+                    sb.append(',');
+                }
+                sb.append(x.getID());
+            }
+            Symbol prim = st.getPrimarySymbol(at);
+            long pid = prim == null || prim.isDynamic() ? -1 : prim.getID();
+            rows.add(new String[] { addr(at), "symat addr=" + addr(at) + " ids=[" + sb
+                + "] primary=" + pid });
+        }
+        System.out.println("symat=" + rows.size());
+        emit(rows);
+        // by name over all namespaces, and by name within a namespace
+        rows = new ArrayList<>();
+        java.util.Set<String> names = new java.util.TreeSet<>();
+        java.util.Set<String> pairs = new java.util.TreeSet<>();
+        for (Symbol s : syms) {
+            if (s.getSource() != SourceType.DEFAULT) {
+                names.add(s.getName());
+                pairs.add(s.getName() + "\u0000" + (s.getParentSymbol() == null ? 0
+                    : s.getParentSymbol().getID()));
+            }
+        }
+        for (Symbol s : syms) {
+            int t = s.getSymbolType().getID();
+            if (s.getSource() == SourceType.DEFAULT && (t == 5 || t == 6)) {
+                names.add(s.getName());
+                pairs.add(s.getName() + "\u0000" + s.getParentNamespace().getID());
+            }
+        }
+        for (String n : names) {
+            List<Symbol> found = new ArrayList<>();
+            for (SymbolIterator it = st.getSymbols(n); it.hasNext();) {
+                found.add(it.next());
+            }
+            rows.add(new String[] { n, "symbyname name=[" + esc(n) + "] ids=[" + ids(found) + "]" });
+        }
+        System.out.println("symbynames=" + rows.size());
+        emit(rows);
+        rows = new ArrayList<>();
+        for (String pr : pairs) {
+            String n = pr.substring(0, pr.indexOf('\u0000'));
+            long nsId = Long.parseLong(pr.substring(pr.indexOf('\u0000') + 1));
+            Namespace ns;
+            if (nsId == 0) {
+                ns = p.getGlobalNamespace();
+            }
+            else {
+                Object o = st.getSymbol(nsId).getObject();
+                if (!(o instanceof Namespace)) {
+                    continue;
+                }
+                ns = (Namespace) o;
+            }
+            rows.add(new String[] { String.format("%020d", nsId) + n, "symbyns name=[" + esc(n)
+                + "] ns=" + nsId + " ids=[" + ids(st.getSymbols(n, ns)) + "]" });
+        }
+        System.out.println("symbyns=" + rows.size());
+        emit(rows);
+        // children of every namespace
+        rows = new ArrayList<>();
+        java.util.Set<Long> nsIds = new java.util.TreeSet<>();
+        nsIds.add(0L);
+        for (Symbol s : syms) {
+            nsIds.add(s.getParentSymbol() == null ? 0L : s.getParentSymbol().getID());
+        }
+        for (long nsId : nsIds) {
+            List<Symbol> kids = new ArrayList<>();
+            if (nsId == 0) {
+                for (SymbolIterator it = st.getSymbols(p.getGlobalNamespace()); it.hasNext();) {
+                    kids.add(it.next());
+                }
+            }
+            else {
+                Object o = st.getSymbol(nsId).getObject();
+                if (!(o instanceof Namespace)) {
+                    continue;
+                }
+                for (SymbolIterator it = st.getSymbols((Namespace) o); it.hasNext();) {
+                    kids.add(it.next());
+                }
+            }
+            rows.add(new String[] { String.format("%020d", nsId), "symchildren ns=" + nsId
+                + " ids=[" + ids(kids) + "]" });
+        }
+        System.out.println("symchildren=" + rows.size());
+        emit(rows);
     }
 
     static String esc(String s) {

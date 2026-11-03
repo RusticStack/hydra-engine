@@ -147,6 +147,7 @@ fn check(dir: &str) {
         .collect();
     got.extend(listing_lines(&db));
     got.extend(memory_lines(&db));
+    got.extend(symbol_query_lines(&db));
     let got_refs: Vec<&str> = got.iter().map(String::as_str).collect();
     for (i, (g, w)) in got_refs.iter().zip(&want).enumerate() {
         assert_eq!(g, w, "line {i}");
@@ -375,6 +376,137 @@ fn memory_lines(db: &ProgramDb<BufferFile>) -> Vec<String> {
         out.push(mem_read_line(&mem, &shift(&b.start, b.length / 2), 4096));
         out.push(mem_read_line(&mem, &shift(&b.start, -1), 8));
     }
+    out
+}
+
+fn ids_of(list: &[&ghidra_progdb::Symbol]) -> String {
+    list.iter()
+        .map(|s| s.id.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn symbol_query_lines(db: &ProgramDb<BufferFile>) -> Vec<String> {
+    use ghidra_progdb::SourceType;
+    use std::collections::BTreeSet;
+    let st = db.symbol_table().unwrap();
+    let spaces = db.address_map().spaces();
+    let mut out = Vec::new();
+    let is_default_fn_or_param = |s: &ghidra_progdb::Symbol| {
+        s.source == SourceType::Default && (s.symbol_type == 5 || s.symbol_type == 6)
+    };
+
+    let rows: Vec<(String, String)> = st
+        .all()
+        .iter()
+        .filter(|s| is_default_fn_or_param(s))
+        .map(|s| {
+            (
+                format!("{:020}", s.id),
+                format!("symname id={} name=[{}]", s.id, esc(&st.name(s).unwrap())),
+            )
+        })
+        .collect();
+    out.push(format!("symnames={}", rows.len()));
+    emit(&mut out, rows);
+
+    let mut rows = Vec::new();
+    let mut seen = BTreeSet::new();
+    for s in st.all() {
+        if let Address::Space { space, .. } = &s.address
+            && (*space == spaces.stack_space
+                || *space == spaces.register_space
+                || space == "VARIABLE")
+        {
+            continue;
+        }
+        let key = s.address.to_string();
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        let primary = st.primary_at(&s.address).map_or(-1, |p| p.id);
+        rows.push((
+            key.clone(),
+            format!(
+                "symat addr={key} ids=[{}] primary={primary}",
+                ids_of(&st.at(&s.address))
+            ),
+        ));
+    }
+    out.push(format!("symat={}", rows.len()));
+    emit(&mut out, rows);
+
+    let mut names = BTreeSet::new();
+    let mut pairs = BTreeSet::new();
+    for s in st.all() {
+        if s.source != SourceType::Default {
+            names.insert(s.name.clone());
+            pairs.insert((s.name.clone(), s.parent_id));
+        }
+    }
+    for s in st.all() {
+        if is_default_fn_or_param(s) {
+            let n = st.name(s).unwrap();
+            names.insert(n.clone());
+            pairs.insert((n, st.parent_namespace_id(s)));
+        }
+    }
+    let rows: Vec<(String, String)> = names
+        .iter()
+        .map(|n| {
+            (
+                n.clone(),
+                format!(
+                    "symbyname name=[{}] ids=[{}]",
+                    esc(n),
+                    ids_of(&st.by_name(n))
+                ),
+            )
+        })
+        .collect();
+    out.push(format!("symbynames={}", rows.len()));
+    emit(&mut out, rows);
+
+    let is_namespace = |id: i64| {
+        id == 0
+            || st
+                .get(id)
+                .is_some_and(|s| matches!(s.symbol_type, 1 | 3 | 4 | 5))
+    };
+    let rows: Vec<(String, String)> = pairs
+        .iter()
+        .filter(|(_, ns)| is_namespace(*ns))
+        .map(|(n, ns)| {
+            (
+                format!("{ns:020}{n}"),
+                format!(
+                    "symbyns name=[{}] ns={ns} ids=[{}]",
+                    esc(n),
+                    ids_of(&st.by_name_in_namespace(n, *ns))
+                ),
+            )
+        })
+        .collect();
+    out.push(format!("symbyns={}", rows.len()));
+    emit(&mut out, rows);
+
+    let mut ns_ids = BTreeSet::new();
+    ns_ids.insert(0i64);
+    for s in st.all() {
+        ns_ids.insert(s.parent_id);
+    }
+    let rows: Vec<(String, String)> = ns_ids
+        .iter()
+        .filter(|id| is_namespace(**id))
+        .map(|id| {
+            (
+                format!("{id:020}"),
+                format!("symchildren ns={id} ids=[{}]", ids_of(&st.children(*id))),
+            )
+        })
+        .collect();
+    out.push(format!("symchildren={}", rows.len()));
+    emit(&mut out, rows);
     out
 }
 
