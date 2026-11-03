@@ -1,0 +1,41 @@
+# ###
+# IP: GHIDRA
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+[package]
+name = "hydra-lite"
+description = "JVM-free read-only Hydra Engine daemon: answers the subset of protocol 3 that the Rust Program database reader can reproduce exactly, and refuses everything else with use_full_daemon (see HYDRA-LITE.md)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "hydra_lite"
+path = "src/lib.rs"
+
+[[bin]]
+name = "hydra-lite"
+path = "src/main.rs"
+
+[dependencies]
+ghidra-progdb = { path = "../../../../../Framework/HydraFormats/crates/ghidra-progdb" }
+ghidra-fmt-gbf = { path = "../../../../../Framework/HydraFormats/crates/ghidra-fmt-gbf" }
+sha2 = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Cryptography", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
+
+[lints]
+workspace = true

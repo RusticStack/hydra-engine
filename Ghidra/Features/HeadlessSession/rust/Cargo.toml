@@ -22,7 +22,7 @@
 # the default until this one is proven reply-identical (see PORTING.md and the lane report).
 [workspace]
 resolver = "3"
-members = ["crates/hydra-client", "crates/hydra-agent", "crates/hydra-etw", "crates/hydra-front"]
+members = ["crates/hydra-client", "crates/hydra-agent", "crates/hydra-etw", "crates/hydra-front", "crates/hydra-lite"]
 
 [workspace.package]
 version = "0.1.0"
