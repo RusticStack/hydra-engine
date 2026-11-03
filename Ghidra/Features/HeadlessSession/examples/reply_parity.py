@@ -19,6 +19,8 @@ install, keep every reply line (masked), and compare two recordings. Standard li
     python reply_parity.py record --ghidra <install dir> --work <empty dir> --out <file.jsonl>
     python reply_parity.py compare <a.jsonl> <b.jsonl>        # exit 0 same, 1 differs, 2 bad input
     python reply_parity.py --selftest                          # the masks and compare, offline
+    python reply_parity.py lite --ghidra <install dir> --work <empty dir> --lite <hydra-lite.exe>
+                                                               # Java daemon vs hydra-lite (HYDRA-LITE.md)
 
 ``--ghidra`` is the install root (the directory that holds ``Ghidra/``, for example
 ``C:\\dev-overflow\\hydra-engines\\final2b\\ghidra_12.3_DEV``). The client is the install's own
@@ -959,6 +961,36 @@ def load_repo_client():
     return mod
 
 
+def learn_lite(gl, exe, install, state, instance, java_daemon):
+    """Teaches hydra-lite who the install is. The launcher starts it once without an identity (it
+    refuses to start); the command line it used is what `hydra-lite learn` needs, and a running
+    Java daemon of the same install is what it learns from: the deployment recipe of
+    HYDRA-LITE.md."""
+    argvs = []
+    orig_front = gl.front_door_argv
+
+    def spy(argv, info, environ=None):
+        argvs.append(list(argv))
+        return orig_front(argv, info, environ)
+
+    gl.front_door_argv = spy
+    os.environ["GHIDRA_SESSION_FRONT"] = str(exe)
+    try:
+        gl.Daemon(install, str(state), instance).connect("rp-probe", "rp-h")
+        raise Harness("hydra-lite started without a learned identity")
+    except gl.LaunchError:
+        pass
+    finally:
+        gl.front_door_argv = orig_front
+        os.environ.pop("GHIDRA_SESSION_FRONT", None)
+    if not argvs:
+        raise Harness("the launcher did not run the front door")
+    learn = subprocess.run([str(exe), "learn", "--from", str(java_daemon.endpoint_file), "--",
+                            *argvs[0]], capture_output=True, text=True, timeout=60, check=False)
+    if learn.returncode != 0:
+        raise Harness(f"hydra-lite learn failed: {learn.stderr.strip()}")
+
+
 def run_lite(a):
     install = str(pathlib.Path(a.ghidra).absolute())
     work = pathlib.Path(a.work).absolute()
@@ -1001,32 +1033,7 @@ def run_lite(a):
         ja = Conn(jrec, jd.connect("rp-a", "rp-h"), "a", gs.SessionError)
         ja.work = side["java"]
         jb = Conn(jrec, jd.connect("rp-b", "rp-h"), "b", gs.SessionError)
-        # The launcher starts hydra-lite once without an identity (it refuses to start); the
-        # command line it used is what `hydra-lite learn` needs, and a running Java daemon is
-        # what it learns from: the deployment recipe of HYDRA-LITE.md.
-        argvs = []
-        orig_front = gl.front_door_argv
-
-        def spy(argv, info, environ=None):
-            argvs.append(list(argv))
-            return orig_front(argv, info, environ)
-
-        gl.front_door_argv = spy
-        os.environ["GHIDRA_SESSION_FRONT"] = str(exe)
-        try:
-            gl.Daemon(install, str(lstate), "rp-lite").connect("rp-probe", "rp-h")
-            raise Harness("hydra-lite started without a learned identity")
-        except gl.LaunchError:
-            pass
-        finally:
-            gl.front_door_argv = orig_front
-            os.environ.pop("GHIDRA_SESSION_FRONT", None)
-        if not argvs:
-            raise Harness("the launcher did not run the front door")
-        learn = subprocess.run([str(exe), "learn", "--from", str(jd.endpoint_file), "--",
-                                *argvs[0]], capture_output=True, text=True, timeout=60, check=False)
-        if learn.returncode != 0:
-            raise Harness(f"hydra-lite learn failed: {learn.stderr.strip()}")
+        learn_lite(gl, exe, install, lstate, "rp-lite", jd)
         log("identity learned from the Java daemon")
         jp = copy_project(base, side["java"] / "project")
         jp2 = copy_project(base, side["java"] / "project2")
