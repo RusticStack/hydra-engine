@@ -1,0 +1,23 @@
+dbid=3761604138514811840
+bufferSize=16379 indexCount=11 free=[]
+buf 0 id=0 empty=false sha256=f742263e559c6bcf599bb8cde52f189962dad5a074956a7558f1c3e0a6b37fd5
+buf 1 id=1 empty=false sha256=f8ca96af08ff65f047485f6ae6d7db1513ddc50062e6631dcb71f6ad0a15f966
+buf 2 id=2 empty=false sha256=a024c0b3417a1672e1add8ae15486a05a495698a4a3f6194d8c335ed70b1810c
+buf 3 id=3 empty=false sha256=964a09a0a1dfea37955038201d22d8eb16d77727c17de3cdbcc6d4cbe7a1ea76
+buf 4 id=4 empty=false sha256=2132bc79b2a77e688d39ca4c9f517699cab6edb7432d40295e722e29fd45430d
+buf 5 id=5 empty=false sha256=9e7501d18180e0f38e1fa48dd795247f5d5fdbee2612b75970e68297673e7985
+buf 6 id=6 empty=false sha256=125e2526d8aab6863a2da1d72c16c8f1be703b80221ad63316e2b12566b3eaf0
+buf 7 id=7 empty=false sha256=28cebf4fd7f5aa1519143cd744a87612f95eb6a34ee48df09b0072e62cf4cd27
+buf 8 id=8 empty=false sha256=a75b404c50db00b74d37bc4eed62c17ecf88eb86ad8da9b6bc0b10a06c20d8cd
+buf 9 id=9 empty=false sha256=4d3b44ffd1f355f2d662be5cb5a1dff09e8b34f543737336a1391864444666e0
+buf 10 id=10 empty=false sha256=e44d20508de51169c24b25b6d17c290dc04ace7206a695348301ab34d84aee31
+table F count=272 max=999
+table V count=556 max=999
+dbid=3761604138514811840
+dbid=3761604138514811840
+tr num=0 name=V idx=-1 root=5 keytype=3 version=1 max=999 count=556 variable=true long=true varnodes=false fixednodes=false
+tr num=1 name=F idx=-1 root=3 keytype=3 version=1 max=999 count=272 variable=false long=true varnodes=false fixednodes=false
+tbl num=0 name=V idx=-1 n=556 sha256=8aa3a4c5da4e9d5b5db8bfe064106597b6036ad923942f467bb289fffa78e7f8
+tbl num=1 name=F idx=-1 n=272 sha256=c074cac7673874375fc6279f7a9acbc470ed5d6d1acc423e7815b8322c6a0a7f
+consistent name=V true
+consistent name=F true

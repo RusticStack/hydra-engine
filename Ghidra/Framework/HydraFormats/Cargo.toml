@@ -1,0 +1,33 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/ghidra-fmt-bytes",
+    "crates/ghidra-fmt-gbf",
+    "crates/ghidra-fmt-chain",
+    "crates/ghidra-fmt-field",
+    "crates/ghidra-fmt-btree",
+    "crates/ghidra-fmt-db",
+    "crates/ghidra-fmt-pack",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+ghidra-fmt-bytes = { path = "crates/ghidra-fmt-bytes" }
+ghidra-fmt-gbf = { path = "crates/ghidra-fmt-gbf" }
+ghidra-fmt-chain = { path = "crates/ghidra-fmt-chain" }
+ghidra-fmt-field = { path = "crates/ghidra-fmt-field" }
+ghidra-fmt-btree = { path = "crates/ghidra-fmt-btree" }
+ghidra-fmt-db = { path = "crates/ghidra-fmt-db" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
