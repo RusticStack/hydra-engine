@@ -317,3 +317,29 @@ fn variable_records_with_int_index() {
 fn several_indexed_tables() {
     check("ix-multi");
 }
+
+#[test]
+fn string_keys_fixed_records() {
+    check("vk-string-fixed");
+}
+
+#[test]
+fn string_keys_variable_records() {
+    check("vk-string-var");
+}
+
+#[test]
+fn index_on_a_string_column() {
+    check("ix-string-column");
+}
+
+#[test]
+fn index_on_every_column() {
+    check("ix-all-columns");
+}
+
+#[test]
+fn string_keys_stress() {
+    check("vk-string-stress");
+    check("vk-string-var-stress");
+}

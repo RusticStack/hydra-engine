@@ -9,6 +9,7 @@ import java.util.List;
  */
 public class GenIx {
     static long s;
+    static int keyMax = 12;
 
     static long next() {
         long x = s;
@@ -38,19 +39,20 @@ public class GenIx {
     }
 
     interface Maker {
-        String put(String name, long key);
+        String put(String name, String key);
     }
 
     /** Random puts (new keys and overwrites) and deletes over a key range. */
     static void ops(List<String> out, String name, String keyType, Maker mk, int n, int range,
             int delPct, int commitEvery) {
-        List<Long> live = new ArrayList<>();
+        List<String> live = new ArrayList<>();
         for (int i = 0; i < n; i++) {
             if (!live.isEmpty() && below(100) < delPct) {
                 int at = below(live.size());
                 out.add("del " + name + " " + live.remove(at));
             } else {
-                long k = below(range) - (keyType.equals("short") || keyType.equals("int") ? range / 2 : 0);
+                String k = keyType.equals("string") ? word(keyMax)
+                    : Long.toString(below(range) - (keyType.equals("short") || keyType.equals("int") ? range / 2 : 0));
                 if (!live.contains(k)) live.add(k);
                 out.add(mk.put(name, k));
             }
@@ -58,12 +60,12 @@ public class GenIx {
         }
     }
 
-    static String fixedPut(String name, long k) {
+    static String fixedPut(String name, String k) {
         return "put " + name + " " + k + " " + (next() >> (below(2) == 0 ? 0 : 50)) + " "
             + (below(40) - 20) + " " + (below(60000) - 30000);
     }
 
-    static String varPut(String name, long k) {
+    static String varPut(String name, String k) {
         int len = below(5) == 0 ? 100 + below(300) : below(30);
         String text = below(3) == 0 ? "-" : word(12);
         return "put " + name + " " + k + " " + (below(50) - 25) + " " + blob(len) + " " + text;
@@ -120,5 +122,53 @@ public class GenIx {
         ops(l, "A", "long", GenIx::fixedPut, 600, 3000, 20, 200);
         ops(l, "B", "short", GenIx::fixedPut, 600, 3000, 20, 200);
         write(dir, "ix-multi", l);
+
+        s = 0x7777;
+        keyMax = 12;
+        l = new ArrayList<>();
+        l.add("buffer 507");
+        l.add("table T string fixed -");
+        ops(l, "T", "string", GenIx::fixedPut, 1500, 0, 25, 400);
+        write(dir, "vk-string-fixed", l);
+
+        s = 0x8888;
+        keyMax = 40;
+        l = new ArrayList<>();
+        l.add("buffer 507");
+        l.add("table T string var -");
+        ops(l, "T", "string", GenIx::varPut, 1500, 0, 25, 300);
+        write(dir, "vk-string-var", l);
+
+        s = 0x9999;
+        keyMax = 12;
+        l = new ArrayList<>();
+        l.add("buffer 507");
+        l.add("table T long var 2");
+        ops(l, "T", "long", GenIx::varPut, 1500, 900, 25, 400);
+        write(dir, "ix-string-column", l);
+
+        s = 0xaaaa;
+        keyMax = 12;
+        l = new ArrayList<>();
+        l.add("buffer 507");
+        l.add("table T int var 2,0");
+        ops(l, "T", "int", GenIx::varPut, 1000, 600, 25, 300);
+        write(dir, "ix-all-columns", l);
+
+        s = 0xbbbb;
+        keyMax = 46;
+        l = new ArrayList<>();
+        l.add("buffer 507");
+        l.add("table T string fixed -");
+        ops(l, "T", "string", GenIx::fixedPut, 3000, 0, 45, 600);
+        write(dir, "vk-string-stress", l);
+
+        s = 0xcccc;
+        keyMax = 46;
+        l = new ArrayList<>();
+        l.add("buffer 507");
+        l.add("table T string var -");
+        ops(l, "T", "string", GenIx::varPut, 3000, 0, 40, 500);
+        write(dir, "vk-string-var-stress", l);
     }
 }

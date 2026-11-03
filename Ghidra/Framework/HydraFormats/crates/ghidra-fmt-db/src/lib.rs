@@ -12,6 +12,7 @@ use ghidra_fmt_btree::{
     fieldkey::FieldKeyTree,
     keywrite::{FixedKeyWriter, LongKeyWriter},
     longkey::LongKeyTree,
+    varwrite::VarKeyWriter,
 };
 use ghidra_fmt_chain::{ChainError, DbParms};
 use ghidra_fmt_field::{Field, FieldError, FieldType, IndexValue, JString, Record, Schema};
@@ -224,6 +225,7 @@ fn force_var_key_nodes_if_needed(
 enum Tree {
     Long(LongKeyWriter),
     Fixed(FixedKeyWriter),
+    Var(VarKeyWriter),
 }
 
 impl Tree {
@@ -231,6 +233,7 @@ impl Tree {
         Ok(match self {
             Self::Long(w) => w.put(s, key.long_value().ok_or(FieldError::TypeMismatch)?, data)?,
             Self::Fixed(w) => w.put(s, key, data)?,
+            Self::Var(w) => w.put(s, key, data)?,
         })
     }
 
@@ -238,6 +241,7 @@ impl Tree {
         Ok(match self {
             Self::Long(w) => w.delete(s, key.long_value().ok_or(FieldError::TypeMismatch)?)?,
             Self::Fixed(w) => w.delete(s, key)?,
+            Self::Var(w) => w.delete(s, key)?,
         })
     }
 
@@ -245,6 +249,7 @@ impl Tree {
         match self {
             Self::Long(w) => w.root(),
             Self::Fixed(w) => w.root(),
+            Self::Var(w) => w.root(),
         }
     }
 }
@@ -401,11 +406,6 @@ impl<S: BufferStoreMut> Database<S> {
         {
             return Err(DbError::TableExists(name.to_owned()));
         }
-        if schema.use_variable_key_nodes() {
-            return Err(DbError::Unsupported(
-                "writing tables with variable-length keys",
-            ));
-        }
         let mut index_schemas = Vec::new();
         for &col in indexed_columns {
             let indexed = schema
@@ -449,11 +449,6 @@ impl<S: BufferStoreMut> Database<S> {
             .iter()
             .position(|t| t.indexed_column == -1 && t.name == name)
             .ok_or_else(|| DbError::TableNotFound(name.to_owned()))?;
-        if self.tables[i].schema.use_variable_key_nodes() {
-            return Err(DbError::Unsupported(
-                "writing tables with variable-length keys",
-            ));
-        }
         Ok(i)
     }
 
@@ -484,9 +479,7 @@ impl<S: BufferStoreMut> Database<S> {
                 fixed,
             )?)
         } else {
-            return Err(DbError::Unsupported(
-                "writing tables with variable-length keys",
-            ));
+            Tree::Var(VarKeyWriter::new(t.root_buffer_id, t.schema.key_type()))
         })
     }
 

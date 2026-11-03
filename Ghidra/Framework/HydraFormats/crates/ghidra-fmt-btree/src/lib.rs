@@ -15,6 +15,7 @@ pub mod fieldkey;
 pub mod keywrite;
 pub mod longkey;
 pub mod longwrite;
+pub mod varwrite;
 
 /// Node type byte stored at offset 0 of every database buffer used by a table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

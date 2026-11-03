@@ -12,6 +12,8 @@ and commons-lang3 jars of a stock Ghidra install):
   `gen_build_scripts.py <dir>` regenerates the scripts. Usage per script:
   `java db.OracleBuild x.script out.gbf` (prints `dbid=`), then `java db.buffers.Oracle out.gbf`
   and `java db.OracleDb out.gbf`; the concatenation is `x.expected`.
+* `OracleBuildIx.java` (package `db`): like `OracleBuild` for field-key tables and index tables; `GenIx.java`
+  (`java GenIx.java <dir>`) writes its scripts and `run_ix.sh <classes> <cp file> <dir> NAME...` the `.expected` files.
 * `PackOracle.java` (default package): `pack`/`unpack` through `ItemSerializer`/`ItemDeserializer`
   for the `.pdb` fixtures in `testdata/pack`.
 
