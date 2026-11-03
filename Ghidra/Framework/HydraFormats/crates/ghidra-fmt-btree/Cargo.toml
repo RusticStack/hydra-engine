@@ -11,6 +11,7 @@ publish.workspace = true
 ghidra-fmt-bytes.workspace = true
 ghidra-fmt-gbf.workspace = true
 ghidra-fmt-chain.workspace = true
+ghidra-fmt-field.workspace = true
 
 [lints]
 workspace = true

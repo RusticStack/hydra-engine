@@ -1,16 +1,17 @@
 //! Read path of the Ghidra database B-tree nodes (`db.NodeMgr` and the node family).
 //!
-//! Node types 0-2 (long keys) are implemented in [`longkey`]. Types 3-7 (variable-length and
-//! fixed-length keys) need the field layer and are not ported yet; opening such a tree returns
-//! [`BtreeError::UnsupportedNodeType`]. Types 8 and 9 are chained buffer nodes
-//! (`ghidra-fmt-chain`).
+//! Node types 0-2 (long keys) are in [`longkey`]; types 3-7 (variable-length and fixed-length
+//! field keys) are in [`fieldkey`]. Types 8 and 9 are chained buffer nodes (`ghidra-fmt-chain`).
+//! Only the read path is implemented.
 
 use std::fmt;
 
 use ghidra_fmt_bytes::BytesError;
 use ghidra_fmt_chain::ChainError;
+use ghidra_fmt_field::FieldError;
 use ghidra_fmt_gbf::GbfError;
 
+pub mod fieldkey;
 pub mod longkey;
 
 /// Node type byte stored at offset 0 of every database buffer used by a table.
@@ -67,6 +68,8 @@ pub enum BtreeError {
     Chain(ChainError),
     /// Offset arithmetic inside a node failed (corrupt offsets or counts).
     Bytes(BytesError),
+    /// Field decoding failure.
+    Field(FieldError),
     /// Node type byte is not valid for this kind of tree (`AssertException` in Java).
     UnexpectedNodeType {
         /// Type byte found.
@@ -74,12 +77,14 @@ pub enum BtreeError {
         /// Buffer id of the node.
         buffer_id: i32,
     },
-    /// Node type belongs to a node family that is not ported yet.
+    /// Node type belongs to the other key family (use `fieldkey` for types 3-7).
     UnsupportedNodeType(u8),
     /// Node contents are inconsistent (zero keys in an interior node, negative lengths, ...).
     CorruptNode(&'static str),
     /// The tree is deeper than any valid tree can be (a loop in the child links).
     TooDeep,
+    /// A fixed-key node was found but no key type was supplied.
+    MissingKeyType,
     /// A fixed-record leaf was found but no record length was supplied.
     MissingFixedLength,
 }
@@ -90,13 +95,17 @@ impl fmt::Display for BtreeError {
             Self::Gbf(e) => write!(f, "{e}"),
             Self::Chain(e) => write!(f, "{e}"),
             Self::Bytes(e) => write!(f, "{e}"),
+            Self::Field(e) => write!(f, "{e}"),
             Self::UnexpectedNodeType { found, buffer_id } => write!(
                 f,
                 "Unexpected Node Type ({found}) found in buffer {buffer_id}"
             ),
-            Self::UnsupportedNodeType(t) => write!(f, "node type {t} is not ported yet"),
+            Self::UnsupportedNodeType(t) => {
+                write!(f, "node type {t} belongs to another key family")
+            }
             Self::CorruptNode(w) => write!(f, "corrupt node: {w}"),
             Self::TooDeep => write!(f, "B-tree deeper than the supported limit"),
+            Self::MissingKeyType => write!(f, "key type required for fixed-key nodes"),
             Self::MissingFixedLength => write!(f, "fixed record length required"),
         }
     }
@@ -108,6 +117,7 @@ impl std::error::Error for BtreeError {
             Self::Gbf(e) => Some(e),
             Self::Chain(e) => Some(e),
             Self::Bytes(e) => Some(e),
+            Self::Field(e) => Some(e),
             _ => None,
         }
     }
@@ -122,6 +132,12 @@ impl From<GbfError> for BtreeError {
 impl From<ChainError> for BtreeError {
     fn from(e: ChainError) -> Self {
         Self::Chain(e)
+    }
+}
+
+impl From<FieldError> for BtreeError {
+    fn from(e: FieldError) -> Self {
+        Self::Field(e)
     }
 }
 

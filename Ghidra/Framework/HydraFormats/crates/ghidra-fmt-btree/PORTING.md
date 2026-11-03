@@ -10,8 +10,8 @@ Source: `db.NodeMgr` (node type table), `LongKeyNode`, `LongKeyInteriorNode`,
 | 0 | `LongKeyInteriorNode` | read path done |
 | 1 | `VarRecNode` | read path done (direct and indirect records) |
 | 2 | `FixedRecNode` | read path done (record length supplied by the caller) |
-| 3, 4 | `VarKeyInteriorNode`, `VarKeyRecordNode` | NOT ported: they need the Field key encoding and ordering (layer L3). Opening returns `UnsupportedNodeType` |
-| 5, 6, 7 | `FixedKey*` | NOT ported, same reason |
+| 3, 4 | `VarKeyInteriorNode`, `VarKeyRecordNode` | Read path ported in `fieldkey.rs` (`FieldKeyTree`): get, ordered scan, consistency check; the key type comes from the master-table schema. Fixture walk of every non-long-key table in both legacy files matches RECORD_COUNT |
+| 5, 6, 7 | `FixedKey*` | Read path ported in `fieldkey.rs` (fixed-length keys; leaf kind needs the schema fixed record length) |
 | 8, 9 | chained buffer nodes | in `ghidra-fmt-chain` |
 
 The write path (insert, delete, split, merge, rebalance) is NOT ported. Java has no JUnit test
