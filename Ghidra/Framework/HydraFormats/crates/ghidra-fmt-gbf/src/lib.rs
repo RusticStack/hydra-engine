@@ -179,11 +179,23 @@ pub trait BufferStore {
     fn get_buffer(&self, index: i32) -> Result<DataBuffer>;
 }
 
-/// In-memory [`BufferStore`] used by tests and by callers that already hold the buffers.
+/// A [`BufferStore`] that can also allocate, overwrite and free buffers (the part of
+/// `db.buffers.BufferMgr` that `ChainedBuffer` needs).
+pub trait BufferStoreMut: BufferStore {
+    /// Allocate a buffer and return its id.
+    fn create_buffer(&mut self) -> Result<i32>;
+    /// Replace the buffer whose id is `buf.id`.
+    fn put_buffer(&mut self, buf: &DataBuffer) -> Result<()>;
+    /// Free buffer `id`.
+    fn delete_buffer(&mut self, id: i32) -> Result<()>;
+}
+
+/// In-memory store used by tests and by callers that already hold the buffers.
 #[derive(Debug, Clone)]
 pub struct MemoryBufferStore {
     buffer_size: usize,
     buffers: Vec<DataBuffer>,
+    free: Vec<i32>,
 }
 
 impl MemoryBufferStore {
@@ -192,15 +204,13 @@ impl MemoryBufferStore {
         Self {
             buffer_size,
             buffers: Vec::new(),
+            free: Vec::new(),
         }
     }
 
-    /// Append a zeroed buffer and return its id/index.
-    pub fn create_buffer(&mut self) -> i32 {
-        let id = self.buffers.len() as i32;
-        self.buffers
-            .push(DataBuffer::new(id, vec![0; self.buffer_size]));
-        id
+    /// Number of buffers currently allocated (not on the free list).
+    pub fn in_use_count(&self) -> usize {
+        self.buffers.len() - self.free.len()
     }
 
     /// Mutable payload of buffer `id`.
@@ -213,6 +223,53 @@ impl MemoryBufferStore {
             .and_then(|b| b.data.as_deref_mut())
             .ok_or(GbfError::IndexOutOfRange { index: id, count })
             .map(|d| &mut d[..bs])
+    }
+}
+
+impl BufferStoreMut for MemoryBufferStore {
+    fn create_buffer(&mut self) -> Result<i32> {
+        let fresh = DataBuffer::new(0, vec![0; self.buffer_size]);
+        if let Some(id) = self.free.pop() {
+            self.buffers[id as usize] = DataBuffer { id, ..fresh };
+            return Ok(id);
+        }
+        let id = self.buffers.len() as i32;
+        self.buffers.push(DataBuffer { id, ..fresh });
+        Ok(id)
+    }
+
+    fn put_buffer(&mut self, buf: &DataBuffer) -> Result<()> {
+        let count = self.index_count();
+        let slot = usize::try_from(buf.id)
+            .ok()
+            .and_then(|i| self.buffers.get_mut(i))
+            .ok_or(GbfError::IndexOutOfRange {
+                index: buf.id,
+                count,
+            })?;
+        if let Some(d) = &buf.data
+            && d.len() != self.buffer_size
+        {
+            return Err(GbfError::BadBufferSize {
+                expected: self.buffer_size,
+                actual: d.len(),
+            });
+        }
+        *slot = buf.clone();
+        Ok(())
+    }
+
+    fn delete_buffer(&mut self, id: i32) -> Result<()> {
+        let count = self.index_count();
+        let slot = usize::try_from(id)
+            .ok()
+            .and_then(|i| self.buffers.get_mut(i))
+            .ok_or(GbfError::IndexOutOfRange { index: id, count })?;
+        if !slot.empty {
+            *slot = DataBuffer::empty(id);
+            self.free.push(id);
+        }
+        Ok(())
     }
 }
 

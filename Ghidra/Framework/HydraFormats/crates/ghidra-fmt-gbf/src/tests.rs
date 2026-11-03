@@ -328,7 +328,7 @@ fn test_block_conversion_uses_equality_for_empty() {
 #[test]
 fn memory_store_round_trips() {
     let mut m = MemoryBufferStore::new(512);
-    let id = m.create_buffer();
+    let id = m.create_buffer().unwrap();
     m.data_mut(id).unwrap()[3] = 9;
     assert_eq!(m.get_buffer(id).unwrap().data.unwrap()[3], 9);
     assert!(m.get_buffer(5).is_err());
