@@ -172,11 +172,7 @@ impl Error {
 
     /// Builds a `deadline_exceeded` session error with the Python client's details.
     #[must_use]
-    pub fn deadline_exceeded(
-        deadline_s: f64,
-        target: u64,
-        cancel_id: Option<u64>,
-    ) -> Self {
+    pub fn deadline_exceeded(deadline_s: f64, target: u64, cancel_id: Option<u64>) -> Self {
         let mut details = serde_json::Map::new();
         details.insert("deadlineS".to_owned(), json_number(deadline_s));
         details.insert("target".to_owned(), Value::from(target));
@@ -186,9 +182,7 @@ impl Error {
         );
         Self::Session(SessionError {
             code: code::DEADLINE_EXCEEDED.to_owned(),
-            message: format!(
-                "no answer to request {target} within {deadline_s} s; cancel sent"
-            ),
+            message: format!("no answer to request {target} within {deadline_s} s; cancel sent"),
             details: Value::Object(details),
             trace: None,
         })

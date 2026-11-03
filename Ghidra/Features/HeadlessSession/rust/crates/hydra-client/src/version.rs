@@ -67,7 +67,8 @@ fn protocol_i64(v: &Value) -> Option<i64> {
     if !is_protocol(Some(v)) {
         return None;
     }
-    v.as_i64().or_else(|| v.as_u64().and_then(|u| i64::try_from(u).ok()))
+    v.as_i64()
+        .or_else(|| v.as_u64().and_then(|u| i64::try_from(u).ok()))
 }
 
 /// The protocols an engine says it serves, from a `hello` answer, a `ready` event or an
@@ -103,7 +104,11 @@ pub fn requested_protocol(hello: &Value) -> i64 {
     }
     let Ok(value) = text.parse::<i128>() else {
         // A magnitude beyond i128 is still "larger than MAX" or "smaller than MIN" by its sign.
-        return if text.starts_with('-') { PROTOCOL_MIN } else { MAX };
+        return if text.starts_with('-') {
+            PROTOCOL_MIN
+        } else {
+            MAX
+        };
     };
     if value >= i128::from(MAX) {
         MAX
@@ -178,7 +183,8 @@ pub fn check_compatible(
         said.push_str(&span(alo, ahi));
         said.push(')');
     }
-    let incompatible = |message: String| Error::Session(SessionError::new(code::INCOMPATIBLE, message));
+    let incompatible =
+        |message: String| Error::Session(SessionError::new(code::INCOMPATIBLE, message));
     let fits = theirs
         .and_then(protocol_i64)
         .is_some_and(|t| lo <= t && t <= hi);
@@ -227,7 +233,11 @@ pub fn check_compatible(
 #[must_use]
 pub fn parse_version(text: &str) -> Option<Vec<u64>> {
     let parts: Vec<&str> = text.trim().split('.').collect();
-    if parts.is_empty() || !parts.iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())) {
+    if parts.is_empty()
+        || !parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+    {
         return None;
     }
     parts.iter().map(|p| p.parse().ok()).collect()
@@ -244,7 +254,9 @@ pub fn check_endpoint(
     instance: &str,
     install_dir: Option<&Path>,
 ) -> Result<(), Error> {
-    if let (Some(their), Some(ours)) = (endpoint.get("install").and_then(Value::as_str), install_dir) {
+    if let (Some(their), Some(ours)) =
+        (endpoint.get("install").and_then(Value::as_str), install_dir)
+    {
         let their_path = Path::new(their);
         let same = their_path
             .canonicalize()
@@ -286,7 +298,8 @@ pub fn check_endpoint(
 /// Windows compares paths case-insensitively; `std::path::Path` does not.
 fn paths_equal(a: &Path, b: &Path) -> bool {
     if cfg!(windows) {
-        a.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy())
+        a.to_string_lossy()
+            .eq_ignore_ascii_case(&b.to_string_lossy())
     } else {
         a == b
     }
@@ -358,7 +371,12 @@ mod tests {
         )
         .expect_err("protocol 4");
         let msg = e.to_string();
-        for part in ["9.9-hydra.1", "speaks protocol 4", "speaks 2..3", CLIENT_VERSION] {
+        for part in [
+            "9.9-hydra.1",
+            "speaks protocol 4",
+            "speaks 2..3",
+            CLIENT_VERSION,
+        ] {
             assert!(msg.contains(part), "message lacks {part:?}: {msg}");
         }
     }
@@ -381,7 +399,10 @@ mod tests {
                 .expect_err("below range should be refused");
             let msg = e.to_string();
             assert!(msg.contains("9.9-hydra.1"), "{msg}");
-            assert!(msg.contains(&format!("ghidra_session.py {CLIENT_VERSION}")), "{msg}");
+            assert!(
+                msg.contains(&format!("ghidra_session.py {CLIENT_VERSION}")),
+                "{msg}"
+            );
             assert!(msg.contains("speaks protocol"), "{msg}");
             assert!(msg.contains("2..3"), "{msg}");
         }

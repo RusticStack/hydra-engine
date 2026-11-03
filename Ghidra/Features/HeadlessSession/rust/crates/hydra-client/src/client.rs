@@ -380,7 +380,13 @@ impl Session {
         addresses: &[String],
         deadline: Option<f64>,
     ) -> Result<String> {
-        let result = self.script("BenchRead.java", addresses, Some(program), Some(120), deadline)?;
+        let result = self.script(
+            "BenchRead.java",
+            addresses,
+            Some(program),
+            Some(120),
+            deadline,
+        )?;
         Ok(result
             .get("output")
             .and_then(Value::as_str)
