@@ -4,6 +4,7 @@ members = [
     "crates/ghidra-fmt-bytes",
     "crates/ghidra-fmt-gbf",
     "crates/ghidra-fmt-chain",
+    "crates/ghidra-fmt-field",
     "crates/ghidra-fmt-btree",
 ]
 
@@ -18,6 +19,7 @@ publish = false
 ghidra-fmt-bytes = { path = "crates/ghidra-fmt-bytes" }
 ghidra-fmt-gbf = { path = "crates/ghidra-fmt-gbf" }
 ghidra-fmt-chain = { path = "crates/ghidra-fmt-chain" }
+ghidra-fmt-field = { path = "crates/ghidra-fmt-field" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
