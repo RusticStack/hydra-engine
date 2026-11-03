@@ -32,4 +32,4 @@ built from this repository's sources here. Build the classpath from every jar un
     java -cp "out;$CP" OracleProgram <ghidra install dir> <db.gbf> 2>/dev/null | grep -v -E "^(INFO|WARN|ERROR|DEBUG) " > testdata/oracleprog-<name>.txt
 
 It opens the file with `OpenMode.IMMUTABLE` and prints the language, address spaces, memory blocks
-with their parts, and every symbol row by id. Log lines (stderr) are dropped.
+with their parts, every symbol row by id, the listing, memory and symbol query sections, and the data types (categories, every stored type with kind, name, path, length and base, structure / union components, enum values, function definition parameters; defined data rows carry the resolved type path). Log lines (stderr) are dropped.

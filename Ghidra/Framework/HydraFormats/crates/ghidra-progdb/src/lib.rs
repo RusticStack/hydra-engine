@@ -12,6 +12,7 @@
 
 mod addrmap;
 mod bodies;
+mod datatypes;
 mod error;
 mod functions;
 mod listing;
@@ -30,6 +31,10 @@ use ghidra_fmt_gbf::BufferStore;
 
 pub use addrmap::{Address, AddressMap, AddressSpaces, SpaceDef};
 pub use bodies::{AddressRange, Variable};
+pub use datatypes::{
+    Component, DataOrganization, DataType, DataTypeKind, DataTypes, EnumValue, FunctionDef,
+    ParameterDef,
+};
 pub use error::ProgError;
 pub use functions::Function;
 pub use listing::{Comments, DataRow, InstructionRow};
@@ -155,7 +160,18 @@ impl<S: BufferStore> ProgramDb<S> {
         optional("Instructions", &[1])?;
         optional("Data", &[0])?;
         optional("File Bytes", &[0])?;
-        optional("Comments", &[1])
+        optional("Comments", &[1])?;
+        optional("Built-in datatypes", &[0])?;
+        optional("Categories", &[0])?;
+        optional("Arrays", &[1])?;
+        optional("Typedefs", &[2])?;
+        optional("Composite Data Types", &[6])?;
+        optional("Component Data Types", &[0])?;
+        optional("Function Definitions", &[2])?;
+        optional("Function Parameters", &[1])?;
+        optional("Pointers", &[2])?;
+        optional("Enumeration Data Types", &[1])?;
+        optional("Enumeration Values", &[1])
     }
 
     /// The underlying database (for raw table access).
@@ -263,6 +279,17 @@ impl<S: BufferStore> ProgramDb<S> {
     /// Rows of "Data" in key order.
     pub fn data(&self) -> Result<Vec<DataRow>> {
         listing::read_data(&self.db, &self.address_map)
+    }
+
+    /// The data types of the program (`DataTypeManagerDB`), sized for Windows x64.
+    pub fn data_types(&self) -> Result<DataTypes> {
+        self.data_types_with(DataOrganization::WINDOWS_X64)
+    }
+
+    /// The data types, with `int`, `long`, pointer and `wchar_t` sizes taken from `org` (Java
+    /// takes them from the compiler specification's `DataOrganization`).
+    pub fn data_types_with(&self, org: DataOrganization) -> Result<DataTypes> {
+        datatypes::read(&self.db, org)
     }
 
     /// Rows of "Comments" in key order.

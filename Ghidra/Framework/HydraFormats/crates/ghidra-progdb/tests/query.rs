@@ -133,6 +133,30 @@ fn check(dir: &str) {
         assert_eq!(ids.join(","), field(l, "ids"));
     }
 
+    // data types: id -> name / path / size, and defined data resolved to its type
+    for l in lines.iter().filter(|l| l.starts_with(" dt id=")) {
+        let id: i64 = field(l, "id").parse().unwrap();
+        let t = p.data_type(id).unwrap().unwrap();
+        // names such as `char[2]` hold the closing bracket, so compare the whole span
+        let want = format!(
+            " name=[{}] path=[{}] len={}",
+            t.name,
+            t.path,
+            t.size.unwrap()
+        );
+        assert!(l.contains(&want), "{l} vs {want}");
+        assert_eq!(p.data_type_by_path(&t.path).unwrap().unwrap().path, t.path);
+    }
+    let mut resolved = 0;
+    for l in lines.iter().filter(|l| l.starts_with(" data addr=")) {
+        let a = p.parse_address(field(l, "addr")).unwrap();
+        let t = p.data_type_at(&a).unwrap().unwrap();
+        assert!(l.ends_with(&format!(" dt=[{}]", t.path)), "{l}");
+        resolved += 1;
+    }
+    assert!(resolved > 0);
+    assert!(p.data_type(-12345).unwrap().is_none());
+
     // bytes
     for l in lines.iter().filter(|l| l.starts_with(" memread ")) {
         let a = p.parse_address(field(l, "addr")).unwrap();

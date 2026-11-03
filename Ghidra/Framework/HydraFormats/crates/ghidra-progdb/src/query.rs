@@ -38,12 +38,13 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use ghidra_fmt_gbf::{BufferFile, BufferStore};
 
 use crate::{
-    Address, AddressRange, AddressSpaces, Function, ProgError, ProgramDb, Reference, Result,
-    Symbol, SymbolTable, Variable,
+    Address, AddressRange, AddressSpaces, Component, DataType, DataTypes, EnumValue, Function,
+    FunctionDef, ProgError, ProgramDb, Reference, Result, Symbol, SymbolTable, Variable,
 };
 
 /// A function with everything the stored tables say about it.
@@ -85,6 +86,8 @@ pub struct Program<S: BufferStore> {
     ranges: Vec<(String, u64, u64, usize)>,
     refs_from: HashMap<Address, Vec<Reference>>,
     refs_to: HashMap<Address, Vec<Reference>>,
+    datatypes: OnceLock<DataTypes>,
+    data_at: OnceLock<HashMap<Address, i64>>,
 }
 
 impl Program<BufferFile> {
@@ -166,6 +169,8 @@ impl<S: BufferStore> Program<S> {
             ranges,
             refs_from,
             refs_to,
+            datatypes: OnceLock::new(),
+            data_at: OnceLock::new(),
         })
     }
 
@@ -282,5 +287,87 @@ impl<S: BufferStore> Program<S> {
     /// [`ProgError::MemoryAccess`] when no byte can be read (unmapped or uninitialized memory).
     pub fn read_bytes(&self, addr: &Address, len: usize) -> Result<Vec<u8>> {
         self.db.memory()?.read(addr, len)
+    }
+
+    /// Every data type of the program, read on first use (`DataTypeManagerDB`), sized for
+    /// Windows x64; use [`ProgramDb::data_types_with`] for another data organization.
+    ///
+    /// # Errors
+    ///
+    /// The error reading the data type tables (nothing is cached on failure).
+    pub fn data_types(&self) -> Result<&DataTypes> {
+        if let Some(d) = self.datatypes.get() {
+            return Ok(d);
+        }
+        let read = self.db.data_types()?;
+        Ok(self.datatypes.get_or_init(|| read))
+    }
+
+    /// The data type with this id (`DataTypeManager.getDataType(long)`): name, path and size.
+    ///
+    /// # Errors
+    ///
+    /// See [`Program::data_types`].
+    pub fn data_type(&self, id: i64) -> Result<Option<&DataType>> {
+        Ok(self.data_types()?.get(id))
+    }
+
+    /// The data type with this path, for example `/PE/IMAGE_DOS_HEADER`.
+    ///
+    /// # Errors
+    ///
+    /// See [`Program::data_types`].
+    pub fn data_type_by_path(&self, path: &str) -> Result<Option<&DataType>> {
+        Ok(self.data_types()?.by_path(path))
+    }
+
+    /// Defined components of a structure or union, ordinal order.
+    ///
+    /// # Errors
+    ///
+    /// See [`Program::data_types`].
+    pub fn components(&self, id: i64) -> Result<&[Component]> {
+        Ok(self.data_types()?.components(id))
+    }
+
+    /// Values of an enum, by value then name.
+    ///
+    /// # Errors
+    ///
+    /// See [`Program::data_types`].
+    pub fn enum_values(&self, id: i64) -> Result<&[EnumValue]> {
+        Ok(self.data_types()?.enum_values(id))
+    }
+
+    /// Details of a function definition data type.
+    ///
+    /// # Errors
+    ///
+    /// See [`Program::data_types`].
+    pub fn function_definition(&self, id: i64) -> Result<Option<&FunctionDef>> {
+        Ok(self.data_types()?.function_def(id))
+    }
+
+    /// The data type of the defined data starting at `addr` (`Listing.getDataAt(addr).getDataType`),
+    /// resolved to its name, path and size.
+    ///
+    /// # Errors
+    ///
+    /// See [`Program::data_types`]; also the error reading the "Data" table.
+    pub fn data_type_at(&self, addr: &Address) -> Result<Option<&DataType>> {
+        let types = self.data_types()?;
+        let rows = match self.data_at.get() {
+            Some(r) => r,
+            None => {
+                let read: HashMap<Address, i64> = self
+                    .db
+                    .data()?
+                    .into_iter()
+                    .map(|d| (d.address, d.datatype_id))
+                    .collect();
+                self.data_at.get_or_init(|| read)
+            }
+        };
+        Ok(rows.get(addr).and_then(|&id| types.get(id)))
     }
 }

@@ -148,11 +148,16 @@ fn check(dir: &str) {
     got.extend(listing_lines(&db));
     got.extend(memory_lines(&db));
     got.extend(symbol_query_lines(&db));
+    got.extend(datatype_lines(&db));
     let got_refs: Vec<&str> = got.iter().map(String::as_str).collect();
     for (i, (g, w)) in got_refs.iter().zip(&want).enumerate() {
         assert_eq!(g, w, "line {i}");
     }
     assert_eq!(got_refs.len(), want.len());
+}
+
+fn esc_opt(s: Option<&str>) -> String {
+    s.map_or("null".to_owned(), esc)
 }
 
 fn esc(s: &str) -> String {
@@ -294,6 +299,7 @@ fn listing_lines(db: &ProgramDb<BufferFile>) -> Vec<String> {
     out.push(format!("instructions={}", rows.len()));
     emit(&mut out, rows);
 
+    let dts = db.data_types().unwrap();
     let rows: Vec<(String, String)> = db
         .data()
         .unwrap()
@@ -301,7 +307,12 @@ fn listing_lines(db: &ProgramDb<BufferFile>) -> Vec<String> {
         .map(|d| {
             (
                 d.address.to_string(),
-                format!("data addr={} type={}", d.address, d.datatype_id),
+                format!(
+                    "data addr={} type={} dt=[{}]",
+                    d.address,
+                    d.datatype_id,
+                    dts.get(d.datatype_id).map_or("?", |t| t.path.as_str())
+                ),
             )
         })
         .collect();
@@ -507,6 +518,130 @@ fn symbol_query_lines(db: &ProgramDb<BufferFile>) -> Vec<String> {
         .collect();
     out.push(format!("symchildren={}", rows.len()));
     emit(&mut out, rows);
+    out
+}
+
+fn datatype_lines(db: &ProgramDb<BufferFile>) -> Vec<String> {
+    use ghidra_progdb::DataTypeKind;
+    let dts = db.data_types().unwrap();
+    let mut out = Vec::new();
+    let mut rows = Vec::new();
+    for (id, path) in dts.categories() {
+        rows.push((
+            format!("{id:020}"),
+            format!("category id={id} path=[{}]", esc(&path)),
+        ));
+    }
+    out.push(format!("categories={}", rows.len()));
+    emit(&mut out, rows);
+
+    let mut rows = Vec::new();
+    let mut sub = Vec::new();
+    for t in dts.all().filter(|t| t.kind != DataTypeKind::Default) {
+        let key = format!("{:020}", t.id);
+        let id = t.id;
+        let base = match t.kind {
+            DataTypeKind::TypeDef | DataTypeKind::Pointer => {
+                format!(" base={}", t.base.unwrap_or(-1))
+            }
+            DataTypeKind::Array => format!(
+                " base={} n={}",
+                t.base.unwrap_or(-1),
+                t.elements.unwrap_or(0)
+            ),
+            _ => String::new(),
+        };
+        let class = match (&t.kind, &t.class_name) {
+            (DataTypeKind::BuiltIn, Some(c)) => format!(" class={c}"),
+            _ => String::new(),
+        };
+        let len = t.size.map_or("?".to_owned(), |n| n.to_string());
+        rows.push((
+            key.clone(),
+            format!(
+                "dt id={id} kind={} name=[{}] path=[{}] len={len}{base}{class}",
+                t.kind.name(),
+                esc(&t.name),
+                esc(&t.path)
+            ),
+        ));
+        match t.kind {
+            DataTypeKind::Structure | DataTypeKind::Union => {
+                sub.push((
+                    format!("{key}000000"),
+                    format!("dtcomment id={id} text=[{}]", esc_opt(t.comment.as_deref())),
+                ));
+                for c in dts.components(id) {
+                    sub.push((
+                        format!("{key}{:06}", c.ordinal + 1),
+                        format!(
+                            "comp parent={id} ord={} off={} type={} name=[{}] comment=[{}] len={}",
+                            c.ordinal,
+                            c.offset,
+                            c.datatype_id,
+                            esc_opt(c.name.as_deref()),
+                            esc_opt(c.comment.as_deref()),
+                            c.length
+                        ),
+                    ));
+                }
+            }
+            DataTypeKind::Enum => {
+                sub.push((
+                    format!("{key}000000"),
+                    format!("dtcomment id={id} text=[{}]", esc_opt(t.comment.as_deref())),
+                ));
+                for (i, v) in dts.enum_values(id).iter().enumerate() {
+                    sub.push((
+                        format!("{key}{:06}", i + 1),
+                        format!(
+                            "enumv parent={id} idx={} name=[{}] value={} comment=[{}]",
+                            i + 1,
+                            esc(&v.name),
+                            v.value,
+                            esc_opt(v.comment.as_deref())
+                        ),
+                    ));
+                }
+            }
+            DataTypeKind::FunctionDefinition => {
+                sub.push((
+                    format!("{key}000000"),
+                    format!("dtcomment id={id} text=[{}]", esc_opt(t.comment.as_deref())),
+                ));
+                let f = dts.function_def(id).unwrap();
+                sub.push((
+                    format!("{key}000001"),
+                    format!(
+                        "funcdef id={id} ret={} varargs={} noreturn={} cc=[{}] params={}",
+                        f.return_type,
+                        f.var_args,
+                        f.no_return,
+                        esc(&f.calling_convention),
+                        f.parameters.len()
+                    ),
+                ));
+                for p in &f.parameters {
+                    sub.push((
+                        format!("{key}{:06}", p.ordinal + 2),
+                        format!(
+                            "fparam parent={id} ord={} type={} name=[{}] comment=[{}]",
+                            p.ordinal,
+                            p.datatype_id,
+                            esc_opt(p.name.as_deref()),
+                            esc_opt(p.comment.as_deref())
+                        ),
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    out.push(format!("datatypes={}", rows.len()));
+    emit(&mut out, rows);
+    out.push(format!("datatype_details={}", sub.len()));
+    emit(&mut out, sub);
+    out.push("dt_default name=[undefined] len=1".to_owned());
     out
 }
 

@@ -3196,1630 +3196,1630 @@ toref from=ram:1400001b0 to=ram:14001e000 type=DATA op=0 src=DEFAULT primary=tru
 toref from=ram:1400002dc to=ram:14001e000 type=DATA op=0 src=DEFAULT primary=true sym=-1 kind=MemReferenceDB
 instructions=0
 data=1624
-data addr=ram:140000000 type=72057594037927936
-data addr=ram:140000080 type=104
-data addr=ram:140000100 type=72057594037927937
-data addr=ram:140000208 type=72057594037927941
-data addr=ram:140000230 type=72057594037927941
-data addr=ram:140000258 type=72057594037927941
-data addr=ram:140000280 type=72057594037927941
-data addr=ram:1400002a8 type=72057594037927941
-data addr=ram:1400002d0 type=72057594037927941
-data addr=ram:140010000 type=288230376151711746
-data addr=ram:140010008 type=288230376151711746
-data addr=ram:140010010 type=288230376151711746
-data addr=ram:140010018 type=288230376151711746
-data addr=ram:140010020 type=288230376151711746
-data addr=ram:140010028 type=288230376151711746
-data addr=ram:140010030 type=288230376151711746
-data addr=ram:140010038 type=288230376151711746
-data addr=ram:140010040 type=288230376151711746
-data addr=ram:140010048 type=288230376151711746
-data addr=ram:140010050 type=288230376151711746
-data addr=ram:140010058 type=288230376151711746
-data addr=ram:140010060 type=288230376151711746
-data addr=ram:140010068 type=288230376151711746
-data addr=ram:140010070 type=288230376151711746
-data addr=ram:140010078 type=288230376151711746
-data addr=ram:140010080 type=288230376151711746
-data addr=ram:140010088 type=288230376151711746
-data addr=ram:140010090 type=288230376151711746
-data addr=ram:140010098 type=288230376151711746
-data addr=ram:1400100a0 type=288230376151711746
-data addr=ram:1400100a8 type=288230376151711746
-data addr=ram:1400100b0 type=288230376151711746
-data addr=ram:1400100b8 type=288230376151711746
-data addr=ram:1400100c0 type=288230376151711746
-data addr=ram:1400100c8 type=288230376151711746
-data addr=ram:1400100d0 type=288230376151711746
-data addr=ram:1400100d8 type=288230376151711746
-data addr=ram:1400100e0 type=288230376151711746
-data addr=ram:1400100e8 type=288230376151711746
-data addr=ram:1400100f0 type=288230376151711746
-data addr=ram:1400100f8 type=288230376151711746
-data addr=ram:140010100 type=288230376151711746
-data addr=ram:140010108 type=288230376151711746
-data addr=ram:140010110 type=288230376151711746
-data addr=ram:140010118 type=288230376151711746
-data addr=ram:140010120 type=288230376151711746
-data addr=ram:140010128 type=288230376151711746
-data addr=ram:140010130 type=288230376151711746
-data addr=ram:140010138 type=288230376151711746
-data addr=ram:140010140 type=288230376151711746
-data addr=ram:140010148 type=288230376151711746
-data addr=ram:140010150 type=288230376151711746
-data addr=ram:140010158 type=288230376151711746
-data addr=ram:140010160 type=288230376151711746
-data addr=ram:140010168 type=288230376151711746
-data addr=ram:140010170 type=288230376151711746
-data addr=ram:140010178 type=288230376151711746
-data addr=ram:140010180 type=288230376151711746
-data addr=ram:140010188 type=288230376151711746
-data addr=ram:140010190 type=288230376151711746
-data addr=ram:140010198 type=288230376151711746
-data addr=ram:1400101a0 type=288230376151711746
-data addr=ram:1400101a8 type=288230376151711746
-data addr=ram:1400101b0 type=288230376151711746
-data addr=ram:1400101b8 type=288230376151711746
-data addr=ram:1400101c0 type=288230376151711746
-data addr=ram:1400101c8 type=288230376151711746
-data addr=ram:1400101d0 type=288230376151711746
-data addr=ram:1400101d8 type=288230376151711746
-data addr=ram:1400101e0 type=288230376151711746
-data addr=ram:1400101e8 type=288230376151711746
-data addr=ram:1400101f0 type=288230376151711746
-data addr=ram:1400101f8 type=288230376151711746
-data addr=ram:140010200 type=288230376151711746
-data addr=ram:140010208 type=288230376151711746
-data addr=ram:140010210 type=288230376151711746
-data addr=ram:140010218 type=288230376151711746
-data addr=ram:140010220 type=288230376151711746
-data addr=ram:140010228 type=288230376151711746
-data addr=ram:140010230 type=288230376151711746
-data addr=ram:140010238 type=288230376151711746
-data addr=ram:140010240 type=288230376151711746
-data addr=ram:140010250 type=288230376151711746
-data addr=ram:140010260 type=288230376151711746
-data addr=ram:140017820 type=72057594037927946
-data addr=ram:140017960 type=72057594037927945
-data addr=ram:14001797c type=72057594037927945
-data addr=ram:1400180d0 type=108
-data addr=ram:1400180d8 type=108
-data addr=ram:1400180f0 type=108
-data addr=ram:1400180f8 type=108
-data addr=ram:140018100 type=108
-data addr=ram:140018138 type=108
-data addr=ram:140018140 type=108
-data addr=ram:140018160 type=108
-data addr=ram:140018168 type=108
-data addr=ram:140018170 type=108
-data addr=ram:14001817c type=108
-data addr=ram:140018188 type=108
-data addr=ram:1400181a0 type=108
-data addr=ram:1400181b8 type=108
-data addr=ram:1400181c0 type=108
-data addr=ram:1400181c4 type=108
-data addr=ram:1400181dc type=108
-data addr=ram:1400181fc type=108
-data addr=ram:140018208 type=108
-data addr=ram:14001820c type=108
-data addr=ram:140018220 type=108
-data addr=ram:140018230 type=108
-data addr=ram:140018240 type=108
-data addr=ram:140018254 type=108
-data addr=ram:140018268 type=108
-data addr=ram:14001827c type=108
-data addr=ram:14001828c type=108
-data addr=ram:14001829c type=108
-data addr=ram:1400182b0 type=108
-data addr=ram:1400182c4 type=108
-data addr=ram:1400182d8 type=108
-data addr=ram:1400182e8 type=108
-data addr=ram:1400182f8 type=108
-data addr=ram:14001831c type=108
-data addr=ram:140018328 type=108
-data addr=ram:140018334 type=108
-data addr=ram:140018348 type=108
-data addr=ram:140018358 type=108
-data addr=ram:14001836c type=108
-data addr=ram:1400183b8 type=108
-data addr=ram:1400183f8 type=108
-data addr=ram:140018404 type=108
-data addr=ram:14001841c type=108
-data addr=ram:14001843c type=108
-data addr=ram:14001844c type=108
-data addr=ram:14001845c type=108
-data addr=ram:14001846c type=108
-data addr=ram:14001847c type=108
-data addr=ram:140018490 type=108
-data addr=ram:1400184a4 type=108
-data addr=ram:1400184b4 type=108
-data addr=ram:1400184ec type=108
-data addr=ram:140018514 type=108
-data addr=ram:140018528 type=108
-data addr=ram:14001854c type=108
-data addr=ram:14001855c type=108
-data addr=ram:14001857c type=108
-data addr=ram:14001858c type=108
-data addr=ram:1400185b0 type=108
-data addr=ram:1400185bc type=108
-data addr=ram:1400185d4 type=108
-data addr=ram:1400185e4 type=108
-data addr=ram:1400185f4 type=108
-data addr=ram:140018608 type=108
-data addr=ram:14001861c type=108
-data addr=ram:140018638 type=108
-data addr=ram:140018650 type=108
-data addr=ram:14001865c type=108
-data addr=ram:140018674 type=108
-data addr=ram:140018688 type=108
-data addr=ram:1400186a0 type=108
-data addr=ram:1400186c0 type=108
-data addr=ram:1400186e0 type=108
-data addr=ram:140018704 type=108
-data addr=ram:14001870c type=108
-data addr=ram:140018734 type=108
-data addr=ram:14001873c type=108
-data addr=ram:140018744 type=108
-data addr=ram:140018760 type=108
-data addr=ram:140018778 type=108
-data addr=ram:14001879c type=108
-data addr=ram:1400187c0 type=108
-data addr=ram:1400187e0 type=108
-data addr=ram:1400187e8 type=108
-data addr=ram:1400187fc type=108
-data addr=ram:140018810 type=108
-data addr=ram:140018814 type=108
-data addr=ram:140018828 type=108
-data addr=ram:140018830 type=108
-data addr=ram:140018838 type=108
-data addr=ram:140018840 type=108
-data addr=ram:140018864 type=108
-data addr=ram:140018888 type=108
-data addr=ram:1400188ac type=108
-data addr=ram:1400188d0 type=108
-data addr=ram:1400188d8 type=108
-data addr=ram:1400188f8 type=108
-data addr=ram:14001890c type=108
-data addr=ram:14001891c type=108
-data addr=ram:140018928 type=108
-data addr=ram:140018938 type=108
-data addr=ram:140018940 type=108
-data addr=ram:140018948 type=108
-data addr=ram:140018960 type=108
-data addr=ram:140018978 type=108
-data addr=ram:140018994 type=108
-data addr=ram:1400189b4 type=108
-data addr=ram:1400189d0 type=108
-data addr=ram:1400189e4 type=108
-data addr=ram:140018a04 type=108
-data addr=ram:140018a0c type=108
-data addr=ram:140018a34 type=108
-data addr=ram:140018a4c type=108
-data addr=ram:140018a68 type=108
-data addr=ram:140018a8c type=108
-data addr=ram:140018a9c type=108
-data addr=ram:140018aa8 type=108
-data addr=ram:140018ac0 type=108
-data addr=ram:140018ad4 type=108
-data addr=ram:140018ae8 type=108
-data addr=ram:140018af8 type=108
-data addr=ram:140018b24 type=108
-data addr=ram:140018b44 type=108
-data addr=ram:140018b60 type=108
-data addr=ram:140018b78 type=108
-data addr=ram:140018b80 type=108
-data addr=ram:140018b90 type=108
-data addr=ram:140018b98 type=108
-data addr=ram:140018bc0 type=108
-data addr=ram:140018be4 type=108
-data addr=ram:140018bf8 type=108
-data addr=ram:140018c14 type=108
-data addr=ram:140018c28 type=108
-data addr=ram:140018c30 type=108
-data addr=ram:140018c3c type=108
-data addr=ram:140018c5c type=108
-data addr=ram:140018c64 type=108
-data addr=ram:140018c88 type=108
-data addr=ram:140018c90 type=108
-data addr=ram:140018cd0 type=108
-data addr=ram:140018cf4 type=108
-data addr=ram:140018d04 type=108
-data addr=ram:140018d0c type=108
-data addr=ram:140018d30 type=108
-data addr=ram:140018d58 type=108
-data addr=ram:140018d74 type=108
-data addr=ram:140018d90 type=108
-data addr=ram:140018da8 type=108
-data addr=ram:140018dc8 type=108
-data addr=ram:140018dd8 type=108
-data addr=ram:140018de8 type=108
-data addr=ram:140018df8 type=108
-data addr=ram:140018e04 type=108
-data addr=ram:140018e14 type=108
-data addr=ram:140018e3c type=108
-data addr=ram:140018e50 type=108
-data addr=ram:140018e64 type=108
-data addr=ram:140018e74 type=108
-data addr=ram:140018e90 type=108
-data addr=ram:140018e98 type=108
-data addr=ram:140018ea4 type=108
-data addr=ram:140018eac type=108
-data addr=ram:140018ed0 type=108
-data addr=ram:140018ee8 type=108
-data addr=ram:140018f14 type=108
-data addr=ram:140018f1c type=108
-data addr=ram:140018f50 type=108
-data addr=ram:140018f70 type=108
-data addr=ram:140018f94 type=108
-data addr=ram:140018fb8 type=108
-data addr=ram:140018fc4 type=108
-data addr=ram:140018fcc type=108
-data addr=ram:140018fdc type=108
-data addr=ram:140019000 type=108
-data addr=ram:140019008 type=108
-data addr=ram:140019018 type=108
-data addr=ram:140019040 type=108
-data addr=ram:140019048 type=108
-data addr=ram:14001906c type=108
-data addr=ram:140019074 type=108
-data addr=ram:140019098 type=108
-data addr=ram:1400190b0 type=108
-data addr=ram:1400190b4 type=108
-data addr=ram:1400190c8 type=108
-data addr=ram:1400190d0 type=108
-data addr=ram:140019164 type=102
-data addr=ram:140019168 type=102
-data addr=ram:14001916c type=102
-data addr=ram:140019170 type=102
-data addr=ram:140019174 type=102
-data addr=ram:140019190 type=106
-data addr=ram:140019198 type=106
-data addr=ram:1400191a0 type=106
-data addr=ram:1400191a8 type=106
-data addr=ram:1400191b0 type=106
-data addr=ram:1400191b8 type=106
-data addr=ram:1400191c0 type=106
-data addr=ram:1400191c8 type=106
-data addr=ram:1400191d0 type=106
-data addr=ram:1400191d8 type=106
-data addr=ram:1400191e0 type=106
-data addr=ram:1400191e8 type=106
-data addr=ram:1400191f0 type=106
-data addr=ram:1400191f8 type=106
-data addr=ram:140019200 type=106
-data addr=ram:140019208 type=106
-data addr=ram:140019210 type=106
-data addr=ram:140019218 type=106
-data addr=ram:140019220 type=106
-data addr=ram:140019228 type=106
-data addr=ram:140019230 type=106
-data addr=ram:140019238 type=106
-data addr=ram:140019240 type=106
-data addr=ram:140019248 type=106
-data addr=ram:140019250 type=106
-data addr=ram:140019258 type=106
-data addr=ram:140019260 type=106
-data addr=ram:140019268 type=106
-data addr=ram:140019270 type=106
-data addr=ram:140019278 type=106
-data addr=ram:140019280 type=106
-data addr=ram:140019288 type=106
-data addr=ram:140019290 type=106
-data addr=ram:140019298 type=106
-data addr=ram:1400192a0 type=106
-data addr=ram:1400192a8 type=106
-data addr=ram:1400192b0 type=106
-data addr=ram:1400192b8 type=106
-data addr=ram:1400192c0 type=106
-data addr=ram:1400192c8 type=106
-data addr=ram:1400192d0 type=106
-data addr=ram:1400192d8 type=106
-data addr=ram:1400192e0 type=106
-data addr=ram:1400192e8 type=106
-data addr=ram:1400192f0 type=106
-data addr=ram:1400192f8 type=106
-data addr=ram:140019300 type=106
-data addr=ram:140019308 type=106
-data addr=ram:140019310 type=106
-data addr=ram:140019318 type=106
-data addr=ram:140019320 type=106
-data addr=ram:140019328 type=106
-data addr=ram:140019330 type=106
-data addr=ram:140019338 type=106
-data addr=ram:140019340 type=106
-data addr=ram:140019348 type=106
-data addr=ram:140019350 type=106
-data addr=ram:140019358 type=106
-data addr=ram:140019360 type=106
-data addr=ram:140019368 type=106
-data addr=ram:140019370 type=106
-data addr=ram:140019378 type=106
-data addr=ram:140019380 type=106
-data addr=ram:140019388 type=106
-data addr=ram:140019390 type=106
-data addr=ram:140019398 type=106
-data addr=ram:1400193a0 type=106
-data addr=ram:1400193a8 type=106
-data addr=ram:1400193b0 type=106
-data addr=ram:1400193b8 type=106
-data addr=ram:1400193c0 type=106
-data addr=ram:1400193c8 type=106
-data addr=ram:1400193d0 type=106
-data addr=ram:1400193e0 type=101
-data addr=ram:1400193e2 type=107
-data addr=ram:1400193f6 type=101
-data addr=ram:1400193f8 type=107
-data addr=ram:1400193fe type=101
-data addr=ram:140019400 type=107
-data addr=ram:140019412 type=101
-data addr=ram:140019414 type=107
-data addr=ram:14001942a type=101
-data addr=ram:14001942c type=107
-data addr=ram:14001943c type=101
-data addr=ram:14001943e type=107
-data addr=ram:140019456 type=101
-data addr=ram:140019458 type=107
-data addr=ram:14001946c type=101
-data addr=ram:14001946e type=107
-data addr=ram:140019482 type=101
-data addr=ram:140019484 type=107
-data addr=ram:14001949c type=101
-data addr=ram:14001949e type=107
-data addr=ram:1400194b2 type=101
-data addr=ram:1400194b4 type=107
-data addr=ram:1400194d0 type=101
-data addr=ram:1400194d2 type=107
-data addr=ram:1400194e2 type=101
-data addr=ram:1400194e4 type=107
-data addr=ram:1400194f6 type=107
-data addr=ram:140019504 type=101
-data addr=ram:140019506 type=107
-data addr=ram:140019512 type=101
-data addr=ram:140019514 type=107
-data addr=ram:140019522 type=101
-data addr=ram:140019524 type=107
-data addr=ram:140019532 type=101
-data addr=ram:140019534 type=107
-data addr=ram:14001953e type=101
-data addr=ram:140019540 type=107
-data addr=ram:14001954c type=101
-data addr=ram:14001954e type=107
-data addr=ram:14001955a type=101
-data addr=ram:14001955c type=107
-data addr=ram:140019564 type=101
-data addr=ram:140019566 type=107
-data addr=ram:14001957c type=101
-data addr=ram:14001957e type=107
-data addr=ram:140019594 type=101
-data addr=ram:140019596 type=107
-data addr=ram:1400195b2 type=101
-data addr=ram:1400195b4 type=107
-data addr=ram:1400195ca type=101
-data addr=ram:1400195cc type=107
-data addr=ram:1400195e4 type=101
-data addr=ram:1400195e6 type=107
-data addr=ram:1400195f4 type=101
-data addr=ram:1400195f6 type=107
-data addr=ram:140019606 type=101
-data addr=ram:140019608 type=107
-data addr=ram:14001961a type=101
-data addr=ram:14001961c type=107
-data addr=ram:14001962a type=101
-data addr=ram:14001962c type=107
-data addr=ram:140019636 type=101
-data addr=ram:140019638 type=107
-data addr=ram:14001964c type=101
-data addr=ram:14001964e type=107
-data addr=ram:14001965a type=101
-data addr=ram:14001965c type=107
-data addr=ram:14001966e type=101
-data addr=ram:140019670 type=107
-data addr=ram:14001967c type=101
-data addr=ram:14001967e type=107
-data addr=ram:140019692 type=101
-data addr=ram:140019694 type=107
-data addr=ram:1400196a4 type=101
-data addr=ram:1400196a6 type=107
-data addr=ram:1400196b6 type=101
-data addr=ram:1400196b8 type=107
-data addr=ram:1400196c8 type=101
-data addr=ram:1400196ca type=107
-data addr=ram:1400196e4 type=101
-data addr=ram:1400196e6 type=107
-data addr=ram:1400196f8 type=101
-data addr=ram:1400196fa type=107
-data addr=ram:14001970c type=101
-data addr=ram:14001970e type=107
-data addr=ram:140019720 type=101
-data addr=ram:140019722 type=107
-data addr=ram:14001973c type=101
-data addr=ram:14001973e type=107
-data addr=ram:140019748 type=101
-data addr=ram:14001974a type=107
-data addr=ram:140019754 type=101
-data addr=ram:140019756 type=107
-data addr=ram:140019760 type=101
-data addr=ram:140019762 type=107
-data addr=ram:140019774 type=101
-data addr=ram:140019776 type=107
-data addr=ram:140019784 type=101
-data addr=ram:140019786 type=107
-data addr=ram:140019796 type=101
-data addr=ram:140019798 type=107
-data addr=ram:1400197a0 type=101
-data addr=ram:1400197a2 type=107
-data addr=ram:1400197ac type=101
-data addr=ram:1400197ae type=107
-data addr=ram:1400197b8 type=101
-data addr=ram:1400197ba type=107
-data addr=ram:1400197ce type=101
-data addr=ram:1400197d0 type=107
-data addr=ram:1400197e4 type=101
-data addr=ram:1400197e6 type=107
-data addr=ram:1400197fe type=101
-data addr=ram:140019800 type=107
-data addr=ram:140019818 type=101
-data addr=ram:14001981a type=107
-data addr=ram:140019832 type=101
-data addr=ram:140019834 type=107
-data addr=ram:140019842 type=101
-data addr=ram:140019844 type=107
-data addr=ram:140019850 type=101
-data addr=ram:140019852 type=107
-data addr=ram:140019862 type=101
-data addr=ram:140019864 type=107
-data addr=ram:140019874 type=101
-data addr=ram:140019876 type=107
-data addr=ram:140019886 type=101
-data addr=ram:140019888 type=107
-data addr=ram:140019896 type=101
-data addr=ram:140019898 type=107
-data addr=ram:1400198a8 type=101
-data addr=ram:1400198aa type=107
-data addr=ram:1400198b4 type=101
-data addr=ram:1400198b6 type=107
-data addr=ram:1400198c2 type=101
-data addr=ram:1400198c4 type=107
-data addr=ram:1400198d6 type=101
-data addr=ram:1400198d8 type=107
-data addr=ram:1400198ec type=101
-data addr=ram:1400198ee type=107
-data addr=ram:1400198fe type=101
-data addr=ram:140019900 type=107
-data addr=ram:140019912 type=101
-data addr=ram:140019914 type=107
-data addr=ram:140019920 type=101
-data addr=ram:140019922 type=107
-data addr=ram:14001992e type=101
-data addr=ram:140019930 type=107
-data addr=ram:14001c000 type=72057594037927943
-data addr=ram:14001c00c type=72057594037927943
-data addr=ram:14001c018 type=72057594037927943
-data addr=ram:14001c024 type=72057594037927943
-data addr=ram:14001c030 type=72057594037927943
-data addr=ram:14001c03c type=72057594037927943
-data addr=ram:14001c048 type=72057594037927943
-data addr=ram:14001c054 type=72057594037927943
-data addr=ram:14001c060 type=72057594037927943
-data addr=ram:14001c06c type=72057594037927943
-data addr=ram:14001c078 type=72057594037927943
-data addr=ram:14001c084 type=72057594037927943
-data addr=ram:14001c090 type=72057594037927943
-data addr=ram:14001c09c type=72057594037927943
-data addr=ram:14001c0a8 type=72057594037927943
-data addr=ram:14001c0b4 type=72057594037927943
-data addr=ram:14001c0c0 type=72057594037927943
-data addr=ram:14001c0cc type=72057594037927943
-data addr=ram:14001c0d8 type=72057594037927943
-data addr=ram:14001c0e4 type=72057594037927943
-data addr=ram:14001c0f0 type=72057594037927943
-data addr=ram:14001c0fc type=72057594037927943
-data addr=ram:14001c108 type=72057594037927943
-data addr=ram:14001c114 type=72057594037927943
-data addr=ram:14001c120 type=72057594037927943
-data addr=ram:14001c12c type=72057594037927943
-data addr=ram:14001c138 type=72057594037927943
-data addr=ram:14001c144 type=72057594037927943
-data addr=ram:14001c150 type=72057594037927943
-data addr=ram:14001c15c type=72057594037927943
-data addr=ram:14001c168 type=72057594037927943
-data addr=ram:14001c174 type=72057594037927943
-data addr=ram:14001c180 type=72057594037927943
-data addr=ram:14001c18c type=72057594037927943
-data addr=ram:14001c198 type=72057594037927943
-data addr=ram:14001c1a4 type=72057594037927943
-data addr=ram:14001c1b0 type=72057594037927943
-data addr=ram:14001c1bc type=72057594037927943
-data addr=ram:14001c1c8 type=72057594037927943
-data addr=ram:14001c1d4 type=72057594037927943
-data addr=ram:14001c1e0 type=72057594037927943
-data addr=ram:14001c1ec type=72057594037927943
-data addr=ram:14001c1f8 type=72057594037927943
-data addr=ram:14001c204 type=72057594037927943
-data addr=ram:14001c210 type=72057594037927943
-data addr=ram:14001c21c type=72057594037927943
-data addr=ram:14001c228 type=72057594037927943
-data addr=ram:14001c234 type=72057594037927943
-data addr=ram:14001c240 type=72057594037927943
-data addr=ram:14001c24c type=72057594037927943
-data addr=ram:14001c258 type=72057594037927943
-data addr=ram:14001c264 type=72057594037927943
-data addr=ram:14001c270 type=72057594037927943
-data addr=ram:14001c27c type=72057594037927943
-data addr=ram:14001c288 type=72057594037927943
-data addr=ram:14001c294 type=72057594037927943
-data addr=ram:14001c2a0 type=72057594037927943
-data addr=ram:14001c2ac type=72057594037927943
-data addr=ram:14001c2b8 type=72057594037927943
-data addr=ram:14001c2c4 type=72057594037927943
-data addr=ram:14001c2d0 type=72057594037927943
-data addr=ram:14001c2dc type=72057594037927943
-data addr=ram:14001c2e8 type=72057594037927943
-data addr=ram:14001c2f4 type=72057594037927943
-data addr=ram:14001c300 type=72057594037927943
-data addr=ram:14001c30c type=72057594037927943
-data addr=ram:14001c318 type=72057594037927943
-data addr=ram:14001c324 type=72057594037927943
-data addr=ram:14001c330 type=72057594037927943
-data addr=ram:14001c33c type=72057594037927943
-data addr=ram:14001c348 type=72057594037927943
-data addr=ram:14001c354 type=72057594037927943
-data addr=ram:14001c360 type=72057594037927943
-data addr=ram:14001c36c type=72057594037927943
-data addr=ram:14001c378 type=72057594037927943
-data addr=ram:14001c384 type=72057594037927943
-data addr=ram:14001c390 type=72057594037927943
-data addr=ram:14001c39c type=72057594037927943
-data addr=ram:14001c3a8 type=72057594037927943
-data addr=ram:14001c3b4 type=72057594037927943
-data addr=ram:14001c3c0 type=72057594037927943
-data addr=ram:14001c3cc type=72057594037927943
-data addr=ram:14001c3d8 type=72057594037927943
-data addr=ram:14001c3e4 type=72057594037927943
-data addr=ram:14001c3f0 type=72057594037927943
-data addr=ram:14001c3fc type=72057594037927943
-data addr=ram:14001c408 type=72057594037927943
-data addr=ram:14001c414 type=72057594037927943
-data addr=ram:14001c420 type=72057594037927943
-data addr=ram:14001c42c type=72057594037927943
-data addr=ram:14001c438 type=72057594037927943
-data addr=ram:14001c444 type=72057594037927943
-data addr=ram:14001c450 type=72057594037927943
-data addr=ram:14001c45c type=72057594037927943
-data addr=ram:14001c468 type=72057594037927943
-data addr=ram:14001c474 type=72057594037927943
-data addr=ram:14001c480 type=72057594037927943
-data addr=ram:14001c48c type=72057594037927943
-data addr=ram:14001c498 type=72057594037927943
-data addr=ram:14001c4a4 type=72057594037927943
-data addr=ram:14001c4b0 type=72057594037927943
-data addr=ram:14001c4bc type=72057594037927943
-data addr=ram:14001c4c8 type=72057594037927943
-data addr=ram:14001c4d4 type=72057594037927943
-data addr=ram:14001c4e0 type=72057594037927943
-data addr=ram:14001c4ec type=72057594037927943
-data addr=ram:14001c4f8 type=72057594037927943
-data addr=ram:14001c504 type=72057594037927943
-data addr=ram:14001c510 type=72057594037927943
-data addr=ram:14001c51c type=72057594037927943
-data addr=ram:14001c528 type=72057594037927943
-data addr=ram:14001c534 type=72057594037927943
-data addr=ram:14001c540 type=72057594037927943
-data addr=ram:14001c54c type=72057594037927943
-data addr=ram:14001c558 type=72057594037927943
-data addr=ram:14001c564 type=72057594037927943
-data addr=ram:14001c570 type=72057594037927943
-data addr=ram:14001c57c type=72057594037927943
-data addr=ram:14001c588 type=72057594037927943
-data addr=ram:14001c594 type=72057594037927943
-data addr=ram:14001c5a0 type=72057594037927943
-data addr=ram:14001c5ac type=72057594037927943
-data addr=ram:14001c5b8 type=72057594037927943
-data addr=ram:14001c5c4 type=72057594037927943
-data addr=ram:14001c5d0 type=72057594037927943
-data addr=ram:14001c5dc type=72057594037927943
-data addr=ram:14001c5e8 type=72057594037927943
-data addr=ram:14001c5f4 type=72057594037927943
-data addr=ram:14001c600 type=72057594037927943
-data addr=ram:14001c60c type=72057594037927943
-data addr=ram:14001c618 type=72057594037927943
-data addr=ram:14001c624 type=72057594037927943
-data addr=ram:14001c630 type=72057594037927943
-data addr=ram:14001c63c type=72057594037927943
-data addr=ram:14001c648 type=72057594037927943
-data addr=ram:14001c654 type=72057594037927943
-data addr=ram:14001c660 type=72057594037927943
-data addr=ram:14001c66c type=72057594037927943
-data addr=ram:14001c678 type=72057594037927943
-data addr=ram:14001c684 type=72057594037927943
-data addr=ram:14001c690 type=72057594037927943
-data addr=ram:14001c69c type=72057594037927943
-data addr=ram:14001c6a8 type=72057594037927943
-data addr=ram:14001c6b4 type=72057594037927943
-data addr=ram:14001c6c0 type=72057594037927943
-data addr=ram:14001c6cc type=72057594037927943
-data addr=ram:14001c6d8 type=72057594037927943
-data addr=ram:14001c6e4 type=72057594037927943
-data addr=ram:14001c6f0 type=72057594037927943
-data addr=ram:14001c6fc type=72057594037927943
-data addr=ram:14001c708 type=72057594037927943
-data addr=ram:14001c714 type=72057594037927943
-data addr=ram:14001c720 type=72057594037927943
-data addr=ram:14001c72c type=72057594037927943
-data addr=ram:14001c738 type=72057594037927943
-data addr=ram:14001c744 type=72057594037927943
-data addr=ram:14001c750 type=72057594037927943
-data addr=ram:14001c75c type=72057594037927943
-data addr=ram:14001c768 type=72057594037927943
-data addr=ram:14001c774 type=72057594037927943
-data addr=ram:14001c780 type=72057594037927943
-data addr=ram:14001c78c type=72057594037927943
-data addr=ram:14001c798 type=72057594037927943
-data addr=ram:14001c7a4 type=72057594037927943
-data addr=ram:14001c7b0 type=72057594037927943
-data addr=ram:14001c7bc type=72057594037927943
-data addr=ram:14001c7c8 type=72057594037927943
-data addr=ram:14001c7d4 type=72057594037927943
-data addr=ram:14001c7e0 type=72057594037927943
-data addr=ram:14001c7ec type=72057594037927943
-data addr=ram:14001c7f8 type=72057594037927943
-data addr=ram:14001c804 type=72057594037927943
-data addr=ram:14001c810 type=72057594037927943
-data addr=ram:14001c81c type=72057594037927943
-data addr=ram:14001c828 type=72057594037927943
-data addr=ram:14001c834 type=72057594037927943
-data addr=ram:14001c840 type=72057594037927943
-data addr=ram:14001c84c type=72057594037927943
-data addr=ram:14001c858 type=72057594037927943
-data addr=ram:14001c864 type=72057594037927943
-data addr=ram:14001c870 type=72057594037927943
-data addr=ram:14001c87c type=72057594037927943
-data addr=ram:14001c888 type=72057594037927943
-data addr=ram:14001c894 type=72057594037927943
-data addr=ram:14001c8a0 type=72057594037927943
-data addr=ram:14001c8ac type=72057594037927943
-data addr=ram:14001c8b8 type=72057594037927943
-data addr=ram:14001c8c4 type=72057594037927943
-data addr=ram:14001c8d0 type=72057594037927943
-data addr=ram:14001c8dc type=72057594037927943
-data addr=ram:14001c8e8 type=72057594037927943
-data addr=ram:14001c8f4 type=72057594037927943
-data addr=ram:14001c900 type=72057594037927943
-data addr=ram:14001c90c type=72057594037927943
-data addr=ram:14001c918 type=72057594037927943
-data addr=ram:14001c924 type=72057594037927943
-data addr=ram:14001c930 type=72057594037927943
-data addr=ram:14001c93c type=72057594037927943
-data addr=ram:14001c948 type=72057594037927943
-data addr=ram:14001c954 type=72057594037927943
-data addr=ram:14001c960 type=72057594037927943
-data addr=ram:14001c96c type=72057594037927943
-data addr=ram:14001c978 type=72057594037927943
-data addr=ram:14001c984 type=72057594037927943
-data addr=ram:14001c990 type=72057594037927943
-data addr=ram:14001c99c type=72057594037927943
-data addr=ram:14001c9a8 type=72057594037927943
-data addr=ram:14001c9b4 type=72057594037927943
-data addr=ram:14001c9c0 type=72057594037927943
-data addr=ram:14001c9cc type=72057594037927943
-data addr=ram:14001c9d8 type=72057594037927943
-data addr=ram:14001c9e4 type=72057594037927943
-data addr=ram:14001c9f0 type=72057594037927943
-data addr=ram:14001c9fc type=72057594037927943
-data addr=ram:14001ca08 type=72057594037927943
-data addr=ram:14001ca14 type=72057594037927943
-data addr=ram:14001ca20 type=72057594037927943
-data addr=ram:14001ca2c type=72057594037927943
-data addr=ram:14001ca38 type=72057594037927943
-data addr=ram:14001ca44 type=72057594037927943
-data addr=ram:14001ca50 type=72057594037927943
-data addr=ram:14001ca5c type=72057594037927943
-data addr=ram:14001ca68 type=72057594037927943
-data addr=ram:14001ca74 type=72057594037927943
-data addr=ram:14001ca80 type=72057594037927943
-data addr=ram:14001ca8c type=72057594037927943
-data addr=ram:14001ca98 type=72057594037927943
-data addr=ram:14001caa4 type=72057594037927943
-data addr=ram:14001cab0 type=72057594037927943
-data addr=ram:14001cabc type=72057594037927943
-data addr=ram:14001cac8 type=72057594037927943
-data addr=ram:14001cad4 type=72057594037927943
-data addr=ram:14001cae0 type=72057594037927943
-data addr=ram:14001caec type=72057594037927943
-data addr=ram:14001caf8 type=72057594037927943
-data addr=ram:14001cb04 type=72057594037927943
-data addr=ram:14001cb10 type=72057594037927943
-data addr=ram:14001cb1c type=72057594037927943
-data addr=ram:14001cb28 type=72057594037927943
-data addr=ram:14001cb34 type=72057594037927943
-data addr=ram:14001cb40 type=72057594037927943
-data addr=ram:14001cb4c type=72057594037927943
-data addr=ram:14001cb58 type=72057594037927943
-data addr=ram:14001cb64 type=72057594037927943
-data addr=ram:14001cb70 type=72057594037927943
-data addr=ram:14001cb7c type=72057594037927943
-data addr=ram:14001cb88 type=72057594037927943
-data addr=ram:14001cb94 type=72057594037927943
-data addr=ram:14001cba0 type=72057594037927943
-data addr=ram:14001cbac type=72057594037927943
-data addr=ram:14001cbb8 type=72057594037927943
-data addr=ram:14001cbc4 type=72057594037927943
-data addr=ram:14001cbd0 type=72057594037927943
-data addr=ram:14001cbdc type=72057594037927943
-data addr=ram:14001cbe8 type=72057594037927943
-data addr=ram:14001cbf4 type=72057594037927943
-data addr=ram:14001cc00 type=72057594037927943
-data addr=ram:14001cc0c type=72057594037927943
-data addr=ram:14001cc18 type=72057594037927943
-data addr=ram:14001cc24 type=72057594037927943
-data addr=ram:14001cc30 type=72057594037927943
-data addr=ram:14001cc3c type=72057594037927943
-data addr=ram:14001cc48 type=72057594037927943
-data addr=ram:14001cc54 type=72057594037927943
-data addr=ram:14001cc60 type=72057594037927943
-data addr=ram:14001cc6c type=72057594037927943
-data addr=ram:14001cc78 type=72057594037927943
-data addr=ram:14001cc84 type=72057594037927943
-data addr=ram:14001cc90 type=72057594037927943
-data addr=ram:14001cc9c type=72057594037927943
-data addr=ram:14001cca8 type=72057594037927943
-data addr=ram:14001ccb4 type=72057594037927943
-data addr=ram:14001ccc0 type=72057594037927943
-data addr=ram:14001cccc type=72057594037927943
-data addr=ram:14001ccd8 type=72057594037927943
-data addr=ram:14001cce4 type=72057594037927943
-data addr=ram:14001ccf0 type=72057594037927943
-data addr=ram:14001ccfc type=72057594037927943
-data addr=ram:14001cd08 type=72057594037927943
-data addr=ram:14001cd14 type=72057594037927943
-data addr=ram:14001cd20 type=72057594037927943
-data addr=ram:14001cd2c type=72057594037927943
-data addr=ram:14001cd38 type=72057594037927943
-data addr=ram:14001cd44 type=72057594037927943
-data addr=ram:14001cd50 type=72057594037927943
-data addr=ram:14001cd5c type=72057594037927943
-data addr=ram:14001cd68 type=72057594037927943
-data addr=ram:14001cd74 type=72057594037927943
-data addr=ram:14001cd80 type=72057594037927943
-data addr=ram:14001cd8c type=72057594037927943
-data addr=ram:14001cd98 type=72057594037927943
-data addr=ram:14001cda4 type=72057594037927943
-data addr=ram:14001cdb0 type=72057594037927943
-data addr=ram:14001cdbc type=72057594037927943
-data addr=ram:14001cdc8 type=72057594037927943
-data addr=ram:14001cdd4 type=72057594037927943
-data addr=ram:14001cde0 type=72057594037927943
-data addr=ram:14001cdec type=72057594037927943
-data addr=ram:14001cdf8 type=72057594037927943
-data addr=ram:14001ce04 type=72057594037927943
-data addr=ram:14001ce10 type=72057594037927943
-data addr=ram:14001ce1c type=72057594037927943
-data addr=ram:14001ce28 type=72057594037927943
-data addr=ram:14001ce34 type=72057594037927943
-data addr=ram:14001ce40 type=72057594037927943
-data addr=ram:14001ce4c type=72057594037927943
-data addr=ram:14001ce58 type=72057594037927943
-data addr=ram:14001ce64 type=72057594037927943
-data addr=ram:14001ce70 type=72057594037927943
-data addr=ram:14001ce7c type=72057594037927943
-data addr=ram:14001ce88 type=72057594037927943
-data addr=ram:14001ce94 type=72057594037927943
-data addr=ram:14001cea0 type=72057594037927943
-data addr=ram:14001ceac type=72057594037927943
-data addr=ram:14001ceb8 type=72057594037927943
-data addr=ram:14001cec4 type=72057594037927943
-data addr=ram:14001ced0 type=72057594037927943
-data addr=ram:14001cedc type=72057594037927943
-data addr=ram:14001cee8 type=72057594037927943
-data addr=ram:14001cef4 type=72057594037927943
-data addr=ram:14001cf00 type=72057594037927943
-data addr=ram:14001cf0c type=72057594037927943
-data addr=ram:14001cf18 type=72057594037927943
-data addr=ram:14001cf24 type=72057594037927943
-data addr=ram:14001cf30 type=72057594037927943
-data addr=ram:14001cf3c type=72057594037927943
-data addr=ram:14001cf48 type=72057594037927943
-data addr=ram:14001cf54 type=72057594037927943
-data addr=ram:14001cf60 type=72057594037927943
-data addr=ram:14001cf6c type=72057594037927943
-data addr=ram:14001cf78 type=72057594037927943
-data addr=ram:14001cf84 type=72057594037927943
-data addr=ram:14001cf90 type=72057594037927943
-data addr=ram:14001cf9c type=72057594037927943
-data addr=ram:14001cfa8 type=72057594037927943
-data addr=ram:14001cfb4 type=72057594037927943
-data addr=ram:14001cfc0 type=72057594037927943
-data addr=ram:14001cfcc type=72057594037927943
-data addr=ram:14001cfd8 type=72057594037927943
-data addr=ram:14001cfe4 type=72057594037927943
-data addr=ram:14001cff0 type=72057594037927943
-data addr=ram:14001e000 type=72057594037927944
-data addr=ram:14001e008 type=101
-data addr=ram:14001e00a type=101
-data addr=ram:14001e00c type=101
-data addr=ram:14001e00e type=101
-data addr=ram:14001e010 type=101
-data addr=ram:14001e012 type=101
-data addr=ram:14001e014 type=101
-data addr=ram:14001e016 type=101
-data addr=ram:14001e018 type=101
-data addr=ram:14001e01a type=101
-data addr=ram:14001e01c type=101
-data addr=ram:14001e01e type=101
-data addr=ram:14001e020 type=101
-data addr=ram:14001e022 type=101
-data addr=ram:14001e024 type=101
-data addr=ram:14001e026 type=101
-data addr=ram:14001e028 type=101
-data addr=ram:14001e02a type=101
-data addr=ram:14001e02c type=101
-data addr=ram:14001e02e type=101
-data addr=ram:14001e030 type=101
-data addr=ram:14001e032 type=101
-data addr=ram:14001e034 type=101
-data addr=ram:14001e036 type=101
-data addr=ram:14001e038 type=101
-data addr=ram:14001e03a type=101
-data addr=ram:14001e03c type=101
-data addr=ram:14001e03e type=101
-data addr=ram:14001e040 type=101
-data addr=ram:14001e042 type=101
-data addr=ram:14001e044 type=101
-data addr=ram:14001e046 type=101
-data addr=ram:14001e048 type=101
-data addr=ram:14001e04a type=101
-data addr=ram:14001e04c type=101
-data addr=ram:14001e04e type=101
-data addr=ram:14001e050 type=101
-data addr=ram:14001e052 type=101
-data addr=ram:14001e054 type=101
-data addr=ram:14001e056 type=101
-data addr=ram:14001e058 type=101
-data addr=ram:14001e05a type=101
-data addr=ram:14001e05c type=101
-data addr=ram:14001e05e type=101
-data addr=ram:14001e060 type=101
-data addr=ram:14001e062 type=101
-data addr=ram:14001e064 type=101
-data addr=ram:14001e066 type=101
-data addr=ram:14001e068 type=101
-data addr=ram:14001e06a type=101
-data addr=ram:14001e06c type=101
-data addr=ram:14001e06e type=101
-data addr=ram:14001e070 type=101
-data addr=ram:14001e072 type=101
-data addr=ram:14001e074 type=101
-data addr=ram:14001e076 type=101
-data addr=ram:14001e078 type=101
-data addr=ram:14001e07a type=101
-data addr=ram:14001e07c type=101
-data addr=ram:14001e07e type=101
-data addr=ram:14001e080 type=101
-data addr=ram:14001e082 type=101
-data addr=ram:14001e084 type=101
-data addr=ram:14001e086 type=101
-data addr=ram:14001e088 type=101
-data addr=ram:14001e08a type=101
-data addr=ram:14001e08c type=101
-data addr=ram:14001e08e type=101
-data addr=ram:14001e090 type=101
-data addr=ram:14001e092 type=101
-data addr=ram:14001e094 type=101
-data addr=ram:14001e096 type=101
-data addr=ram:14001e098 type=101
-data addr=ram:14001e09a type=101
-data addr=ram:14001e09c type=101
-data addr=ram:14001e09e type=101
-data addr=ram:14001e0a0 type=101
-data addr=ram:14001e0a2 type=101
-data addr=ram:14001e0a4 type=101
-data addr=ram:14001e0a6 type=101
-data addr=ram:14001e0a8 type=101
-data addr=ram:14001e0aa type=101
-data addr=ram:14001e0ac type=101
-data addr=ram:14001e0ae type=101
-data addr=ram:14001e0b0 type=101
-data addr=ram:14001e0b2 type=101
-data addr=ram:14001e0b4 type=101
-data addr=ram:14001e0b6 type=101
-data addr=ram:14001e0b8 type=101
-data addr=ram:14001e0ba type=101
-data addr=ram:14001e0bc type=101
-data addr=ram:14001e0be type=101
-data addr=ram:14001e0c0 type=101
-data addr=ram:14001e0c2 type=101
-data addr=ram:14001e0c4 type=101
-data addr=ram:14001e0c6 type=101
-data addr=ram:14001e0c8 type=101
-data addr=ram:14001e0ca type=101
-data addr=ram:14001e0cc type=101
-data addr=ram:14001e0ce type=101
-data addr=ram:14001e0d0 type=101
-data addr=ram:14001e0d2 type=101
-data addr=ram:14001e0d4 type=101
-data addr=ram:14001e0d6 type=101
-data addr=ram:14001e0d8 type=101
-data addr=ram:14001e0da type=101
-data addr=ram:14001e0dc type=101
-data addr=ram:14001e0de type=101
-data addr=ram:14001e0e0 type=101
-data addr=ram:14001e0e2 type=101
-data addr=ram:14001e0e4 type=101
-data addr=ram:14001e0e6 type=101
-data addr=ram:14001e0e8 type=101
-data addr=ram:14001e0ea type=101
-data addr=ram:14001e0ec type=101
-data addr=ram:14001e0ee type=101
-data addr=ram:14001e0f0 type=101
-data addr=ram:14001e0f2 type=101
-data addr=ram:14001e0f4 type=101
-data addr=ram:14001e0f6 type=101
-data addr=ram:14001e0f8 type=101
-data addr=ram:14001e0fa type=101
-data addr=ram:14001e0fc type=101
-data addr=ram:14001e0fe type=101
-data addr=ram:14001e100 type=101
-data addr=ram:14001e102 type=101
-data addr=ram:14001e104 type=101
-data addr=ram:14001e106 type=101
-data addr=ram:14001e108 type=101
-data addr=ram:14001e10a type=101
-data addr=ram:14001e10c type=72057594037927944
-data addr=ram:14001e114 type=101
-data addr=ram:14001e116 type=101
-data addr=ram:14001e118 type=101
-data addr=ram:14001e11a type=101
-data addr=ram:14001e11c type=101
-data addr=ram:14001e11e type=101
-data addr=ram:14001e120 type=101
-data addr=ram:14001e122 type=101
-data addr=ram:14001e124 type=101
-data addr=ram:14001e126 type=101
-data addr=ram:14001e128 type=101
-data addr=ram:14001e12a type=101
-data addr=ram:14001e12c type=101
-data addr=ram:14001e12e type=101
-data addr=ram:14001e130 type=101
-data addr=ram:14001e132 type=101
-data addr=ram:14001e134 type=101
-data addr=ram:14001e136 type=101
-data addr=ram:14001e138 type=101
-data addr=ram:14001e13a type=101
-data addr=ram:14001e13c type=101
-data addr=ram:14001e13e type=101
-data addr=ram:14001e140 type=101
-data addr=ram:14001e142 type=101
-data addr=ram:14001e144 type=101
-data addr=ram:14001e146 type=101
-data addr=ram:14001e148 type=101
-data addr=ram:14001e14a type=101
-data addr=ram:14001e14c type=101
-data addr=ram:14001e14e type=101
-data addr=ram:14001e150 type=101
-data addr=ram:14001e152 type=101
-data addr=ram:14001e154 type=101
-data addr=ram:14001e156 type=101
-data addr=ram:14001e158 type=101
-data addr=ram:14001e15a type=101
-data addr=ram:14001e15c type=101
-data addr=ram:14001e15e type=101
-data addr=ram:14001e160 type=101
-data addr=ram:14001e162 type=101
-data addr=ram:14001e164 type=101
-data addr=ram:14001e166 type=101
-data addr=ram:14001e168 type=101
-data addr=ram:14001e16a type=101
-data addr=ram:14001e16c type=101
-data addr=ram:14001e16e type=101
-data addr=ram:14001e170 type=101
-data addr=ram:14001e172 type=101
-data addr=ram:14001e174 type=101
-data addr=ram:14001e176 type=101
-data addr=ram:14001e178 type=101
-data addr=ram:14001e17a type=101
-data addr=ram:14001e17c type=101
-data addr=ram:14001e17e type=101
-data addr=ram:14001e180 type=101
-data addr=ram:14001e182 type=101
-data addr=ram:14001e184 type=101
-data addr=ram:14001e186 type=101
-data addr=ram:14001e188 type=101
-data addr=ram:14001e18a type=101
-data addr=ram:14001e18c type=101
-data addr=ram:14001e18e type=101
-data addr=ram:14001e190 type=101
-data addr=ram:14001e192 type=101
-data addr=ram:14001e194 type=101
-data addr=ram:14001e196 type=101
-data addr=ram:14001e198 type=101
-data addr=ram:14001e19a type=101
-data addr=ram:14001e19c type=101
-data addr=ram:14001e19e type=101
-data addr=ram:14001e1a0 type=101
-data addr=ram:14001e1a2 type=101
-data addr=ram:14001e1a4 type=101
-data addr=ram:14001e1a6 type=101
-data addr=ram:14001e1a8 type=101
-data addr=ram:14001e1aa type=101
-data addr=ram:14001e1ac type=101
-data addr=ram:14001e1ae type=101
-data addr=ram:14001e1b0 type=101
-data addr=ram:14001e1b2 type=101
-data addr=ram:14001e1b4 type=101
-data addr=ram:14001e1b6 type=101
-data addr=ram:14001e1b8 type=101
-data addr=ram:14001e1ba type=101
-data addr=ram:14001e1bc type=101
-data addr=ram:14001e1be type=101
-data addr=ram:14001e1c0 type=101
-data addr=ram:14001e1c2 type=101
-data addr=ram:14001e1c4 type=101
-data addr=ram:14001e1c6 type=101
-data addr=ram:14001e1c8 type=101
-data addr=ram:14001e1ca type=101
-data addr=ram:14001e1cc type=101
-data addr=ram:14001e1ce type=101
-data addr=ram:14001e1d0 type=101
-data addr=ram:14001e1d2 type=101
-data addr=ram:14001e1d4 type=101
-data addr=ram:14001e1d6 type=101
-data addr=ram:14001e1d8 type=101
-data addr=ram:14001e1da type=101
-data addr=ram:14001e1dc type=101
-data addr=ram:14001e1de type=101
-data addr=ram:14001e1e0 type=101
-data addr=ram:14001e1e2 type=101
-data addr=ram:14001e1e4 type=101
-data addr=ram:14001e1e6 type=101
-data addr=ram:14001e1e8 type=101
-data addr=ram:14001e1ea type=101
-data addr=ram:14001e1ec type=101
-data addr=ram:14001e1ee type=101
-data addr=ram:14001e1f0 type=101
-data addr=ram:14001e1f2 type=101
-data addr=ram:14001e1f4 type=101
-data addr=ram:14001e1f6 type=101
-data addr=ram:14001e1f8 type=101
-data addr=ram:14001e1fa type=101
-data addr=ram:14001e1fc type=101
-data addr=ram:14001e1fe type=101
-data addr=ram:14001e200 type=101
-data addr=ram:14001e202 type=101
-data addr=ram:14001e204 type=101
-data addr=ram:14001e206 type=101
-data addr=ram:14001e208 type=72057594037927944
-data addr=ram:14001e210 type=101
-data addr=ram:14001e212 type=101
-data addr=ram:14001e214 type=101
-data addr=ram:14001e216 type=101
-data addr=ram:14001e218 type=101
-data addr=ram:14001e21a type=101
-data addr=ram:14001e21c type=101
-data addr=ram:14001e21e type=101
-data addr=ram:14001e220 type=101
-data addr=ram:14001e222 type=101
-data addr=ram:14001e224 type=101
-data addr=ram:14001e226 type=101
-data addr=ram:14001e228 type=101
-data addr=ram:14001e22a type=101
-data addr=ram:14001e22c type=101
-data addr=ram:14001e22e type=101
-data addr=ram:14001e230 type=101
-data addr=ram:14001e232 type=101
-data addr=ram:14001e234 type=101
-data addr=ram:14001e236 type=101
-data addr=ram:14001e238 type=101
-data addr=ram:14001e23a type=101
-data addr=ram:14001e23c type=101
-data addr=ram:14001e23e type=101
-data addr=ram:14001e240 type=101
-data addr=ram:14001e242 type=101
-data addr=ram:14001e244 type=101
-data addr=ram:14001e246 type=101
-data addr=ram:14001e248 type=101
-data addr=ram:14001e24a type=101
-data addr=ram:14001e24c type=101
-data addr=ram:14001e24e type=101
-data addr=ram:14001e250 type=101
-data addr=ram:14001e252 type=101
-data addr=ram:14001e254 type=101
-data addr=ram:14001e256 type=101
-data addr=ram:14001e258 type=101
-data addr=ram:14001e25a type=101
-data addr=ram:14001e25c type=101
-data addr=ram:14001e25e type=101
-data addr=ram:14001e260 type=101
-data addr=ram:14001e262 type=101
-data addr=ram:14001e264 type=101
-data addr=ram:14001e266 type=101
-data addr=ram:14001e268 type=101
-data addr=ram:14001e26a type=101
-data addr=ram:14001e26c type=101
-data addr=ram:14001e26e type=101
-data addr=ram:14001e270 type=101
-data addr=ram:14001e272 type=101
-data addr=ram:14001e274 type=101
-data addr=ram:14001e276 type=101
-data addr=ram:14001e278 type=101
-data addr=ram:14001e27a type=101
-data addr=ram:14001e27c type=101
-data addr=ram:14001e27e type=101
-data addr=ram:14001e280 type=101
-data addr=ram:14001e282 type=101
-data addr=ram:14001e284 type=101
-data addr=ram:14001e286 type=101
-data addr=ram:14001e288 type=101
-data addr=ram:14001e28a type=101
-data addr=ram:14001e28c type=101
-data addr=ram:14001e28e type=101
-data addr=ram:14001e290 type=101
-data addr=ram:14001e292 type=101
-data addr=ram:14001e294 type=101
-data addr=ram:14001e296 type=101
-data addr=ram:14001e298 type=101
-data addr=ram:14001e29a type=101
-data addr=ram:14001e29c type=101
-data addr=ram:14001e29e type=101
-data addr=ram:14001e2a0 type=101
-data addr=ram:14001e2a2 type=101
-data addr=ram:14001e2a4 type=101
-data addr=ram:14001e2a6 type=101
-data addr=ram:14001e2a8 type=101
-data addr=ram:14001e2aa type=101
-data addr=ram:14001e2ac type=101
-data addr=ram:14001e2ae type=101
-data addr=ram:14001e2b0 type=101
-data addr=ram:14001e2b2 type=101
-data addr=ram:14001e2b4 type=101
-data addr=ram:14001e2b6 type=101
-data addr=ram:14001e2b8 type=101
-data addr=ram:14001e2ba type=101
-data addr=ram:14001e2bc type=101
-data addr=ram:14001e2be type=101
-data addr=ram:14001e2c0 type=101
-data addr=ram:14001e2c2 type=101
-data addr=ram:14001e2c4 type=101
-data addr=ram:14001e2c6 type=101
-data addr=ram:14001e2c8 type=101
-data addr=ram:14001e2ca type=101
-data addr=ram:14001e2cc type=101
-data addr=ram:14001e2ce type=101
-data addr=ram:14001e2d0 type=101
-data addr=ram:14001e2d2 type=101
-data addr=ram:14001e2d4 type=101
-data addr=ram:14001e2d6 type=101
-data addr=ram:14001e2d8 type=101
-data addr=ram:14001e2da type=101
-data addr=ram:14001e2dc type=101
-data addr=ram:14001e2de type=101
-data addr=ram:14001e2e0 type=101
-data addr=ram:14001e2e2 type=101
-data addr=ram:14001e2e4 type=101
-data addr=ram:14001e2e6 type=101
-data addr=ram:14001e2e8 type=101
-data addr=ram:14001e2ea type=101
-data addr=ram:14001e2ec type=101
-data addr=ram:14001e2ee type=101
-data addr=ram:14001e2f0 type=101
-data addr=ram:14001e2f2 type=101
-data addr=ram:14001e2f4 type=101
-data addr=ram:14001e2f6 type=101
-data addr=ram:14001e2f8 type=101
-data addr=ram:14001e2fa type=101
-data addr=ram:14001e2fc type=72057594037927944
-data addr=ram:14001e304 type=101
-data addr=ram:14001e306 type=101
-data addr=ram:14001e308 type=101
-data addr=ram:14001e30a type=101
-data addr=ram:14001e30c type=101
-data addr=ram:14001e30e type=101
-data addr=ram:14001e310 type=101
-data addr=ram:14001e312 type=101
-data addr=ram:14001e314 type=101
-data addr=ram:14001e316 type=101
-data addr=ram:14001e318 type=101
-data addr=ram:14001e31a type=101
-data addr=ram:14001e31c type=101
-data addr=ram:14001e31e type=101
-data addr=ram:14001e320 type=101
-data addr=ram:14001e322 type=101
-data addr=ram:14001e324 type=101
-data addr=ram:14001e326 type=101
-data addr=ram:14001e328 type=101
-data addr=ram:14001e32a type=101
-data addr=ram:14001e32c type=101
-data addr=ram:14001e32e type=101
-data addr=ram:14001e330 type=101
-data addr=ram:14001e332 type=101
-data addr=ram:14001e334 type=101
-data addr=ram:14001e336 type=101
-data addr=ram:14001e338 type=101
-data addr=ram:14001e33a type=101
-data addr=ram:14001e33c type=101
-data addr=ram:14001e33e type=101
-data addr=ram:14001e340 type=101
-data addr=ram:14001e342 type=101
-data addr=ram:14001e344 type=101
-data addr=ram:14001e346 type=101
-data addr=ram:14001e348 type=101
-data addr=ram:14001e34a type=101
-data addr=ram:14001e34c type=101
-data addr=ram:14001e34e type=101
-data addr=ram:14001e350 type=101
-data addr=ram:14001e352 type=101
-data addr=ram:14001e354 type=101
-data addr=ram:14001e356 type=101
-data addr=ram:14001e358 type=101
-data addr=ram:14001e35a type=101
-data addr=ram:14001e35c type=101
-data addr=ram:14001e35e type=101
-data addr=ram:14001e360 type=101
-data addr=ram:14001e362 type=101
-data addr=ram:14001e364 type=101
-data addr=ram:14001e366 type=101
-data addr=ram:14001e368 type=101
-data addr=ram:14001e36a type=101
-data addr=ram:14001e36c type=101
-data addr=ram:14001e36e type=101
-data addr=ram:14001e370 type=101
-data addr=ram:14001e372 type=101
-data addr=ram:14001e374 type=101
-data addr=ram:14001e376 type=101
-data addr=ram:14001e378 type=101
-data addr=ram:14001e37a type=101
-data addr=ram:14001e37c type=101
-data addr=ram:14001e37e type=101
-data addr=ram:14001e380 type=101
-data addr=ram:14001e382 type=101
-data addr=ram:14001e384 type=101
-data addr=ram:14001e386 type=101
-data addr=ram:14001e388 type=101
-data addr=ram:14001e38a type=101
-data addr=ram:14001e38c type=101
-data addr=ram:14001e38e type=101
-data addr=ram:14001e390 type=101
-data addr=ram:14001e392 type=101
-data addr=ram:14001e394 type=101
-data addr=ram:14001e396 type=101
-data addr=ram:14001e398 type=101
-data addr=ram:14001e39a type=101
-data addr=ram:14001e39c type=101
-data addr=ram:14001e39e type=101
-data addr=ram:14001e3a0 type=101
-data addr=ram:14001e3a2 type=101
-data addr=ram:14001e3a4 type=101
-data addr=ram:14001e3a6 type=101
-data addr=ram:14001e3a8 type=101
-data addr=ram:14001e3aa type=101
-data addr=ram:14001e3ac type=101
-data addr=ram:14001e3ae type=101
-data addr=ram:14001e3b0 type=101
-data addr=ram:14001e3b2 type=101
-data addr=ram:14001e3b4 type=101
-data addr=ram:14001e3b6 type=101
-data addr=ram:14001e3b8 type=101
-data addr=ram:14001e3ba type=101
-data addr=ram:14001e3bc type=101
-data addr=ram:14001e3be type=101
-data addr=ram:14001e3c0 type=101
-data addr=ram:14001e3c2 type=101
-data addr=ram:14001e3c4 type=101
-data addr=ram:14001e3c6 type=101
-data addr=ram:14001e3c8 type=101
-data addr=ram:14001e3ca type=101
-data addr=ram:14001e3cc type=101
-data addr=ram:14001e3ce type=101
-data addr=ram:14001e3d0 type=101
-data addr=ram:14001e3d2 type=101
-data addr=ram:14001e3d4 type=101
-data addr=ram:14001e3d6 type=101
-data addr=ram:14001e3d8 type=101
-data addr=ram:14001e3da type=101
-data addr=ram:14001e3dc type=101
-data addr=ram:14001e3de type=101
-data addr=ram:14001e3e0 type=101
-data addr=ram:14001e3e2 type=101
-data addr=ram:14001e3e4 type=101
-data addr=ram:14001e3e6 type=101
-data addr=ram:14001e3e8 type=101
-data addr=ram:14001e3ea type=101
-data addr=ram:14001e3ec type=101
-data addr=ram:14001e3ee type=101
-data addr=ram:14001e3f0 type=101
-data addr=ram:14001e3f2 type=101
-data addr=ram:14001e3f4 type=101
-data addr=ram:14001e3f6 type=101
-data addr=ram:14001e3f8 type=101
-data addr=ram:14001e3fa type=101
-data addr=ram:14001e3fc type=101
-data addr=ram:14001e3fe type=101
-data addr=ram:14001e400 type=101
-data addr=ram:14001e402 type=101
-data addr=ram:14001e404 type=101
-data addr=ram:14001e406 type=101
-data addr=ram:14001e408 type=101
-data addr=ram:14001e40a type=101
-data addr=ram:14001e40c type=101
-data addr=ram:14001e40e type=101
-data addr=ram:14001e410 type=72057594037927944
-data addr=ram:14001e418 type=101
-data addr=ram:14001e41a type=101
-data addr=ram:14001e41c type=101
-data addr=ram:14001e41e type=101
-data addr=ram:14001e420 type=101
-data addr=ram:14001e422 type=101
-data addr=ram:14001e424 type=101
-data addr=ram:14001e426 type=101
-data addr=ram:14001e428 type=101
-data addr=ram:14001e42a type=101
-data addr=ram:14001e42c type=101
-data addr=ram:14001e42e type=101
-data addr=ram:14001e430 type=101
-data addr=ram:14001e432 type=101
-data addr=ram:14001e434 type=101
-data addr=ram:14001e436 type=101
-data addr=ram:14001e438 type=101
-data addr=ram:14001e43a type=101
-data addr=ram:14001e43c type=101
-data addr=ram:14001e43e type=101
-data addr=ram:14001e440 type=101
-data addr=ram:14001e442 type=101
-data addr=ram:14001e444 type=101
-data addr=ram:14001e446 type=101
-data addr=ram:14001e448 type=101
-data addr=ram:14001e44a type=101
-data addr=ram:14001e44c type=101
-data addr=ram:14001e44e type=101
-data addr=ram:14001e450 type=101
-data addr=ram:14001e452 type=101
-data addr=ram:14001e454 type=101
-data addr=ram:14001e456 type=101
-data addr=ram:14001e458 type=101
-data addr=ram:14001e45a type=101
-data addr=ram:14001e45c type=101
-data addr=ram:14001e45e type=101
-data addr=ram:14001e460 type=101
-data addr=ram:14001e462 type=101
-data addr=ram:14001e464 type=101
-data addr=ram:14001e466 type=101
-data addr=ram:14001e468 type=101
-data addr=ram:14001e46a type=101
-data addr=ram:14001e46c type=101
-data addr=ram:14001e46e type=101
-data addr=ram:14001e470 type=101
-data addr=ram:14001e472 type=101
-data addr=ram:14001e474 type=101
-data addr=ram:14001e476 type=101
-data addr=ram:14001e478 type=101
-data addr=ram:14001e47a type=101
-data addr=ram:14001e47c type=101
-data addr=ram:14001e47e type=101
-data addr=ram:14001e480 type=101
-data addr=ram:14001e482 type=101
-data addr=ram:14001e484 type=101
-data addr=ram:14001e486 type=101
-data addr=ram:14001e488 type=101
-data addr=ram:14001e48a type=101
-data addr=ram:14001e48c type=101
-data addr=ram:14001e48e type=101
-data addr=ram:14001e490 type=101
-data addr=ram:14001e492 type=101
-data addr=ram:14001e494 type=101
-data addr=ram:14001e496 type=101
-data addr=ram:14001e498 type=101
-data addr=ram:14001e49a type=101
-data addr=ram:14001e49c type=101
-data addr=ram:14001e49e type=101
-data addr=ram:14001e4a0 type=101
-data addr=ram:14001e4a2 type=101
-data addr=ram:14001e4a4 type=101
-data addr=ram:14001e4a6 type=101
-data addr=ram:14001e4a8 type=101
-data addr=ram:14001e4aa type=101
-data addr=ram:14001e4ac type=101
-data addr=ram:14001e4ae type=101
-data addr=ram:14001e4b0 type=101
-data addr=ram:14001e4b2 type=101
-data addr=ram:14001e4b4 type=101
-data addr=ram:14001e4b6 type=101
-data addr=ram:14001e4b8 type=101
-data addr=ram:14001e4ba type=101
-data addr=ram:14001e4bc type=101
-data addr=ram:14001e4be type=101
-data addr=ram:14001e4c0 type=101
-data addr=ram:14001e4c2 type=101
-data addr=ram:14001e4c4 type=101
-data addr=ram:14001e4c6 type=101
-data addr=ram:14001e4c8 type=101
-data addr=ram:14001e4ca type=101
-data addr=ram:14001e4cc type=101
-data addr=ram:14001e4ce type=101
-data addr=ram:14001e4d0 type=101
-data addr=ram:14001e4d2 type=101
-data addr=ram:14001e4d4 type=101
-data addr=ram:14001e4d6 type=101
-data addr=ram:14001e4d8 type=101
-data addr=ram:14001e4da type=101
-data addr=ram:14001e4dc type=101
-data addr=ram:14001e4de type=101
-data addr=ram:14001e4e0 type=101
-data addr=ram:14001e4e2 type=101
-data addr=ram:14001e4e4 type=101
-data addr=ram:14001e4e6 type=101
-data addr=ram:14001e4e8 type=101
-data addr=ram:14001e4ea type=101
-data addr=ram:14001e4ec type=101
-data addr=ram:14001e4ee type=101
-data addr=ram:14001e4f0 type=101
-data addr=ram:14001e4f2 type=101
-data addr=ram:14001e4f4 type=101
-data addr=ram:14001e4f6 type=101
-data addr=ram:14001e4f8 type=101
-data addr=ram:14001e4fa type=101
-data addr=ram:14001e4fc type=101
-data addr=ram:14001e4fe type=101
-data addr=ram:14001e500 type=101
-data addr=ram:14001e502 type=101
-data addr=ram:14001e504 type=101
-data addr=ram:14001e506 type=101
-data addr=ram:14001e508 type=101
-data addr=ram:14001e50a type=101
-data addr=ram:14001e50c type=101
-data addr=ram:14001e50e type=101
-data addr=ram:14001e510 type=101
-data addr=ram:14001e512 type=101
-data addr=ram:14001e514 type=101
-data addr=ram:14001e516 type=101
-data addr=ram:14001e518 type=101
-data addr=ram:14001e51a type=101
-data addr=ram:14001e51c type=101
-data addr=ram:14001e51e type=101
-data addr=ram:14001e520 type=101
-data addr=ram:14001e522 type=101
-data addr=ram:14001e524 type=101
-data addr=ram:14001e526 type=101
-data addr=ram:14001e528 type=101
-data addr=ram:14001e52a type=101
-data addr=ram:14001e52c type=101
-data addr=ram:14001e52e type=101
-data addr=ram:14001e530 type=101
-data addr=ram:14001e532 type=101
-data addr=ram:14001e534 type=101
-data addr=ram:14001e536 type=101
-data addr=ram:14001e538 type=101
-data addr=ram:14001e53a type=101
-data addr=ram:14001e53c type=101
-data addr=ram:14001e53e type=101
-data addr=ram:14001e540 type=101
-data addr=ram:14001e542 type=101
-data addr=ram:14001e544 type=101
-data addr=ram:14001e546 type=101
-data addr=ram:14001e548 type=101
-data addr=ram:14001e54a type=101
-data addr=ram:14001e54c type=101
-data addr=ram:14001e54e type=101
-data addr=ram:14001e550 type=101
-data addr=ram:14001e552 type=101
-data addr=ram:14001e554 type=101
-data addr=ram:14001e556 type=101
-data addr=ram:14001e558 type=101
-data addr=ram:14001e55a type=101
-data addr=ram:14001e55c type=101
-data addr=ram:14001e55e type=101
-data addr=ram:14001e560 type=101
-data addr=ram:14001e562 type=101
-data addr=ram:14001e564 type=101
-data addr=ram:14001e566 type=101
-data addr=ram:14001e568 type=101
-data addr=ram:14001e56a type=101
-data addr=ram:14001e56c type=101
-data addr=ram:14001e56e type=101
-data addr=ram:14001e570 type=101
-data addr=ram:14001e572 type=101
-data addr=ram:14001e574 type=101
-data addr=ram:14001e576 type=101
-data addr=ram:14001e578 type=101
-data addr=ram:14001e57a type=101
-data addr=ram:14001e57c type=101
-data addr=ram:14001e57e type=101
-data addr=ram:14001e580 type=101
-data addr=ram:14001e582 type=101
-data addr=ram:14001e584 type=101
-data addr=ram:14001e586 type=101
-data addr=ram:14001e588 type=72057594037927944
-data addr=ram:14001e590 type=101
-data addr=ram:14001e592 type=101
-data addr=ram:14001e594 type=101
-data addr=ram:14001e596 type=101
-data addr=ram:14001e598 type=101
-data addr=ram:14001e59a type=101
-data addr=ram:14001e59c type=101
-data addr=ram:14001e59e type=101
-data addr=ram:14001e5a0 type=101
-data addr=ram:14001e5a2 type=101
-data addr=ram:14001e5a4 type=101
-data addr=ram:14001e5a6 type=101
-data addr=ram:14001e5a8 type=101
-data addr=ram:14001e5aa type=101
-data addr=ram:14001e5ac type=101
-data addr=ram:14001e5ae type=101
-data addr=ram:14001e5b0 type=101
-data addr=ram:14001e5b2 type=101
-data addr=ram:14001e5b4 type=101
-data addr=ram:14001e5b6 type=101
-data addr=ram:14001e5b8 type=101
-data addr=ram:14001e5ba type=101
-data addr=ram:14001e5bc type=101
-data addr=ram:14001e5be type=101
-data addr=ram:14001e5c0 type=101
-data addr=ram:14001e5c2 type=101
-data addr=ram:14001e5c4 type=101
-data addr=ram:14001e5c6 type=101
-data addr=ram:14001e5c8 type=101
-data addr=ram:14001e5ca type=101
-data addr=ram:14001e5cc type=101
-data addr=ram:14001e5ce type=101
-data addr=ram:14001e5d0 type=101
-data addr=ram:14001e5d2 type=101
-data addr=ram:14001e5d4 type=101
-data addr=ram:14001e5d6 type=101
-data addr=ram:14001e5d8 type=101
-data addr=ram:14001e5da type=101
-data addr=ram:14001e5dc type=101
-data addr=ram:14001e5de type=101
-data addr=ram:14001e5e0 type=101
-data addr=ram:14001e5e2 type=101
-data addr=ram:14001e5e4 type=101
-data addr=ram:14001e5e6 type=101
-data addr=ram:14001e5e8 type=72057594037927944
-data addr=ram:14001e5f0 type=101
-data addr=ram:14001e5f2 type=101
-data addr=ram:14001e5f4 type=101
-data addr=ram:14001e5f6 type=101
-data addr=ram:14001e5f8 type=101
-data addr=ram:14001e5fa type=101
-data addr=ram:14001e5fc type=101
-data addr=ram:14001e5fe type=101
-data addr=ram:14001e600 type=101
-data addr=ram:14001e602 type=101
-data addr=ram:14001e604 type=101
-data addr=ram:14001e606 type=101
-data addr=ram:14001e608 type=72057594037927944
-data addr=ram:14001e610 type=101
-data addr=ram:14001e612 type=101
-data addr=ram:14001e614 type=101
-data addr=ram:14001e616 type=101
-data addr=ram:14001e618 type=101
-data addr=ram:14001e61a type=101
-data addr=ram:14001e61c type=101
-data addr=ram:14001e61e type=101
-data addr=ram:14001e620 type=101
-data addr=ram:14001e622 type=101
-data addr=ram:14001e624 type=101
-data addr=ram:14001e626 type=101
-data addr=ram:14001e628 type=101
-data addr=ram:14001e62a type=101
-data addr=ram:14001e62c type=101
-data addr=ram:14001e62e type=101
-data addr=ram:14001e630 type=101
-data addr=ram:14001e632 type=101
-data addr=ram:14001e634 type=101
-data addr=ram:14001e636 type=101
-data addr=ram:14001e638 type=101
-data addr=ram:14001e63a type=101
-data addr=ram:14001e63c type=101
-data addr=ram:14001e63e type=101
-data addr=ram:14001e640 type=101
-data addr=ram:14001e642 type=101
-data addr=ram:14001e644 type=101
-data addr=ram:14001e646 type=101
-data addr=ram:14001e648 type=101
-data addr=ram:14001e64a type=101
-data addr=ram:14001e64c type=101
-data addr=ram:14001e64e type=101
-data addr=ram:14001e650 type=101
-data addr=ram:14001e652 type=101
+data addr=ram:140000000 type=72057594037927936 dt=[/DOS/IMAGE_DOS_HEADER]
+data addr=ram:140000080 type=104 dt=[/IMAGE_RICH_HEADER]
+data addr=ram:140000100 type=72057594037927937 dt=[/PE/IMAGE_NT_HEADERS64]
+data addr=ram:140000208 type=72057594037927941 dt=[/PE/IMAGE_SECTION_HEADER]
+data addr=ram:140000230 type=72057594037927941 dt=[/PE/IMAGE_SECTION_HEADER]
+data addr=ram:140000258 type=72057594037927941 dt=[/PE/IMAGE_SECTION_HEADER]
+data addr=ram:140000280 type=72057594037927941 dt=[/PE/IMAGE_SECTION_HEADER]
+data addr=ram:1400002a8 type=72057594037927941 dt=[/PE/IMAGE_SECTION_HEADER]
+data addr=ram:1400002d0 type=72057594037927941 dt=[/PE/IMAGE_SECTION_HEADER]
+data addr=ram:140010000 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010008 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010010 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010018 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010020 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010028 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010030 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010038 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010040 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010048 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010050 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010058 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010060 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010068 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010070 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010078 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010080 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010088 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010090 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010098 type=288230376151711746 dt=[/pointer]
+data addr=ram:1400100a0 type=288230376151711746 dt=[/pointer]
+data addr=ram:1400100a8 type=288230376151711746 dt=[/pointer]
+data addr=ram:1400100b0 type=288230376151711746 dt=[/pointer]
+data addr=ram:1400100b8 type=288230376151711746 dt=[/pointer]
+data addr=ram:1400100c0 type=288230376151711746 dt=[/pointer]
+data addr=ram:1400100c8 type=288230376151711746 dt=[/pointer]
+data addr=ram:1400100d0 type=288230376151711746 dt=[/pointer]
+data addr=ram:1400100d8 type=288230376151711746 dt=[/pointer]
+data addr=ram:1400100e0 type=288230376151711746 dt=[/pointer]
+data addr=ram:1400100e8 type=288230376151711746 dt=[/pointer]
+data addr=ram:1400100f0 type=288230376151711746 dt=[/pointer]
+data addr=ram:1400100f8 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010100 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010108 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010110 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010118 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010120 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010128 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010130 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010138 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010140 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010148 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010150 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010158 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010160 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010168 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010170 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010178 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010180 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010188 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010190 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010198 type=288230376151711746 dt=[/pointer]
+data addr=ram:1400101a0 type=288230376151711746 dt=[/pointer]
+data addr=ram:1400101a8 type=288230376151711746 dt=[/pointer]
+data addr=ram:1400101b0 type=288230376151711746 dt=[/pointer]
+data addr=ram:1400101b8 type=288230376151711746 dt=[/pointer]
+data addr=ram:1400101c0 type=288230376151711746 dt=[/pointer]
+data addr=ram:1400101c8 type=288230376151711746 dt=[/pointer]
+data addr=ram:1400101d0 type=288230376151711746 dt=[/pointer]
+data addr=ram:1400101d8 type=288230376151711746 dt=[/pointer]
+data addr=ram:1400101e0 type=288230376151711746 dt=[/pointer]
+data addr=ram:1400101e8 type=288230376151711746 dt=[/pointer]
+data addr=ram:1400101f0 type=288230376151711746 dt=[/pointer]
+data addr=ram:1400101f8 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010200 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010208 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010210 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010218 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010220 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010228 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010230 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010238 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010240 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010250 type=288230376151711746 dt=[/pointer]
+data addr=ram:140010260 type=288230376151711746 dt=[/pointer]
+data addr=ram:140017820 type=72057594037927946 dt=[/PE/IMAGE_LOAD_CONFIG_DIRECTORY64]
+data addr=ram:140017960 type=72057594037927945 dt=[/PE/IMAGE_DEBUG_DIRECTORY]
+data addr=ram:14001797c type=72057594037927945 dt=[/PE/IMAGE_DEBUG_DIRECTORY]
+data addr=ram:1400180d0 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400180d8 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400180f0 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400180f8 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018100 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018138 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018140 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018160 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018168 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018170 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:14001817c type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018188 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400181a0 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400181b8 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400181c0 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400181c4 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400181dc type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400181fc type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018208 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:14001820c type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018220 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018230 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018240 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018254 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018268 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:14001827c type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:14001828c type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:14001829c type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400182b0 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400182c4 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400182d8 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400182e8 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400182f8 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:14001831c type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018328 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018334 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018348 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018358 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:14001836c type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400183b8 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400183f8 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018404 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:14001841c type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:14001843c type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:14001844c type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:14001845c type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:14001846c type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:14001847c type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018490 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400184a4 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400184b4 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400184ec type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018514 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018528 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:14001854c type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:14001855c type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:14001857c type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:14001858c type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400185b0 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400185bc type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400185d4 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400185e4 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400185f4 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018608 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:14001861c type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018638 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018650 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:14001865c type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018674 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018688 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400186a0 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400186c0 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400186e0 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018704 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:14001870c type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018734 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:14001873c type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018744 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018760 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018778 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:14001879c type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400187c0 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400187e0 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400187e8 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400187fc type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018810 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018814 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018828 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018830 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018838 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018840 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018864 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018888 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400188ac type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400188d0 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400188d8 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400188f8 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:14001890c type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:14001891c type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018928 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018938 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018940 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018948 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018960 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018978 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018994 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400189b4 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400189d0 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400189e4 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018a04 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018a0c type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018a34 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018a4c type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018a68 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018a8c type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018a9c type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018aa8 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018ac0 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018ad4 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018ae8 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018af8 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018b24 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018b44 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018b60 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018b78 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018b80 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018b90 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018b98 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018bc0 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018be4 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018bf8 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018c14 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018c28 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018c30 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018c3c type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018c5c type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018c64 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018c88 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018c90 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018cd0 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018cf4 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018d04 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018d0c type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018d30 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018d58 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018d74 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018d90 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018da8 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018dc8 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018dd8 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018de8 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018df8 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018e04 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018e14 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018e3c type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018e50 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018e64 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018e74 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018e90 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018e98 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018ea4 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018eac type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018ed0 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018ee8 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018f14 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018f1c type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018f50 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018f70 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018f94 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018fb8 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018fc4 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018fcc type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140018fdc type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140019000 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140019008 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140019018 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140019040 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140019048 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:14001906c type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140019074 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140019098 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400190b0 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400190b4 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400190c8 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:1400190d0 type=108 dt=[/PEx64_UnwindInfo]
+data addr=ram:140019164 type=102 dt=[/dword]
+data addr=ram:140019168 type=102 dt=[/dword]
+data addr=ram:14001916c type=102 dt=[/dword]
+data addr=ram:140019170 type=102 dt=[/dword]
+data addr=ram:140019174 type=102 dt=[/dword]
+data addr=ram:140019190 type=106 dt=[/qword]
+data addr=ram:140019198 type=106 dt=[/qword]
+data addr=ram:1400191a0 type=106 dt=[/qword]
+data addr=ram:1400191a8 type=106 dt=[/qword]
+data addr=ram:1400191b0 type=106 dt=[/qword]
+data addr=ram:1400191b8 type=106 dt=[/qword]
+data addr=ram:1400191c0 type=106 dt=[/qword]
+data addr=ram:1400191c8 type=106 dt=[/qword]
+data addr=ram:1400191d0 type=106 dt=[/qword]
+data addr=ram:1400191d8 type=106 dt=[/qword]
+data addr=ram:1400191e0 type=106 dt=[/qword]
+data addr=ram:1400191e8 type=106 dt=[/qword]
+data addr=ram:1400191f0 type=106 dt=[/qword]
+data addr=ram:1400191f8 type=106 dt=[/qword]
+data addr=ram:140019200 type=106 dt=[/qword]
+data addr=ram:140019208 type=106 dt=[/qword]
+data addr=ram:140019210 type=106 dt=[/qword]
+data addr=ram:140019218 type=106 dt=[/qword]
+data addr=ram:140019220 type=106 dt=[/qword]
+data addr=ram:140019228 type=106 dt=[/qword]
+data addr=ram:140019230 type=106 dt=[/qword]
+data addr=ram:140019238 type=106 dt=[/qword]
+data addr=ram:140019240 type=106 dt=[/qword]
+data addr=ram:140019248 type=106 dt=[/qword]
+data addr=ram:140019250 type=106 dt=[/qword]
+data addr=ram:140019258 type=106 dt=[/qword]
+data addr=ram:140019260 type=106 dt=[/qword]
+data addr=ram:140019268 type=106 dt=[/qword]
+data addr=ram:140019270 type=106 dt=[/qword]
+data addr=ram:140019278 type=106 dt=[/qword]
+data addr=ram:140019280 type=106 dt=[/qword]
+data addr=ram:140019288 type=106 dt=[/qword]
+data addr=ram:140019290 type=106 dt=[/qword]
+data addr=ram:140019298 type=106 dt=[/qword]
+data addr=ram:1400192a0 type=106 dt=[/qword]
+data addr=ram:1400192a8 type=106 dt=[/qword]
+data addr=ram:1400192b0 type=106 dt=[/qword]
+data addr=ram:1400192b8 type=106 dt=[/qword]
+data addr=ram:1400192c0 type=106 dt=[/qword]
+data addr=ram:1400192c8 type=106 dt=[/qword]
+data addr=ram:1400192d0 type=106 dt=[/qword]
+data addr=ram:1400192d8 type=106 dt=[/qword]
+data addr=ram:1400192e0 type=106 dt=[/qword]
+data addr=ram:1400192e8 type=106 dt=[/qword]
+data addr=ram:1400192f0 type=106 dt=[/qword]
+data addr=ram:1400192f8 type=106 dt=[/qword]
+data addr=ram:140019300 type=106 dt=[/qword]
+data addr=ram:140019308 type=106 dt=[/qword]
+data addr=ram:140019310 type=106 dt=[/qword]
+data addr=ram:140019318 type=106 dt=[/qword]
+data addr=ram:140019320 type=106 dt=[/qword]
+data addr=ram:140019328 type=106 dt=[/qword]
+data addr=ram:140019330 type=106 dt=[/qword]
+data addr=ram:140019338 type=106 dt=[/qword]
+data addr=ram:140019340 type=106 dt=[/qword]
+data addr=ram:140019348 type=106 dt=[/qword]
+data addr=ram:140019350 type=106 dt=[/qword]
+data addr=ram:140019358 type=106 dt=[/qword]
+data addr=ram:140019360 type=106 dt=[/qword]
+data addr=ram:140019368 type=106 dt=[/qword]
+data addr=ram:140019370 type=106 dt=[/qword]
+data addr=ram:140019378 type=106 dt=[/qword]
+data addr=ram:140019380 type=106 dt=[/qword]
+data addr=ram:140019388 type=106 dt=[/qword]
+data addr=ram:140019390 type=106 dt=[/qword]
+data addr=ram:140019398 type=106 dt=[/qword]
+data addr=ram:1400193a0 type=106 dt=[/qword]
+data addr=ram:1400193a8 type=106 dt=[/qword]
+data addr=ram:1400193b0 type=106 dt=[/qword]
+data addr=ram:1400193b8 type=106 dt=[/qword]
+data addr=ram:1400193c0 type=106 dt=[/qword]
+data addr=ram:1400193c8 type=106 dt=[/qword]
+data addr=ram:1400193d0 type=106 dt=[/qword]
+data addr=ram:1400193e0 type=101 dt=[/word]
+data addr=ram:1400193e2 type=107 dt=[/TerminatedCString]
+data addr=ram:1400193f6 type=101 dt=[/word]
+data addr=ram:1400193f8 type=107 dt=[/TerminatedCString]
+data addr=ram:1400193fe type=101 dt=[/word]
+data addr=ram:140019400 type=107 dt=[/TerminatedCString]
+data addr=ram:140019412 type=101 dt=[/word]
+data addr=ram:140019414 type=107 dt=[/TerminatedCString]
+data addr=ram:14001942a type=101 dt=[/word]
+data addr=ram:14001942c type=107 dt=[/TerminatedCString]
+data addr=ram:14001943c type=101 dt=[/word]
+data addr=ram:14001943e type=107 dt=[/TerminatedCString]
+data addr=ram:140019456 type=101 dt=[/word]
+data addr=ram:140019458 type=107 dt=[/TerminatedCString]
+data addr=ram:14001946c type=101 dt=[/word]
+data addr=ram:14001946e type=107 dt=[/TerminatedCString]
+data addr=ram:140019482 type=101 dt=[/word]
+data addr=ram:140019484 type=107 dt=[/TerminatedCString]
+data addr=ram:14001949c type=101 dt=[/word]
+data addr=ram:14001949e type=107 dt=[/TerminatedCString]
+data addr=ram:1400194b2 type=101 dt=[/word]
+data addr=ram:1400194b4 type=107 dt=[/TerminatedCString]
+data addr=ram:1400194d0 type=101 dt=[/word]
+data addr=ram:1400194d2 type=107 dt=[/TerminatedCString]
+data addr=ram:1400194e2 type=101 dt=[/word]
+data addr=ram:1400194e4 type=107 dt=[/TerminatedCString]
+data addr=ram:1400194f6 type=107 dt=[/TerminatedCString]
+data addr=ram:140019504 type=101 dt=[/word]
+data addr=ram:140019506 type=107 dt=[/TerminatedCString]
+data addr=ram:140019512 type=101 dt=[/word]
+data addr=ram:140019514 type=107 dt=[/TerminatedCString]
+data addr=ram:140019522 type=101 dt=[/word]
+data addr=ram:140019524 type=107 dt=[/TerminatedCString]
+data addr=ram:140019532 type=101 dt=[/word]
+data addr=ram:140019534 type=107 dt=[/TerminatedCString]
+data addr=ram:14001953e type=101 dt=[/word]
+data addr=ram:140019540 type=107 dt=[/TerminatedCString]
+data addr=ram:14001954c type=101 dt=[/word]
+data addr=ram:14001954e type=107 dt=[/TerminatedCString]
+data addr=ram:14001955a type=101 dt=[/word]
+data addr=ram:14001955c type=107 dt=[/TerminatedCString]
+data addr=ram:140019564 type=101 dt=[/word]
+data addr=ram:140019566 type=107 dt=[/TerminatedCString]
+data addr=ram:14001957c type=101 dt=[/word]
+data addr=ram:14001957e type=107 dt=[/TerminatedCString]
+data addr=ram:140019594 type=101 dt=[/word]
+data addr=ram:140019596 type=107 dt=[/TerminatedCString]
+data addr=ram:1400195b2 type=101 dt=[/word]
+data addr=ram:1400195b4 type=107 dt=[/TerminatedCString]
+data addr=ram:1400195ca type=101 dt=[/word]
+data addr=ram:1400195cc type=107 dt=[/TerminatedCString]
+data addr=ram:1400195e4 type=101 dt=[/word]
+data addr=ram:1400195e6 type=107 dt=[/TerminatedCString]
+data addr=ram:1400195f4 type=101 dt=[/word]
+data addr=ram:1400195f6 type=107 dt=[/TerminatedCString]
+data addr=ram:140019606 type=101 dt=[/word]
+data addr=ram:140019608 type=107 dt=[/TerminatedCString]
+data addr=ram:14001961a type=101 dt=[/word]
+data addr=ram:14001961c type=107 dt=[/TerminatedCString]
+data addr=ram:14001962a type=101 dt=[/word]
+data addr=ram:14001962c type=107 dt=[/TerminatedCString]
+data addr=ram:140019636 type=101 dt=[/word]
+data addr=ram:140019638 type=107 dt=[/TerminatedCString]
+data addr=ram:14001964c type=101 dt=[/word]
+data addr=ram:14001964e type=107 dt=[/TerminatedCString]
+data addr=ram:14001965a type=101 dt=[/word]
+data addr=ram:14001965c type=107 dt=[/TerminatedCString]
+data addr=ram:14001966e type=101 dt=[/word]
+data addr=ram:140019670 type=107 dt=[/TerminatedCString]
+data addr=ram:14001967c type=101 dt=[/word]
+data addr=ram:14001967e type=107 dt=[/TerminatedCString]
+data addr=ram:140019692 type=101 dt=[/word]
+data addr=ram:140019694 type=107 dt=[/TerminatedCString]
+data addr=ram:1400196a4 type=101 dt=[/word]
+data addr=ram:1400196a6 type=107 dt=[/TerminatedCString]
+data addr=ram:1400196b6 type=101 dt=[/word]
+data addr=ram:1400196b8 type=107 dt=[/TerminatedCString]
+data addr=ram:1400196c8 type=101 dt=[/word]
+data addr=ram:1400196ca type=107 dt=[/TerminatedCString]
+data addr=ram:1400196e4 type=101 dt=[/word]
+data addr=ram:1400196e6 type=107 dt=[/TerminatedCString]
+data addr=ram:1400196f8 type=101 dt=[/word]
+data addr=ram:1400196fa type=107 dt=[/TerminatedCString]
+data addr=ram:14001970c type=101 dt=[/word]
+data addr=ram:14001970e type=107 dt=[/TerminatedCString]
+data addr=ram:140019720 type=101 dt=[/word]
+data addr=ram:140019722 type=107 dt=[/TerminatedCString]
+data addr=ram:14001973c type=101 dt=[/word]
+data addr=ram:14001973e type=107 dt=[/TerminatedCString]
+data addr=ram:140019748 type=101 dt=[/word]
+data addr=ram:14001974a type=107 dt=[/TerminatedCString]
+data addr=ram:140019754 type=101 dt=[/word]
+data addr=ram:140019756 type=107 dt=[/TerminatedCString]
+data addr=ram:140019760 type=101 dt=[/word]
+data addr=ram:140019762 type=107 dt=[/TerminatedCString]
+data addr=ram:140019774 type=101 dt=[/word]
+data addr=ram:140019776 type=107 dt=[/TerminatedCString]
+data addr=ram:140019784 type=101 dt=[/word]
+data addr=ram:140019786 type=107 dt=[/TerminatedCString]
+data addr=ram:140019796 type=101 dt=[/word]
+data addr=ram:140019798 type=107 dt=[/TerminatedCString]
+data addr=ram:1400197a0 type=101 dt=[/word]
+data addr=ram:1400197a2 type=107 dt=[/TerminatedCString]
+data addr=ram:1400197ac type=101 dt=[/word]
+data addr=ram:1400197ae type=107 dt=[/TerminatedCString]
+data addr=ram:1400197b8 type=101 dt=[/word]
+data addr=ram:1400197ba type=107 dt=[/TerminatedCString]
+data addr=ram:1400197ce type=101 dt=[/word]
+data addr=ram:1400197d0 type=107 dt=[/TerminatedCString]
+data addr=ram:1400197e4 type=101 dt=[/word]
+data addr=ram:1400197e6 type=107 dt=[/TerminatedCString]
+data addr=ram:1400197fe type=101 dt=[/word]
+data addr=ram:140019800 type=107 dt=[/TerminatedCString]
+data addr=ram:140019818 type=101 dt=[/word]
+data addr=ram:14001981a type=107 dt=[/TerminatedCString]
+data addr=ram:140019832 type=101 dt=[/word]
+data addr=ram:140019834 type=107 dt=[/TerminatedCString]
+data addr=ram:140019842 type=101 dt=[/word]
+data addr=ram:140019844 type=107 dt=[/TerminatedCString]
+data addr=ram:140019850 type=101 dt=[/word]
+data addr=ram:140019852 type=107 dt=[/TerminatedCString]
+data addr=ram:140019862 type=101 dt=[/word]
+data addr=ram:140019864 type=107 dt=[/TerminatedCString]
+data addr=ram:140019874 type=101 dt=[/word]
+data addr=ram:140019876 type=107 dt=[/TerminatedCString]
+data addr=ram:140019886 type=101 dt=[/word]
+data addr=ram:140019888 type=107 dt=[/TerminatedCString]
+data addr=ram:140019896 type=101 dt=[/word]
+data addr=ram:140019898 type=107 dt=[/TerminatedCString]
+data addr=ram:1400198a8 type=101 dt=[/word]
+data addr=ram:1400198aa type=107 dt=[/TerminatedCString]
+data addr=ram:1400198b4 type=101 dt=[/word]
+data addr=ram:1400198b6 type=107 dt=[/TerminatedCString]
+data addr=ram:1400198c2 type=101 dt=[/word]
+data addr=ram:1400198c4 type=107 dt=[/TerminatedCString]
+data addr=ram:1400198d6 type=101 dt=[/word]
+data addr=ram:1400198d8 type=107 dt=[/TerminatedCString]
+data addr=ram:1400198ec type=101 dt=[/word]
+data addr=ram:1400198ee type=107 dt=[/TerminatedCString]
+data addr=ram:1400198fe type=101 dt=[/word]
+data addr=ram:140019900 type=107 dt=[/TerminatedCString]
+data addr=ram:140019912 type=101 dt=[/word]
+data addr=ram:140019914 type=107 dt=[/TerminatedCString]
+data addr=ram:140019920 type=101 dt=[/word]
+data addr=ram:140019922 type=107 dt=[/TerminatedCString]
+data addr=ram:14001992e type=101 dt=[/word]
+data addr=ram:140019930 type=107 dt=[/TerminatedCString]
+data addr=ram:14001c000 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c00c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c018 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c024 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c030 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c03c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c048 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c054 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c060 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c06c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c078 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c084 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c090 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c09c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c0a8 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c0b4 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c0c0 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c0cc type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c0d8 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c0e4 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c0f0 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c0fc type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c108 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c114 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c120 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c12c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c138 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c144 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c150 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c15c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c168 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c174 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c180 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c18c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c198 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c1a4 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c1b0 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c1bc type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c1c8 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c1d4 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c1e0 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c1ec type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c1f8 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c204 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c210 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c21c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c228 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c234 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c240 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c24c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c258 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c264 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c270 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c27c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c288 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c294 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c2a0 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c2ac type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c2b8 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c2c4 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c2d0 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c2dc type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c2e8 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c2f4 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c300 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c30c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c318 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c324 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c330 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c33c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c348 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c354 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c360 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c36c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c378 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c384 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c390 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c39c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c3a8 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c3b4 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c3c0 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c3cc type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c3d8 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c3e4 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c3f0 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c3fc type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c408 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c414 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c420 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c42c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c438 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c444 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c450 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c45c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c468 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c474 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c480 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c48c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c498 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c4a4 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c4b0 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c4bc type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c4c8 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c4d4 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c4e0 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c4ec type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c4f8 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c504 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c510 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c51c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c528 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c534 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c540 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c54c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c558 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c564 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c570 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c57c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c588 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c594 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c5a0 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c5ac type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c5b8 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c5c4 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c5d0 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c5dc type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c5e8 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c5f4 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c600 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c60c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c618 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c624 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c630 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c63c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c648 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c654 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c660 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c66c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c678 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c684 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c690 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c69c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c6a8 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c6b4 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c6c0 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c6cc type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c6d8 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c6e4 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c6f0 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c6fc type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c708 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c714 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c720 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c72c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c738 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c744 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c750 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c75c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c768 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c774 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c780 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c78c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c798 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c7a4 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c7b0 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c7bc type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c7c8 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c7d4 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c7e0 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c7ec type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c7f8 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c804 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c810 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c81c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c828 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c834 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c840 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c84c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c858 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c864 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c870 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c87c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c888 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c894 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c8a0 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c8ac type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c8b8 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c8c4 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c8d0 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c8dc type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c8e8 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c8f4 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c900 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c90c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c918 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c924 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c930 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c93c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c948 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c954 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c960 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c96c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c978 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c984 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c990 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c99c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c9a8 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c9b4 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c9c0 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c9cc type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c9d8 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c9e4 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c9f0 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001c9fc type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001ca08 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001ca14 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001ca20 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001ca2c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001ca38 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001ca44 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001ca50 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001ca5c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001ca68 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001ca74 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001ca80 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001ca8c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001ca98 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001caa4 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cab0 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cabc type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cac8 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cad4 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cae0 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001caec type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001caf8 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cb04 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cb10 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cb1c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cb28 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cb34 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cb40 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cb4c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cb58 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cb64 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cb70 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cb7c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cb88 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cb94 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cba0 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cbac type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cbb8 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cbc4 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cbd0 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cbdc type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cbe8 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cbf4 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cc00 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cc0c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cc18 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cc24 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cc30 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cc3c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cc48 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cc54 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cc60 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cc6c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cc78 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cc84 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cc90 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cc9c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cca8 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001ccb4 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001ccc0 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cccc type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001ccd8 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cce4 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001ccf0 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001ccfc type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cd08 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cd14 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cd20 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cd2c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cd38 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cd44 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cd50 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cd5c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cd68 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cd74 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cd80 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cd8c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cd98 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cda4 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cdb0 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cdbc type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cdc8 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cdd4 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cde0 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cdec type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cdf8 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001ce04 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001ce10 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001ce1c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001ce28 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001ce34 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001ce40 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001ce4c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001ce58 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001ce64 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001ce70 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001ce7c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001ce88 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001ce94 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cea0 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001ceac type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001ceb8 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cec4 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001ced0 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cedc type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cee8 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cef4 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cf00 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cf0c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cf18 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cf24 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cf30 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cf3c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cf48 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cf54 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cf60 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cf6c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cf78 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cf84 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cf90 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cf9c type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cfa8 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cfb4 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cfc0 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cfcc type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cfd8 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cfe4 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001cff0 type=72057594037927943 dt=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY]
+data addr=ram:14001e000 type=72057594037927944 dt=[/PE/IMAGE_BASE_RELOCATION]
+data addr=ram:14001e008 type=101 dt=[/word]
+data addr=ram:14001e00a type=101 dt=[/word]
+data addr=ram:14001e00c type=101 dt=[/word]
+data addr=ram:14001e00e type=101 dt=[/word]
+data addr=ram:14001e010 type=101 dt=[/word]
+data addr=ram:14001e012 type=101 dt=[/word]
+data addr=ram:14001e014 type=101 dt=[/word]
+data addr=ram:14001e016 type=101 dt=[/word]
+data addr=ram:14001e018 type=101 dt=[/word]
+data addr=ram:14001e01a type=101 dt=[/word]
+data addr=ram:14001e01c type=101 dt=[/word]
+data addr=ram:14001e01e type=101 dt=[/word]
+data addr=ram:14001e020 type=101 dt=[/word]
+data addr=ram:14001e022 type=101 dt=[/word]
+data addr=ram:14001e024 type=101 dt=[/word]
+data addr=ram:14001e026 type=101 dt=[/word]
+data addr=ram:14001e028 type=101 dt=[/word]
+data addr=ram:14001e02a type=101 dt=[/word]
+data addr=ram:14001e02c type=101 dt=[/word]
+data addr=ram:14001e02e type=101 dt=[/word]
+data addr=ram:14001e030 type=101 dt=[/word]
+data addr=ram:14001e032 type=101 dt=[/word]
+data addr=ram:14001e034 type=101 dt=[/word]
+data addr=ram:14001e036 type=101 dt=[/word]
+data addr=ram:14001e038 type=101 dt=[/word]
+data addr=ram:14001e03a type=101 dt=[/word]
+data addr=ram:14001e03c type=101 dt=[/word]
+data addr=ram:14001e03e type=101 dt=[/word]
+data addr=ram:14001e040 type=101 dt=[/word]
+data addr=ram:14001e042 type=101 dt=[/word]
+data addr=ram:14001e044 type=101 dt=[/word]
+data addr=ram:14001e046 type=101 dt=[/word]
+data addr=ram:14001e048 type=101 dt=[/word]
+data addr=ram:14001e04a type=101 dt=[/word]
+data addr=ram:14001e04c type=101 dt=[/word]
+data addr=ram:14001e04e type=101 dt=[/word]
+data addr=ram:14001e050 type=101 dt=[/word]
+data addr=ram:14001e052 type=101 dt=[/word]
+data addr=ram:14001e054 type=101 dt=[/word]
+data addr=ram:14001e056 type=101 dt=[/word]
+data addr=ram:14001e058 type=101 dt=[/word]
+data addr=ram:14001e05a type=101 dt=[/word]
+data addr=ram:14001e05c type=101 dt=[/word]
+data addr=ram:14001e05e type=101 dt=[/word]
+data addr=ram:14001e060 type=101 dt=[/word]
+data addr=ram:14001e062 type=101 dt=[/word]
+data addr=ram:14001e064 type=101 dt=[/word]
+data addr=ram:14001e066 type=101 dt=[/word]
+data addr=ram:14001e068 type=101 dt=[/word]
+data addr=ram:14001e06a type=101 dt=[/word]
+data addr=ram:14001e06c type=101 dt=[/word]
+data addr=ram:14001e06e type=101 dt=[/word]
+data addr=ram:14001e070 type=101 dt=[/word]
+data addr=ram:14001e072 type=101 dt=[/word]
+data addr=ram:14001e074 type=101 dt=[/word]
+data addr=ram:14001e076 type=101 dt=[/word]
+data addr=ram:14001e078 type=101 dt=[/word]
+data addr=ram:14001e07a type=101 dt=[/word]
+data addr=ram:14001e07c type=101 dt=[/word]
+data addr=ram:14001e07e type=101 dt=[/word]
+data addr=ram:14001e080 type=101 dt=[/word]
+data addr=ram:14001e082 type=101 dt=[/word]
+data addr=ram:14001e084 type=101 dt=[/word]
+data addr=ram:14001e086 type=101 dt=[/word]
+data addr=ram:14001e088 type=101 dt=[/word]
+data addr=ram:14001e08a type=101 dt=[/word]
+data addr=ram:14001e08c type=101 dt=[/word]
+data addr=ram:14001e08e type=101 dt=[/word]
+data addr=ram:14001e090 type=101 dt=[/word]
+data addr=ram:14001e092 type=101 dt=[/word]
+data addr=ram:14001e094 type=101 dt=[/word]
+data addr=ram:14001e096 type=101 dt=[/word]
+data addr=ram:14001e098 type=101 dt=[/word]
+data addr=ram:14001e09a type=101 dt=[/word]
+data addr=ram:14001e09c type=101 dt=[/word]
+data addr=ram:14001e09e type=101 dt=[/word]
+data addr=ram:14001e0a0 type=101 dt=[/word]
+data addr=ram:14001e0a2 type=101 dt=[/word]
+data addr=ram:14001e0a4 type=101 dt=[/word]
+data addr=ram:14001e0a6 type=101 dt=[/word]
+data addr=ram:14001e0a8 type=101 dt=[/word]
+data addr=ram:14001e0aa type=101 dt=[/word]
+data addr=ram:14001e0ac type=101 dt=[/word]
+data addr=ram:14001e0ae type=101 dt=[/word]
+data addr=ram:14001e0b0 type=101 dt=[/word]
+data addr=ram:14001e0b2 type=101 dt=[/word]
+data addr=ram:14001e0b4 type=101 dt=[/word]
+data addr=ram:14001e0b6 type=101 dt=[/word]
+data addr=ram:14001e0b8 type=101 dt=[/word]
+data addr=ram:14001e0ba type=101 dt=[/word]
+data addr=ram:14001e0bc type=101 dt=[/word]
+data addr=ram:14001e0be type=101 dt=[/word]
+data addr=ram:14001e0c0 type=101 dt=[/word]
+data addr=ram:14001e0c2 type=101 dt=[/word]
+data addr=ram:14001e0c4 type=101 dt=[/word]
+data addr=ram:14001e0c6 type=101 dt=[/word]
+data addr=ram:14001e0c8 type=101 dt=[/word]
+data addr=ram:14001e0ca type=101 dt=[/word]
+data addr=ram:14001e0cc type=101 dt=[/word]
+data addr=ram:14001e0ce type=101 dt=[/word]
+data addr=ram:14001e0d0 type=101 dt=[/word]
+data addr=ram:14001e0d2 type=101 dt=[/word]
+data addr=ram:14001e0d4 type=101 dt=[/word]
+data addr=ram:14001e0d6 type=101 dt=[/word]
+data addr=ram:14001e0d8 type=101 dt=[/word]
+data addr=ram:14001e0da type=101 dt=[/word]
+data addr=ram:14001e0dc type=101 dt=[/word]
+data addr=ram:14001e0de type=101 dt=[/word]
+data addr=ram:14001e0e0 type=101 dt=[/word]
+data addr=ram:14001e0e2 type=101 dt=[/word]
+data addr=ram:14001e0e4 type=101 dt=[/word]
+data addr=ram:14001e0e6 type=101 dt=[/word]
+data addr=ram:14001e0e8 type=101 dt=[/word]
+data addr=ram:14001e0ea type=101 dt=[/word]
+data addr=ram:14001e0ec type=101 dt=[/word]
+data addr=ram:14001e0ee type=101 dt=[/word]
+data addr=ram:14001e0f0 type=101 dt=[/word]
+data addr=ram:14001e0f2 type=101 dt=[/word]
+data addr=ram:14001e0f4 type=101 dt=[/word]
+data addr=ram:14001e0f6 type=101 dt=[/word]
+data addr=ram:14001e0f8 type=101 dt=[/word]
+data addr=ram:14001e0fa type=101 dt=[/word]
+data addr=ram:14001e0fc type=101 dt=[/word]
+data addr=ram:14001e0fe type=101 dt=[/word]
+data addr=ram:14001e100 type=101 dt=[/word]
+data addr=ram:14001e102 type=101 dt=[/word]
+data addr=ram:14001e104 type=101 dt=[/word]
+data addr=ram:14001e106 type=101 dt=[/word]
+data addr=ram:14001e108 type=101 dt=[/word]
+data addr=ram:14001e10a type=101 dt=[/word]
+data addr=ram:14001e10c type=72057594037927944 dt=[/PE/IMAGE_BASE_RELOCATION]
+data addr=ram:14001e114 type=101 dt=[/word]
+data addr=ram:14001e116 type=101 dt=[/word]
+data addr=ram:14001e118 type=101 dt=[/word]
+data addr=ram:14001e11a type=101 dt=[/word]
+data addr=ram:14001e11c type=101 dt=[/word]
+data addr=ram:14001e11e type=101 dt=[/word]
+data addr=ram:14001e120 type=101 dt=[/word]
+data addr=ram:14001e122 type=101 dt=[/word]
+data addr=ram:14001e124 type=101 dt=[/word]
+data addr=ram:14001e126 type=101 dt=[/word]
+data addr=ram:14001e128 type=101 dt=[/word]
+data addr=ram:14001e12a type=101 dt=[/word]
+data addr=ram:14001e12c type=101 dt=[/word]
+data addr=ram:14001e12e type=101 dt=[/word]
+data addr=ram:14001e130 type=101 dt=[/word]
+data addr=ram:14001e132 type=101 dt=[/word]
+data addr=ram:14001e134 type=101 dt=[/word]
+data addr=ram:14001e136 type=101 dt=[/word]
+data addr=ram:14001e138 type=101 dt=[/word]
+data addr=ram:14001e13a type=101 dt=[/word]
+data addr=ram:14001e13c type=101 dt=[/word]
+data addr=ram:14001e13e type=101 dt=[/word]
+data addr=ram:14001e140 type=101 dt=[/word]
+data addr=ram:14001e142 type=101 dt=[/word]
+data addr=ram:14001e144 type=101 dt=[/word]
+data addr=ram:14001e146 type=101 dt=[/word]
+data addr=ram:14001e148 type=101 dt=[/word]
+data addr=ram:14001e14a type=101 dt=[/word]
+data addr=ram:14001e14c type=101 dt=[/word]
+data addr=ram:14001e14e type=101 dt=[/word]
+data addr=ram:14001e150 type=101 dt=[/word]
+data addr=ram:14001e152 type=101 dt=[/word]
+data addr=ram:14001e154 type=101 dt=[/word]
+data addr=ram:14001e156 type=101 dt=[/word]
+data addr=ram:14001e158 type=101 dt=[/word]
+data addr=ram:14001e15a type=101 dt=[/word]
+data addr=ram:14001e15c type=101 dt=[/word]
+data addr=ram:14001e15e type=101 dt=[/word]
+data addr=ram:14001e160 type=101 dt=[/word]
+data addr=ram:14001e162 type=101 dt=[/word]
+data addr=ram:14001e164 type=101 dt=[/word]
+data addr=ram:14001e166 type=101 dt=[/word]
+data addr=ram:14001e168 type=101 dt=[/word]
+data addr=ram:14001e16a type=101 dt=[/word]
+data addr=ram:14001e16c type=101 dt=[/word]
+data addr=ram:14001e16e type=101 dt=[/word]
+data addr=ram:14001e170 type=101 dt=[/word]
+data addr=ram:14001e172 type=101 dt=[/word]
+data addr=ram:14001e174 type=101 dt=[/word]
+data addr=ram:14001e176 type=101 dt=[/word]
+data addr=ram:14001e178 type=101 dt=[/word]
+data addr=ram:14001e17a type=101 dt=[/word]
+data addr=ram:14001e17c type=101 dt=[/word]
+data addr=ram:14001e17e type=101 dt=[/word]
+data addr=ram:14001e180 type=101 dt=[/word]
+data addr=ram:14001e182 type=101 dt=[/word]
+data addr=ram:14001e184 type=101 dt=[/word]
+data addr=ram:14001e186 type=101 dt=[/word]
+data addr=ram:14001e188 type=101 dt=[/word]
+data addr=ram:14001e18a type=101 dt=[/word]
+data addr=ram:14001e18c type=101 dt=[/word]
+data addr=ram:14001e18e type=101 dt=[/word]
+data addr=ram:14001e190 type=101 dt=[/word]
+data addr=ram:14001e192 type=101 dt=[/word]
+data addr=ram:14001e194 type=101 dt=[/word]
+data addr=ram:14001e196 type=101 dt=[/word]
+data addr=ram:14001e198 type=101 dt=[/word]
+data addr=ram:14001e19a type=101 dt=[/word]
+data addr=ram:14001e19c type=101 dt=[/word]
+data addr=ram:14001e19e type=101 dt=[/word]
+data addr=ram:14001e1a0 type=101 dt=[/word]
+data addr=ram:14001e1a2 type=101 dt=[/word]
+data addr=ram:14001e1a4 type=101 dt=[/word]
+data addr=ram:14001e1a6 type=101 dt=[/word]
+data addr=ram:14001e1a8 type=101 dt=[/word]
+data addr=ram:14001e1aa type=101 dt=[/word]
+data addr=ram:14001e1ac type=101 dt=[/word]
+data addr=ram:14001e1ae type=101 dt=[/word]
+data addr=ram:14001e1b0 type=101 dt=[/word]
+data addr=ram:14001e1b2 type=101 dt=[/word]
+data addr=ram:14001e1b4 type=101 dt=[/word]
+data addr=ram:14001e1b6 type=101 dt=[/word]
+data addr=ram:14001e1b8 type=101 dt=[/word]
+data addr=ram:14001e1ba type=101 dt=[/word]
+data addr=ram:14001e1bc type=101 dt=[/word]
+data addr=ram:14001e1be type=101 dt=[/word]
+data addr=ram:14001e1c0 type=101 dt=[/word]
+data addr=ram:14001e1c2 type=101 dt=[/word]
+data addr=ram:14001e1c4 type=101 dt=[/word]
+data addr=ram:14001e1c6 type=101 dt=[/word]
+data addr=ram:14001e1c8 type=101 dt=[/word]
+data addr=ram:14001e1ca type=101 dt=[/word]
+data addr=ram:14001e1cc type=101 dt=[/word]
+data addr=ram:14001e1ce type=101 dt=[/word]
+data addr=ram:14001e1d0 type=101 dt=[/word]
+data addr=ram:14001e1d2 type=101 dt=[/word]
+data addr=ram:14001e1d4 type=101 dt=[/word]
+data addr=ram:14001e1d6 type=101 dt=[/word]
+data addr=ram:14001e1d8 type=101 dt=[/word]
+data addr=ram:14001e1da type=101 dt=[/word]
+data addr=ram:14001e1dc type=101 dt=[/word]
+data addr=ram:14001e1de type=101 dt=[/word]
+data addr=ram:14001e1e0 type=101 dt=[/word]
+data addr=ram:14001e1e2 type=101 dt=[/word]
+data addr=ram:14001e1e4 type=101 dt=[/word]
+data addr=ram:14001e1e6 type=101 dt=[/word]
+data addr=ram:14001e1e8 type=101 dt=[/word]
+data addr=ram:14001e1ea type=101 dt=[/word]
+data addr=ram:14001e1ec type=101 dt=[/word]
+data addr=ram:14001e1ee type=101 dt=[/word]
+data addr=ram:14001e1f0 type=101 dt=[/word]
+data addr=ram:14001e1f2 type=101 dt=[/word]
+data addr=ram:14001e1f4 type=101 dt=[/word]
+data addr=ram:14001e1f6 type=101 dt=[/word]
+data addr=ram:14001e1f8 type=101 dt=[/word]
+data addr=ram:14001e1fa type=101 dt=[/word]
+data addr=ram:14001e1fc type=101 dt=[/word]
+data addr=ram:14001e1fe type=101 dt=[/word]
+data addr=ram:14001e200 type=101 dt=[/word]
+data addr=ram:14001e202 type=101 dt=[/word]
+data addr=ram:14001e204 type=101 dt=[/word]
+data addr=ram:14001e206 type=101 dt=[/word]
+data addr=ram:14001e208 type=72057594037927944 dt=[/PE/IMAGE_BASE_RELOCATION]
+data addr=ram:14001e210 type=101 dt=[/word]
+data addr=ram:14001e212 type=101 dt=[/word]
+data addr=ram:14001e214 type=101 dt=[/word]
+data addr=ram:14001e216 type=101 dt=[/word]
+data addr=ram:14001e218 type=101 dt=[/word]
+data addr=ram:14001e21a type=101 dt=[/word]
+data addr=ram:14001e21c type=101 dt=[/word]
+data addr=ram:14001e21e type=101 dt=[/word]
+data addr=ram:14001e220 type=101 dt=[/word]
+data addr=ram:14001e222 type=101 dt=[/word]
+data addr=ram:14001e224 type=101 dt=[/word]
+data addr=ram:14001e226 type=101 dt=[/word]
+data addr=ram:14001e228 type=101 dt=[/word]
+data addr=ram:14001e22a type=101 dt=[/word]
+data addr=ram:14001e22c type=101 dt=[/word]
+data addr=ram:14001e22e type=101 dt=[/word]
+data addr=ram:14001e230 type=101 dt=[/word]
+data addr=ram:14001e232 type=101 dt=[/word]
+data addr=ram:14001e234 type=101 dt=[/word]
+data addr=ram:14001e236 type=101 dt=[/word]
+data addr=ram:14001e238 type=101 dt=[/word]
+data addr=ram:14001e23a type=101 dt=[/word]
+data addr=ram:14001e23c type=101 dt=[/word]
+data addr=ram:14001e23e type=101 dt=[/word]
+data addr=ram:14001e240 type=101 dt=[/word]
+data addr=ram:14001e242 type=101 dt=[/word]
+data addr=ram:14001e244 type=101 dt=[/word]
+data addr=ram:14001e246 type=101 dt=[/word]
+data addr=ram:14001e248 type=101 dt=[/word]
+data addr=ram:14001e24a type=101 dt=[/word]
+data addr=ram:14001e24c type=101 dt=[/word]
+data addr=ram:14001e24e type=101 dt=[/word]
+data addr=ram:14001e250 type=101 dt=[/word]
+data addr=ram:14001e252 type=101 dt=[/word]
+data addr=ram:14001e254 type=101 dt=[/word]
+data addr=ram:14001e256 type=101 dt=[/word]
+data addr=ram:14001e258 type=101 dt=[/word]
+data addr=ram:14001e25a type=101 dt=[/word]
+data addr=ram:14001e25c type=101 dt=[/word]
+data addr=ram:14001e25e type=101 dt=[/word]
+data addr=ram:14001e260 type=101 dt=[/word]
+data addr=ram:14001e262 type=101 dt=[/word]
+data addr=ram:14001e264 type=101 dt=[/word]
+data addr=ram:14001e266 type=101 dt=[/word]
+data addr=ram:14001e268 type=101 dt=[/word]
+data addr=ram:14001e26a type=101 dt=[/word]
+data addr=ram:14001e26c type=101 dt=[/word]
+data addr=ram:14001e26e type=101 dt=[/word]
+data addr=ram:14001e270 type=101 dt=[/word]
+data addr=ram:14001e272 type=101 dt=[/word]
+data addr=ram:14001e274 type=101 dt=[/word]
+data addr=ram:14001e276 type=101 dt=[/word]
+data addr=ram:14001e278 type=101 dt=[/word]
+data addr=ram:14001e27a type=101 dt=[/word]
+data addr=ram:14001e27c type=101 dt=[/word]
+data addr=ram:14001e27e type=101 dt=[/word]
+data addr=ram:14001e280 type=101 dt=[/word]
+data addr=ram:14001e282 type=101 dt=[/word]
+data addr=ram:14001e284 type=101 dt=[/word]
+data addr=ram:14001e286 type=101 dt=[/word]
+data addr=ram:14001e288 type=101 dt=[/word]
+data addr=ram:14001e28a type=101 dt=[/word]
+data addr=ram:14001e28c type=101 dt=[/word]
+data addr=ram:14001e28e type=101 dt=[/word]
+data addr=ram:14001e290 type=101 dt=[/word]
+data addr=ram:14001e292 type=101 dt=[/word]
+data addr=ram:14001e294 type=101 dt=[/word]
+data addr=ram:14001e296 type=101 dt=[/word]
+data addr=ram:14001e298 type=101 dt=[/word]
+data addr=ram:14001e29a type=101 dt=[/word]
+data addr=ram:14001e29c type=101 dt=[/word]
+data addr=ram:14001e29e type=101 dt=[/word]
+data addr=ram:14001e2a0 type=101 dt=[/word]
+data addr=ram:14001e2a2 type=101 dt=[/word]
+data addr=ram:14001e2a4 type=101 dt=[/word]
+data addr=ram:14001e2a6 type=101 dt=[/word]
+data addr=ram:14001e2a8 type=101 dt=[/word]
+data addr=ram:14001e2aa type=101 dt=[/word]
+data addr=ram:14001e2ac type=101 dt=[/word]
+data addr=ram:14001e2ae type=101 dt=[/word]
+data addr=ram:14001e2b0 type=101 dt=[/word]
+data addr=ram:14001e2b2 type=101 dt=[/word]
+data addr=ram:14001e2b4 type=101 dt=[/word]
+data addr=ram:14001e2b6 type=101 dt=[/word]
+data addr=ram:14001e2b8 type=101 dt=[/word]
+data addr=ram:14001e2ba type=101 dt=[/word]
+data addr=ram:14001e2bc type=101 dt=[/word]
+data addr=ram:14001e2be type=101 dt=[/word]
+data addr=ram:14001e2c0 type=101 dt=[/word]
+data addr=ram:14001e2c2 type=101 dt=[/word]
+data addr=ram:14001e2c4 type=101 dt=[/word]
+data addr=ram:14001e2c6 type=101 dt=[/word]
+data addr=ram:14001e2c8 type=101 dt=[/word]
+data addr=ram:14001e2ca type=101 dt=[/word]
+data addr=ram:14001e2cc type=101 dt=[/word]
+data addr=ram:14001e2ce type=101 dt=[/word]
+data addr=ram:14001e2d0 type=101 dt=[/word]
+data addr=ram:14001e2d2 type=101 dt=[/word]
+data addr=ram:14001e2d4 type=101 dt=[/word]
+data addr=ram:14001e2d6 type=101 dt=[/word]
+data addr=ram:14001e2d8 type=101 dt=[/word]
+data addr=ram:14001e2da type=101 dt=[/word]
+data addr=ram:14001e2dc type=101 dt=[/word]
+data addr=ram:14001e2de type=101 dt=[/word]
+data addr=ram:14001e2e0 type=101 dt=[/word]
+data addr=ram:14001e2e2 type=101 dt=[/word]
+data addr=ram:14001e2e4 type=101 dt=[/word]
+data addr=ram:14001e2e6 type=101 dt=[/word]
+data addr=ram:14001e2e8 type=101 dt=[/word]
+data addr=ram:14001e2ea type=101 dt=[/word]
+data addr=ram:14001e2ec type=101 dt=[/word]
+data addr=ram:14001e2ee type=101 dt=[/word]
+data addr=ram:14001e2f0 type=101 dt=[/word]
+data addr=ram:14001e2f2 type=101 dt=[/word]
+data addr=ram:14001e2f4 type=101 dt=[/word]
+data addr=ram:14001e2f6 type=101 dt=[/word]
+data addr=ram:14001e2f8 type=101 dt=[/word]
+data addr=ram:14001e2fa type=101 dt=[/word]
+data addr=ram:14001e2fc type=72057594037927944 dt=[/PE/IMAGE_BASE_RELOCATION]
+data addr=ram:14001e304 type=101 dt=[/word]
+data addr=ram:14001e306 type=101 dt=[/word]
+data addr=ram:14001e308 type=101 dt=[/word]
+data addr=ram:14001e30a type=101 dt=[/word]
+data addr=ram:14001e30c type=101 dt=[/word]
+data addr=ram:14001e30e type=101 dt=[/word]
+data addr=ram:14001e310 type=101 dt=[/word]
+data addr=ram:14001e312 type=101 dt=[/word]
+data addr=ram:14001e314 type=101 dt=[/word]
+data addr=ram:14001e316 type=101 dt=[/word]
+data addr=ram:14001e318 type=101 dt=[/word]
+data addr=ram:14001e31a type=101 dt=[/word]
+data addr=ram:14001e31c type=101 dt=[/word]
+data addr=ram:14001e31e type=101 dt=[/word]
+data addr=ram:14001e320 type=101 dt=[/word]
+data addr=ram:14001e322 type=101 dt=[/word]
+data addr=ram:14001e324 type=101 dt=[/word]
+data addr=ram:14001e326 type=101 dt=[/word]
+data addr=ram:14001e328 type=101 dt=[/word]
+data addr=ram:14001e32a type=101 dt=[/word]
+data addr=ram:14001e32c type=101 dt=[/word]
+data addr=ram:14001e32e type=101 dt=[/word]
+data addr=ram:14001e330 type=101 dt=[/word]
+data addr=ram:14001e332 type=101 dt=[/word]
+data addr=ram:14001e334 type=101 dt=[/word]
+data addr=ram:14001e336 type=101 dt=[/word]
+data addr=ram:14001e338 type=101 dt=[/word]
+data addr=ram:14001e33a type=101 dt=[/word]
+data addr=ram:14001e33c type=101 dt=[/word]
+data addr=ram:14001e33e type=101 dt=[/word]
+data addr=ram:14001e340 type=101 dt=[/word]
+data addr=ram:14001e342 type=101 dt=[/word]
+data addr=ram:14001e344 type=101 dt=[/word]
+data addr=ram:14001e346 type=101 dt=[/word]
+data addr=ram:14001e348 type=101 dt=[/word]
+data addr=ram:14001e34a type=101 dt=[/word]
+data addr=ram:14001e34c type=101 dt=[/word]
+data addr=ram:14001e34e type=101 dt=[/word]
+data addr=ram:14001e350 type=101 dt=[/word]
+data addr=ram:14001e352 type=101 dt=[/word]
+data addr=ram:14001e354 type=101 dt=[/word]
+data addr=ram:14001e356 type=101 dt=[/word]
+data addr=ram:14001e358 type=101 dt=[/word]
+data addr=ram:14001e35a type=101 dt=[/word]
+data addr=ram:14001e35c type=101 dt=[/word]
+data addr=ram:14001e35e type=101 dt=[/word]
+data addr=ram:14001e360 type=101 dt=[/word]
+data addr=ram:14001e362 type=101 dt=[/word]
+data addr=ram:14001e364 type=101 dt=[/word]
+data addr=ram:14001e366 type=101 dt=[/word]
+data addr=ram:14001e368 type=101 dt=[/word]
+data addr=ram:14001e36a type=101 dt=[/word]
+data addr=ram:14001e36c type=101 dt=[/word]
+data addr=ram:14001e36e type=101 dt=[/word]
+data addr=ram:14001e370 type=101 dt=[/word]
+data addr=ram:14001e372 type=101 dt=[/word]
+data addr=ram:14001e374 type=101 dt=[/word]
+data addr=ram:14001e376 type=101 dt=[/word]
+data addr=ram:14001e378 type=101 dt=[/word]
+data addr=ram:14001e37a type=101 dt=[/word]
+data addr=ram:14001e37c type=101 dt=[/word]
+data addr=ram:14001e37e type=101 dt=[/word]
+data addr=ram:14001e380 type=101 dt=[/word]
+data addr=ram:14001e382 type=101 dt=[/word]
+data addr=ram:14001e384 type=101 dt=[/word]
+data addr=ram:14001e386 type=101 dt=[/word]
+data addr=ram:14001e388 type=101 dt=[/word]
+data addr=ram:14001e38a type=101 dt=[/word]
+data addr=ram:14001e38c type=101 dt=[/word]
+data addr=ram:14001e38e type=101 dt=[/word]
+data addr=ram:14001e390 type=101 dt=[/word]
+data addr=ram:14001e392 type=101 dt=[/word]
+data addr=ram:14001e394 type=101 dt=[/word]
+data addr=ram:14001e396 type=101 dt=[/word]
+data addr=ram:14001e398 type=101 dt=[/word]
+data addr=ram:14001e39a type=101 dt=[/word]
+data addr=ram:14001e39c type=101 dt=[/word]
+data addr=ram:14001e39e type=101 dt=[/word]
+data addr=ram:14001e3a0 type=101 dt=[/word]
+data addr=ram:14001e3a2 type=101 dt=[/word]
+data addr=ram:14001e3a4 type=101 dt=[/word]
+data addr=ram:14001e3a6 type=101 dt=[/word]
+data addr=ram:14001e3a8 type=101 dt=[/word]
+data addr=ram:14001e3aa type=101 dt=[/word]
+data addr=ram:14001e3ac type=101 dt=[/word]
+data addr=ram:14001e3ae type=101 dt=[/word]
+data addr=ram:14001e3b0 type=101 dt=[/word]
+data addr=ram:14001e3b2 type=101 dt=[/word]
+data addr=ram:14001e3b4 type=101 dt=[/word]
+data addr=ram:14001e3b6 type=101 dt=[/word]
+data addr=ram:14001e3b8 type=101 dt=[/word]
+data addr=ram:14001e3ba type=101 dt=[/word]
+data addr=ram:14001e3bc type=101 dt=[/word]
+data addr=ram:14001e3be type=101 dt=[/word]
+data addr=ram:14001e3c0 type=101 dt=[/word]
+data addr=ram:14001e3c2 type=101 dt=[/word]
+data addr=ram:14001e3c4 type=101 dt=[/word]
+data addr=ram:14001e3c6 type=101 dt=[/word]
+data addr=ram:14001e3c8 type=101 dt=[/word]
+data addr=ram:14001e3ca type=101 dt=[/word]
+data addr=ram:14001e3cc type=101 dt=[/word]
+data addr=ram:14001e3ce type=101 dt=[/word]
+data addr=ram:14001e3d0 type=101 dt=[/word]
+data addr=ram:14001e3d2 type=101 dt=[/word]
+data addr=ram:14001e3d4 type=101 dt=[/word]
+data addr=ram:14001e3d6 type=101 dt=[/word]
+data addr=ram:14001e3d8 type=101 dt=[/word]
+data addr=ram:14001e3da type=101 dt=[/word]
+data addr=ram:14001e3dc type=101 dt=[/word]
+data addr=ram:14001e3de type=101 dt=[/word]
+data addr=ram:14001e3e0 type=101 dt=[/word]
+data addr=ram:14001e3e2 type=101 dt=[/word]
+data addr=ram:14001e3e4 type=101 dt=[/word]
+data addr=ram:14001e3e6 type=101 dt=[/word]
+data addr=ram:14001e3e8 type=101 dt=[/word]
+data addr=ram:14001e3ea type=101 dt=[/word]
+data addr=ram:14001e3ec type=101 dt=[/word]
+data addr=ram:14001e3ee type=101 dt=[/word]
+data addr=ram:14001e3f0 type=101 dt=[/word]
+data addr=ram:14001e3f2 type=101 dt=[/word]
+data addr=ram:14001e3f4 type=101 dt=[/word]
+data addr=ram:14001e3f6 type=101 dt=[/word]
+data addr=ram:14001e3f8 type=101 dt=[/word]
+data addr=ram:14001e3fa type=101 dt=[/word]
+data addr=ram:14001e3fc type=101 dt=[/word]
+data addr=ram:14001e3fe type=101 dt=[/word]
+data addr=ram:14001e400 type=101 dt=[/word]
+data addr=ram:14001e402 type=101 dt=[/word]
+data addr=ram:14001e404 type=101 dt=[/word]
+data addr=ram:14001e406 type=101 dt=[/word]
+data addr=ram:14001e408 type=101 dt=[/word]
+data addr=ram:14001e40a type=101 dt=[/word]
+data addr=ram:14001e40c type=101 dt=[/word]
+data addr=ram:14001e40e type=101 dt=[/word]
+data addr=ram:14001e410 type=72057594037927944 dt=[/PE/IMAGE_BASE_RELOCATION]
+data addr=ram:14001e418 type=101 dt=[/word]
+data addr=ram:14001e41a type=101 dt=[/word]
+data addr=ram:14001e41c type=101 dt=[/word]
+data addr=ram:14001e41e type=101 dt=[/word]
+data addr=ram:14001e420 type=101 dt=[/word]
+data addr=ram:14001e422 type=101 dt=[/word]
+data addr=ram:14001e424 type=101 dt=[/word]
+data addr=ram:14001e426 type=101 dt=[/word]
+data addr=ram:14001e428 type=101 dt=[/word]
+data addr=ram:14001e42a type=101 dt=[/word]
+data addr=ram:14001e42c type=101 dt=[/word]
+data addr=ram:14001e42e type=101 dt=[/word]
+data addr=ram:14001e430 type=101 dt=[/word]
+data addr=ram:14001e432 type=101 dt=[/word]
+data addr=ram:14001e434 type=101 dt=[/word]
+data addr=ram:14001e436 type=101 dt=[/word]
+data addr=ram:14001e438 type=101 dt=[/word]
+data addr=ram:14001e43a type=101 dt=[/word]
+data addr=ram:14001e43c type=101 dt=[/word]
+data addr=ram:14001e43e type=101 dt=[/word]
+data addr=ram:14001e440 type=101 dt=[/word]
+data addr=ram:14001e442 type=101 dt=[/word]
+data addr=ram:14001e444 type=101 dt=[/word]
+data addr=ram:14001e446 type=101 dt=[/word]
+data addr=ram:14001e448 type=101 dt=[/word]
+data addr=ram:14001e44a type=101 dt=[/word]
+data addr=ram:14001e44c type=101 dt=[/word]
+data addr=ram:14001e44e type=101 dt=[/word]
+data addr=ram:14001e450 type=101 dt=[/word]
+data addr=ram:14001e452 type=101 dt=[/word]
+data addr=ram:14001e454 type=101 dt=[/word]
+data addr=ram:14001e456 type=101 dt=[/word]
+data addr=ram:14001e458 type=101 dt=[/word]
+data addr=ram:14001e45a type=101 dt=[/word]
+data addr=ram:14001e45c type=101 dt=[/word]
+data addr=ram:14001e45e type=101 dt=[/word]
+data addr=ram:14001e460 type=101 dt=[/word]
+data addr=ram:14001e462 type=101 dt=[/word]
+data addr=ram:14001e464 type=101 dt=[/word]
+data addr=ram:14001e466 type=101 dt=[/word]
+data addr=ram:14001e468 type=101 dt=[/word]
+data addr=ram:14001e46a type=101 dt=[/word]
+data addr=ram:14001e46c type=101 dt=[/word]
+data addr=ram:14001e46e type=101 dt=[/word]
+data addr=ram:14001e470 type=101 dt=[/word]
+data addr=ram:14001e472 type=101 dt=[/word]
+data addr=ram:14001e474 type=101 dt=[/word]
+data addr=ram:14001e476 type=101 dt=[/word]
+data addr=ram:14001e478 type=101 dt=[/word]
+data addr=ram:14001e47a type=101 dt=[/word]
+data addr=ram:14001e47c type=101 dt=[/word]
+data addr=ram:14001e47e type=101 dt=[/word]
+data addr=ram:14001e480 type=101 dt=[/word]
+data addr=ram:14001e482 type=101 dt=[/word]
+data addr=ram:14001e484 type=101 dt=[/word]
+data addr=ram:14001e486 type=101 dt=[/word]
+data addr=ram:14001e488 type=101 dt=[/word]
+data addr=ram:14001e48a type=101 dt=[/word]
+data addr=ram:14001e48c type=101 dt=[/word]
+data addr=ram:14001e48e type=101 dt=[/word]
+data addr=ram:14001e490 type=101 dt=[/word]
+data addr=ram:14001e492 type=101 dt=[/word]
+data addr=ram:14001e494 type=101 dt=[/word]
+data addr=ram:14001e496 type=101 dt=[/word]
+data addr=ram:14001e498 type=101 dt=[/word]
+data addr=ram:14001e49a type=101 dt=[/word]
+data addr=ram:14001e49c type=101 dt=[/word]
+data addr=ram:14001e49e type=101 dt=[/word]
+data addr=ram:14001e4a0 type=101 dt=[/word]
+data addr=ram:14001e4a2 type=101 dt=[/word]
+data addr=ram:14001e4a4 type=101 dt=[/word]
+data addr=ram:14001e4a6 type=101 dt=[/word]
+data addr=ram:14001e4a8 type=101 dt=[/word]
+data addr=ram:14001e4aa type=101 dt=[/word]
+data addr=ram:14001e4ac type=101 dt=[/word]
+data addr=ram:14001e4ae type=101 dt=[/word]
+data addr=ram:14001e4b0 type=101 dt=[/word]
+data addr=ram:14001e4b2 type=101 dt=[/word]
+data addr=ram:14001e4b4 type=101 dt=[/word]
+data addr=ram:14001e4b6 type=101 dt=[/word]
+data addr=ram:14001e4b8 type=101 dt=[/word]
+data addr=ram:14001e4ba type=101 dt=[/word]
+data addr=ram:14001e4bc type=101 dt=[/word]
+data addr=ram:14001e4be type=101 dt=[/word]
+data addr=ram:14001e4c0 type=101 dt=[/word]
+data addr=ram:14001e4c2 type=101 dt=[/word]
+data addr=ram:14001e4c4 type=101 dt=[/word]
+data addr=ram:14001e4c6 type=101 dt=[/word]
+data addr=ram:14001e4c8 type=101 dt=[/word]
+data addr=ram:14001e4ca type=101 dt=[/word]
+data addr=ram:14001e4cc type=101 dt=[/word]
+data addr=ram:14001e4ce type=101 dt=[/word]
+data addr=ram:14001e4d0 type=101 dt=[/word]
+data addr=ram:14001e4d2 type=101 dt=[/word]
+data addr=ram:14001e4d4 type=101 dt=[/word]
+data addr=ram:14001e4d6 type=101 dt=[/word]
+data addr=ram:14001e4d8 type=101 dt=[/word]
+data addr=ram:14001e4da type=101 dt=[/word]
+data addr=ram:14001e4dc type=101 dt=[/word]
+data addr=ram:14001e4de type=101 dt=[/word]
+data addr=ram:14001e4e0 type=101 dt=[/word]
+data addr=ram:14001e4e2 type=101 dt=[/word]
+data addr=ram:14001e4e4 type=101 dt=[/word]
+data addr=ram:14001e4e6 type=101 dt=[/word]
+data addr=ram:14001e4e8 type=101 dt=[/word]
+data addr=ram:14001e4ea type=101 dt=[/word]
+data addr=ram:14001e4ec type=101 dt=[/word]
+data addr=ram:14001e4ee type=101 dt=[/word]
+data addr=ram:14001e4f0 type=101 dt=[/word]
+data addr=ram:14001e4f2 type=101 dt=[/word]
+data addr=ram:14001e4f4 type=101 dt=[/word]
+data addr=ram:14001e4f6 type=101 dt=[/word]
+data addr=ram:14001e4f8 type=101 dt=[/word]
+data addr=ram:14001e4fa type=101 dt=[/word]
+data addr=ram:14001e4fc type=101 dt=[/word]
+data addr=ram:14001e4fe type=101 dt=[/word]
+data addr=ram:14001e500 type=101 dt=[/word]
+data addr=ram:14001e502 type=101 dt=[/word]
+data addr=ram:14001e504 type=101 dt=[/word]
+data addr=ram:14001e506 type=101 dt=[/word]
+data addr=ram:14001e508 type=101 dt=[/word]
+data addr=ram:14001e50a type=101 dt=[/word]
+data addr=ram:14001e50c type=101 dt=[/word]
+data addr=ram:14001e50e type=101 dt=[/word]
+data addr=ram:14001e510 type=101 dt=[/word]
+data addr=ram:14001e512 type=101 dt=[/word]
+data addr=ram:14001e514 type=101 dt=[/word]
+data addr=ram:14001e516 type=101 dt=[/word]
+data addr=ram:14001e518 type=101 dt=[/word]
+data addr=ram:14001e51a type=101 dt=[/word]
+data addr=ram:14001e51c type=101 dt=[/word]
+data addr=ram:14001e51e type=101 dt=[/word]
+data addr=ram:14001e520 type=101 dt=[/word]
+data addr=ram:14001e522 type=101 dt=[/word]
+data addr=ram:14001e524 type=101 dt=[/word]
+data addr=ram:14001e526 type=101 dt=[/word]
+data addr=ram:14001e528 type=101 dt=[/word]
+data addr=ram:14001e52a type=101 dt=[/word]
+data addr=ram:14001e52c type=101 dt=[/word]
+data addr=ram:14001e52e type=101 dt=[/word]
+data addr=ram:14001e530 type=101 dt=[/word]
+data addr=ram:14001e532 type=101 dt=[/word]
+data addr=ram:14001e534 type=101 dt=[/word]
+data addr=ram:14001e536 type=101 dt=[/word]
+data addr=ram:14001e538 type=101 dt=[/word]
+data addr=ram:14001e53a type=101 dt=[/word]
+data addr=ram:14001e53c type=101 dt=[/word]
+data addr=ram:14001e53e type=101 dt=[/word]
+data addr=ram:14001e540 type=101 dt=[/word]
+data addr=ram:14001e542 type=101 dt=[/word]
+data addr=ram:14001e544 type=101 dt=[/word]
+data addr=ram:14001e546 type=101 dt=[/word]
+data addr=ram:14001e548 type=101 dt=[/word]
+data addr=ram:14001e54a type=101 dt=[/word]
+data addr=ram:14001e54c type=101 dt=[/word]
+data addr=ram:14001e54e type=101 dt=[/word]
+data addr=ram:14001e550 type=101 dt=[/word]
+data addr=ram:14001e552 type=101 dt=[/word]
+data addr=ram:14001e554 type=101 dt=[/word]
+data addr=ram:14001e556 type=101 dt=[/word]
+data addr=ram:14001e558 type=101 dt=[/word]
+data addr=ram:14001e55a type=101 dt=[/word]
+data addr=ram:14001e55c type=101 dt=[/word]
+data addr=ram:14001e55e type=101 dt=[/word]
+data addr=ram:14001e560 type=101 dt=[/word]
+data addr=ram:14001e562 type=101 dt=[/word]
+data addr=ram:14001e564 type=101 dt=[/word]
+data addr=ram:14001e566 type=101 dt=[/word]
+data addr=ram:14001e568 type=101 dt=[/word]
+data addr=ram:14001e56a type=101 dt=[/word]
+data addr=ram:14001e56c type=101 dt=[/word]
+data addr=ram:14001e56e type=101 dt=[/word]
+data addr=ram:14001e570 type=101 dt=[/word]
+data addr=ram:14001e572 type=101 dt=[/word]
+data addr=ram:14001e574 type=101 dt=[/word]
+data addr=ram:14001e576 type=101 dt=[/word]
+data addr=ram:14001e578 type=101 dt=[/word]
+data addr=ram:14001e57a type=101 dt=[/word]
+data addr=ram:14001e57c type=101 dt=[/word]
+data addr=ram:14001e57e type=101 dt=[/word]
+data addr=ram:14001e580 type=101 dt=[/word]
+data addr=ram:14001e582 type=101 dt=[/word]
+data addr=ram:14001e584 type=101 dt=[/word]
+data addr=ram:14001e586 type=101 dt=[/word]
+data addr=ram:14001e588 type=72057594037927944 dt=[/PE/IMAGE_BASE_RELOCATION]
+data addr=ram:14001e590 type=101 dt=[/word]
+data addr=ram:14001e592 type=101 dt=[/word]
+data addr=ram:14001e594 type=101 dt=[/word]
+data addr=ram:14001e596 type=101 dt=[/word]
+data addr=ram:14001e598 type=101 dt=[/word]
+data addr=ram:14001e59a type=101 dt=[/word]
+data addr=ram:14001e59c type=101 dt=[/word]
+data addr=ram:14001e59e type=101 dt=[/word]
+data addr=ram:14001e5a0 type=101 dt=[/word]
+data addr=ram:14001e5a2 type=101 dt=[/word]
+data addr=ram:14001e5a4 type=101 dt=[/word]
+data addr=ram:14001e5a6 type=101 dt=[/word]
+data addr=ram:14001e5a8 type=101 dt=[/word]
+data addr=ram:14001e5aa type=101 dt=[/word]
+data addr=ram:14001e5ac type=101 dt=[/word]
+data addr=ram:14001e5ae type=101 dt=[/word]
+data addr=ram:14001e5b0 type=101 dt=[/word]
+data addr=ram:14001e5b2 type=101 dt=[/word]
+data addr=ram:14001e5b4 type=101 dt=[/word]
+data addr=ram:14001e5b6 type=101 dt=[/word]
+data addr=ram:14001e5b8 type=101 dt=[/word]
+data addr=ram:14001e5ba type=101 dt=[/word]
+data addr=ram:14001e5bc type=101 dt=[/word]
+data addr=ram:14001e5be type=101 dt=[/word]
+data addr=ram:14001e5c0 type=101 dt=[/word]
+data addr=ram:14001e5c2 type=101 dt=[/word]
+data addr=ram:14001e5c4 type=101 dt=[/word]
+data addr=ram:14001e5c6 type=101 dt=[/word]
+data addr=ram:14001e5c8 type=101 dt=[/word]
+data addr=ram:14001e5ca type=101 dt=[/word]
+data addr=ram:14001e5cc type=101 dt=[/word]
+data addr=ram:14001e5ce type=101 dt=[/word]
+data addr=ram:14001e5d0 type=101 dt=[/word]
+data addr=ram:14001e5d2 type=101 dt=[/word]
+data addr=ram:14001e5d4 type=101 dt=[/word]
+data addr=ram:14001e5d6 type=101 dt=[/word]
+data addr=ram:14001e5d8 type=101 dt=[/word]
+data addr=ram:14001e5da type=101 dt=[/word]
+data addr=ram:14001e5dc type=101 dt=[/word]
+data addr=ram:14001e5de type=101 dt=[/word]
+data addr=ram:14001e5e0 type=101 dt=[/word]
+data addr=ram:14001e5e2 type=101 dt=[/word]
+data addr=ram:14001e5e4 type=101 dt=[/word]
+data addr=ram:14001e5e6 type=101 dt=[/word]
+data addr=ram:14001e5e8 type=72057594037927944 dt=[/PE/IMAGE_BASE_RELOCATION]
+data addr=ram:14001e5f0 type=101 dt=[/word]
+data addr=ram:14001e5f2 type=101 dt=[/word]
+data addr=ram:14001e5f4 type=101 dt=[/word]
+data addr=ram:14001e5f6 type=101 dt=[/word]
+data addr=ram:14001e5f8 type=101 dt=[/word]
+data addr=ram:14001e5fa type=101 dt=[/word]
+data addr=ram:14001e5fc type=101 dt=[/word]
+data addr=ram:14001e5fe type=101 dt=[/word]
+data addr=ram:14001e600 type=101 dt=[/word]
+data addr=ram:14001e602 type=101 dt=[/word]
+data addr=ram:14001e604 type=101 dt=[/word]
+data addr=ram:14001e606 type=101 dt=[/word]
+data addr=ram:14001e608 type=72057594037927944 dt=[/PE/IMAGE_BASE_RELOCATION]
+data addr=ram:14001e610 type=101 dt=[/word]
+data addr=ram:14001e612 type=101 dt=[/word]
+data addr=ram:14001e614 type=101 dt=[/word]
+data addr=ram:14001e616 type=101 dt=[/word]
+data addr=ram:14001e618 type=101 dt=[/word]
+data addr=ram:14001e61a type=101 dt=[/word]
+data addr=ram:14001e61c type=101 dt=[/word]
+data addr=ram:14001e61e type=101 dt=[/word]
+data addr=ram:14001e620 type=101 dt=[/word]
+data addr=ram:14001e622 type=101 dt=[/word]
+data addr=ram:14001e624 type=101 dt=[/word]
+data addr=ram:14001e626 type=101 dt=[/word]
+data addr=ram:14001e628 type=101 dt=[/word]
+data addr=ram:14001e62a type=101 dt=[/word]
+data addr=ram:14001e62c type=101 dt=[/word]
+data addr=ram:14001e62e type=101 dt=[/word]
+data addr=ram:14001e630 type=101 dt=[/word]
+data addr=ram:14001e632 type=101 dt=[/word]
+data addr=ram:14001e634 type=101 dt=[/word]
+data addr=ram:14001e636 type=101 dt=[/word]
+data addr=ram:14001e638 type=101 dt=[/word]
+data addr=ram:14001e63a type=101 dt=[/word]
+data addr=ram:14001e63c type=101 dt=[/word]
+data addr=ram:14001e63e type=101 dt=[/word]
+data addr=ram:14001e640 type=101 dt=[/word]
+data addr=ram:14001e642 type=101 dt=[/word]
+data addr=ram:14001e644 type=101 dt=[/word]
+data addr=ram:14001e646 type=101 dt=[/word]
+data addr=ram:14001e648 type=101 dt=[/word]
+data addr=ram:14001e64a type=101 dt=[/word]
+data addr=ram:14001e64c type=101 dt=[/word]
+data addr=ram:14001e64e type=101 dt=[/word]
+data addr=ram:14001e650 type=101 dt=[/word]
+data addr=ram:14001e652 type=101 dt=[/word]
 comments=228
 comment addr=ram:0 kind=PLATE text=[SEHandlerTable (0x0 entries)]
 comment addr=ram:140000208 kind=EOL text=[.text]
@@ -6561,3 +6561,242 @@ symbyns name=[WriteFile] ns=313 ids=[344]
 symchildren=2
 symchildren ns=0 ids=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,123,124,125,126,127,128,129,130,131,132,133,134,135,136,137,138,139,140,141,142,143,144,145,146,147,148,149,150,151,152,153,154,155,156,157,158,159,160,161,162,163,164,165,166,167,168,169,170,171,172,173,174,175,176,177,178,179,180,181,182,183,184,185,186,187,188,189,190,191,192,193,194,195,196,197,198,199,200,201,202,203,204,205,206,207,208,209,210,211,212,213,214,215,216,217,218,219,220,221,222,223,224,225,226,227,228,229,230,231,232,233,234,235,236,237,238,239,240,241,242,243,244,245,246,247,248,249,250,251,252,253,254,255,256,257,258,259,260,261,262,263,264,265,266,267,268,269,270,271,272,273,274,275,276,277,278,279,280,281,282,283,284,285,286,287,288,289,290,291,292,293,294,295,296,297,298,299,300,301,302,303,304,305,306,307,308,309,310,312,313]
 symchildren ns=313 ids=[314,315,316,317,318,319,320,321,322,323,324,325,326,327,328,329,330,331,332,333,334,335,336,337,338,339,340,341,342,343,344,345,346,347,348,349,350,351,352,353,354,355,356,357,358,359,360,361,362,363,364,365,366,367,368,369,370,371,372,373,374,375,376,377,378,379,380,381,382,383,384,385,386]
+categories=3
+category id=0 path=[/]
+category id=1 path=[/DOS]
+category id=2 path=[/PE]
+datatypes=33
+dt id=100 kind=BUILTIN name=[char] path=[/char] len=1 class=ghidra.program.model.data.CharDataType
+dt id=101 kind=BUILTIN name=[word] path=[/word] len=2 class=ghidra.program.model.data.WordDataType
+dt id=102 kind=BUILTIN name=[dword] path=[/dword] len=4 class=ghidra.program.model.data.DWordDataType
+dt id=103 kind=BUILTIN name=[byte] path=[/byte] len=1 class=ghidra.program.model.data.ByteDataType
+dt id=104 kind=BUILTIN name=[IMAGE_RICH_HEADER] path=[/IMAGE_RICH_HEADER] len=-1 class=ghidra.app.util.bin.format.pe.rich.PERichTableDataType
+dt id=105 kind=BUILTIN name=[ImageBaseOffset32] path=[/ImageBaseOffset32] len=4 class=ghidra.program.model.data.IBO32DataType
+dt id=106 kind=BUILTIN name=[qword] path=[/qword] len=8 class=ghidra.program.model.data.QWordDataType
+dt id=107 kind=BUILTIN name=[TerminatedCString] path=[/TerminatedCString] len=-1 class=ghidra.program.model.data.TerminatedStringDataType
+dt id=108 kind=BUILTIN name=[PEx64_UnwindInfo] path=[/PEx64_UnwindInfo] len=-1 class=ghidra.app.util.bin.format.pe.PEx64UnwindInfoDataType
+dt id=72057594037927936 kind=STRUCT name=[IMAGE_DOS_HEADER] path=[/DOS/IMAGE_DOS_HEADER] len=128
+dt id=72057594037927937 kind=STRUCT name=[IMAGE_NT_HEADERS64] path=[/PE/IMAGE_NT_HEADERS64] len=264
+dt id=72057594037927938 kind=STRUCT name=[IMAGE_FILE_HEADER] path=[/PE/IMAGE_FILE_HEADER] len=20
+dt id=72057594037927939 kind=STRUCT name=[IMAGE_OPTIONAL_HEADER64] path=[/PE/IMAGE_OPTIONAL_HEADER64] len=240
+dt id=72057594037927940 kind=STRUCT name=[IMAGE_DATA_DIRECTORY] path=[/PE/IMAGE_DATA_DIRECTORY] len=8
+dt id=72057594037927941 kind=STRUCT name=[IMAGE_SECTION_HEADER] path=[/PE/IMAGE_SECTION_HEADER] len=40
+dt id=72057594037927942 kind=UNION name=[Misc] path=[/PE/Misc] len=4
+dt id=72057594037927943 kind=STRUCT name=[_IMAGE_RUNTIME_FUNCTION_ENTRY] path=[/PE/_IMAGE_RUNTIME_FUNCTION_ENTRY] len=12
+dt id=72057594037927944 kind=STRUCT name=[IMAGE_BASE_RELOCATION] path=[/PE/IMAGE_BASE_RELOCATION] len=8
+dt id=72057594037927945 kind=STRUCT name=[IMAGE_DEBUG_DIRECTORY] path=[/PE/IMAGE_DEBUG_DIRECTORY] len=28
+dt id=72057594037927946 kind=STRUCT name=[IMAGE_LOAD_CONFIG_DIRECTORY64] path=[/PE/IMAGE_LOAD_CONFIG_DIRECTORY64] len=256
+dt id=72057594037927947 kind=STRUCT name=[IMAGE_LOAD_CONFIG_CODE_INTEGRITY] path=[/PE/IMAGE_LOAD_CONFIG_CODE_INTEGRITY] len=12
+dt id=216172782113783808 kind=ARRAY name=[char[2]] path=[/char[2]] len=2 base=100 n=2
+dt id=216172782113783809 kind=ARRAY name=[word[4]] path=[/word[4]] len=8 base=101 n=4
+dt id=216172782113783810 kind=ARRAY name=[word[10]] path=[/word[10]] len=20 base=101 n=10
+dt id=216172782113783811 kind=ARRAY name=[byte[64]] path=[/byte[64]] len=64 base=103 n=64
+dt id=216172782113783812 kind=ARRAY name=[char[4]] path=[/char[4]] len=4 base=100 n=4
+dt id=216172782113783813 kind=ARRAY name=[IMAGE_DATA_DIRECTORY[16]] path=[/PE/IMAGE_DATA_DIRECTORY[16]] len=128 base=72057594037927940 n=16
+dt id=216172782113783814 kind=ARRAY name=[char[8]] path=[/char[8]] len=8 base=100 n=8
+dt id=288230376151711744 kind=POINTER name=[undefined *64] path=[/undefined *64] len=8 base=0
+dt id=288230376151711745 kind=POINTER name=[pointer64] path=[/pointer64] len=8 base=-1
+dt id=288230376151711746 kind=POINTER name=[pointer] path=[/pointer] len=8 base=-1
+dt id=576460752303423488 kind=ENUM name=[SectionFlags] path=[/PE/SectionFlags] len=4
+dt id=576460752303423489 kind=ENUM name=[IMAGE_GUARD_FLAGS] path=[/PE/IMAGE_GUARD_FLAGS] len=4
+datatype_details=199
+dtcomment id=72057594037927936 text=[]
+comp parent=72057594037927936 ord=0 off=0 type=216172782113783808 name=[e_magic] comment=[Magic number] len=2
+comp parent=72057594037927936 ord=1 off=2 type=101 name=[e_cblp] comment=[Bytes of last page] len=2
+comp parent=72057594037927936 ord=2 off=4 type=101 name=[e_cp] comment=[Pages in file] len=2
+comp parent=72057594037927936 ord=3 off=6 type=101 name=[e_crlc] comment=[Relocations] len=2
+comp parent=72057594037927936 ord=4 off=8 type=101 name=[e_cparhdr] comment=[Size of header in paragraphs] len=2
+comp parent=72057594037927936 ord=5 off=10 type=101 name=[e_minalloc] comment=[Minimum extra paragraphs needed] len=2
+comp parent=72057594037927936 ord=6 off=12 type=101 name=[e_maxalloc] comment=[Maximum extra paragraphs needed] len=2
+comp parent=72057594037927936 ord=7 off=14 type=101 name=[e_ss] comment=[Initial (relative) SS value] len=2
+comp parent=72057594037927936 ord=8 off=16 type=101 name=[e_sp] comment=[Initial SP value] len=2
+comp parent=72057594037927936 ord=9 off=18 type=101 name=[e_csum] comment=[Checksum] len=2
+comp parent=72057594037927936 ord=10 off=20 type=101 name=[e_ip] comment=[Initial IP value] len=2
+comp parent=72057594037927936 ord=11 off=22 type=101 name=[e_cs] comment=[Initial (relative) CS value] len=2
+comp parent=72057594037927936 ord=12 off=24 type=101 name=[e_lfarlc] comment=[File address of relocation table] len=2
+comp parent=72057594037927936 ord=13 off=26 type=101 name=[e_ovno] comment=[Overlay number] len=2
+comp parent=72057594037927936 ord=14 off=28 type=216172782113783809 name=[e_res[4]] comment=[Reserved words] len=8
+comp parent=72057594037927936 ord=15 off=36 type=101 name=[e_oemid] comment=[OEM identifier (for e_oeminfo)] len=2
+comp parent=72057594037927936 ord=16 off=38 type=101 name=[e_oeminfo] comment=[OEM information; e_oemid specific] len=2
+comp parent=72057594037927936 ord=17 off=40 type=216172782113783810 name=[e_res2[10]] comment=[Reserved words] len=20
+comp parent=72057594037927936 ord=18 off=60 type=102 name=[e_lfanew] comment=[File address of new exe header] len=4
+comp parent=72057594037927936 ord=19 off=64 type=216172782113783811 name=[e_program] comment=[Actual DOS program] len=64
+dtcomment id=72057594037927937 text=[]
+comp parent=72057594037927937 ord=0 off=0 type=216172782113783812 name=[Signature] comment=[null] len=4
+comp parent=72057594037927937 ord=1 off=4 type=72057594037927938 name=[FileHeader] comment=[null] len=20
+comp parent=72057594037927937 ord=2 off=24 type=72057594037927939 name=[OptionalHeader] comment=[null] len=240
+dtcomment id=72057594037927938 text=[]
+comp parent=72057594037927938 ord=0 off=0 type=101 name=[Machine] comment=[34404] len=2
+comp parent=72057594037927938 ord=1 off=2 type=101 name=[NumberOfSections] comment=[null] len=2
+comp parent=72057594037927938 ord=2 off=4 type=102 name=[TimeDateStamp] comment=[null] len=4
+comp parent=72057594037927938 ord=3 off=8 type=102 name=[PointerToSymbolTable] comment=[null] len=4
+comp parent=72057594037927938 ord=4 off=12 type=102 name=[NumberOfSymbols] comment=[null] len=4
+comp parent=72057594037927938 ord=5 off=16 type=101 name=[SizeOfOptionalHeader] comment=[null] len=2
+comp parent=72057594037927938 ord=6 off=18 type=101 name=[Characteristics] comment=[null] len=2
+dtcomment id=72057594037927939 text=[]
+comp parent=72057594037927939 ord=0 off=0 type=101 name=[Magic] comment=[null] len=2
+comp parent=72057594037927939 ord=1 off=2 type=103 name=[MajorLinkerVersion] comment=[null] len=1
+comp parent=72057594037927939 ord=2 off=3 type=103 name=[MinorLinkerVersion] comment=[null] len=1
+comp parent=72057594037927939 ord=3 off=4 type=102 name=[SizeOfCode] comment=[null] len=4
+comp parent=72057594037927939 ord=4 off=8 type=102 name=[SizeOfInitializedData] comment=[null] len=4
+comp parent=72057594037927939 ord=5 off=12 type=102 name=[SizeOfUninitializedData] comment=[null] len=4
+comp parent=72057594037927939 ord=6 off=16 type=105 name=[AddressOfEntryPoint] comment=[null] len=4
+comp parent=72057594037927939 ord=7 off=20 type=105 name=[BaseOfCode] comment=[null] len=4
+comp parent=72057594037927939 ord=8 off=24 type=288230376151711745 name=[ImageBase] comment=[null] len=8
+comp parent=72057594037927939 ord=9 off=32 type=102 name=[SectionAlignment] comment=[null] len=4
+comp parent=72057594037927939 ord=10 off=36 type=102 name=[FileAlignment] comment=[null] len=4
+comp parent=72057594037927939 ord=11 off=40 type=101 name=[MajorOperatingSystemVersion] comment=[null] len=2
+comp parent=72057594037927939 ord=12 off=42 type=101 name=[MinorOperatingSystemVersion] comment=[null] len=2
+comp parent=72057594037927939 ord=13 off=44 type=101 name=[MajorImageVersion] comment=[null] len=2
+comp parent=72057594037927939 ord=14 off=46 type=101 name=[MinorImageVersion] comment=[null] len=2
+comp parent=72057594037927939 ord=15 off=48 type=101 name=[MajorSubsystemVersion] comment=[null] len=2
+comp parent=72057594037927939 ord=16 off=50 type=101 name=[MinorSubsystemVersion] comment=[null] len=2
+comp parent=72057594037927939 ord=17 off=52 type=102 name=[Win32VersionValue] comment=[null] len=4
+comp parent=72057594037927939 ord=18 off=56 type=102 name=[SizeOfImage] comment=[null] len=4
+comp parent=72057594037927939 ord=19 off=60 type=102 name=[SizeOfHeaders] comment=[null] len=4
+comp parent=72057594037927939 ord=20 off=64 type=102 name=[CheckSum] comment=[null] len=4
+comp parent=72057594037927939 ord=21 off=68 type=101 name=[Subsystem] comment=[null] len=2
+comp parent=72057594037927939 ord=22 off=70 type=101 name=[DllCharacteristics] comment=[null] len=2
+comp parent=72057594037927939 ord=23 off=72 type=106 name=[SizeOfStackReserve] comment=[null] len=8
+comp parent=72057594037927939 ord=24 off=80 type=106 name=[SizeOfStackCommit] comment=[null] len=8
+comp parent=72057594037927939 ord=25 off=88 type=106 name=[SizeOfHeapReserve] comment=[null] len=8
+comp parent=72057594037927939 ord=26 off=96 type=106 name=[SizeOfHeapCommit] comment=[null] len=8
+comp parent=72057594037927939 ord=27 off=104 type=102 name=[LoaderFlags] comment=[null] len=4
+comp parent=72057594037927939 ord=28 off=108 type=102 name=[NumberOfRvaAndSizes] comment=[null] len=4
+comp parent=72057594037927939 ord=29 off=112 type=216172782113783813 name=[DataDirectory] comment=[null] len=128
+dtcomment id=72057594037927940 text=[]
+comp parent=72057594037927940 ord=0 off=0 type=105 name=[VirtualAddress] comment=[null] len=4
+comp parent=72057594037927940 ord=1 off=4 type=102 name=[Size] comment=[null] len=4
+dtcomment id=72057594037927941 text=[]
+comp parent=72057594037927941 ord=0 off=0 type=216172782113783814 name=[Name] comment=[null] len=8
+comp parent=72057594037927941 ord=1 off=8 type=72057594037927942 name=[Misc] comment=[null] len=4
+comp parent=72057594037927941 ord=2 off=12 type=105 name=[VirtualAddress] comment=[null] len=4
+comp parent=72057594037927941 ord=3 off=16 type=102 name=[SizeOfRawData] comment=[null] len=4
+comp parent=72057594037927941 ord=4 off=20 type=102 name=[PointerToRawData] comment=[null] len=4
+comp parent=72057594037927941 ord=5 off=24 type=102 name=[PointerToRelocations] comment=[null] len=4
+comp parent=72057594037927941 ord=6 off=28 type=102 name=[PointerToLinenumbers] comment=[null] len=4
+comp parent=72057594037927941 ord=7 off=32 type=101 name=[NumberOfRelocations] comment=[null] len=2
+comp parent=72057594037927941 ord=8 off=34 type=101 name=[NumberOfLinenumbers] comment=[null] len=2
+comp parent=72057594037927941 ord=9 off=36 type=576460752303423488 name=[Characteristics] comment=[null] len=4
+dtcomment id=72057594037927942 text=[]
+comp parent=72057594037927942 ord=0 off=0 type=102 name=[PhysicalAddress] comment=[null] len=4
+comp parent=72057594037927942 ord=1 off=0 type=102 name=[VirtualSize] comment=[null] len=4
+dtcomment id=72057594037927943 text=[]
+comp parent=72057594037927943 ord=0 off=0 type=105 name=[BeginAddress] comment=[null] len=4
+comp parent=72057594037927943 ord=1 off=4 type=102 name=[EndAddress] comment=[Apply ImageBaseOffset32 to see reference] len=4
+comp parent=72057594037927943 ord=2 off=8 type=105 name=[UnwindInfoAddressOrData] comment=[null] len=4
+dtcomment id=72057594037927944 text=[]
+comp parent=72057594037927944 ord=0 off=0 type=102 name=[VirtualAddress] comment=[null] len=4
+comp parent=72057594037927944 ord=1 off=4 type=102 name=[SizeOfBlock] comment=[null] len=4
+dtcomment id=72057594037927945 text=[]
+comp parent=72057594037927945 ord=0 off=0 type=102 name=[Characteristics] comment=[null] len=4
+comp parent=72057594037927945 ord=1 off=4 type=102 name=[TimeDateStamp] comment=[null] len=4
+comp parent=72057594037927945 ord=2 off=8 type=101 name=[MajorVersion] comment=[null] len=2
+comp parent=72057594037927945 ord=3 off=10 type=101 name=[MinorVersion] comment=[null] len=2
+comp parent=72057594037927945 ord=4 off=12 type=102 name=[Type] comment=[null] len=4
+comp parent=72057594037927945 ord=5 off=16 type=102 name=[SizeOfData] comment=[null] len=4
+comp parent=72057594037927945 ord=6 off=20 type=102 name=[AddressOfRawData] comment=[null] len=4
+comp parent=72057594037927945 ord=7 off=24 type=102 name=[PointerToRawData] comment=[null] len=4
+dtcomment id=72057594037927946 text=[]
+comp parent=72057594037927946 ord=0 off=0 type=102 name=[Size] comment=[null] len=4
+comp parent=72057594037927946 ord=1 off=4 type=102 name=[TimeDateStamp] comment=[null] len=4
+comp parent=72057594037927946 ord=2 off=8 type=101 name=[MajorVersion] comment=[null] len=2
+comp parent=72057594037927946 ord=3 off=10 type=101 name=[MinorVersion] comment=[null] len=2
+comp parent=72057594037927946 ord=4 off=12 type=102 name=[GlobalFlagsClear] comment=[null] len=4
+comp parent=72057594037927946 ord=5 off=16 type=102 name=[GlobalFlagsSet] comment=[null] len=4
+comp parent=72057594037927946 ord=6 off=20 type=102 name=[CriticalSectionDefaultTimeout] comment=[null] len=4
+comp parent=72057594037927946 ord=7 off=24 type=106 name=[DeCommitFreeBlockThreshold] comment=[null] len=8
+comp parent=72057594037927946 ord=8 off=32 type=106 name=[DeCommitTotalFreeThreshold] comment=[null] len=8
+comp parent=72057594037927946 ord=9 off=40 type=288230376151711745 name=[LockPrefixTable] comment=[null] len=8
+comp parent=72057594037927946 ord=10 off=48 type=106 name=[MaximumAllocationSize] comment=[null] len=8
+comp parent=72057594037927946 ord=11 off=56 type=106 name=[VirtualMemoryThreshold] comment=[null] len=8
+comp parent=72057594037927946 ord=12 off=64 type=106 name=[ProcessAffinityMask] comment=[null] len=8
+comp parent=72057594037927946 ord=13 off=72 type=102 name=[ProcessHeapFlags] comment=[null] len=4
+comp parent=72057594037927946 ord=14 off=76 type=101 name=[CsdVersion] comment=[null] len=2
+comp parent=72057594037927946 ord=15 off=78 type=101 name=[DependentLoadFlags] comment=[null] len=2
+comp parent=72057594037927946 ord=16 off=80 type=288230376151711745 name=[EditList] comment=[null] len=8
+comp parent=72057594037927946 ord=17 off=88 type=288230376151711745 name=[SecurityCookie] comment=[null] len=8
+comp parent=72057594037927946 ord=18 off=96 type=288230376151711745 name=[SEHandlerTable] comment=[null] len=8
+comp parent=72057594037927946 ord=19 off=104 type=106 name=[SEHandlerCount] comment=[null] len=8
+comp parent=72057594037927946 ord=20 off=112 type=288230376151711745 name=[GuardCFCCheckFunctionPointer] comment=[null] len=8
+comp parent=72057594037927946 ord=21 off=120 type=288230376151711745 name=[GuardCFDispatchFunctionPointer] comment=[null] len=8
+comp parent=72057594037927946 ord=22 off=128 type=288230376151711745 name=[GuardCFFunctionTable] comment=[null] len=8
+comp parent=72057594037927946 ord=23 off=136 type=106 name=[GuardCFFunctionCount] comment=[null] len=8
+comp parent=72057594037927946 ord=24 off=144 type=576460752303423489 name=[GuardFlags] comment=[null] len=4
+comp parent=72057594037927946 ord=25 off=148 type=72057594037927947 name=[CodeIntegrity] comment=[null] len=12
+comp parent=72057594037927946 ord=26 off=160 type=288230376151711745 name=[GuardAddressTakenIatEntryTable] comment=[null] len=8
+comp parent=72057594037927946 ord=27 off=168 type=106 name=[GuardAddressTakenIatEntryCount] comment=[null] len=8
+comp parent=72057594037927946 ord=28 off=176 type=288230376151711745 name=[GuardLongJumpTargetTable] comment=[null] len=8
+comp parent=72057594037927946 ord=29 off=184 type=106 name=[GuardLongJumpTargetCount] comment=[null] len=8
+comp parent=72057594037927946 ord=30 off=192 type=288230376151711745 name=[DynamicValueRelocTable] comment=[null] len=8
+comp parent=72057594037927946 ord=31 off=200 type=288230376151711745 name=[CHPEMetadataPointer] comment=[null] len=8
+comp parent=72057594037927946 ord=32 off=208 type=288230376151711745 name=[GuardRFFailureRoutine] comment=[null] len=8
+comp parent=72057594037927946 ord=33 off=216 type=288230376151711745 name=[GuardRFFailureRoutineFunctionPointer] comment=[null] len=8
+comp parent=72057594037927946 ord=34 off=224 type=102 name=[DynamicValueRelocTableOffset] comment=[null] len=4
+comp parent=72057594037927946 ord=35 off=228 type=101 name=[DynamicValueRelocTableSection] comment=[null] len=2
+comp parent=72057594037927946 ord=36 off=230 type=101 name=[Reserved1] comment=[null] len=2
+comp parent=72057594037927946 ord=37 off=232 type=288230376151711745 name=[GuardRFVerifyStackPointerFunctionPointer] comment=[null] len=8
+comp parent=72057594037927946 ord=38 off=240 type=102 name=[HotPatchTableOffset] comment=[null] len=4
+comp parent=72057594037927946 ord=39 off=244 type=102 name=[Reserved2] comment=[null] len=4
+comp parent=72057594037927946 ord=40 off=248 type=106 name=[Reserved3] comment=[null] len=8
+dtcomment id=72057594037927947 text=[]
+comp parent=72057594037927947 ord=0 off=0 type=101 name=[Flags] comment=[null] len=2
+comp parent=72057594037927947 ord=1 off=2 type=101 name=[Catalog] comment=[null] len=2
+comp parent=72057594037927947 ord=2 off=4 type=102 name=[CatalogOffset] comment=[null] len=4
+comp parent=72057594037927947 ord=3 off=8 type=102 name=[Reserved] comment=[null] len=4
+dtcomment id=576460752303423488 text=[]
+enumv parent=576460752303423488 idx=1 name=[IMAGE_SCN_TYPE_NO_PAD] value=8 comment=[]
+enumv parent=576460752303423488 idx=2 name=[IMAGE_SCN_RESERVED_0001] value=16 comment=[]
+enumv parent=576460752303423488 idx=3 name=[IMAGE_SCN_CNT_CODE] value=32 comment=[]
+enumv parent=576460752303423488 idx=4 name=[IMAGE_SCN_CNT_INITIALIZED_DATA] value=64 comment=[]
+enumv parent=576460752303423488 idx=5 name=[IMAGE_SCN_CNT_UNINITIALIZED_DATA] value=128 comment=[]
+enumv parent=576460752303423488 idx=6 name=[IMAGE_SCN_LNK_OTHER] value=256 comment=[]
+enumv parent=576460752303423488 idx=7 name=[IMAGE_SCN_LNK_INFO] value=512 comment=[]
+enumv parent=576460752303423488 idx=8 name=[IMAGE_SCN_RESERVED_0040] value=1024 comment=[]
+enumv parent=576460752303423488 idx=9 name=[IMAGE_SCN_LNK_REMOVE] value=2048 comment=[]
+enumv parent=576460752303423488 idx=10 name=[IMAGE_SCN_LNK_COMDAT] value=4096 comment=[]
+enumv parent=576460752303423488 idx=11 name=[IMAGE_SCN_GPREL] value=32768 comment=[]
+enumv parent=576460752303423488 idx=12 name=[IMAGE_SCN_MEM_16BIT] value=131072 comment=[]
+enumv parent=576460752303423488 idx=13 name=[IMAGE_SCN_MEM_PURGEABLE] value=131072 comment=[]
+enumv parent=576460752303423488 idx=14 name=[IMAGE_SCN_MEM_LOCKED] value=262144 comment=[]
+enumv parent=576460752303423488 idx=15 name=[IMAGE_SCN_MEM_PRELOAD] value=524288 comment=[]
+enumv parent=576460752303423488 idx=16 name=[IMAGE_SCN_ALIGN_1BYTES] value=1048576 comment=[]
+enumv parent=576460752303423488 idx=17 name=[IMAGE_SCN_ALIGN_2BYTES] value=2097152 comment=[]
+enumv parent=576460752303423488 idx=18 name=[IMAGE_SCN_ALIGN_4BYTES] value=3145728 comment=[]
+enumv parent=576460752303423488 idx=19 name=[IMAGE_SCN_ALIGN_8BYTES] value=4194304 comment=[]
+enumv parent=576460752303423488 idx=20 name=[IMAGE_SCN_ALIGN_16BYTES] value=5242880 comment=[]
+enumv parent=576460752303423488 idx=21 name=[IMAGE_SCN_ALIGN_32BYTES] value=6291456 comment=[]
+enumv parent=576460752303423488 idx=22 name=[IMAGE_SCN_ALIGN_64BYTES] value=7340032 comment=[]
+enumv parent=576460752303423488 idx=23 name=[IMAGE_SCN_ALIGN_128BYTES] value=8388608 comment=[]
+enumv parent=576460752303423488 idx=24 name=[IMAGE_SCN_ALIGN_256BYTES] value=9437184 comment=[]
+enumv parent=576460752303423488 idx=25 name=[IMAGE_SCN_ALIGN_512BYTES] value=10485760 comment=[]
+enumv parent=576460752303423488 idx=26 name=[IMAGE_SCN_ALIGN_1024BYTES] value=11534336 comment=[]
+enumv parent=576460752303423488 idx=27 name=[IMAGE_SCN_ALIGN_2048BYTES] value=12582912 comment=[]
+enumv parent=576460752303423488 idx=28 name=[IMAGE_SCN_ALIGN_4096BYTES] value=13631488 comment=[]
+enumv parent=576460752303423488 idx=29 name=[IMAGE_SCN_ALIGN_8192BYTES] value=14680064 comment=[]
+enumv parent=576460752303423488 idx=30 name=[IMAGE_SCN_LNK_NRELOC_OVFL] value=16777216 comment=[]
+enumv parent=576460752303423488 idx=31 name=[IMAGE_SCN_MEM_DISCARDABLE] value=33554432 comment=[]
+enumv parent=576460752303423488 idx=32 name=[IMAGE_SCN_MEM_NOT_CACHED] value=67108864 comment=[]
+enumv parent=576460752303423488 idx=33 name=[IMAGE_SCN_MEM_NOT_PAGED] value=134217728 comment=[]
+enumv parent=576460752303423488 idx=34 name=[IMAGE_SCN_MEM_SHARED] value=268435456 comment=[]
+enumv parent=576460752303423488 idx=35 name=[IMAGE_SCN_MEM_EXECUTE] value=536870912 comment=[]
+enumv parent=576460752303423488 idx=36 name=[IMAGE_SCN_MEM_READ] value=1073741824 comment=[]
+enumv parent=576460752303423488 idx=37 name=[IMAGE_SCN_MEM_WRITE] value=2147483648 comment=[]
+dtcomment id=576460752303423489 text=[]
+enumv parent=576460752303423489 idx=1 name=[IMAGE_GUARD_CF_INSTRUMENTED] value=256 comment=[]
+enumv parent=576460752303423489 idx=2 name=[IMAGE_GUARD_CFW_INSTRUMENTED] value=512 comment=[]
+enumv parent=576460752303423489 idx=3 name=[IMAGE_GUARD_CF_FUNCTION_TABLE_PRESENT] value=1024 comment=[]
+enumv parent=576460752303423489 idx=4 name=[IMAGE_GUARD_SECURITY_COOKIE_UNUSED] value=2048 comment=[]
+enumv parent=576460752303423489 idx=5 name=[IMAGE_GUARD_PROTECT_DELAYLOAD_IAT] value=4096 comment=[]
+enumv parent=576460752303423489 idx=6 name=[IMAGE_GUARD_DELAYLOAD_IAT_IN_ITS_OWN_SECTION] value=8192 comment=[]
+enumv parent=576460752303423489 idx=7 name=[IMAGE_GUARD_CF_EXPORT_SUPPRESSION_INFO_PRESENT] value=16384 comment=[]
+enumv parent=576460752303423489 idx=8 name=[IMAGE_GUARD_CF_ENABLE_EXPORT_SUPPRESSION] value=32768 comment=[]
+enumv parent=576460752303423489 idx=9 name=[IMAGE_GUARD_CF_LONGJUMP_TABLE_PRESENT] value=65536 comment=[]
+enumv parent=576460752303423489 idx=10 name=[IMAGE_GUARD_RF_INSTRUMENTED] value=131072 comment=[]
+enumv parent=576460752303423489 idx=11 name=[IMAGE_GUARD_RF_ENABLE] value=262144 comment=[]
+enumv parent=576460752303423489 idx=12 name=[IMAGE_GUARD_RF_STRICT] value=524288 comment=[]
+enumv parent=576460752303423489 idx=13 name=[IMAGE_GUARD_CF_FUNCTION_TABLE_SIZE_MASK_1] value=268435456 comment=[]
+enumv parent=576460752303423489 idx=14 name=[IMAGE_GUARD_CF_FUNCTION_TABLE_SIZE_MASK_2] value=536870912 comment=[]
+enumv parent=576460752303423489 idx=15 name=[IMAGE_GUARD_CF_FUNCTION_TABLE_SIZE_MASK_4] value=1073741824 comment=[]
+enumv parent=576460752303423489 idx=16 name=[IMAGE_GUARD_CF_FUNCTION_TABLE_SIZE_MASK_8] value=2147483648 comment=[]
+dt_default name=[undefined] len=1

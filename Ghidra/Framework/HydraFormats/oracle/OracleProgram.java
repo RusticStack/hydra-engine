@@ -105,6 +105,7 @@ public class OracleProgram {
         dumpListing(p);
         dumpMemory(p);
         dumpSymbolQueries(p);
+        dumpDataTypes(p);
         p.release(OracleProgram.class);
         System.exit(0);
     }
@@ -291,7 +292,151 @@ public class OracleProgram {
         emit(rows);
     }
 
+    static long dtId(ghidra.program.model.data.DataTypeManager dtm, DataType dt) {
+        if (dt == null) {
+            return -1;
+        }
+        if (dt == DataType.DEFAULT) {
+            return 0;
+        }
+        return dtm.getID(dt);
+    }
+
+    static String dtKind(DataType dt) {
+        if (dt instanceof ghidra.program.model.data.Structure) {
+            return "STRUCT";
+        }
+        if (dt instanceof ghidra.program.model.data.Union) {
+            return "UNION";
+        }
+        if (dt instanceof ghidra.program.model.data.Enum) {
+            return "ENUM";
+        }
+        if (dt instanceof ghidra.program.model.data.TypeDef) {
+            return "TYPEDEF";
+        }
+        if (dt instanceof ghidra.program.model.data.Pointer) {
+            return "POINTER";
+        }
+        if (dt instanceof ghidra.program.model.data.Array) {
+            return "ARRAY";
+        }
+        if (dt instanceof ghidra.program.model.data.FunctionDefinition) {
+            return "FUNCDEF";
+        }
+        return "BUILTIN";
+    }
+
+    static void walkCategories(ghidra.program.model.data.Category c, List<String[]> rows) {
+        rows.add(new String[] { String.format("%020d", c.getID()),
+            "category id=" + c.getID() + " path=[" + esc(c.getCategoryPathName()) + "]" });
+        for (ghidra.program.model.data.Category sub : c.getCategories()) {
+            walkCategories(sub, rows);
+        }
+    }
+
+    static void dumpDataTypes(ProgramDB p) throws Exception {
+        ghidra.program.model.data.DataTypeManager dtm = p.getDataTypeManager();
+        DBHandle h = p.getDBHandle();
+        List<String[]> rows = new ArrayList<>();
+        walkCategories(dtm.getRootCategory(), rows);
+        System.out.println("categories=" + rows.size());
+        emit(rows);
+        String[] tables = { "Built-in datatypes", "Composite Data Types", "Enumeration Data Types",
+            "Typedefs", "Pointers", "Arrays", "Function Definitions" };
+        rows = new ArrayList<>();
+        List<String[]> sub = new ArrayList<>();
+        for (String tn : tables) {
+            db.Table t = h.getTable(tn);
+            if (t == null) {
+                continue;
+            }
+            for (db.RecordIterator it = t.iterator(); it.hasNext();) {
+                long id = it.next().getKey();
+                DataType dt = dtm.getDataType(id);
+                String key = String.format("%020d", id);
+                if (dt == null) {
+                    rows.add(new String[] { key, "dt id=" + id + " missing" });
+                    continue;
+                }
+                String kind = switch (tn) {
+                    case "Built-in datatypes" -> "BUILTIN";
+                    case "Composite Data Types" -> dtKind(dt);
+                    case "Enumeration Data Types" -> "ENUM";
+                    case "Typedefs" -> "TYPEDEF";
+                    case "Pointers" -> "POINTER";
+                    case "Arrays" -> "ARRAY";
+                    default -> "FUNCDEF";
+                };
+                String base = "";
+                if (kind.equals("TYPEDEF")) {
+                    base = " base=" + dtId(dtm, ((ghidra.program.model.data.TypeDef) dt).getDataType());
+                }
+                else if (kind.equals("POINTER")) {
+                    base = " base=" + dtId(dtm, ((ghidra.program.model.data.Pointer) dt).getDataType());
+                }
+                else if (kind.equals("ARRAY")) {
+                    ghidra.program.model.data.Array ar = (ghidra.program.model.data.Array) dt;
+                    base = " base=" + dtId(dtm, ar.getDataType()) + " n=" + ar.getNumElements();
+                }
+                String cls = kind.equals("BUILTIN") ? " class=" + dt.getClass().getName() : "";
+                rows.add(new String[] { key, "dt id=" + id + " kind=" + kind + " name=["
+                    + esc(dt.getName()) + "] path=[" + esc(dt.getPathName()) + "] len="
+                    + dt.getLength() + base + cls });
+                if (kind.equals("STRUCT") || kind.equals("UNION")) {
+                    ghidra.program.model.data.Composite comp = (ghidra.program.model.data.Composite) dt;
+                    sub.add(new String[] { key + "000000", "dtcomment id=" + id + " text=["
+                        + esc(comp.getDescription()) + "]" });
+                    for (ghidra.program.model.data.DataTypeComponent dc : comp
+                        .getDefinedComponents()) {
+                        sub.add(new String[] { key + String.format("%06d", dc.getOrdinal() + 1),
+                            "comp parent=" + id + " ord=" + dc.getOrdinal() + " off="
+                                + dc.getOffset() + " type=" + dtId(dtm, dc.getDataType())
+                                + " name=[" + esc(dc.getFieldName()) + "] comment=["
+                                + esc(dc.getComment()) + "] len=" + dc.getLength() });
+                    }
+                }
+                else if (kind.equals("ENUM")) {
+                    ghidra.program.model.data.Enum en = (ghidra.program.model.data.Enum) dt;
+                    sub.add(new String[] { key + "000000", "dtcomment id=" + id + " text=["
+                        + esc(en.getDescription()) + "]" });
+                    int i = 0;
+                    for (String n : en.getNames()) {
+                        sub.add(new String[] { key + String.format("%06d", ++i),
+                            "enumv parent=" + id + " idx=" + i + " name=[" + esc(n) + "] value="
+                                + en.getValue(n) + " comment=[" + esc(en.getComment(n)) + "]" });
+                    }
+                }
+                else if (kind.equals("FUNCDEF")) {
+                    ghidra.program.model.data.FunctionDefinition fd = (ghidra.program.model.data.FunctionDefinition) dt;
+                    sub.add(new String[] { key + "000000", "dtcomment id=" + id + " text=["
+                        + esc(fd.getComment()) + "]" });
+                    sub.add(new String[] { key + "000001", "funcdef id=" + id + " ret="
+                        + dtId(dtm, fd.getReturnType()) + " varargs=" + fd.hasVarArgs()
+                        + " noreturn=" + fd.hasNoReturn() + " cc=[" + esc(fd.getCallingConventionName())
+                        + "] params=" + fd.getArguments().length });
+                    for (ghidra.program.model.data.ParameterDefinition pd : fd.getArguments()) {
+                        sub.add(new String[] { key + String.format("%06d", pd.getOrdinal() + 2),
+                            "fparam parent=" + id + " ord=" + pd.getOrdinal() + " type="
+                                + dtId(dtm, pd.getDataType()) + " name=[" + esc(pd.getName())
+                                + "] comment=[" + esc(pd.getComment()) + "]" });
+                    }
+                }
+            }
+        }
+        System.out.println("datatypes=" + rows.size());
+        emit(rows);
+        System.out.println("datatype_details=" + sub.size());
+        emit(sub);
+        // the default type and the kinds the data rows use
+        System.out.println("dt_default name=[" + DataType.DEFAULT.getName() + "] len="
+            + DataType.DEFAULT.getLength());
+    }
+
     static String esc(String s) {
+        if (s == null) {
+            return "null";
+        }
         return s.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r");
     }
 
@@ -428,7 +573,8 @@ public class OracleProgram {
         for (DataIterator it = l.getDefinedData(true); it.hasNext();) {
             Data d = it.next();
             rows.add(new String[] { addr(d.getAddress()), "data addr=" + addr(d.getAddress())
-                + " type=" + p.getDataTypeManager().getID(d.getDataType()) });
+                + " type=" + p.getDataTypeManager().getID(d.getDataType()) + " dt=["
+                + esc(d.getDataType().getPathName()) + "]" });
         }
         System.out.println("data=" + rows.size());
         emit(rows);
