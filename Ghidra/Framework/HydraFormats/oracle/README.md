@@ -18,3 +18,16 @@ and commons-lang3 jars of a stock Ghidra install):
 To check that Java reads what Rust wrote: `HYDRA_FMT_KEEP_DIR=<dir> cargo test -p ghidra-fmt-db
 --test build_diff` leaves `rust-built-<name>.gbf` files in `<dir>`; run `db.OracleDb` and
 `db.buffers.Oracle` on them and compare with the `.expected` files.
+
+## Program database oracle
+
+`OracleProgram.java` (default package) needs the stock Ghidra jars, because `ProgramDB` is not
+built from this repository's sources here. Build the classpath from every jar under the stock
+`Ghidra/Framework`, `Ghidra/Features/Base`, `Ghidra/Configurations` and `Ghidra/Processors/x86`
+(not the `-src` ones), then:
+
+    javac -cp "$CP" -d out OracleProgram.java
+    java -cp "out;$CP" OracleProgram <ghidra install dir> <db.gbf> > testdata/oracleprog-<name>.txt
+
+It opens the file with `OpenMode.IMMUTABLE` and prints the language, address spaces, memory blocks
+with their parts, and every symbol row by id. Log lines (stderr) are dropped.
