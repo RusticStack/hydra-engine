@@ -514,6 +514,19 @@ when the journal knows the editor). The fields are `"signature"` and `"type"`.
 - `next`: a ready request in the same shape as the existing `suggestion` objects, for the cases
   where the engine knows the move. `details.suggest` keeps its string vocabulary unchanged.
 
+**`use_full_daemon`** is sent only by `hydra-lite` (HYDRA-LITE.md), never by the Java daemon: the
+request is one the lite daemon cannot answer with the Java daemon's reply bytes. The reply has
+`ok:false`, `error.code:"use_full_daemon"`, `error.details.reason` from a closed set (HYDRA-LITE.md
+lists it) and, except for `capacity`, `error.details.cmd`; `ms` is 0. The lite daemon has done
+nothing for such a request, so it can be sent again to the full daemon unchanged. The rule for a
+client: on this code the session moves to the full daemon of the same instance (connect, repeat the
+state commands that succeeded, `hello`, `open_project`, `open_program`, `switch` and their closes,
+in order, then the refused request and every request still unanswered, each with its own id). A
+client that does not do this sees an ordinary error, and a daemon that is not lite never sends it.
+`capacity` is answered by the acceptor before it reads a line, so it has no `id` and the connection
+is closed. The shipped clients do this when the endpoint file says `"lite": true`
+(`ghidra_session.py`, `hydra-client`); see HYDRA-LITE.md, "Clients".
+
 Examples (all v3):
 
 ```json
