@@ -30,6 +30,7 @@
 #define HYDRA_ERR_NULL     -1 /* out is NULL */
 #define HYDRA_ERR_SIZE     -2 /* out_size < sizeof(HydraCpuInfo) */
 #define HYDRA_ERR_OVERRIDE -3 /* the override is not UTF-8 */
+#define HYDRA_ERR_PANIC -100 /* a Rust panic was caught inside the call */
 
 /* Counts of CPUs and cores are of the CPUs the process may run on, except system_cpus. */
 typedef struct HydraCpuInfo {
@@ -139,6 +140,7 @@ void hydra_cs_free(HydraCsScan *s);
 #define HYDRA_TRACE_ERR_UTF8     -3 /* the root or command is not UTF-8 */
 #define HYDRA_TRACE_ERR_STATE    -4 /* hydra_trace_init with a different root after first use */
 #define HYDRA_TRACE_ERR_BUFFER   -5 /* out_cap too small: *out_len is the size needed */
+#define HYDRA_TRACE_ERR_PANIC    -6 /* a Rust panic was caught inside the call; nothing was written */
 
 /* Sets the directory sessions live in. Optional: the first request otherwise uses the
  * HYDRA_TRACE_ROOT environment variable, or "traces" in the working directory. */

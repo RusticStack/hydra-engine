@@ -31,6 +31,19 @@ pub const ERR_NULL: i32 = -1;
 pub const ERR_SIZE: i32 = -2;
 /// The override is not UTF-8.
 pub const ERR_OVERRIDE: i32 = -3;
+/// A Rust panic was caught at the C boundary; the call did nothing useful and the library stays usable.
+pub const ERR_PANIC: i32 = -100;
+
+/// The panic fence of the C ABI. Every exported `extern "C"` function runs its body through this, so a Rust panic
+/// (a bug in a parser, an index out of range) becomes `fallback`, an error value the caller already handles, instead
+/// of an abort of the whole JVM. Needs `panic = "unwind"` (the release profile's default); the constant functions
+/// (`*_abi_version`, `hydra_cpu_info_size`) cannot panic and are the only exports without it.
+///
+/// State touched by the panicking call may be half-updated; the exported functions keep it behind locks that
+/// recover from poisoning or per-call values, so the next call starts clean.
+pub(crate) fn guard<T>(fallback: T, f: impl FnOnce() -> T) -> T {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or(fallback)
+}
 
 /// What `hydra_cpu_query` reports, laid out for C and for Java's `MemorySegment` reads (every
 /// field at its natural alignment, no padding). Counts of CPUs and cores are of the CPUs the
@@ -168,29 +181,31 @@ pub unsafe extern "C" fn hydra_cpu_query(
     out: *mut HydraCpuInfo,
     out_size: usize,
 ) -> i32 {
-    if out.is_null() {
-        return ERR_NULL;
-    }
-    if out_size < size_of::<HydraCpuInfo>() {
-        return ERR_SIZE;
-    }
-    let env;
-    let name = if profile_override.is_null() {
-        env = std::env::var(profile::OVERRIDE_ENV).ok();
-        env.as_deref()
-    } else {
-        // SAFETY: the caller guarantees `override_len` readable bytes.
-        let bytes = unsafe { std::slice::from_raw_parts(profile_override, override_len) };
-        match std::str::from_utf8(bytes) {
-            Ok(s) => Some(s),
-            Err(_) => return ERR_OVERRIDE,
+    crate::guard(crate::ERR_PANIC, || {
+        if out.is_null() {
+            return ERR_NULL;
         }
-    };
-    let info = HydraCpuInfo::detect(name);
-    // SAFETY: the caller guarantees `out` is valid for `out_size` >= size_of::<HydraCpuInfo>()
-    // bytes; it may be unaligned (a Java segment at any offset).
-    unsafe { out.write_unaligned(info) };
-    OK
+        if out_size < size_of::<HydraCpuInfo>() {
+            return ERR_SIZE;
+        }
+        let env;
+        let name = if profile_override.is_null() {
+            env = std::env::var(profile::OVERRIDE_ENV).ok();
+            env.as_deref()
+        } else {
+            // SAFETY: the caller guarantees `override_len` readable bytes.
+            let bytes = unsafe { std::slice::from_raw_parts(profile_override, override_len) };
+            match std::str::from_utf8(bytes) {
+                Ok(s) => Some(s),
+                Err(_) => return ERR_OVERRIDE,
+            }
+        };
+        let info = HydraCpuInfo::detect(name);
+        // SAFETY: the caller guarantees `out` is valid for `out_size` >= size_of::<HydraCpuInfo>()
+        // bytes; it may be unaligned (a Java segment at any offset).
+        unsafe { out.write_unaligned(info) };
+        OK
+    })
 }
 
 #[cfg(test)]
@@ -268,6 +283,21 @@ mod tests {
         assert_eq!(c_string::<4>("abcdef"), *b"abc\0");
         assert_eq!(c_string::<4>("aé"), [b'a', 0xC3, 0xA9, 0]);
         assert_eq!(c_string::<4>("abé"), *b"ab\0\0");
+    }
+
+    #[test]
+    fn a_panic_at_the_c_boundary_becomes_the_error_value() {
+        assert_eq!(
+            guard(ERR_PANIC, || -> i32 { panic!("a bug behind the ABI") }),
+            ERR_PANIC
+        );
+        assert_eq!(guard(ERR_PANIC, || OK), OK);
+        // the release profile must unwind, or `guard` cannot catch anything
+        let manifest = include_str!("../../../Cargo.toml");
+        let aborts = manifest
+            .lines()
+            .any(|l| l.trim_start().starts_with("panic") && l.contains("abort"));
+        assert!(!aborts, "panic = \"abort\" makes every guard a no-op");
     }
 
     #[test]

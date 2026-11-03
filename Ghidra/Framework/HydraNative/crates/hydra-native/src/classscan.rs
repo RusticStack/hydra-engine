@@ -313,24 +313,26 @@ pub unsafe extern "C" fn hydra_cs_scan(
     suffixes: *const u8,
     suffixes_len: u64,
 ) -> *mut ClassScan {
-    // SAFETY: guaranteed by the caller, pointer and length together.
-    let path_bytes = unsafe { arena(paths, paths_len) };
-    // SAFETY: as above.
-    let suffix_bytes = unsafe { arena(suffixes, suffixes_len) };
-    let Some(paths) = utf8_list(path_bytes) else {
-        return std::ptr::null_mut();
-    };
-    let Some(suffixes) = utf8_list(suffix_bytes) else {
-        return std::ptr::null_mut();
-    };
-    let paths: Vec<&Path> = paths.iter().map(Path::new).collect();
-    match scan_jars(&paths, &suffixes)
-        .ok()
-        .and_then(|hits| ClassScan::of(&hits))
-    {
-        Some(scan) => Box::into_raw(Box::new(scan)),
-        None => std::ptr::null_mut(),
-    }
+    crate::guard(std::ptr::null_mut(), || {
+        // SAFETY: guaranteed by the caller, pointer and length together.
+        let path_bytes = unsafe { arena(paths, paths_len) };
+        // SAFETY: as above.
+        let suffix_bytes = unsafe { arena(suffixes, suffixes_len) };
+        let Some(paths) = utf8_list(path_bytes) else {
+            return std::ptr::null_mut();
+        };
+        let Some(suffixes) = utf8_list(suffix_bytes) else {
+            return std::ptr::null_mut();
+        };
+        let paths: Vec<&Path> = paths.iter().map(Path::new).collect();
+        match scan_jars(&paths, &suffixes)
+            .ok()
+            .and_then(|hits| ClassScan::of(&hits))
+        {
+            Some(scan) => Box::into_raw(Box::new(scan)),
+            None => std::ptr::null_mut(),
+        }
+    })
 }
 
 /// # Safety
@@ -368,8 +370,10 @@ fn utf8_list(bytes: &[u8]) -> Option<Vec<&str>> {
 /// `s` must come from [`hydra_cs_scan`] and not be freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hydra_cs_len(s: *const ClassScan) -> u64 {
-    // SAFETY: guaranteed by the caller.
-    unsafe { s.as_ref() }.map_or(0, |s| s.bytes.len() as u64)
+    crate::guard(0, || {
+        // SAFETY: guaranteed by the caller.
+        unsafe { s.as_ref() }.map_or(0, |s| s.bytes.len() as u64)
+    })
 }
 
 /// Copies the encoded hits into `out`, which must hold `len` bytes. Returns the bytes copied.
@@ -378,17 +382,19 @@ pub unsafe extern "C" fn hydra_cs_len(s: *const ClassScan) -> u64 {
 /// As [`hydra_cs_len`]; `out` must be valid for `len` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hydra_cs_copy(s: *const ClassScan, out: *mut u8, len: u64) -> u64 {
-    // SAFETY: guaranteed by the caller.
-    let Some(scan) = (unsafe { s.as_ref() }) else {
-        return 0;
-    };
-    let len = usize::try_from(len).unwrap_or(0).min(scan.bytes.len());
-    if len == 0 {
-        return 0;
-    }
-    // SAFETY: guaranteed by the caller (valid for `len` bytes).
-    unsafe { std::ptr::copy_nonoverlapping(scan.bytes.as_ptr(), out, len) };
-    len as u64
+    crate::guard(0, || {
+        // SAFETY: guaranteed by the caller.
+        let Some(scan) = (unsafe { s.as_ref() }) else {
+            return 0;
+        };
+        let len = usize::try_from(len).unwrap_or(0).min(scan.bytes.len());
+        if len == 0 {
+            return 0;
+        }
+        // SAFETY: guaranteed by the caller (valid for `len` bytes).
+        unsafe { std::ptr::copy_nonoverlapping(scan.bytes.as_ptr(), out, len) };
+        len as u64
+    })
 }
 
 /// Frees a scan.
@@ -397,10 +403,12 @@ pub unsafe extern "C" fn hydra_cs_copy(s: *const ClassScan, out: *mut u8, len: u
 /// `s` must come from [`hydra_cs_scan`] and not have been freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hydra_cs_free(s: *mut ClassScan) {
-    if !s.is_null() {
-        // SAFETY: guaranteed by the caller.
-        drop(unsafe { Box::from_raw(s) });
-    }
+    crate::guard((), || {
+        if !s.is_null() {
+            // SAFETY: guaranteed by the caller.
+            drop(unsafe { Box::from_raw(s) });
+        }
+    })
 }
 
 #[cfg(test)]

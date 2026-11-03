@@ -29,4 +29,6 @@ undocumented_unsafe_blocks = "warn"
 [profile.release]
 lto = "thin"
 codegen-units = 1
-panic = "abort"
+# Unwind, not abort: every exported C function catches panics (`hydra_native::guard`) and returns an error value,
+# because an abort would take the whole JVM (and every agent connected to the engine) down with one bad request.
+# `panic = "abort"` would turn those guards into no-ops.

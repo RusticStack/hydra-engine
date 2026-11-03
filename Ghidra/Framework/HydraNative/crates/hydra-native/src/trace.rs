@@ -18,6 +18,8 @@ pub const TRACE_ERR_UTF8: i32 = -3;
 pub const TRACE_ERR_STATE: i32 = -4;
 /// `out_cap` is too small; `*out_len` is the size needed.
 pub const TRACE_ERR_BUFFER: i32 = -5;
+/// A Rust panic was caught inside the call; nothing was written to `out`.
+pub const TRACE_ERR_PANIC: i32 = -6;
 
 static SERVICE: OnceLock<(PathBuf, Service)> = OnceLock::new();
 static ROUTER: OnceLock<Router> = OnceLock::new();
@@ -75,21 +77,23 @@ fn service() -> &'static Service {
 /// `root` must be valid for `root_len` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hydra_trace_init(root: *const u8, root_len: usize) -> i32 {
-    if root.is_null() {
-        return TRACE_ERR_NULL;
-    }
-    // SAFETY: guaranteed by the caller.
-    let Ok(text) = std::str::from_utf8(unsafe { bytes(root, root_len) }) else {
-        return TRACE_ERR_UTF8;
-    };
-    let path = PathBuf::from(text);
-    size_workers();
-    let set = SERVICE.get_or_init(|| (path.clone(), Service::new(path.clone())));
-    if set.0 == path {
-        TRACE_OK
-    } else {
-        TRACE_ERR_STATE
-    }
+    crate::guard(TRACE_ERR_PANIC, || {
+        if root.is_null() {
+            return TRACE_ERR_NULL;
+        }
+        // SAFETY: guaranteed by the caller.
+        let Ok(text) = std::str::from_utf8(unsafe { bytes(root, root_len) }) else {
+            return TRACE_ERR_UTF8;
+        };
+        let path = PathBuf::from(text);
+        size_workers();
+        let set = SERVICE.get_or_init(|| (path.clone(), Service::new(path.clone())));
+        if set.0 == path {
+            TRACE_OK
+        } else {
+            TRACE_ERR_STATE
+        }
+    })
 }
 
 /// Runs one trace command.
@@ -107,17 +111,19 @@ pub unsafe extern "C" fn hydra_trace_request(
     out_cap: usize,
     out_len: *mut usize,
 ) -> i32 {
-    if cmd.is_null() || out_len.is_null() || (req.is_null() && req_len > 0) {
-        return TRACE_ERR_NULL;
-    }
-    // SAFETY: guaranteed by the caller.
-    let (cmd, req) = unsafe { (bytes(cmd, cmd_len), bytes(req, req_len)) };
-    let Ok(cmd) = std::str::from_utf8(cmd) else {
-        return TRACE_ERR_UTF8;
-    };
-    let reply = service().handle(cmd, req);
-    // SAFETY: out_len is valid for a write; out is valid for out_cap bytes (the caller's promise).
-    unsafe { deliver(reply, out, out_cap, out_len) }
+    crate::guard(TRACE_ERR_PANIC, || {
+        if cmd.is_null() || out_len.is_null() || (req.is_null() && req_len > 0) {
+            return TRACE_ERR_NULL;
+        }
+        // SAFETY: guaranteed by the caller.
+        let (cmd, req) = unsafe { (bytes(cmd, cmd_len), bytes(req, req_len)) };
+        let Ok(cmd) = std::str::from_utf8(cmd) else {
+            return TRACE_ERR_UTF8;
+        };
+        let reply = service().handle(cmd, req);
+        // SAFETY: out_len is valid for a write; out is valid for out_cap bytes (the caller's promise).
+        unsafe { deliver(reply, out, out_cap, out_len) }
+    })
 }
 
 /// Writes `reply` to `out` or keeps it on this thread when it does not fit.
@@ -145,18 +151,20 @@ unsafe fn deliver(reply: Vec<u8>, out: *mut u8, out_cap: usize, out_len: *mut us
 /// `out` valid for `out_cap` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hydra_trace_reply_copy(out: *mut u8, out_cap: usize) -> i64 {
-    KEPT.with(|k| {
-        let mut kept = k.borrow_mut();
-        match kept.as_ref() {
-            Some(r) if r.len() <= out_cap && !out.is_null() => {
-                // SAFETY: out is valid for out_cap >= r.len() bytes.
-                unsafe { std::ptr::copy_nonoverlapping(r.as_ptr(), out, r.len()) };
-                let n = r.len() as i64;
-                *kept = None;
-                n
+    crate::guard(-1, || {
+        KEPT.with(|k| {
+            let mut kept = k.borrow_mut();
+            match kept.as_ref() {
+                Some(r) if r.len() <= out_cap && !out.is_null() => {
+                    // SAFETY: out is valid for out_cap >= r.len() bytes.
+                    unsafe { std::ptr::copy_nonoverlapping(r.as_ptr(), out, r.len()) };
+                    let n = r.len() as i64;
+                    *kept = None;
+                    n
+                }
+                _ => -1,
             }
-            _ => -1,
-        }
+        })
     })
 }
 
@@ -196,7 +204,9 @@ fn install_progress(cell: *mut i64) {
 /// `flag` is null or valid for reads of one `i32` until it is removed on this thread.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hydra_trace_set_cancel(flag: *const i32) {
-    install_cancel(flag);
+    crate::guard((), || {
+        install_cancel(flag);
+    })
 }
 
 /// Installs a progress cell for the next requests on this thread: two native `int64` the long
@@ -207,7 +217,9 @@ pub unsafe extern "C" fn hydra_trace_set_cancel(flag: *const i32) {
 /// `cell` is null or valid for writes of two `i64` until it is removed on this thread.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hydra_trace_set_progress(cell: *mut i64) {
-    install_progress(cell);
+    crate::guard((), || {
+        install_progress(cell);
+    })
 }
 
 // ---- the router: validation, lanes, the writer lease, request shaping and reply wrapping ------
@@ -241,7 +253,9 @@ static SYMBOLS: OnceLock<(SymbolsBuild, SymbolsCopy)> = OnceLock::new();
 /// that calls `hydra_trace_route`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hydra_trace_set_symbols(build: SymbolsBuild, copy: SymbolsCopy) {
-    let _ = SYMBOLS.set((build, copy));
+    crate::guard((), || {
+        let _ = SYMBOLS.set((build, copy));
+    })
 }
 
 struct CSymbols;
@@ -264,7 +278,9 @@ impl Symbols for CSymbols {
 /// Sets `trace.quickMB` and `trace.quotaMB` (before the first route).
 #[unsafe(no_mangle)]
 pub extern "C" fn hydra_trace_configure(quick_mb: u64, quota_mb: u64) {
-    router().configure(quick_mb, quota_mb);
+    crate::guard((), || {
+        router().configure(quick_mb, quota_mb);
+    })
 }
 
 /// The lane of a command: 0 quick, 1 long, 2 depends on the request (given none; `trace_diff` and
@@ -279,43 +295,49 @@ pub unsafe extern "C" fn hydra_trace_lane(
     req: *const u8,
     req_len: usize,
 ) -> i32 {
-    if cmd.is_null() || (req.is_null() && req_len > 0) {
-        return -1;
-    }
-    // SAFETY: guaranteed by the caller.
-    let (cmd, req) = unsafe { (bytes(cmd, cmd_len), bytes(req, req_len)) };
-    let Ok(cmd) = std::str::from_utf8(cmd) else {
-        return -1;
-    };
-    let request = if req_len == 0 { None } else { Some(req) };
-    // the lane of a diff reads the store's indexes: the root in use, or the default one, without
-    // starting the service
-    let root = SERVICE
-        .get()
-        .map_or_else(default_root, |(root, _)| root.clone());
-    match router().lane(&root, cmd, request) {
-        Lane::Quick => 0,
-        Lane::Long => 1,
-        Lane::Dynamic => 2,
-    }
+    crate::guard(-1, || {
+        if cmd.is_null() || (req.is_null() && req_len > 0) {
+            return -1;
+        }
+        // SAFETY: guaranteed by the caller.
+        let (cmd, req) = unsafe { (bytes(cmd, cmd_len), bytes(req, req_len)) };
+        let Ok(cmd) = std::str::from_utf8(cmd) else {
+            return -1;
+        };
+        let request = if req_len == 0 { None } else { Some(req) };
+        // the lane of a diff reads the store's indexes: the root in use, or the default one, without
+        // starting the service
+        let root = SERVICE
+            .get()
+            .map_or_else(default_root, |(root, _)| root.clone());
+        match router().lane(&root, cmd, request) {
+            Lane::Quick => 0,
+            Lane::Long => 1,
+            Lane::Dynamic => 2,
+        }
+    })
 }
 
 /// A connection is ending: a writer lease it holds counts as orphaned from now.
 #[unsafe(no_mangle)]
 pub extern "C" fn hydra_trace_client_leaving(client: u64) {
-    router().client_leaving(client);
+    crate::guard((), || {
+        router().client_leaving(client);
+    })
 }
 
 /// A connection ended: every writer lease it held is orphaned.
 #[unsafe(no_mangle)]
 pub extern "C" fn hydra_trace_client_gone(client: u64) {
-    router().client_gone(client);
+    crate::guard((), || {
+        router().client_gone(client);
+    })
 }
 
 /// How many sessions have a writer lease record in memory.
 #[unsafe(no_mangle)]
 pub extern "C" fn hydra_trace_lease_count() -> i64 {
-    router().lease_count() as i64
+    crate::guard(0, || router().lease_count() as i64)
 }
 
 /// Removes the cancel flag and the progress cell of this thread when a route ends.
@@ -357,53 +379,55 @@ pub unsafe extern "C" fn hydra_trace_route(
     out_len: *mut usize,
     kind: *mut i32,
 ) -> i32 {
-    if cmd.is_null()
-        || out_len.is_null()
-        || kind.is_null()
-        || (req.is_null() && req_len > 0)
-        || (label.is_null() && label_len > 0)
-    {
-        return TRACE_ERR_NULL;
-    }
-    // SAFETY: guaranteed by the caller.
-    let (cmd, req, label) = unsafe {
-        (
-            bytes(cmd, cmd_len),
-            bytes(req, req_len),
-            bytes(label, label_len),
-        )
-    };
-    let (Ok(cmd), Ok(label)) = (std::str::from_utf8(cmd), std::str::from_utf8(label)) else {
-        return TRACE_ERR_UTF8;
-    };
-    let _armed = Armed;
-    install_cancel(cancel);
-    install_progress(progress);
-    let (k, reply) = if flags & ROUTE_CHECK_ONLY != 0 {
-        match router().check(cmd, req) {
-            Some(e) => (ROUTE_ERROR, e.json()),
-            None => (ROUTE_REPLY, Vec::new()),
+    crate::guard(TRACE_ERR_PANIC, || {
+        if cmd.is_null()
+            || out_len.is_null()
+            || kind.is_null()
+            || (req.is_null() && req_len > 0)
+            || (label.is_null() && label_len > 0)
+        {
+            return TRACE_ERR_NULL;
         }
-    } else {
-        let ctx = Ctx {
-            client,
-            label,
-            v3: flags & ROUTE_V3 != 0,
-            headroom,
+        // SAFETY: guaranteed by the caller.
+        let (cmd, req, label) = unsafe {
+            (
+                bytes(cmd, cmd_len),
+                bytes(req, req_len),
+                bytes(label, label_len),
+            )
         };
-        match router().route(service(), &ctx, cmd, req, &CSymbols) {
-            Outcome::Reply(b) => (ROUTE_REPLY, b),
-            Outcome::Error(e) => (ROUTE_ERROR, e.json()),
-            Outcome::Disk { estimate, what } => {
-                (ROUTE_DISK, hydra_trace::route::disk_json(estimate, &what))
+        let (Ok(cmd), Ok(label)) = (std::str::from_utf8(cmd), std::str::from_utf8(label)) else {
+            return TRACE_ERR_UTF8;
+        };
+        let _armed = Armed;
+        install_cancel(cancel);
+        install_progress(progress);
+        let (k, reply) = if flags & ROUTE_CHECK_ONLY != 0 {
+            match router().check(cmd, req) {
+                Some(e) => (ROUTE_ERROR, e.json()),
+                None => (ROUTE_REPLY, Vec::new()),
             }
-            Outcome::Callback => (ROUTE_CALLBACK, Vec::new()),
-        }
-    };
-    // SAFETY: kind is valid for a write.
-    unsafe { *kind = k };
-    // SAFETY: out_len is valid for a write; out is valid for out_cap bytes.
-    unsafe { deliver(reply, out, out_cap, out_len) }
+        } else {
+            let ctx = Ctx {
+                client,
+                label,
+                v3: flags & ROUTE_V3 != 0,
+                headroom,
+            };
+            match router().route(service(), &ctx, cmd, req, &CSymbols) {
+                Outcome::Reply(b) => (ROUTE_REPLY, b),
+                Outcome::Error(e) => (ROUTE_ERROR, e.json()),
+                Outcome::Disk { estimate, what } => {
+                    (ROUTE_DISK, hydra_trace::route::disk_json(estimate, &what))
+                }
+                Outcome::Callback => (ROUTE_CALLBACK, Vec::new()),
+            }
+        };
+        // SAFETY: kind is valid for a write.
+        unsafe { *kind = k };
+        // SAFETY: out_len is valid for a write; out is valid for out_cap bytes.
+        unsafe { deliver(reply, out, out_cap, out_len) }
+    })
 }
 
 #[cfg(test)]

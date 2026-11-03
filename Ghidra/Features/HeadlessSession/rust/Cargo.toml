@@ -83,5 +83,7 @@ enum_glob_use = "allow"
 [profile.release]
 lto = "thin"
 codegen-units = 1
-panic = "abort"
+# Unwind: a panic in one connection's thread must end that connection (its `Slot` guard frees the slot, its
+# `Connection` leaves the engine), not abort the daemon and every other client with it.
+panic = "unwind"
 strip = "symbols"
