@@ -26,7 +26,7 @@ fn access<T>(msg: impl Into<String>) -> Result<T> {
 pub struct Memory<'a, S: BufferStore> {
     db: &'a Database<S>,
     map: &'a AddressMap,
-    blocks: Vec<MemoryBlock>,
+    blocks: &'a [MemoryBlock],
 }
 
 /// `ByteMappingScheme`: `mapped` bytes out of every `source` bytes of the mapped-to memory.
@@ -65,13 +65,13 @@ impl ByteMappingScheme {
 }
 
 impl<'a, S: BufferStore> Memory<'a, S> {
-    pub(crate) fn new(db: &'a Database<S>, map: &'a AddressMap, blocks: Vec<MemoryBlock>) -> Self {
+    pub(crate) fn new(db: &'a Database<S>, map: &'a AddressMap, blocks: &'a [MemoryBlock]) -> Self {
         Self { db, map, blocks }
     }
 
     /// The blocks in memory map order.
     pub fn blocks(&self) -> &[MemoryBlock] {
-        &self.blocks
+        self.blocks
     }
 
     /// The block containing `addr`, if any (`Memory.getBlock(Address)`).

@@ -17,6 +17,7 @@ mod functions;
 mod listing;
 mod memory;
 mod memread;
+pub mod query;
 mod references;
 mod symbols;
 mod symtab;
@@ -54,6 +55,7 @@ pub struct ProgramDb<S: BufferStore> {
     stored_version: i32,
     metadata: BTreeMap<String, String>,
     address_map: AddressMap,
+    blocks: std::sync::OnceLock<Vec<MemoryBlock>>,
 }
 
 impl<S: BufferStore> ProgramDb<S> {
@@ -108,6 +110,7 @@ impl<S: BufferStore> ProgramDb<S> {
             stored_version,
             metadata,
             address_map,
+            blocks: std::sync::OnceLock::new(),
         };
         me.check_table_versions()?;
         Ok(me)
@@ -202,11 +205,14 @@ impl<S: BufferStore> ProgramDb<S> {
 
     /// The bytes of the program (`Memory.getBytes` and friends).
     pub fn memory(&self) -> Result<Memory<'_, S>> {
-        Ok(Memory::new(
-            &self.db,
-            &self.address_map,
-            self.memory_blocks()?,
-        ))
+        let blocks = match self.blocks.get() {
+            Some(b) => b,
+            None => {
+                let read = self.memory_blocks()?;
+                self.blocks.get_or_init(|| read)
+            }
+        };
+        Ok(Memory::new(&self.db, &self.address_map, blocks))
     }
 
     /// Every record of the symbol table in id order.
