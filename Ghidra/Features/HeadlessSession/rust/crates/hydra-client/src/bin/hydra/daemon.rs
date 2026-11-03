@@ -18,7 +18,7 @@
 //! keeps owning the JDK choice, the class cache and the process hand-off. The interpreter is the
 //! only thing this command line needs besides the install.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -149,32 +149,111 @@ fn interpreters(env: &Env) -> Vec<String> {
     }
 }
 
-/// Runs `ghidra_session.py ensure` for an instance.
+/// Starts a daemon of the given kind.
+///
+/// `hydra-lite` answers `hello` from an identity learned from a real daemon of the same command
+/// line. When it reports none, `hydra-front` is run once for the same instance (it starts the JVM,
+/// learns the identity into the same cache file and is then stopped) and `hydra-lite` is started
+/// again.
 ///
 /// # Errors
-/// `Unavailable` when there is no install, no interpreter, the launcher fails or takes too long.
+/// `Unavailable` when there is no install, no interpreter, no executable for the kind, the
+/// launcher fails or takes too long.
 pub fn start(env: &Env, which: Instance) -> Result<(), CliError> {
     let (ghidra, launcher) = env.launcher()?;
     env.publish_script()?;
     std::fs::create_dir_all(&env.state)
         .map_err(|e| CliError::unavailable("state_io", format!("{}: {e}", env.state.display())))?;
-    let lite =
-        match which {
-            Instance::Full => None,
-            Instance::Lite => Some(env.lite_bin.clone().filter(|p| p.is_file()).ok_or_else(
-                || {
-                    CliError::unavailable("no_lite", "hydra-lite.exe was not found")
-                        .with_hint("pass --lite-bin or set HYDRA_LITE, or use --backend full")
-                },
-            )?),
-        };
+    let run = |front: Option<&Path>| launch(env, which, &ghidra, &launcher, front);
+    match which {
+        Instance::Full => run(None),
+        Instance::Lite => {
+            let lite = existing(
+                env.lite_bin.as_deref(),
+                "no_lite",
+                "hydra-lite.exe",
+                "--lite-bin",
+                "HYDRA_LITE",
+            )?;
+            match run(Some(&lite)) {
+                Err(e) if e.code == "launch_failed" && missing_identity(env, which) => {
+                    let front = existing(env.front_bin.as_deref(), "no_front", "hydra-front.exe", "--front-bin", "HYDRA_FRONT")
+                        .map_err(|f| f.with_hint("hydra-lite has no learned identity for this install; hydra-front can learn it"))?;
+                    run(Some(&front))?;
+                    stop_learner(env, which)?;
+                    run(Some(&lite))
+                }
+                other => other,
+            }
+        }
+    }
+}
+
+fn existing(
+    path: Option<&Path>,
+    code: &str,
+    what: &str,
+    flag: &str,
+    var: &str,
+) -> Result<PathBuf, CliError> {
+    path.filter(|p| p.is_file())
+        .map(Path::to_path_buf)
+        .ok_or_else(|| {
+            CliError::unavailable(code, format!("{what} was not found"))
+                .with_hint(format!("pass {flag} or set {var}, or use --backend full"))
+        })
+}
+
+/// Whether the instance's log says `hydra-lite` refused to start for want of an identity.
+fn missing_identity(env: &Env, which: Instance) -> bool {
+    std::fs::read_to_string(env.state.join(format!("{}.log", which.name(env)))).is_ok_and(|log| {
+        log.lines()
+            .rev()
+            .take(20)
+            .any(|l| l.contains("no learned identity"))
+    })
+}
+
+/// Stops the front door that learned the identity and waits for its endpoint file to go away.
+fn stop_learner(env: &Env, which: Instance) -> Result<(), CliError> {
+    if let Some(session) = attach(env, which)? {
+        let mut f = serde_json::Map::new();
+        f.insert("force".to_owned(), Value::Bool(true));
+        // The connection may close before the answer arrives; either way the daemon is going.
+        let _ = session.call("shutdown", f, Some(30.0));
+    }
+    let gone = endpoint_file(env, which);
+    for _ in 0..80 {
+        if !gone.exists() {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    Err(CliError::unavailable(
+        "learner_running",
+        format!(
+            "the front door that learned the identity is still running ({})",
+            gone.display()
+        ),
+    ))
+}
+
+/// Runs `ghidra_session.py ensure` for an instance, with `front` as the daemon executable when
+/// given (`GHIDRA_SESSION_FRONT`), or the JVM directly when not.
+fn launch(
+    env: &Env,
+    which: Instance,
+    ghidra: &Path,
+    launcher: &Path,
+    front: Option<&Path>,
+) -> Result<(), CliError> {
     let mut tried = Vec::new();
     for python in interpreters(env) {
         let mut cmd = Command::new(&python);
         cmd.arg("-I")
-            .arg(&launcher)
+            .arg(launcher)
             .arg("--ghidra")
-            .arg(&ghidra)
+            .arg(ghidra)
             .arg("--state")
             .arg(&env.state)
             .arg("--instance")
@@ -183,7 +262,7 @@ pub fn start(env: &Env, which: Instance) -> Result<(), CliError> {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        match &lite {
+        match front {
             Some(bin) => cmd.env("GHIDRA_SESSION_FRONT", bin),
             None => cmd.env_remove("GHIDRA_SESSION_FRONT"),
         };
@@ -306,6 +385,47 @@ mod tests {
         let err = attach_or_start(&env, Instance::Full).expect_err("refuses");
         assert_eq!(err.code, "no_daemon");
         assert_eq!(err.exit, crate::error::Exit::Unavailable);
+    }
+
+    #[test]
+    fn a_missing_identity_is_read_from_the_instance_log() {
+        let dir = std::env::temp_dir().join(format!("hydra-daemon-log-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let env = env_for(&dir);
+        assert!(!missing_identity(&env, Instance::Lite), "no log yet");
+        std::fs::write(
+            dir.join("hydra-lite.log"),
+            "start
+hydra-lite: no learned identity for this command line: run learn
+",
+        )
+        .expect("log");
+        assert!(missing_identity(&env, Instance::Lite));
+        std::fs::write(
+            dir.join("hydra-lite.log"),
+            "all good
+",
+        )
+        .expect("log");
+        assert!(!missing_identity(&env, Instance::Lite));
+    }
+
+    #[test]
+    fn a_missing_executable_names_its_flag_and_variable() {
+        let err = existing(
+            None,
+            "no_lite",
+            "hydra-lite.exe",
+            "--lite-bin",
+            "HYDRA_LITE",
+        )
+        .expect_err("nothing given");
+        assert_eq!(err.code, "no_lite");
+        let hint = err.hint.expect("hint");
+        assert!(
+            hint.contains("--lite-bin") && hint.contains("HYDRA_LITE"),
+            "{hint}"
+        );
     }
 
     #[test]

@@ -79,6 +79,8 @@ pub struct Global {
     pub python: Option<String>,
     /// `--lite-bin`: the `hydra-lite` executable.
     pub lite_bin: Option<PathBuf>,
+    /// `--front-bin`: the `hydra-front` executable.
+    pub front_bin: Option<PathBuf>,
 }
 
 /// Whether `analyze` runs on the imported program too.
@@ -269,15 +271,23 @@ global options:
   --json | --text                JSON object on stdout (default) | plain text
   --deadline S                   client-side deadline of each request, seconds (default 600)
   --no-start                     never start a daemon (exit 4 when none runs)
-  --instance NAME --python EXE --lite-bin EXE
+  --instance NAME --python EXE --lite-bin EXE --front-bin EXE
 
 exit codes: 0 ok, 1 failed, 2 usage, 3 not found, 4 no daemon, 5 busy/timeout, 6 incompatible,
             7 no project/program selected, 8 refused, 9 needs the full daemon
 ";
 
 const GLOBAL_VALUES: &[&str] = &[
-    "state", "ghidra", "project", "program", "instance", "backend", "deadline", "python",
+    "state",
+    "ghidra",
+    "project",
+    "program",
+    "instance",
+    "backend",
+    "deadline",
+    "python",
     "lite-bin",
+    "front-bin",
 ];
 const GLOBAL_SWITCHES: &[&str] = &["json", "text", "no-start"];
 
@@ -431,6 +441,7 @@ fn set_global(g: &mut Global, name: &str, value: String) -> Result<(), CliError>
         "instance" => g.instance = Some(value),
         "python" => g.python = Some(value),
         "lite-bin" => g.lite_bin = Some(PathBuf::from(value)),
+        "front-bin" => g.front_bin = Some(PathBuf::from(value)),
         "backend" => {
             g.backend = match value.as_str() {
                 "auto" => BackendChoice::Auto,

@@ -66,6 +66,8 @@ pub struct Env {
     pub python: Option<String>,
     /// The `hydra-lite` executable, when one was found.
     pub lite_bin: Option<PathBuf>,
+    /// The `hydra-front` executable, which teaches `hydra-lite` its identity.
+    pub front_bin: Option<PathBuf>,
     /// Per-request deadline in seconds.
     pub deadline_s: f64,
     /// Where `open` and `import` remember their selection.
@@ -126,6 +128,15 @@ impl Env {
                     .map(|d| d.join("hydra-lite.exe"))
                     .filter(|p| p.is_file())
             });
+        let front_bin = global
+            .front_bin
+            .clone()
+            .or_else(|| get("HYDRA_FRONT").map(PathBuf::from))
+            .or_else(|| {
+                exe.and_then(Path::parent)
+                    .map(|d| d.join("hydra-front.exe"))
+                    .filter(|p| p.is_file())
+            });
         Ok(Self {
             state,
             ghidra,
@@ -140,6 +151,7 @@ impl Env {
             start: global.start,
             python: global.python.clone().or_else(|| get("HYDRA_PYTHON")),
             lite_bin,
+            front_bin,
             deadline_s,
             context_file,
         })
