@@ -1224,13 +1224,8 @@ impl Engine {
 
 // ---- programs -----------------------------------------------------------------------------------
 
-/// The program file of an item and what `list` and `open_program` need of it.
-struct FileFacts {
-    stored: project::StoredFile,
-    metadata: Vec<(String, String)>,
-}
-
-fn file_facts(r: &Resolved, item: &IndexItem) -> Result<FileFacts, Failure> {
+/// The newest stored file of a program item, after checking that the item is a database program.
+fn stored_of(r: &Resolved, item: &IndexItem) -> Result<project::StoredFile, Failure> {
     let idata = Path::new(&r.rep()).join("idata");
     let props = project::read_props(&idata, item)?;
     if props.file_type != 0 || props.content_type != "Program" {
@@ -1242,13 +1237,17 @@ fn file_facts(r: &Resolved, item: &IndexItem) -> Result<FileFacts, Failure> {
             ),
         ));
     }
-    let stored = project::stored_file(&idata, item)?;
-    let header = project::read_header(&stored.path)
-        .map_err(|e| refuse(Reason::UnsupportedProgram, format!("{}: {e}", item.name)))?;
-    Ok(FileFacts {
-        stored,
-        metadata: header.metadata,
-    })
+    project::stored_file(&idata, item)
+}
+
+/// The domain metadata of a stored program (`GhidraFileData.getMetadata`), read from its header.
+fn metadata_of(
+    stored: &project::StoredFile,
+    item: &IndexItem,
+) -> Result<Vec<(String, String)>, Failure> {
+    project::read_header(&stored.path)
+        .map(|h| h.metadata)
+        .map_err(|e| refuse(Reason::UnsupportedProgram, format!("{}: {e}", item.name)))
 }
 
 fn md_value<'a>(md: &'a [(String, String)], key: &str) -> Option<&'a str> {
@@ -1351,7 +1350,7 @@ impl Engine {
         }
         let index = Index::read(&resolved.index_file())?;
         let (file_path, item) = find_file(&pid, &index, &name)?;
-        let facts = file_facts(&resolved, &item)?;
+        let stored = stored_of(&resolved, &item)?;
         let key = format!("{pid}:{file_path}");
         // join an open program, or open it outside the state lock
         {
@@ -1366,13 +1365,13 @@ impl Engine {
             }
         }
         let t0 = Instant::now();
-        let view = program::open(&facts.stored, &item.name)?;
+        let view = program::open(&stored, &item.name)?;
         let open_ms = u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX);
         let revision = project::program_revision(
             &file_path,
-            facts.stored.length,
-            facts.stored.modified_ms,
-            facts.stored.version,
+            stored.length,
+            stored.modified_ms,
+            stored.version,
         );
         let mut st = lock(&self.state);
         let p = st
@@ -1745,8 +1744,9 @@ impl ListQuery<'_> {
         for item in files {
             let path = join_path(folder, &item.name);
             if let Some(sha) = self.sha {
-                let facts = file_facts(self.r, item)?;
-                if !md_value(&facts.metadata, "Executable SHA256")
+                let stored = stored_of(self.r, item)?;
+                let metadata = metadata_of(&stored, item)?;
+                if !md_value(&metadata, "Executable SHA256")
                     .is_some_and(|v| v.eq_ignore_ascii_case(sha))
                 {
                     continue;
@@ -1760,7 +1760,7 @@ impl ListQuery<'_> {
     }
 
     fn describe(&self, path: &str, item: &IndexItem) -> Result<Json, Failure> {
-        let facts = file_facts(self.r, item)?;
+        let stored = stored_of(self.r, item)?;
         let mut e = Json::obj()
             .with("path", Json::str(path))
             .with("key", Json::str(format!("{}:{path}", self.pid)))
@@ -1770,23 +1770,24 @@ impl ListQuery<'_> {
             .with("program", Json::Bool(true))
             .with("versioned", Json::Bool(false))
             .with("readOnly", Json::Bool(true))
-            .with("bytes", Json::uint(facts.stored.length));
+            .with("bytes", Json::uint(stored.length));
         if self.metadata {
+            let metadata = metadata_of(&stored, item)?;
             e.put(
                 "sha256",
-                Json::opt_str(md_value(&facts.metadata, "Executable SHA256")),
+                Json::opt_str(md_value(&metadata, "Executable SHA256")),
             );
             e.put(
                 "language",
-                Json::opt_str(md_value(&facts.metadata, "Language ID")),
+                Json::opt_str(md_value(&metadata, "Language ID")),
             );
             e.put(
                 "format",
-                Json::opt_str(md_value(&facts.metadata, "Executable Format")),
+                Json::opt_str(md_value(&metadata, "Executable Format")),
             );
             e.put(
                 "executable",
-                Json::opt_str(md_value(&facts.metadata, "Executable Location")),
+                Json::opt_str(md_value(&metadata, "Executable Location")),
             );
         }
         e.put("open", self.open.get(path).cloned().unwrap_or(Json::Null));
