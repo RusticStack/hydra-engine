@@ -22,6 +22,7 @@ rust/crates/hydra-decomp-host/cpp/snapshot_arch.cc||GHIDRA||||END|
 rust/crates/hydra-decomp-host/cpp/snapshot_arch.hh||GHIDRA||||END|
 rust/crates/hydra-decomp-host/cpp/snapshot_seh.cc||GHIDRA||||END|
 rust/crates/hydra-decomp-host/scripts/build_stock_console.ps1||GHIDRA||||END|
+rust/crates/hydra-decomp-host/src/answers.rs||GHIDRA||||END|
 rust/crates/hydra-decomp-host/src/lib.rs||GHIDRA||||END|
 rust/crates/hydra-decomp-host/src/main.rs||GHIDRA||||END|
 rust/crates/hydra-decomp-host/src/parser_check.rs||GHIDRA||||END|

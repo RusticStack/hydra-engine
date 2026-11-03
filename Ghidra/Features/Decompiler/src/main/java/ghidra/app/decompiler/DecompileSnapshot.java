@@ -20,6 +20,8 @@ import static ghidra.program.model.pcode.ElementId.*;
 
 import java.io.*;
 import java.math.BigInteger;
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -1318,6 +1320,16 @@ public class DecompileSnapshot {
 	 * @return the results, or null
 	 */
 	public DecompileResults decodeResults(Function f, byte[] response, int maxPayloadMBytes) {
+		return decodeResults(f, MemorySegment.ofArray(response), maxPayloadMBytes);
+	}
+
+	/**
+	 * As {@link #decodeResults(Function, byte[], int)}, reading the response in place from a
+	 * segment (the host's native buffer): no Java copy of the whole response is made, the main
+	 * payload goes straight into the decoder's pages.
+	 * @param response the command response; read only during the call
+	 */
+	public DecompileResults decodeResults(Function f, MemorySegment response, int maxPayloadMBytes) {
 		ResponseReader r = new ResponseReader(response);
 		int type = r.nextBurst();
 		if (type != 6) {
@@ -1353,7 +1365,7 @@ public class DecompileSnapshot {
 					if (r.nextBurst() != 17) {
 						return null;
 					}
-					errorMessage = new String(response, s, e - s);
+					errorMessage = r.string(s, e);
 					continue;
 				}
 				case 18: {
@@ -1362,7 +1374,7 @@ public class DecompileSnapshot {
 					if (r.nextBurst() != 19) {
 						return null;
 					}
-					ghidra.util.Msg.warn(DecompileProcess.class, new String(response, s, e - s));
+					ghidra.util.Msg.warn(DecompileProcess.class, r.string(s, e));
 					continue;
 				}
 				default:
@@ -1370,7 +1382,7 @@ public class DecompileSnapshot {
 			}
 			break;
 		}
-		if (r.pos != response.length) {
+		if (r.pos != response.byteSize()) {
 			return null;
 		}
 		try {
@@ -1381,7 +1393,7 @@ public class DecompileSnapshot {
 					return null;
 				}
 				decoder.open(max, program.getName());
-				decoder.ingestBytes(response, mainStart, mainEnd - mainStart);
+				r.ingest(decoder, mainStart, mainEnd - mainStart);
 				decoder.endIngest();
 			}
 			return new DecompileResults(f, language, compilerSpec, dtmanage, errorMessage, decoder,
@@ -1394,33 +1406,60 @@ public class DecompileSnapshot {
 
 	/** Reads the burst framing of a command response (DecompileProcess.readToBurst). */
 	private static final class ResponseReader {
-		final byte[] b;
+		private static final int CHUNK = 64 << 10;
+		final MemorySegment b;
+		final long len;
 		int pos;
 
-		ResponseReader(byte[] b) {
+		ResponseReader(MemorySegment b) {
 			this.b = b;
+			this.len = b.byteSize();
+		}
+
+		private int at(int i) {
+			return b.get(ValueLayout.JAVA_BYTE, i);
+		}
+
+		/** The text of bytes {@code [s, e)}, in the platform encoding as {@code new String(byte[])}. */
+		String string(int s, int e) {
+			return new String(b.asSlice(s, e - s).toArray(ValueLayout.JAVA_BYTE));
+		}
+
+		/** Feeds bytes {@code [s, s + n)} to the decoder in chunks (no whole-response array). */
+		void ingest(PackedDecode d, int s, int n) throws IOException {
+			if (b.heapBase().isPresent() && b.heapBase().get() instanceof byte[] arr) {
+				d.ingestBytes(arr, s, n);	// the segment wraps an array: no copy at all
+				return;
+			}
+			byte[] chunk = new byte[Math.min(CHUNK, n)];
+			for (int done = 0; done < n;) {
+				int k = Math.min(chunk.length, n - done);
+				MemorySegment.copy(b, ValueLayout.JAVA_BYTE, s + done, chunk, 0, k);
+				d.ingestBytes(chunk, 0, k);
+				done += k;
+			}
 		}
 
 		/** The next burst code, or -1 at the end. */
 		int nextBurst() {
-			while (pos < b.length && b[pos] != 0) {
+			while (pos < len && at(pos) != 0) {
 				pos++;
 			}
-			while (pos < b.length && b[pos] == 0) {
+			while (pos < len && at(pos) == 0) {
 				pos++;
 			}
-			if (pos + 1 < b.length && b[pos] == 1) {
-				int code = b[pos + 1] & 0xff;
+			if (pos + 1 < len && at(pos) == 1) {
+				int code = at(pos + 1) & 0xff;
 				pos += 2;
 				return code;
 			}
-			pos = b.length;
+			pos = (int) len;
 			return -1;
 		}
 
 		/** Moves to the next zero byte and returns its index. */
 		int skipToZero() {
-			while (pos < b.length && b[pos] != 0) {
+			while (pos < len && at(pos) != 0) {
 				pos++;
 			}
 			return pos;

@@ -9,6 +9,12 @@ example `12.3-hydra.1`); its tag is `v` and the version. Releases are on
 
 ## Unreleased
 
+- Decompile path off the Java heap (h7, additive; no ABI version change): the host backend decodes a finished run's response in place from the
+  library's native buffer (no whole-response Java `byte[]`), and the full C text of a streamed (spilled) answer is kept in a bounded answer store inside
+  `hydra_decomp_host` (new exports `hydra_dhost_answer_*`; RAM tier + unlinked-on-close temporary files, settings `answerCacheRamMb` / `answerCacheDiskMb`)
+  so an `offset` page request is served without decompiling again (`spill.served_from_store:true`). New Java API: `HostAnswers`,
+  `PartialMarkup.Sink`, `DecompInterface.setStreamSink`, `DecompileSnapshot.decodeResults(Function, MemorySegment, int)`.
+
 ## 12.3-hydra.6
 
 Released 2026-11-02. Based on upstream Ghidra `master` (12.3 DEV) at

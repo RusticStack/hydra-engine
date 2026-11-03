@@ -341,13 +341,16 @@ public final class HostDecompiler {
 					catch (Throwable t) {
 						err = t;
 					}
+					if (p == null && r != null) {
+						r.release();	// nobody waits for this run any more
+					}
 					if (p != null) {
 						try {
 							if (err != null) {
 								p.future.completeExceptionally(err);
 							}
-							else {
-								p.future.complete(r);
+							else if (!p.future.complete(r) && r != null) {
+								r.release();
 							}
 						}
 						finally {
@@ -1420,7 +1423,49 @@ public final class HostDecompiler {
 	// ---- decompile ----------------------------------------------------------------------------
 
 	/** One native run: status, the command response (or message) and the missed queries. */
-	private record Run(int rc, byte[] out, List<byte[]> misses, List<byte[]> fed) {
+	private record Run(int rc, byte[] out, List<byte[]> misses, List<byte[]> fed, Native nat) {
+		Run(int rc, byte[] out, List<byte[]> misses, List<byte[]> fed) {
+			this(rc, out, misses, fed, null);
+		}
+
+		/** Frees the native response of a completed run (idempotent; no-op without one). */
+		void release() {
+			if (nat != null) {
+				nat.free();
+			}
+		}
+	}
+
+	/**
+	 * The command response of a completed run, left in the host's buffer: decoded in place and
+	 * freed once, so a large response never exists as a second, Java-heap copy.
+	 */
+	private static final class Native {
+		private final Lib lib;
+		private final MemorySegment seg;
+		private final java.util.concurrent.atomic.AtomicBoolean freed =
+			new java.util.concurrent.atomic.AtomicBoolean();
+
+		Native(Lib lib, MemorySegment seg) {
+			this.lib = lib;
+			this.seg = seg;
+		}
+
+		/** The response bytes; valid until {@link #free()}. */
+		MemorySegment segment() {
+			return seg;
+		}
+
+		void free() {
+			if (freed.compareAndSet(false, true)) {
+				try {
+					lib.free.invokeExact(seg);
+				}
+				catch (Throwable t) {
+					Msg.warn(HostDecompiler.class, "decompile host: free: " + t);
+				}
+			}
+		}
 	}
 
 	private static Run run(Lib l, Gen g, byte[] addr) throws Throwable {
@@ -1447,7 +1492,15 @@ public final class HostDecompiler {
 	private static Run decodeRun(Lib l, int rc, MemorySegment out, long outlen, MemorySegment miss,
 			long misslen, long answered) throws Throwable {
 		ANSWERED.add(answered);
-		byte[] o = take(l, out, outlen);
+		Native nat = null;
+		byte[] o;
+		if (rc == OK && !out.equals(MemorySegment.NULL) && outlen > 0) {
+			nat = new Native(l, out.reinterpret(outlen));	// decoded in place, freed after
+			o = EMPTY;
+		}
+		else {
+			o = take(l, out, outlen);
+		}
 		byte[] m = take(l, miss, misslen);
 		List<byte[]> misses = new ArrayList<>();
 		List<byte[]> fed = new ArrayList<>();
@@ -1469,7 +1522,7 @@ public final class HostDecompiler {
 		if (fed.size() < misses.size()) {
 			fed.add(new byte[0]);
 		}
-		return new Run(rc, o, misses, fed);
+		return new Run(rc, o, misses, fed, nat);
 	}
 
 	/**
@@ -1530,6 +1583,15 @@ public final class HostDecompiler {
 				return fut.get();
 			}
 			return fut.get(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
+		}
+		catch (TimeoutException e) {
+			// the run finishes unseen: nobody will decode its response, so free it when it lands
+			fut.whenComplete((r, t) -> {
+				if (r != null) {
+					r.release();
+				}
+			});
+			throw e;
 		}
 		catch (ExecutionException e) {
 			throw e.getCause();
@@ -1798,8 +1860,15 @@ public final class HostDecompiler {
 				if (r.rc() == OK) {
 					a.setFunction(f);	// fresh temporary ids for decoding, as the process path
 					long td = System.nanoTime();
-					DecompileResults res =
-						a.decodeResults(f, r.out(), options.getMaxPayloadMBytes());
+					DecompileResults res;
+					try {
+						res = r.nat() != null
+								? a.decodeResults(f, r.nat().segment(), options.getMaxPayloadMBytes())
+								: a.decodeResults(f, r.out(), options.getMaxPayloadMBytes());
+					}
+					finally {
+						r.release();
+					}
 					DECODE_NANOS.add(System.nanoTime() - td);
 					if (res == null) {
 						return Outcome.fallback("host result not decodable");

@@ -4503,8 +4503,12 @@ what filled the heap): the C text is read from the file token by token (`Partial
 request asks for (`offset`, `maxChars`) is kept. The reply has the usual fields (`completed:true`, `signature`, `chars` = all characters,
 `truncated`, `c`, and `offset`/`next_offset` when `offset` is given) plus `streamed:true` and `spill:{spilled_bytes, threshold_bytes, c_lines,
 c_tokens, note}`. Differences from the tree path, only for a streamed answer: a long comment is not rewrapped and names do not pass through the
-name transformer; the answer is not cached or shared (each page request decompiles again; the text of one request is a prefix-consistent window of
-the same decompile). A response that stays under the threshold is unchanged, byte for byte.
+name transformer; the answer is not cached or shared as a result, but the full C text of a streamed answer is kept in the host library's answer store
+(off the Java heap, in `hydra_decomp_host`; settings `answerCacheRamMb` default 64 and `answerCacheDiskMb` default 512, each also limited by a share of the
+free RAM above `spillHardFloorRamMb` and of the free disk above `diskReserve`, 0 turns it off; keyed by program, modification number, function and
+decompiler set-up; least recently read entries leave RAM for a temporary file and then go), so a later `offset` page of the same answer is read from the
+store without decompiling again (`spill.served_from_store:true`; an evicted or never stored answer decompiles again, as before; only requests without
+`maxResultMb`). The text of one decompile is a prefix-consistent window of the same decompile. A response that stays under the threshold is unchanged, byte for byte.
 
 *Budget with a spill.* With no `maxResultMb`, when the disk has room the adaptive budget is the heap threshold plus a quarter of the volume's free space
 above the engine's `diskReserve` (max(5 GB, 5 %)), divided by the decompiles in flight, at most 2000 MB; with less than 16 MB of disk share the response stays on

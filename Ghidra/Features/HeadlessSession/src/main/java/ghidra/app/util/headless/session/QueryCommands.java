@@ -370,9 +370,21 @@ final class QueryCommands {
 		// Protocol 2 keeps the hydra.3 process path (its client may kill the decompiler by pid);
 		// a protocol 3 client gets the host backend when it is enabled (the round 2 default).
 		// A request that names its own response cap takes the process path, which enforces it.
+		// h7: a streamed answer already read once is served from the answer store (off the heap)
+		byte[] answerKey = capBytes == 0 && ensureAnswers() ? answerKey(prog, f) : null;
+		if (answerKey != null) {
+			JsonObject stored = storedReply(f, answerKey, cap);
+			if (stored != null) {
+				if (faultOut != null) {
+					faultOut[0] = true; // large and request-shaped (window, cap): not shared or cached
+				}
+				return stored;
+			}
+		}
 		DecompileResults hosted =
 			v3 && capBytes == 0 ? HostDecompileBackend.tryDecompile(prog, e, f, timeout) : null;
 		DecompInterface d = hosted != null ? null : e.borrowDecompiler();
+		HostAnswers.Writer answerWriter = null;
 		boolean healthy = false;
 		Budget budget = null;
 		ResponseSpill spill = null;
@@ -399,6 +411,11 @@ final class QueryCommands {
 					});
 					Integer off = PAGE_OFFSET.get();
 					d.setResponseSpill(spill, cap, off == null ? 0 : off);
+					if (answerKey != null) {
+						// h7: the whole text is kept for the later pages of this answer
+						answerWriter = HostAnswers.begin(answerKey);
+						d.setStreamSink(answerWriter);
+					}
 				}
 			}
 			DecompileResults res = hosted != null ? hosted : d.decompileFunction(f, timeout, m);
@@ -412,6 +429,9 @@ final class QueryCommands {
 				DecompilerGate.Breaker.succeeded(prog, f);
 				if (faultOut != null) {
 					faultOut[0] = true; // large and request-shaped (window, cap): not shared or cached
+				}
+				if (answerWriter != null) {
+					answerWriter.commit(streamMeta(streamed, spill, budget));
 				}
 				return streamedReply(f, streamed, spill, budget, cap);
 			}
@@ -495,9 +515,13 @@ final class QueryCommands {
 		}
 		finally {
 			IN_FLIGHT.decrementAndGet();
+			if (answerWriter != null) {
+				answerWriter.abort(); // a no-op once committed
+			}
 			if (d != null) {
 				d.setSalvageOverflow(0);
 				d.setMaxResultBytes(0);
+				d.setStreamSink(null);
 				d.setResponseSpill(null, 0, 0);
 				if (spill != null) {
 					spill.close(); // deletes the temporary file
@@ -519,13 +543,18 @@ final class QueryCommands {
 	 */
 	private static JsonObject streamedReply(Function f, PartialMarkup pm, ResponseSpill spill,
 			Budget budget, int cap) {
+		return streamedReply(f, pm.signature(), pm.chars(), pm.text(), pm.lines(), pm.tokens(),
+			spill.spilledBytes(), spill.threshold(), budget == null ? null : budget.json(), false);
+	}
+
+	private static JsonObject streamedReply(Function f, String signature, long total, String c,
+			long lines, long tokens, long spilledBytes, long threshold, JsonObject budget,
+			boolean fromStore) {
 		JsonObject r = Json.of("name", f.getName(true), "entry", hex(f.getEntryPoint()));
 		Json.put(r, "completed", true);
-		Json.put(r, "signature", pm.signature());
-		long total = pm.chars();
+		Json.put(r, "signature", signature);
 		Json.put(r, "chars", total);
 		Integer off = PAGE_OFFSET.get();
-		String c = pm.text();
 		long from = off == null ? 0 : Math.min((long) off, total);
 		long to = from + c.length();
 		Json.put(r, "truncated", to < total);
@@ -537,16 +566,123 @@ final class QueryCommands {
 			}
 		}
 		Json.put(r, "streamed", true);
-		JsonObject sp = Json.of("spilled_bytes", spill.spilledBytes(), "threshold_bytes", spill.threshold(),
-			"c_lines", pm.lines(), "c_tokens", pm.tokens());
+		JsonObject sp = Json.of("spilled_bytes", spilledBytes, "threshold_bytes", threshold,
+			"c_lines", lines, "c_tokens", tokens);
 		Json.put(sp, "note", "the response was larger than the heap threshold and was read from a temporary " +
 			"file: the text is not rewrapped (long comments) and not run through the name transformer; a page " +
-			"request decompiles again (a streamed answer is not cached)");
+			"request is answered from the answer store while the text is still held there, else it " +
+			"decompiles again");
+		if (fromStore) {
+			Json.put(sp, "served_from_store", true);
+		}
 		Json.put(r, "spill", sp);
 		if (budget != null) {
-			Json.put(r, "budget", budget.json());
+			Json.put(r, "budget", budget);
 		}
 		return r;
+	}
+
+	// ---- h7: streamed answers kept in the host library's answer store (off the heap) ----------
+
+	private static final Map<Program, Long> ANSWER_TOKENS = new WeakHashMap<>();
+	private static long nextAnswerToken = 1;
+	private static volatile long answersConfiguredAt;
+
+	/** The store key of {@code f}'s answer in {@code prog} as it stands now. */
+	private static byte[] answerKey(Program prog, Function f) {
+		long token;
+		synchronized (ANSWER_TOKENS) {
+			Long t = ANSWER_TOKENS.get(prog);
+			if (t == null) {
+				t = nextAnswerToken++;
+				ANSWER_TOKENS.put(prog, t);
+			}
+			token = t;
+		}
+		Address a = f.getEntryPoint();
+		java.nio.ByteBuffer b = java.nio.ByteBuffer.allocate(8 + 8 + 4 + 8 + 4);
+		b.putLong(token).putLong(prog.getModificationNumber()).putInt(a.getAddressSpace().getSpaceID())
+				.putLong(a.getOffset()).putInt(ProgramEntry.DECOMPILER_SETUP);
+		return b.array();
+	}
+
+	/**
+	 * Sets the answer store's limits from the machine's headroom, at most every ten seconds: a
+	 * share of the free RAM above the floor and of the free disk above the engine's reserve (the
+	 * rules of the adaptive response budget), never more than the settings
+	 * {@code answerCacheRamMb} / {@code answerCacheDiskMb}. False when the store is off (setting 0,
+	 * no library, or too little room).
+	 */
+	private static boolean ensureAnswers() {
+		long now = System.nanoTime();
+		long at = answersConfiguredAt;
+		if (at != 0 && now - at < TimeUnit.SECONDS.toNanos(10)) {
+			return HostAnswers.available();
+		}
+		synchronized (ANSWER_TOKENS) {
+			if (answersConfiguredAt != 0 && now - answersConfiguredAt < TimeUnit.SECONDS.toNanos(10)) {
+				return HostAnswers.available();
+			}
+			answersConfiguredAt = now == 0 ? 1 : now;
+			long ramMb = Settings.integer("answerCacheRamMb", 64);
+			long diskMb = Settings.integer("answerCacheDiskMb", 512);
+			if (ramMb <= 0 && diskMb <= 0 || !HostAnswers.loadable()) {
+				return false;
+			}
+			long free = ResponseSpill.osFreeMb();
+			if (free >= 0) {
+				ramMb = Math.min(ramMb, Math.max(0, free - HARD_FLOOR_PHYS_MB) / 16);
+			}
+			java.nio.file.Path dir = answerDir();
+			String dh = System.getenv("HYDRA_TEST_DISK_FREE_MB");
+			long usable = dh != null && !dh.isBlank() ? Long.parseLong(dh.trim()) : ResponseSpill.usableMb(dir);
+			if (usable >= 0) {
+				diskMb = Math.min(diskMb, Math.max(0, usable - diskFloorMb(dir)) / 8);
+			}
+			if (ramMb < 4 && diskMb < 16) {
+				HostAnswers.configure(0, 0, 0, dir); // nothing fits: drop what is held, keep nothing
+				return false;
+			}
+			long ram = ramMb << 20;
+			long disk = diskMb << 20;
+			return HostAnswers.configure(ram, disk, Math.max(ram, disk) / 2, dir);
+		}
+	}
+
+	/** Where the answer store keeps its temporary files (deleted when closed, also after a crash). */
+	static java.nio.file.Path answerDir() {
+		return java.nio.file.Path.of(System.getProperty("java.io.tmpdir"), "hydra-decompiler-answers");
+	}
+
+	/** What the reply of a streamed answer needs besides its text, kept with the text. */
+	private static byte[] streamMeta(PartialMarkup pm, ResponseSpill spill, Budget budget) {
+		JsonObject o = Json.of("signature", pm.signature(), "lines", pm.lines(), "tokens", pm.tokens(),
+			"spilled", spill.spilledBytes(), "threshold", spill.threshold());
+		if (budget != null) {
+			o.add("budget", budget.json());
+		}
+		return o.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+	}
+
+	/** The reply of a streamed answer held by the store: the page asked, or null on a miss. */
+	private static JsonObject storedReply(Function f, byte[] key, int cap) {
+		Integer off = PAGE_OFFSET.get();
+		HostAnswers.Page pg = HostAnswers.read(key, off == null ? 0 : off, cap);
+		if (pg == null) {
+			return null;
+		}
+		try {
+			JsonObject m = JsonParser.parseString(
+				new String(pg.meta(), java.nio.charset.StandardCharsets.UTF_8)).getAsJsonObject();
+			return streamedReply(f, m.get("signature").getAsString(), pg.totalChars(), pg.text(),
+				m.get("lines").getAsLong(), m.get("tokens").getAsLong(), m.get("spilled").getAsLong(),
+				m.get("threshold").getAsLong(),
+				m.has("budget") ? m.getAsJsonObject("budget") : null, true);
+		}
+		catch (RuntimeException ex) {
+			HostAnswers.remove(key); // unreadable: decompile again
+			return null;
+		}
 	}
 
 	/**

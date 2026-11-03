@@ -94,6 +94,7 @@ public class DecompInterface {
 	private int streamKeep;				// Hydra (issue 6): window of the streamed text
 	private long streamSkip;
 	private PartialMarkup streamed;		// Hydra (issue 6): the text read from a spilled response
+	private PartialMarkup.Sink streamSink;	// Hydra (h7): receives the whole streamed text
 
 	public static class EncodeDecodeSet {
 		public OverlayAddressSpace overlay;		// Active overlay space or null
@@ -818,6 +819,16 @@ public class DecompInterface {
 	}
 
 	/**
+	 * Hydra (h7): passes the whole C text of the next streamed (spilled) decompiles, piece by
+	 * piece, to {@code sink} as it is read, besides keeping the window asked of
+	 * {@link #setResponseSpill}.
+	 * @param sink the receiver, or null for none
+	 */
+	public synchronized void setStreamSink(PartialMarkup.Sink sink) {
+		streamSink = sink;
+	}
+
+	/**
 	 * Hydra (issue 6): the text window read from a spilled response by the last decompile, or
 	 * null (the decompile did not spill, or failed). Taking it clears it.
 	 * @return the text and its counts
@@ -1075,7 +1086,8 @@ public class DecompInterface {
 			if (responseSpill != null && activeSet.mainResponse.isSpilled() &&
 				(errorMessage == null || errorMessage.isEmpty())) {
 				// Hydra (issue 6): the response left the heap; build the text, not the tree
-				PartialMarkup pm = PartialMarkup.read(activeSet.mainResponse, streamKeep, streamSkip);
+				PartialMarkup pm = PartialMarkup.read(activeSet.mainResponse, streamKeep, streamSkip,
+					streamSink);
 				if (pm.markupReached()) {
 					streamed = pm;
 					activeSet.mainResponse.clear();
