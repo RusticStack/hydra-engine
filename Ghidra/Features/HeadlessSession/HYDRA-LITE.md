@@ -17,7 +17,8 @@
 
 # `hydra-lite`: a JVM-free, read-only Hydra Engine daemon
 
-STATUS: PROTOTYPE, opt-in, not the default and not wired into `build-install.py`. The Java daemon
+STATUS: PROTOTYPE, opt-in (`HYDRA_LITE`, default `off`), not the default and not wired into
+`build-install.py`. The Java daemon
 is unchanged and stays the only complete implementation. `hydra-lite` answers a small subset of
 protocol 3 with the Java daemon's reply bytes and refuses everything else with a structured error
 that means "ask the full daemon". It never guesses.
@@ -62,10 +63,10 @@ Anything `hydra-lite` cannot reproduce exactly gets this reply and nothing else:
 `error.code` is the constant `use_full_daemon`. It is new: it is not in PROTOCOL-3.md and the Java
 daemon never sends it. `error.details.reason` is one of a closed set, and `details.cmd` is the
 command of the request (absent for a refusal that has no request, see `capacity`). `ms` is 0.
-A client that reads `use_full_daemon` closes the connection, starts or joins the full daemon of the
-same instance with `GHIDRA_SESSION_FRONT` unset, and sends its session again from the beginning
-(`hello`, `open_project`, ...). The shipped clients (`ghidra_session.py`, `hydra-client`) do not do
-this yet; the code is defined so that they can, and the harness below shows what they would see.
+A client that reads `use_full_daemon` starts or joins the full daemon of the same instance and
+sends its session again from the beginning (`hello`, `open_project`, ...) followed by the refused
+request. The shipped clients (`ghidra_session.py`, `hydra-client`) do this by themselves; the rules
+are under "Clients" below.
 
 | reason | meaning |
 | --- | --- |
@@ -128,6 +129,93 @@ to start (exit 2, "no learned identity"). A cache for another Ghidra release tha
 used (`unsupported_engine`). `reply_parity.py lite` does the sequence the way a deployment would:
 start the launcher once (it fails), learn from a running Java daemon with the command line the
 launcher used, start again.
+
+## Clients
+
+### Selecting hydra-lite: `HYDRA_LITE`
+
+`ghidra_session.py` (config key `lite`, environment `HYDRA_LITE`) decides whether the launcher
+starts hydra-lite for an instance:
+
+| value | the launcher | a refusal |
+| --- | --- | --- |
+| `off` (default) | never starts hydra-lite; the Java daemon, as before | a lite daemon that runs anyway (started by hand or by `GHIDRA_SESSION_FRONT`) still moves the session |
+| `auto` | starts hydra-lite as the front of the instance when it is installed and has learned this install; otherwise the JVM | the session moves to the full daemon, transparently |
+| `only` | hydra-lite or nothing (`LaunchError` `lite_unavailable` when there is no executable or no identity) | returned to the caller as the error `use_full_daemon` (diagnostics, tests) |
+
+`HYDRA_LITE_EXE` names the executable (default: `hydra-lite[.exe]` beside `ghidra_session.py`);
+`HYDRA_LITE_OPTS` gives it extra options (`--workers 64`). hydra-lite is the front only when
+`STATE/INSTANCE.front-identity.json` has the key of the Java command line (see Identity). In `auto`
+mode, when it has not, the first start of an instance is the JVM and a detached
+`hydra-lite learn --from STATE/INSTANCE.json -- <command line>` teaches it from that daemon, so the
+next start is lite. An explicit `GHIDRA_SESSION_FRONT` still takes precedence. The full daemon is
+never started with a front or with hydra-lite. The Rust client reads `HYDRA_LITE` for what a
+refusal does (`LiteMode`); it has no launcher, so starting is left to Python (below).
+
+### Moving a session to the full daemon
+
+A lite daemon's endpoint file carries `"lite": true`; a client that opened its session on such a
+daemon (and is not in mode `only`) watches for the error code `use_full_daemon`. On the first one:
+
+1. The full daemon is `<instance>.full` (the instance name cut to 59 characters, plus `.full`),
+   started or joined through the launcher with `HYDRA_LITE=off`: its own endpoint file, its own
+   lock, so the lite daemon keeps `<instance>` for the clients that need nothing else.
+2. The client connects there and replays, in order, the state commands that had succeeded on the
+   lite connection: `hello`, `open_project`, `close_project`, `open_program`, `switch`,
+   `close_program`. If the full daemon numbers a project differently (`p1` on lite, `p2` there),
+   the ids in the `project` and `program` (`pN:/path`) fields of the requests that follow are
+   rewritten, so the caller keeps using the ids it was given.
+3. The client swaps the connection under its own lock and sends again, with their own ids, the
+   refused request and every request still unanswered. Only requests that lite refused before it
+   did anything are sent again; lite refuses every command that is not a read before any side effect
+   (and everything after the first refusal as `diverged_connection`).
+4. The move is tried once per session. If it fails (no JVM, no install, the launcher times out) the
+   refusal is the answer, with `error.details.failover` giving the reason; the lite connection stays
+   as it was and answers `ping` and `hello`.
+
+A capacity refusal at `hello` (no `id`, connection closed) moves the session at once.
+
+Known limits, all of one kind (two daemons serve one instance):
+
+* Sessions that moved and sessions that did not see different daemons: `users`, `joined` and the
+  clients listed by `status` differ until all of them have moved. Commands that describe a daemon
+  (`status`, `health`) describe the one that answers: instance `<instance>.full`, its counters.
+* Ids are remapped in requests only, not in replies; a reply from the full daemon names its own id.
+* `Daemon.status()` of the Python client, used on an instance whose daemon is lite, raises
+  `use_full_daemon` (it has no session of its own to move).
+* The move starts a JVM: the first refused request costs a JVM start, then everything is as before.
+
+### The Rust client
+
+`hydra-client` does the same inside `Session`: `ConnectOptions::with_full_daemon(Arc<dyn
+FullDaemon>)` supplies the full daemon's endpoint and `with_lite_mode(LiteMode)` the mode (default
+`Off`; a supplied full daemon is used on a refusal in `Off` and `Auto` alike, only `Only` returns the
+refusal; `LiteMode::from_env()` reads `HYDRA_LITE`). The crate has no
+launcher: `PythonLauncher` implements `FullDaemon` by running `ghidra_session.py ... --instance
+<instance>.full ensure` (with `HYDRA_LITE=off`, no front). `Session::failed_over()` and
+`Session::current_endpoint()` tell whether and where the session moved. `hydra-agent call
+--session-py <ghidra_session.py> [--ghidra <install>]` does it for the differential harness.
+
+### Tests
+
+* `examples/cc_lite.py`: a fake lite daemon and a fake full daemon over loopback, driving the
+  Python client (key, launcher selection, replay and re-send, id remap, in-flight requests, a
+  failed move, mode `only`, capacity), 8 offline tests. `rust/crates/hydra-client/tests/lite_failover.rs`:
+  the same cases for the Rust client (9 tests).
+* `examples/cc_lite.py` online (`HYDRA_LITE_EXE=... python cc_lite.py --ghidra INSTALL`) and
+  `examples/reply_parity.py auto --ghidra INSTALL --work EMPTYDIR --lite hydra-lite.exe [--agent
+  hydra-agent.exe]`: the real hydra-lite and the real Java daemon on the parity fixtures. The
+  harness starts one instance with `HYDRA_LITE=off` and one with `HYDRA_LITE=auto` (the first start
+  of that instance is the JVM and teaches hydra-lite, the second is lite, checked by the image name
+  of the answering process), runs the lite corpus and then the read corpus through the repo's
+  Python client, and fails on any difference between the final replies of the two (the masked
+  reply with key order kept, and the raw line with ids, timings and the work directory replaced;
+  `status` and `health`, which describe a daemon, are compared on `ok` only). With `--agent` the
+  same requests also go through `hydra-agent call` (the Rust client) against both instances.
+  Last run (`_logs/h7/fmt/lite-auto4.log`): 128 requests of the Python corpus, the first 78 answered
+  by hydra-lite and the rest by the full daemon after both sessions moved, plus 9 requests through
+  the Rust client (5 answered by hydra-lite, the first `decompile` moves the session): 0
+  differences from `HYDRA_LITE=off`.
 
 ## Concurrency
 

@@ -738,6 +738,10 @@ DEFAULTS = {
     "singleton": "warn",     # warn | per-install: a live daemon of this install under another state
                              # dir is reported (warn) or refused (DuplicateDaemonError)
     "heapCheck": True,       # refuse an explicit maxHeap that is larger than the free physical memory
+    "lite": "off",           # off | auto | only: start hydra-lite (a JVM-free read-only daemon, HYDRA-LITE.md)
+                             # instead of the JVM when it is installed and has learned this install; a
+                             # request it cannot answer moves the session to the full daemon (auto), or
+                             # is returned as the error use_full_daemon (only). off: never started
     "settingsDir": "auto",   # Ghidra's per-user settings dir (OSGi felixcache, compiled script bundles) of a
                              # daemon: auto (its own, <state>/settings/<instance>) | shared (the user's, as
                              # Ghidra's launcher chooses it) | a directory
@@ -762,6 +766,7 @@ ENV_MAP = {
     "GHIDRA_SESSION_FORK_COPY_LIMIT_MB": ("forkCopyLimitMb", int),
     "GHIDRA_SESSION_SINGLETON": ("singleton", str),
     "GHIDRA_SESSION_SETTINGS_DIR": ("settingsDir", str),
+    "HYDRA_LITE": ("lite", str),
     "GHIDRA_SESSION_CLASS_CACHE_DIR": ("classCacheDir", str),
     "GHIDRA_SESSION_JIT_ONE_SHOT": ("jitOneShot", lambda v: v.strip().lower() not in
                                     ("0", "false", "off", "no")),
@@ -860,6 +865,9 @@ def load_config(state: Path, overrides: dict | None = None) -> dict:
         raise LaunchError(f"mode must be fast or standard, not {cfg['mode']!r}")
     if cfg["gc"] not in ("g1", "zgc", "parallel", "default"):
         raise LaunchError(f"gc must be g1, zgc, parallel or default, not {cfg['gc']!r}")
+    cfg["lite"] = str(cfg["lite"]).strip().lower()
+    if cfg["lite"] not in LITE_MODES:
+        raise LaunchError(f"lite (HYDRA_LITE) must be off, auto or only, not {cfg['lite']!r}")
     if cfg["singleton"] not in ("warn", "per-install"):
         raise LaunchError(f"singleton must be warn or per-install, not {cfg['singleton']!r}")
     return cfg
@@ -1331,6 +1339,12 @@ class _Base:
         self.last_response = None  # the last whole response (with stale/refreshed markers)
         self._raw = {}
         self._abandoned = set()  # ids whose answer nobody waits for any more (deadline expired)
+        # a session on a hydra-lite daemon (HYDRA-LITE.md, "Clients"): see ``_arm_failover``
+        self._failover = None
+        self.failed_over = False
+        self._journal = []       # (cmd, fields, result id) of the session-state requests that succeeded
+        self._reqs = {}          # id -> (cmd, fields) of the requests not answered yet
+        self._idmap = {}         # project id on the lite daemon -> on the full daemon, when they differ
 
     #: True when ``_recv(timeout)`` can give up after ``timeout`` seconds (a ``deadline``).
     supports_deadline = False
@@ -1493,10 +1507,89 @@ class _Base:
         """Whether an export folder can still be reproduced from the store (not evicted, intact)."""
         return self.call("trace_bundle", deadline, path=path, **fields)
 
+    def _arm_failover(self, failover):
+        """Called by ``Daemon.connect`` for a session on a hydra-lite daemon: from now on a request
+        answered ``use_full_daemon`` moves the whole session to the full daemon and is sent again
+        there (``_fail_over``). Needs a socket session."""
+        self._failover = failover
+
+    def _remap(self, fields: dict) -> dict:
+        """``fields`` with the project ids this session learned from the lite daemon replaced by
+        the ids the full daemon gave the same projects (``program`` ``p1:/a.exe`` and ``project``)."""
+        if not self._idmap:
+            return fields
+        out = dict(fields)
+        for key in ("program", "project"):
+            v = out.get(key)
+            if isinstance(v, str):
+                head, sep, rest = v.partition(":")
+                if head in self._idmap:
+                    out[key] = self._idmap[head] + sep + rest
+        return out
+
+    def _fail_over(self, refused: dict):
+        """The lite daemon answered ``use_full_daemon`` to a request (``refused`` is that answer).
+        Connect to the full daemon, replay what this session established on the lite one (the
+        successful ``hello``/``open_project``/``open_program``/``switch``/``close_*`` requests, in
+        order), swap the connection under this session, and send again every request that has no
+        answer yet, with its own id, so its waiter gets the full daemon's reply. Lite refuses a
+        write before it has any effect, so sending the request again is safe. Holds the read lock
+        of the caller. When the full daemon cannot be reached or does not take the replay, the
+        refusal itself is the answer, with ``details.failover`` saying why."""
+        fo, self._failover = self._failover, None
+        try:
+            with self._lock:
+                full = fo.connect_full()
+                try:
+                    idmap = {}
+                    for cmd, fields, old_id in self._journal:
+                        f = dict(fields)
+                        for key in ("program", "project"):
+                            v = f.get(key)
+                            if isinstance(v, str):
+                                head, sep, rest = v.partition(":")
+                                if head in idmap:
+                                    f[key] = idmap[head] + sep + rest
+                        f.pop("token", None)
+                        res = full.call(cmd, **f)
+                        if cmd == "open_project" and old_id and isinstance(res, dict) \
+                                and res.get("id") not in (None, old_id):
+                            idmap[old_id] = res["id"]
+                except BaseException:
+                    full.close()
+                    raise
+                old_sock = self.sock
+                self.sock, self._buf = full.sock, full._buf
+                full.sock = None
+                with contextlib.suppress(OSError):
+                    old_sock.shutdown(socket.SHUT_RDWR)
+                old_sock.close()
+                self.endpoint, self.hello, self.protocol = full.endpoint, full.hello, full.protocol
+                self.launch, self.started, self.warnings = full.launch, full.started, full.warnings
+                self.failed_over = True
+                self._idmap = idmap
+                for rid, (cmd, fields) in sorted(self._reqs.items()):
+                    if rid in self._abandoned:
+                        continue
+                    self._send(json.dumps({"id": rid, "cmd": cmd, **self._remap(fields)}) + "\n")
+        except (OSError, SessionError, LaunchError, ValueError) as e:
+            err = refused.setdefault("error", {})
+            details = err.get("details")
+            if not isinstance(details, dict):
+                details = err["details"] = {}
+            details["failover"] = str(e)
+            with self._done:
+                self._pending[refused.get("id")] = refused
+                self._done.notify_all()
+
     def _send_request(self, cmd: str, fields: dict, abandon: bool = False) -> int:
         with self._lock:
             self._id += 1
             rid = self._id
+            if self._failover is not None or self.failed_over:
+                fields = self._remap(fields)
+            if self._failover is not None:
+                self._reqs[rid] = (cmd, dict(fields))
             if abandon:  # before the line leaves: its answer may be the next thing read
                 with self._done:
                     self._abandoned.add(rid)
@@ -1539,6 +1632,7 @@ class _Base:
                     with self._done:
                         if rid in self._pending:
                             continue
+                    refused = None
                     if end is None:
                         line = self._recv()
                     else:
@@ -1553,15 +1647,26 @@ class _Base:
                             pass  # not protocol (a JVM message on stdout); ignore
                         else:
                             m = json.loads(line)
+                            if "id" not in m and _is_refusal(m):
+                                # the acceptor of a full hydra-lite daemon answers before it reads
+                                # a line, so it has no id: it is the answer to the first request
+                                m["id"] = 1
                             if "event" in m and "ok" not in m:
                                 self.events.append(m)
                                 if self.on_event:
                                     self.on_event(m)
                             elif m.get("id") in self._abandoned:
                                 self._abandoned.discard(m.get("id"))  # a late answer: dropped
+                                self._reqs.pop(m.get("id"), None)
+                            elif self._failover is not None and _is_refusal(m):
+                                refused = m
                             else:
+                                if self._failover is not None:
+                                    self._note(m)
                                 self._pending[m.get("id")] = m
                         self._done.notify_all()
+                    if refused is not None:
+                        self._fail_over(refused)
                 finally:
                     self._read_lock.release()
             else:
@@ -1577,11 +1682,38 @@ class _Base:
             raise SessionError(e.get("code"), e.get("message"), e.get("details"), e.get("trace"))
         return msg["result"]
 
+    def _note(self, m: dict):
+        """An answer arrived on a lite connection: forget the request, and keep it for the replay
+        when it changed what the daemon holds for this session."""
+        req = self._reqs.pop(m.get("id"), None)
+        if req and m.get("ok") and req[0] in LITE_STATE_COMMANDS:
+            result = m.get("result")
+            rid = result.get("id") if isinstance(result, dict) and req[0] == "open_project" else None
+            self._journal.append((req[0], req[1], rid))
+
     def __enter__(self):
         return self
 
     def __exit__(self, *exc):
         self.close()
+
+
+def _is_refusal(m: dict) -> bool:
+    """True for the answer ``use_full_daemon`` of a lite daemon (or of the acceptor, which sends
+    it without an id)."""
+    e = m.get("error")
+    return m.get("ok") is False and isinstance(e, dict) and e.get("code") == USE_FULL_DAEMON
+
+
+class _Failover:
+    """What a session on a lite daemon needs to move to the full one: the daemon it belongs to and
+    the labels it was opened with."""
+
+    def __init__(self, daemon, client: str, harness: str):
+        self.daemon, self.client, self.harness = daemon, client, harness
+
+    def connect_full(self):
+        return self.daemon.full().connect(self.client, self.harness)
 
 
 class Labelled:
@@ -1689,6 +1821,7 @@ class SocketSession(_Base):
         #: answer (2 against a hydra.2 or hydra.3 engine, up to ``PROTOCOL`` against a newer
         #: one). ``None`` until the answer is in, and when an unchecked answer carries none.
         self.protocol = None
+        self.failed_over = False
         try:
             self.hello = self.call("hello", token=endpoint["token"], client=client,
                                    harness=harness, clientVersion=CLIENT_VERSION,
@@ -2302,6 +2435,69 @@ def find_duplicate(install: "Install", state: Path, instance: str) -> dict | Non
 
 # ---- the shared daemon ----------------------------------------------------------------------
 
+#: The values of ``lite`` / ``HYDRA_LITE`` (HYDRA-LITE.md, "Clients").
+LITE_MODES = ("off", "auto", "only")
+#: The error code of a lite daemon that cannot answer a request exactly.
+USE_FULL_DAEMON = "use_full_daemon"
+#: Commands whose success changes what the daemon holds for this connection: replayed on the full
+#: daemon, in order, when a session moves there. (Lite answers no other state-changing command.)
+LITE_STATE_COMMANDS = frozenset({"hello", "open_project", "close_project", "open_program", "switch",
+                                 "close_program"})
+
+
+def lite_command_key(argv: list[str]) -> str:
+    """The key of a Java command line in the identity cache (FNV-1a over the arguments and a NUL
+    after each; the same function as ``hydra-front`` and ``hydra-lite``)."""
+    h = 0xcbf29ce484222325
+    for a in argv:
+        for b in a.encode("utf-8") + b"\0":
+            h ^= b
+            h = (h * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF
+    return f"{h:016x}"
+
+
+def _flag_value(argv: list[str], flag: str) -> str | None:
+    try:
+        return argv[argv.index(flag) + 1]
+    except (ValueError, IndexError):
+        return None
+
+
+def lite_identity_file(argv: list[str]) -> Path | None:
+    """``<stateDir>/<instance>.front-identity.json`` of a Java command line, where ``hydra-lite``
+    keeps what it learned of the engine."""
+    state, instance = _flag_value(argv, "-stateDir"), _flag_value(argv, "-instance")
+    return Path(state) / f"{instance}.front-identity.json" if state and instance else None
+
+
+def lite_has_identity(argv: list[str]) -> bool:
+    """True when the identity cache holds the engine's answers for exactly this command line."""
+    f = lite_identity_file(argv)
+    try:
+        return f is not None and json.loads(f.read_text(encoding="utf-8")).get("key") == \
+            lite_command_key(argv)
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def lite_exe(environ=None) -> Path | None:
+    """The ``hydra-lite`` executable: ``HYDRA_LITE_EXE``, else ``hydra-lite[.exe]`` next to this
+    file (where an install keeps ``hydra-agent``), else None."""
+    env = os.environ if environ is None else environ
+    name = "hydra-lite.exe" if IS_WINDOWS else "hydra-lite"
+    explicit = env.get("HYDRA_LITE_EXE")
+    for c in ([Path(explicit)] if explicit else []) + [Path(__file__).resolve().parent / name]:
+        if c.is_file():
+            return c
+    return None
+
+
+def full_instance(instance: str) -> str:
+    """The instance name of the full daemon that goes with a lite one: lite owns the endpoint file
+    and instance lock of ``instance``, so the JVM runs as ``<instance>.full``."""
+    return instance[:59] + ".full"
+
+
 def front_door_argv(argv: list[str], info: dict, environ=None) -> list[str]:
     """PROTOTYPE (h7): with ``GHIDRA_SESSION_FRONT`` naming a ``hydra-front`` binary, the daemon's
     command is the front door followed by the JVM command line it starts lazily (FRONT-DOOR.md).
@@ -2336,6 +2532,22 @@ class Daemon:
         #: The outcome of the last ``_spawn`` of this object (``spawn_daemon``'s dict).
         self.last_launch = None
         self._log_offset = 0
+        #: Set on the Daemon of ``<instance>.full``: never put hydra-lite or a front door in front.
+        self._full_daemon = False
+        self._last_argv: list[str] = []
+        self._teach: tuple[Path, list[str]] | None = None
+
+    def lite_mode(self) -> str:
+        """``off``, ``auto`` or ``only`` (config ``lite``, ``HYDRA_LITE``)."""
+        return "off" if self._full_daemon else load_config(self.state, self.cfg_overrides)["lite"]
+
+    def full(self) -> "Daemon":
+        """The daemon a session moves to when hydra-lite answers ``use_full_daemon``: a JVM of
+        the same install and state dir under the instance ``<instance>.full``."""
+        d = Daemon(self.ghidra, str(self.state), full_instance(self.instance),
+                   **{**self.cfg_overrides, "lite": "off"})
+        d._full_daemon = True
+        return d
 
     @property
     def log_file(self) -> Path:
@@ -2361,7 +2573,7 @@ class Daemon:
             lk.close()
 
     def _try_connect(self, client, harness, timeout=5.0, check=True,
-                     hello_deadline=None) -> SocketSession | None:
+                     hello_deadline=None, fallback=False) -> SocketSession | None:
         ep = self.read_endpoint()
         if not ep:
             return None
@@ -2372,7 +2584,13 @@ class Daemon:
         try:
             return SocketSession(ep, client=client, harness=harness, timeout=timeout,
                                  check=check, hello_deadline=hello_deadline)
-        except (OSError, SessionError, KeyError, ValueError):
+        except SessionError as e:
+            if fallback and e.code == USE_FULL_DAEMON and not self._full_daemon \
+                    and self.lite_mode() != "only":
+                # a lite daemon with all its workers busy: this caller goes to the full daemon
+                return self.full().connect(client, harness)
+            return None
+        except (OSError, KeyError, ValueError):
             return None
 
     def _check_install(self, ep: dict, install: Install):
@@ -2403,6 +2621,11 @@ class Daemon:
                 timeout: float = ENDPOINT_WAIT_S) -> SocketSession:
         """Joins the running daemon, starting it first if there is none (and ``start``).
 
+        With ``lite`` (config) / ``HYDRA_LITE`` set to ``auto`` or ``only`` the daemon started is
+        ``hydra-lite`` when it is installed and has learned this command line (HYDRA-LITE.md); a
+        session on a lite daemon moves by itself to the full daemon (``<instance>.full``) the
+        first time a request is answered ``use_full_daemon`` (not with ``only``).
+
         The session carries ``launch`` (how that daemon was started, see ``spawn_daemon``),
         ``started`` (this call started it) and ``warnings`` (``daemon_dies_with_harness``: the
         daemon runs in the job of the harness that started it and ends with it;
@@ -2414,11 +2637,18 @@ class Daemon:
         the wait for a spawned daemon to answer takes up to ``timeout`` again. The worst case
         is therefore about 2 x ``timeout`` plus the spawn time. A daemon that is alive but
         does not answer ``hello`` ends as ``no_answer``, not as a hang."""
+        s = self._connect(client, harness, start, timeout)
+        if s.endpoint.get("lite") and s._failover is None and not s.failed_over \
+                and self.lite_mode() != "only":
+            s._arm_failover(_Failover(self, client, harness))
+        return s
+
+    def _connect(self, client: str, harness: str, start: bool, timeout: float) -> SocketSession:
         install = Install.locate(self.ghidra)
         t_end = time.monotonic() + timeout
         # A daemon that is alive but wedged accepts the TCP connection and never answers hello:
         # every dial gets a deadline taken from the time that is left.
-        s = self._try_connect(client, harness, hello_deadline=_hello_left(t_end))
+        s = self._try_connect(client, harness, hello_deadline=_hello_left(t_end), fallback=True)
         if s:
             self._check_install(s.endpoint, install)
             return self._annotate(s)
@@ -2447,7 +2677,7 @@ class Daemon:
                                    "suggest": "wait for the other launcher, or find the process "
                                               "that holds the lock"})
             s = self._try_connect(client, harness,  # someone else started it meanwhile
-                                  hello_deadline=_hello_left(t_end))
+                                  hello_deadline=_hello_left(t_end), fallback=True)
             if s:
                 self._check_install(s.endpoint, install)
                 return self._annotate(s)
@@ -2473,6 +2703,7 @@ class Daemon:
                 _unregister_task(outcome["task_name"])  # the daemon is up: the entry has done its job
             public = {k: v for k, v in outcome.items() if not k.startswith("_")}
             self._after_start(install, s, public)
+            self._teach_lite()
             s.launch, s.started = public, True
             s.warnings = list(public.get("warnings") or []) + warnings
             return s
@@ -2614,7 +2845,12 @@ class Daemon:
         for d in cfg.get("scriptPath") or []:
             args += ["-scriptPath", d]
         argv, info = launch.command(args)
-        argv = front_door_argv(argv, info)
+        self._last_argv = list(argv)
+        self._teach = None
+        if not self._full_daemon:
+            argv = front_door_argv(argv, info)
+            if "front" not in info:
+                argv = self._lite_argv(argv, info, cfg)
         log = self.log_file
         log.parent.mkdir(parents=True, exist_ok=True)
         with contextlib.suppress(OSError):
@@ -2640,6 +2876,45 @@ class Daemon:
                                      wait_endpoint=endpoint_pid)
         self.last_launch = outcome
         return proc
+
+    def _lite_argv(self, argv: list[str], info: dict, cfg: dict) -> list[str]:
+        """``HYDRA_LITE`` auto / only: the command with hydra-lite in front of the JVM line when
+        it is installed and has learned this exact line; otherwise the JVM line (auto: the first
+        start of an instance teaches hydra-lite, see ``_teach_lite``) or ``LaunchError`` (only)."""
+        mode = cfg["lite"]
+        if mode == "off":
+            return argv
+        exe = lite_exe()
+        if exe is None:
+            if mode == "only":
+                raise LaunchError("HYDRA_LITE=only, but there is no hydra-lite (set HYDRA_LITE_EXE "
+                                  "or put hydra-lite next to ghidra_session.py)", "lite_unavailable")
+            return argv
+        if not lite_has_identity(argv):
+            if mode == "only":
+                raise LaunchError(
+                    "HYDRA_LITE=only, but hydra-lite has not learned this command line: start the "
+                    "daemon once with HYDRA_LITE=auto, or run `hydra-lite learn` (HYDRA-LITE.md)",
+                    "lite_unavailable")
+            info["lite"] = "learning"
+            self._teach = (exe, list(argv))
+            return argv
+        info["front"], info["lite"] = str(exe), mode
+        return [str(exe), *os.environ.get("HYDRA_LITE_OPTS", "").split(), "--", *argv]
+
+    def _teach_lite(self):
+        """The JVM daemon of an auto-mode instance is up: let a detached ``hydra-lite learn`` copy
+        its answers into the identity cache, so the next start of this instance can be lite. Best
+        effort; a failure only means the next start is a JVM again."""
+        if self._teach is None:
+            return
+        exe, argv = self._teach
+        self._teach = None
+        flags = (0x08000000 | 0x00000008) if IS_WINDOWS else 0  # CREATE_NO_WINDOW | DETACHED_PROCESS
+        with contextlib.suppress(OSError):
+            subprocess.Popen([str(exe), "learn", "--from", str(self.endpoint_file), "--", *argv],
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, creationflags=flags)
 
     def _wait_ready(self, proc, client, harness, timeout, since: int = 0,
                     asked: float | None = None) -> SocketSession:

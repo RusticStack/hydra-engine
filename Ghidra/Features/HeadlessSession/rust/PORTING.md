@@ -190,3 +190,10 @@ Verification: `cargo test -p hydra-lite` (34 tests), `cargo clippy --all-targets
 the Java daemon, key order and raw bytes included; 16 refusal probes). The workspace's
 `cargo fmt --check` also reports formatting differences in `hydra-client` and `hydra-agent`; they
 predate this crate and are not touched here.
+
+Clients: a lite daemon is only useful when the clients follow its refusal. `ghidra_session.py` and
+`hydra-client` (`lite.rs`: `LiteMode`, `FullDaemon`, `PythonLauncher`; `session.rs`: the replay of
+the state commands and the re-send of the unanswered requests) do, per HYDRA-LITE.md, "Clients".
+`hydra-client` has no launcher, so `PythonLauncher` runs `ghidra_session.py ... ensure` for the
+`<instance>.full` daemon. Tests: `crates/hydra-client/tests/lite_failover.rs` (a fake lite and a fake
+full daemon), `examples/cc_lite.py` (the same for Python), `reply_parity.py auto [--agent]`.

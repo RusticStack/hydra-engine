@@ -27,7 +27,9 @@
 use std::io::{BufRead, Write};
 use std::path::Path;
 
-use hydra_client::{ConnectOptions, Endpoint, Session};
+use std::sync::Arc;
+
+use hydra_client::{ConnectOptions, Endpoint, FullDaemon, LiteMode, Session};
 use serde_json::{Map, Value, json};
 
 /// Keep each answer's raw line, or only its parsed value.
@@ -50,15 +52,26 @@ pub(crate) fn run(
     client: &str,
     harness: &str,
     raw: KeepRaw,
+    full_daemon: Option<Arc<dyn FullDaemon>>,
 ) -> std::process::ExitCode {
+    let lite_mode = match LiteMode::from_env() {
+        Ok(mode) => mode,
+        Err(e) => {
+            eprintln!("hydra-agent call: {e}");
+            return std::process::ExitCode::from(2);
+        }
+    };
     let options = ConnectOptions {
         client: client.to_owned(),
         harness: harness.to_owned(),
         check: true,
         hello_deadline: Some(5.0),
         keep_raw: raw == KeepRaw::Keep,
+        full_daemon,
+        lite_mode,
     };
-    let session = match Endpoint::read_file(endpoint).and_then(|ep| Session::connect(ep, &options)) {
+    let session = match Endpoint::read_file(endpoint).and_then(|ep| Session::connect(ep, &options))
+    {
         Ok(session) => session,
         Err(e) => {
             eprintln!("hydra-agent call: {e}");
@@ -86,7 +99,10 @@ pub(crate) fn run(
                     Ok(fresh) => {
                         let protocol = fresh.protocol();
                         session = Some(fresh);
-                        format!("{}\n", json!({"ok": true, "result": {"protocol": protocol}}))
+                        format!(
+                            "{}\n",
+                            json!({"ok": true, "result": {"protocol": protocol}})
+                        )
                     }
                     Err(e) => client_side(&e),
                 }
@@ -96,9 +112,9 @@ pub(crate) fn run(
                     return std::process::ExitCode::FAILURE;
                 };
                 match current.call_raw(&cmd, request, deadline) {
-                    Ok(reply) => {
-                        reply.raw.unwrap_or_else(|| format!("{value}\n", value = reply.value))
-                    }
+                    Ok(reply) => reply
+                        .raw
+                        .unwrap_or_else(|| format!("{value}\n", value = reply.value)),
                     Err(e) => client_side(&e),
                 }
             }
@@ -149,6 +165,7 @@ pub(crate) fn probe(endpoint: &Path, client: &str, harness: &str) -> std::proces
         check: true,
         hello_deadline: Some(5.0),
         keep_raw: false,
+        ..ConnectOptions::default()
     };
     match Endpoint::read_file(endpoint).and_then(|ep| Session::connect(ep, &options)) {
         Ok(session) => {
