@@ -11,12 +11,16 @@
 //! is refused with a descriptive [`ProgError`] instead of being guessed at.
 
 mod addrmap;
+mod bodies;
 mod error;
 mod functions;
 mod listing;
 mod memory;
+mod memread;
+pub mod query;
 mod references;
 mod symbols;
+mod symtab;
 
 use std::collections::BTreeMap;
 
@@ -25,12 +29,15 @@ use ghidra_fmt_field::{Field, Record, Schema};
 use ghidra_fmt_gbf::BufferStore;
 
 pub use addrmap::{Address, AddressMap, AddressSpaces, SpaceDef};
+pub use bodies::{AddressRange, Variable};
 pub use error::ProgError;
 pub use functions::Function;
 pub use listing::{Comments, DataRow, InstructionRow};
 pub use memory::{MemoryBlock, SubBlock, SubBlockKind};
+pub use memread::{ByteMappingScheme, Memory};
 pub use references::{RefKind, Reference, ref_type_name};
 pub use symbols::{SourceType, Symbol};
+pub use symtab::SymbolTable;
 
 /// Result type of this crate.
 pub type Result<T> = std::result::Result<T, ProgError>;
@@ -48,6 +55,7 @@ pub struct ProgramDb<S: BufferStore> {
     stored_version: i32,
     metadata: BTreeMap<String, String>,
     address_map: AddressMap,
+    blocks: std::sync::OnceLock<Vec<MemoryBlock>>,
 }
 
 impl<S: BufferStore> ProgramDb<S> {
@@ -102,6 +110,7 @@ impl<S: BufferStore> ProgramDb<S> {
             stored_version,
             metadata,
             address_map,
+            blocks: std::sync::OnceLock::new(),
         };
         me.check_table_versions()?;
         Ok(me)
@@ -140,10 +149,12 @@ impl<S: BufferStore> ProgramDb<S> {
         };
         optional("Function Data", &[3])?;
         optional("Thunk Functions", &[0])?;
+        optional("Variable Storage", &[2])?;
         optional("FROM REFS", &[0])?;
         optional("TO REFS", &[1])?;
         optional("Instructions", &[1])?;
         optional("Data", &[0])?;
+        optional("File Bytes", &[0])?;
         optional("Comments", &[1])
     }
 
@@ -187,6 +198,23 @@ impl<S: BufferStore> ProgramDb<S> {
         memory::read_blocks(&self.db, &self.address_map)
     }
 
+    /// The symbols indexed for the `SymbolManager` queries (see [`SymbolTable`]).
+    pub fn symbol_table(&self) -> Result<SymbolTable> {
+        SymbolTable::build(&self.db, &self.address_map, self.symbols()?)
+    }
+
+    /// The bytes of the program (`Memory.getBytes` and friends).
+    pub fn memory(&self) -> Result<Memory<'_, S>> {
+        let blocks = match self.blocks.get() {
+            Some(b) => b,
+            None => {
+                let read = self.memory_blocks()?;
+                self.blocks.get_or_init(|| read)
+            }
+        };
+        Ok(Memory::new(&self.db, &self.address_map, blocks))
+    }
+
     /// Every record of the symbol table in id order.
     pub fn symbols(&self) -> Result<Vec<Symbol>> {
         symbols::read_symbols(&self.db, &self.address_map)
@@ -201,6 +229,20 @@ impl<S: BufferStore> ProgramDb<S> {
             .map(|s| (s.id, s.address))
             .collect();
         functions::read_functions(&self.db, &addresses)
+    }
+
+    /// The body (merged address ranges) of every function, by function id.
+    ///
+    /// A body is the ranges painted for the function in "Range Map - SCOPE ADDRESSES" plus the
+    /// bodies of the namespaces nested under it (`NamespaceManager.getAddressSet`).
+    pub fn function_bodies(&self) -> Result<BTreeMap<i64, Vec<AddressRange>>> {
+        let ids: Vec<i64> = self.functions()?.iter().map(|f| f.id).collect();
+        bodies::function_bodies(&self.db, &self.address_map, &self.symbols()?, &ids)
+    }
+
+    /// Every parameter and local variable symbol in symbol id order.
+    pub fn variables(&self) -> Result<Vec<Variable>> {
+        bodies::read_variables(&self.db, &self.symbols()?)
     }
 
     /// Every "FROM REFS" row in key order: the from address and its references.

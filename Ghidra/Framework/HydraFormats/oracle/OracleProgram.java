@@ -18,6 +18,7 @@ import ghidra.program.model.symbol.SourceType;
 import ghidra.program.model.symbol.Symbol;
 import ghidra.util.task.TaskMonitor;
 import ghidra.program.model.address.AddressIterator;
+import ghidra.program.model.address.AddressRange;
 import ghidra.program.model.address.AddressSetView;
 import ghidra.program.model.listing.*;
 import ghidra.program.model.symbol.*;
@@ -102,8 +103,192 @@ public class OracleProgram {
                 + s.isPrimary() + " pinned=" + s.isPinned());
         }
         dumpListing(p);
+        dumpMemory(p);
+        dumpSymbolQueries(p);
         p.release(OracleProgram.class);
         System.exit(0);
+    }
+
+    static String sha(byte[] b, int n) throws Exception {
+        java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+        md.update(b, 0, n);
+        StringBuilder sb = new StringBuilder();
+        for (byte x : md.digest()) {
+            sb.append(String.format("%02x", x));
+        }
+        return sb.toString();
+    }
+
+    static void memRead(ghidra.program.model.mem.Memory mem, Address a, int len) throws Exception {
+        byte[] buf = new byte[len];
+        try {
+            int n = mem.getBytes(a, buf, 0, len);
+            System.out.println("memread addr=" + addr(a) + " len=" + len + " n=" + n + " sha256="
+                + sha(buf, n));
+        }
+        catch (ghidra.program.model.mem.MemoryAccessException e) {
+            System.out.println("memread addr=" + addr(a) + " len=" + len + " error");
+        }
+    }
+
+    static void dumpMemory(ProgramDB p) throws Exception {
+        ghidra.program.model.mem.Memory mem = p.getMemory();
+        for (MemoryBlock b : mem.getBlocks()) {
+            Address s = b.getStart();
+            int size = (int) b.getSize();
+            byte[] buf = new byte[size];
+            try {
+                int n = mem.getBytes(s, buf, 0, size);
+                System.out.println("memblock name=" + b.getName() + " n=" + n + " sha256="
+                    + sha(buf, n));
+            }
+            catch (ghidra.program.model.mem.MemoryAccessException e) {
+                System.out.println("memblock name=" + b.getName() + " error");
+            }
+            memRead(mem, s, 16);
+            memRead(mem, b.getEnd().subtract(7), 32);
+            memRead(mem, b.getEnd().subtract(3), 4096);
+            memRead(mem, s.add(size / 2), 4096);
+            try {
+                memRead(mem, s.subtract(1), 8);
+            }
+            catch (Exception e) {
+                System.out.println("memread before-start skipped");
+            }
+        }
+    }
+
+    static String ids(java.util.Collection<? extends Symbol> list) {
+        StringBuilder sb = new StringBuilder();
+        for (Symbol s : list) {
+            if (sb.length() > 0) {
+                sb.append(',');
+            }
+            sb.append(s.getID());
+        }
+        return sb.toString();
+    }
+
+    static void dumpSymbolQueries(ProgramDB p) throws Exception {
+        SymbolTable st = p.getSymbolTable();
+        long maxId = p.getDBHandle().getTable("Symbols").getMaxKey();
+        List<Symbol> syms = new ArrayList<>();
+        for (long id = 1; id <= maxId; id++) {
+            Symbol s = st.getSymbol(id);
+            if (s != null) {
+                syms.add(s);
+            }
+        }
+        // names Java computes for default functions and parameters
+        List<String[]> rows = new ArrayList<>();
+        for (Symbol s : syms) {
+            int t = s.getSymbolType().getID();
+            if (s.getSource() == SourceType.DEFAULT && (t == 5 || t == 6)) {
+                rows.add(new String[] { String.format("%020d", s.getID()),
+                    "symname id=" + s.getID() + " name=[" + esc(s.getName()) + "]" });
+            }
+        }
+        System.out.println("symnames=" + rows.size());
+        emit(rows);
+        // symbols at each distinct symbol address, and the primary symbol there
+        rows = new ArrayList<>();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (Symbol s : syms) {
+            Address at = s.getAddress();
+            if (at.isStackAddress() || at.isRegisterAddress() || at.isVariableAddress()
+                || !seen.add(addr(at))) {
+                continue;
+            }
+            Symbol[] list = st.getSymbols(at);
+            StringBuilder sb = new StringBuilder();
+            for (Symbol x : list) {
+                if (sb.length() > 0) {
+                    sb.append(',');
+                }
+                sb.append(x.getID());
+            }
+            Symbol prim = st.getPrimarySymbol(at);
+            long pid = prim == null || prim.isDynamic() ? -1 : prim.getID();
+            rows.add(new String[] { addr(at), "symat addr=" + addr(at) + " ids=[" + sb
+                + "] primary=" + pid });
+        }
+        System.out.println("symat=" + rows.size());
+        emit(rows);
+        // by name over all namespaces, and by name within a namespace
+        rows = new ArrayList<>();
+        java.util.Set<String> names = new java.util.TreeSet<>();
+        java.util.Set<String> pairs = new java.util.TreeSet<>();
+        for (Symbol s : syms) {
+            if (s.getSource() != SourceType.DEFAULT) {
+                names.add(s.getName());
+                pairs.add(s.getName() + "\u0000" + (s.getParentSymbol() == null ? 0
+                    : s.getParentSymbol().getID()));
+            }
+        }
+        for (Symbol s : syms) {
+            int t = s.getSymbolType().getID();
+            if (s.getSource() == SourceType.DEFAULT && (t == 5 || t == 6)) {
+                names.add(s.getName());
+                pairs.add(s.getName() + "\u0000" + s.getParentNamespace().getID());
+            }
+        }
+        for (String n : names) {
+            List<Symbol> found = new ArrayList<>();
+            for (SymbolIterator it = st.getSymbols(n); it.hasNext();) {
+                found.add(it.next());
+            }
+            rows.add(new String[] { n, "symbyname name=[" + esc(n) + "] ids=[" + ids(found) + "]" });
+        }
+        System.out.println("symbynames=" + rows.size());
+        emit(rows);
+        rows = new ArrayList<>();
+        for (String pr : pairs) {
+            String n = pr.substring(0, pr.indexOf('\u0000'));
+            long nsId = Long.parseLong(pr.substring(pr.indexOf('\u0000') + 1));
+            Namespace ns;
+            if (nsId == 0) {
+                ns = p.getGlobalNamespace();
+            }
+            else {
+                Object o = st.getSymbol(nsId).getObject();
+                if (!(o instanceof Namespace)) {
+                    continue;
+                }
+                ns = (Namespace) o;
+            }
+            rows.add(new String[] { String.format("%020d", nsId) + n, "symbyns name=[" + esc(n)
+                + "] ns=" + nsId + " ids=[" + ids(st.getSymbols(n, ns)) + "]" });
+        }
+        System.out.println("symbyns=" + rows.size());
+        emit(rows);
+        // children of every namespace
+        rows = new ArrayList<>();
+        java.util.Set<Long> nsIds = new java.util.TreeSet<>();
+        nsIds.add(0L);
+        for (Symbol s : syms) {
+            nsIds.add(s.getParentSymbol() == null ? 0L : s.getParentSymbol().getID());
+        }
+        for (long nsId : nsIds) {
+            List<Symbol> kids = new ArrayList<>();
+            if (nsId == 0) {
+                for (SymbolIterator it = st.getSymbols(p.getGlobalNamespace()); it.hasNext();) {
+                    kids.add(it.next());
+                }
+            }
+            else {
+                Object o = st.getSymbol(nsId).getObject();
+                if (!(o instanceof Namespace)) {
+                    continue;
+                }
+                for (SymbolIterator it = st.getSymbols((Namespace) o); it.hasNext();) {
+                    kids.add(it.next());
+                }
+            }
+            rows.add(new String[] { String.format("%020d", nsId), "symchildren ns=" + nsId
+                + " ids=[" + ids(kids) + "]" });
+        }
+        System.out.println("symchildren=" + rows.size());
+        emit(rows);
     }
 
     static String esc(String s) {
@@ -151,6 +336,53 @@ public class OracleProgram {
                     + " sigsrc=" + f.getSignatureSource().name());
             }
         }
+        // bodies, stack frame return offset, stored variables
+        List<String[]> varRows = new ArrayList<>();
+        for (Function f : fns) {
+            StringBuilder body = new StringBuilder();
+            for (AddressRange r : f.getBody().getAddressRanges()) {
+                body.append(addr(r.getMinAddress())).append('-').append(addr(r.getMaxAddress()))
+                    .append(';');
+            }
+            System.out.println("fnbody id=" + f.getID() + " ranges=[" + body + "]");
+            if (f.isThunk()) {
+                continue;
+            }
+            System.out.println("fnframe id=" + f.getID() + " retoff="
+                + f.getStackFrame().getReturnAddressOffset());
+            int autoCount = 0;
+            for (Parameter pr : f.getParameters()) {
+                if (pr.isAutoParameter()) {
+                    autoCount++;
+                }
+            }
+            boolean custom = f.hasCustomVariableStorage();
+            List<Variable> vars = new ArrayList<>();
+            for (Parameter pr : f.getParameters()) {
+                if (!pr.isAutoParameter()) {
+                    vars.add(pr);
+                }
+            }
+            for (Variable v : f.getLocalVariables()) {
+                vars.add(v);
+            }
+            for (Variable v : vars) {
+                boolean param = v instanceof Parameter;
+                Symbol sym = v.getSymbol();
+                String name = sym.getSource() == SourceType.DEFAULT ? "" : sym.getName();
+                String ord = param ? Integer.toString(((Parameter) v).getOrdinal() - autoCount) : "-";
+                String first = param ? "-" : Integer.toString(v.getFirstUseOffset());
+                String storage = param && !custom ? "-" : v.getVariableStorage().getSerializationString();
+                varRows.add(new String[] {
+                    String.format("%020d %s %020d", f.getID(), param ? "param" : "local", sym.getID()),
+                    "fnvar fn=" + f.getID() + " sym=" + sym.getID() + " kind=" + (param ? "param" : "local")
+                        + " name=[" + name + "] src=" + sym.getSource().name() + " ord=" + ord
+                        + " first=" + first + " dt=" + p.getDataTypeManager().getID(v.getDataType())
+                        + " storage=[" + storage + "]" });
+            }
+        }
+        System.out.println("fnvars=" + varRows.size());
+        emit(varRows);
         ghidra.program.model.address.AddressSet all = new ghidra.program.model.address.AddressSet();
         for (AddressSpace sp : p.getAddressFactory().getAllAddressSpaces()) {
             if (sp.isMemorySpace() || sp.isExternalSpace()) {

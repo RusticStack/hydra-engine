@@ -4,8 +4,10 @@
 
 use std::path::{Path, PathBuf};
 
+mod common;
+
 use ghidra_fmt_gbf::BufferFile;
-use ghidra_progdb::{AddressSpaces, ProgramDb, RefKind, SpaceDef};
+use ghidra_progdb::{Address, AddressSpaces, ProgramDb, RefKind, SpaceDef};
 
 fn fixture(dir: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -144,6 +146,8 @@ fn check(dir: &str) {
         })
         .collect();
     got.extend(listing_lines(&db));
+    got.extend(memory_lines(&db));
+    got.extend(symbol_query_lines(&db));
     let got_refs: Vec<&str> = got.iter().map(String::as_str).collect();
     for (i, (g, w)) in got_refs.iter().zip(&want).enumerate() {
         assert_eq!(g, w, "line {i}");
@@ -208,6 +212,53 @@ fn listing_lines(db: &ProgramDb<BufferFile>) -> Vec<String> {
             ));
         }
     }
+
+    // bodies, stack frame return offset and stored variables
+    let bodies = db.function_bodies().unwrap();
+    let variables = db.variables().unwrap();
+    let mut var_rows = Vec::new();
+    for f in &fns {
+        let body: String = bodies[&f.id]
+            .iter()
+            .map(|r| format!("{r};"))
+            .collect::<Vec<_>>()
+            .concat();
+        out.push(format!("fnbody id={} ranges=[{body}]", f.id));
+        if f.is_thunk() {
+            continue;
+        }
+        out.push(format!(
+            "fnframe id={} retoff={}",
+            f.id, f.stack_return_offset
+        ));
+        for v in variables.iter().filter(|v| v.function_id == f.id) {
+            let kind = if v.is_parameter { "param" } else { "local" };
+            let name = if v.source == ghidra_progdb::SourceType::Default {
+                ""
+            } else {
+                &v.name
+            };
+            let ord = v.ordinal.map_or("-".to_owned(), |o| o.to_string());
+            let first = v.first_use_offset.map_or("-".to_owned(), |o| o.to_string());
+            let storage = if v.is_parameter && !f.has_custom_storage() {
+                "-"
+            } else {
+                v.storage.as_deref().unwrap_or("")
+            };
+            var_rows.push((
+                format!("{:020} {kind} {:020}", f.id, v.symbol_id),
+                format!(
+                    "fnvar fn={} sym={} kind={kind} name=[{name}] src={} ord={ord} first={first} dt={} storage=[{storage}]",
+                    f.id,
+                    v.symbol_id,
+                    v.source.name(),
+                    v.datatype_id.unwrap_or(-1)
+                ),
+            ));
+        }
+    }
+    out.push(format!("fnvars={}", var_rows.len()));
+    emit(&mut out, var_rows);
 
     let mut rows = Vec::new();
     for (owner, refs) in db.references_from().unwrap() {
@@ -276,6 +327,185 @@ fn listing_lines(db: &ProgramDb<BufferFile>) -> Vec<String> {
         }
     }
     out.push(format!("comments={}", rows.len()));
+    emit(&mut out, rows);
+    out
+}
+
+fn mem_read_line(
+    mem: &ghidra_progdb::Memory<'_, BufferFile>,
+    addr: &Address,
+    len: usize,
+) -> String {
+    match mem.read(addr, len) {
+        Ok(b) => format!(
+            "memread addr={addr} len={len} n={} sha256={}",
+            b.len(),
+            common::sha256_hex(&b)
+        ),
+        Err(_) => format!("memread addr={addr} len={len} error"),
+    }
+}
+
+fn shift(addr: &Address, delta: i64) -> Address {
+    match addr {
+        Address::Space { space, offset } => Address::Space {
+            space: space.clone(),
+            offset: offset.wrapping_add_signed(delta),
+        },
+        other => other.clone(),
+    }
+}
+
+fn memory_lines(db: &ProgramDb<BufferFile>) -> Vec<String> {
+    let mem = db.memory().unwrap();
+    let mut out = Vec::new();
+    for b in mem.blocks() {
+        match mem.read(&b.start, b.length as usize) {
+            Ok(bytes) => out.push(format!(
+                "memblock name={} n={} sha256={}",
+                b.name,
+                bytes.len(),
+                common::sha256_hex(&bytes)
+            )),
+            Err(_) => out.push(format!("memblock name={} error", b.name)),
+        }
+        let end = shift(&b.start, b.length - 1);
+        out.push(mem_read_line(&mem, &b.start, 16));
+        out.push(mem_read_line(&mem, &shift(&end, -7), 32));
+        out.push(mem_read_line(&mem, &shift(&end, -3), 4096));
+        out.push(mem_read_line(&mem, &shift(&b.start, b.length / 2), 4096));
+        out.push(mem_read_line(&mem, &shift(&b.start, -1), 8));
+    }
+    out
+}
+
+fn ids_of(list: &[&ghidra_progdb::Symbol]) -> String {
+    list.iter()
+        .map(|s| s.id.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn symbol_query_lines(db: &ProgramDb<BufferFile>) -> Vec<String> {
+    use ghidra_progdb::SourceType;
+    use std::collections::BTreeSet;
+    let st = db.symbol_table().unwrap();
+    let spaces = db.address_map().spaces();
+    let mut out = Vec::new();
+    let is_default_fn_or_param = |s: &ghidra_progdb::Symbol| {
+        s.source == SourceType::Default && (s.symbol_type == 5 || s.symbol_type == 6)
+    };
+
+    let rows: Vec<(String, String)> = st
+        .all()
+        .iter()
+        .filter(|s| is_default_fn_or_param(s))
+        .map(|s| {
+            (
+                format!("{:020}", s.id),
+                format!("symname id={} name=[{}]", s.id, esc(&st.name(s).unwrap())),
+            )
+        })
+        .collect();
+    out.push(format!("symnames={}", rows.len()));
+    emit(&mut out, rows);
+
+    let mut rows = Vec::new();
+    let mut seen = BTreeSet::new();
+    for s in st.all() {
+        if let Address::Space { space, .. } = &s.address
+            && (*space == spaces.stack_space
+                || *space == spaces.register_space
+                || space == "VARIABLE")
+        {
+            continue;
+        }
+        let key = s.address.to_string();
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        let primary = st.primary_at(&s.address).map_or(-1, |p| p.id);
+        rows.push((
+            key.clone(),
+            format!(
+                "symat addr={key} ids=[{}] primary={primary}",
+                ids_of(&st.at(&s.address))
+            ),
+        ));
+    }
+    out.push(format!("symat={}", rows.len()));
+    emit(&mut out, rows);
+
+    let mut names = BTreeSet::new();
+    let mut pairs = BTreeSet::new();
+    for s in st.all() {
+        if s.source != SourceType::Default {
+            names.insert(s.name.clone());
+            pairs.insert((s.name.clone(), s.parent_id));
+        }
+    }
+    for s in st.all() {
+        if is_default_fn_or_param(s) {
+            let n = st.name(s).unwrap();
+            names.insert(n.clone());
+            pairs.insert((n, st.parent_namespace_id(s)));
+        }
+    }
+    let rows: Vec<(String, String)> = names
+        .iter()
+        .map(|n| {
+            (
+                n.clone(),
+                format!(
+                    "symbyname name=[{}] ids=[{}]",
+                    esc(n),
+                    ids_of(&st.by_name(n))
+                ),
+            )
+        })
+        .collect();
+    out.push(format!("symbynames={}", rows.len()));
+    emit(&mut out, rows);
+
+    let is_namespace = |id: i64| {
+        id == 0
+            || st
+                .get(id)
+                .is_some_and(|s| matches!(s.symbol_type, 1 | 3 | 4 | 5))
+    };
+    let rows: Vec<(String, String)> = pairs
+        .iter()
+        .filter(|(_, ns)| is_namespace(*ns))
+        .map(|(n, ns)| {
+            (
+                format!("{ns:020}{n}"),
+                format!(
+                    "symbyns name=[{}] ns={ns} ids=[{}]",
+                    esc(n),
+                    ids_of(&st.by_name_in_namespace(n, *ns))
+                ),
+            )
+        })
+        .collect();
+    out.push(format!("symbyns={}", rows.len()));
+    emit(&mut out, rows);
+
+    let mut ns_ids = BTreeSet::new();
+    ns_ids.insert(0i64);
+    for s in st.all() {
+        ns_ids.insert(s.parent_id);
+    }
+    let rows: Vec<(String, String)> = ns_ids
+        .iter()
+        .filter(|id| is_namespace(**id))
+        .map(|id| {
+            (
+                format!("{id:020}"),
+                format!("symchildren ns={id} ids=[{}]", ids_of(&st.children(*id))),
+            )
+        })
+        .collect();
+    out.push(format!("symchildren={}", rows.len()));
     emit(&mut out, rows);
     out
 }
