@@ -136,9 +136,11 @@ impl Identity {
         }
         hello_result.members()?;
         endpoint.members()?;
+        let mut endpoint = endpoint.clone();
+        endpoint.remove("lite");
         Some(Self {
             hello: hello_result.clone(),
-            endpoint: endpoint.clone(),
+            endpoint,
         })
     }
 
@@ -203,7 +205,7 @@ impl Identity {
     }
 
     /// The endpoint file this daemon publishes: the learned one with the live pid, port, token,
-    /// start time and instance.
+    /// start time and instance, and `"lite":true`.
     #[must_use]
     pub fn endpoint_file(&self, live: &Live<'_>, token: &str) -> Json {
         let mut e = self.endpoint.clone();
@@ -212,6 +214,8 @@ impl Identity {
         e.put("token", Json::str(token));
         e.put("started", Json::uint(live.started_at));
         e.put("instance", Json::str(live.instance));
+        // clients that see this key move a session to the full daemon on `use_full_daemon`
+        e.put("lite", Json::Bool(true));
         e
     }
 }

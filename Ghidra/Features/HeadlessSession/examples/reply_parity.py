@@ -21,6 +21,9 @@ install, keep every reply line (masked), and compare two recordings. Standard li
     python reply_parity.py --selftest                          # the masks and compare, offline
     python reply_parity.py lite --ghidra <install dir> --work <empty dir> --lite <hydra-lite.exe>
                                                                # Java daemon vs hydra-lite (HYDRA-LITE.md)
+    python reply_parity.py auto --ghidra <install dir> --work <empty dir> --lite <hydra-lite.exe>
+                               [--agent <hydra-agent.exe>]
+                                                               # HYDRA_LITE=auto vs off, same final replies
 
 ``--ghidra`` is the install root (the directory that holds ``Ghidra/``, for example
 ``C:\\dev-overflow\\hydra-engines\\final2b\\ghidra_12.3_DEV``). The client is the install's own
@@ -891,16 +894,23 @@ def narrow(line, subs):
     return line
 
 
-def compare_lite(jrec, lrec, jraw, lraw, jwork, lwork, out=sys.stdout):
+def compare_lite(jrec, lrec, jraw, lraw, jwork, lwork, out=sys.stdout, describes_daemon=()):
     """Java records against lite records of the same corpus: the masked reply with the key order
     kept, and the raw line with only ids, timings and the work directory replaced. Returns the
-    number of differences."""
+    number of differences. The replies of the commands in ``describes_daemon`` (``status``: the
+    instance name, the other clients, the scheduler counters of one particular daemon) only have
+    to agree on ``ok``."""
     diffs = 0
     if len(jrec) != len(lrec) or len(jraw) != len(lraw):
         out.write(f"record counts differ: java {len(jrec)}/{len(jraw)}, "
                   f"lite {len(lrec)}/{len(lraw)}\n")
         return 1
     for i, (x, y) in enumerate(zip(jrec, lrec), 1):
+        if x.get("cmd") in describes_daemon and y.get("cmd") == x.get("cmd"):
+            if (x.get("reply") or {}).get("ok") != (y.get("reply") or {}).get("ok"):
+                diffs += 1
+                out.write(f"--- request {i}: {x.get('cmd')} ok differs\n")
+            continue
         sx = json.dumps({k: v for k, v in x.items() if k != "n"}, ensure_ascii=True)
         sy = json.dumps({k: v for k, v in y.items() if k != "n"}, ensure_ascii=True)
         if sx != sy:
@@ -910,7 +920,7 @@ def compare_lite(jrec, lrec, jraw, lraw, jwork, lwork, out=sys.stdout):
                 _block(x), _block(y), fromfile="java", tofile="lite", lineterm=""))
     # the raw lines: hello carries per-process figures the mask hides, so it is compared masked only
     for i, ((_w, cj, lj), (_w2, _cl, ll)) in enumerate(zip(jraw, lraw), 1):
-        if cj == "hello":
+        if cj == "hello" or cj in describes_daemon:
             continue
         x = narrow(lj, [(str(jwork), "<WORK>")])
         y = narrow(ll, [(str(lwork), "<WORK>"), (str(jwork), "<WORK>")])
@@ -1048,7 +1058,8 @@ def run_lite(a):
         stop(jd)
         jd = None
         os.environ["GHIDRA_SESSION_FRONT"] = str(exe)
-        ld = gl.Daemon(install, str(lstate), "rp-lite")
+        # mode "only": a refusal is the answer, the session must not move to the full daemon
+        ld = gl.Daemon(install, str(lstate), "rp-lite", lite="only")
         lfh = outs["lite"][1].open("w", encoding="utf-8", newline="\n")
         lrec = Recorder(outs["lite"][0], lfh, log)
         lrec.raws = []
@@ -1095,6 +1106,176 @@ def run_lite(a):
     log(f"{'PASS' if problems == 0 else 'FAIL'}: {problems} problems; "
         f"records in {outs['java'][1]} and {outs['lite'][1]}")
     return 0 if problems == 0 else 1
+
+
+# ---- HYDRA_LITE=auto against HYDRA_LITE=off ------------------------------------------------
+
+def sec_auto(a, b, rec, P, P2):
+    """The corpus of the auto test: what hydra-lite answers (its sections), then the read corpus
+    of this file, whose first ``status`` / ``decompile`` the lite daemon refuses: the sessions move
+    to the full daemon there and everything after runs on it."""
+    sec_lite(a, b, rec, P, P2)
+    rec.lite_records = rec.n
+    # Two sessions of one lite daemon that move to the full daemon one after the other would, in
+    # between, see the same projects through two different daemons (the `users` lists, `joined`):
+    # that split is real and documented (HYDRA-LITE.md), so the corpus moves both here, with a
+    # command lite refuses and whose answer does not depend on the daemon.
+    a.ok("overlays")
+    b.ok("overlays")
+    sec_read(a, rec, P)
+    sec_multi(a, b, rec, P)
+
+
+RUST_REQUESTS = [
+    ("open_project", {"path": "@PROJECT@"}),
+    ("open_program", {"path": "/alpha.exe"}),
+    ("functions", {}),
+    ("functions", {"limit": 2, "offset": 1}),
+    ("info", {}),
+    ("decompile", {"name": "entry"}),
+    ("decompile", {"name": "nothing_here"}),
+    ("functions", {"contains": "FUN"}),
+    ("decompile", {"address": "rva:0x1020", "timeout": 30}),
+]
+
+
+def rust_phase(a, mode, state, instance, project, install, log):
+    """The requests of RUST_REQUESTS through ``hydra-agent call`` (the Rust client) against the
+    daemon of ``instance``; the raw reply lines. With HYDRA_LITE=auto that daemon is hydra-lite, and
+    the first ``info`` moves the session to the full daemon."""
+    lines = []
+    for cmd, f in RUST_REQUESTS:
+        f = {k: (project if v == "@PROJECT@" else v) for k, v in f.items()}
+        lines.append(json.dumps({"cmd": cmd, **f}))
+    env = dict(os.environ)
+    env["HYDRA_LITE"] = mode
+    env["HYDRA_PYTHON"] = sys.executable
+    argv = [str(a.agent), "call", "--endpoint", str(pathlib.Path(state) / f"{instance}.json"),
+            "--client", "rp-rust", "--harness", "rp-h", "--keep-raw", "--session-py",
+            str(HERE.parent / "support" / "ghidra_session.py"), "--ghidra", install]
+    out = subprocess.run(argv, input="\n".join(lines) + "\n", capture_output=True, text=True,
+                         env=env, timeout=600, check=False)
+    got = [ln for ln in out.stdout.splitlines() if ln.strip()]
+    if out.returncode != 0 or len(got) != len(lines):
+        raise Harness(f"hydra-agent call ({mode}) exited {out.returncode} with {len(got)} of "
+                      f"{len(lines)} answers: {out.stderr.strip()[-600:]}")
+    log(f"rust client, HYDRA_LITE={mode}: {len(got)} answers")
+    return got
+
+
+def run_auto(a):
+    install = str(pathlib.Path(a.ghidra).absolute())
+    work = pathlib.Path(a.work).absolute()
+    exe = pathlib.Path(a.lite).absolute()
+    if work.exists() and any(work.iterdir()):
+        print(f"error: --work {work} is not empty", file=sys.stderr)
+        return 2
+    if not exe.is_file():
+        print(f"error: --lite {exe} is not a file", file=sys.stderr)
+        return 2
+    work.mkdir(parents=True, exist_ok=True)
+    t0 = time.monotonic()
+
+    def log(msg):
+        print(f"[{time.monotonic() - t0:7.1f}s] {msg}", file=sys.stderr, flush=True)
+
+    gs = ct.load_client("install", install)  # builds the fixture, as the other modes do
+    gl = load_repo_client()                  # both runs use the client under test
+    side = {n: work / n for n in ("off", "auto")}
+    for w in side.values():
+        w.mkdir()
+    scripts, bins, ostate = write_inputs(side["off"])
+    _s, _b, astate = write_inputs(side["auto"])
+    base = build_fixture(gs, install, side["off"], ostate, scripts, bins, log)
+    saved = {k: os.environ.pop(k, None) for k in ("HYDRA_LITE", "HYDRA_LITE_EXE", "HYDRA_LITE_OPTS",
+                                                  "GHIDRA_SESSION_FRONT")}
+    outs, runs, daemons, rust = {}, {}, [], {}
+    try:
+        for n, w in side.items():
+            masker = ParityMasker([(str(w), "<WORK>"), (install, "<INSTALL>"),
+                                   (str(w.resolve()), "<WORK>"), (str(side["off"]), "<WORK>")])
+            path = pathlib.Path(a.out_dir or work) / f"auto-{n}.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            outs[n] = (masker, path)
+        os.environ["HYDRA_LITE_EXE"] = str(exe)
+        for n, state, mode in (("off", ostate, "off"), ("auto", astate, "auto")):
+            d = gl.Daemon(install, str(state), "rp-auto", lite=mode)
+            daemons.append(d)
+            if n == "auto":
+                # the first start of an instance is the JVM, and teaches hydra-lite; the second is lite
+                s = d.connect("rp-teach", "rp-h")
+                if s.endpoint.get("lite"):
+                    raise Harness("the first auto start was lite: it had nothing to learn from")
+                s.close()
+                end = time.monotonic() + 120
+                while not gl.lite_has_identity(d._last_argv):
+                    if time.monotonic() > end:
+                        raise Harness("hydra-lite did not learn the identity within 120 s")
+                    time.sleep(0.2)
+                log("hydra-lite learned the identity from the JVM daemon the launcher started")
+                if not d.stop():
+                    raise Harness("the teaching JVM daemon did not stop")
+            fh = outs[n][1].open("w", encoding="utf-8", newline="\n")
+            rec = Recorder(outs[n][0], fh, log)
+            rec.raws = []
+            rec.lite_records = 0
+            ca = Conn(rec, d.connect("rp-a", "rp-h"), "a", gl.SessionError)
+            ca.work = side[n]
+            cb = None
+            try:
+                if n == "auto":
+                    pid = ca.s.endpoint.get("pid")
+                    if not ca.s.endpoint.get("lite") or "hydra-lite" not in (process_name(pid) or ""):
+                        raise Harness(f"the auto daemon is not hydra-lite: pid {pid}")
+                cb = Conn(rec, d.connect("rp-b", "rp-h"), "b", gl.SessionError)
+                p1 = str(copy_project(base, side[n] / "project"))
+                p2 = str(copy_project(base, side[n] / "project2"))
+                sec_auto(ca, cb, rec, p1, p2)
+                runs[n] = (rec, ca.s.failed_over, cb.s.failed_over)
+            finally:
+                for cc_ in (ca, cb):
+                    if cc_ is not None:
+                        cc_.close()
+                fh.close()
+            log(f"{n} side done: {rec.n} requests")
+            if a.agent:
+                p3 = str(copy_project(base, side[n] / "project3"))
+                rust[n] = rust_phase(a, n, state, "rp-auto", p3, install, log)
+        full_ep = pathlib.Path(astate) / f"{gl.full_instance('rp-auto')}.json"
+        if not (runs["auto"][1] and runs["auto"][2] and full_ep.is_file()):
+            raise Harness(f"the auto sessions did not both move to the full daemon: {runs['auto'][1:]}, "
+                          f"{full_ep.is_file()}")
+        if runs["off"][1] or runs["off"][2]:
+            raise Harness("the off sessions moved")
+    except (Harness, ct.Fail) as e:
+        print(f"HARNESS ERROR: {e}", file=sys.stderr)
+        return 2
+    finally:
+        os.environ.pop("HYDRA_LITE_EXE", None)
+        for k, v in saved.items():
+            if v is not None:
+                os.environ[k] = v
+        for d in daemons:
+            stop(d)
+            with contextlib.suppress(Exception):
+                stop(d.full())
+    off_rec, auto_rec = runs["off"][0], runs["auto"][0]
+    diffs = compare_lite(load(outs["off"][1]), load(outs["auto"][1]), off_rec.raws, auto_rec.raws,
+                         side["off"], side["auto"], describes_daemon=("status", "health"))
+    if a.agent:
+        subs = {n: [(str(side[n]), "<WORK>"), (str(side["off"]), "<WORK>")] for n in side}
+        for i, (x, y) in enumerate(zip(rust["off"], rust["auto"]), 1):
+            nx, ny = narrow(x, subs["off"]), narrow(y, subs["auto"])
+            if nx != ny:
+                diffs += 1
+                print(f"--- rust request {i}: {RUST_REQUESTS[i - 1][0]}\n  off:  {nx[:600]}\n"
+                      f"  auto: {ny[:600]}")
+        print(f"rust client: {len(rust['auto'])} requests through hydra-agent call, compared with "
+              f"HYDRA_LITE=off")
+    print(f"auto: {auto_rec.n} requests; the first {auto_rec.lite_records} were lite's, the rest "
+          f"the full daemon's after the sessions moved; {diffs} differences from HYDRA_LITE=off")
+    log(f"{'PASS' if diffs == 0 else 'FAIL'}: records in {outs['off'][1]} and {outs['auto'][1]}")
+    return 0 if diffs == 0 else 1
 
 
 # ---- selftest ------------------------------------------------------------------------------
@@ -1175,6 +1356,12 @@ def main(argv=None):
     lt.add_argument("--work", required=True, help="empty work directory")
     lt.add_argument("--lite", required=True, help="the hydra-lite executable")
     lt.add_argument("--out-dir", help="where lite-java.jsonl and lite-lite.jsonl go (default: work)")
+    au = sub.add_parser("auto", help="the same corpus with HYDRA_LITE=off and HYDRA_LITE=auto")
+    au.add_argument("--ghidra", required=True, help="install root (holds Ghidra/)")
+    au.add_argument("--work", required=True, help="empty work directory")
+    au.add_argument("--lite", required=True, help="the hydra-lite executable")
+    au.add_argument("--agent", help="hydra-agent executable: also run requests through the Rust client")
+    au.add_argument("--out-dir", help="where auto-off.jsonl and auto-auto.jsonl go (default: work)")
     c = sub.add_parser("compare", help="diff two corpora; exit 1 on any difference")
     c.add_argument("a")
     c.add_argument("b")
@@ -1185,6 +1372,8 @@ def main(argv=None):
         return run_record(a)
     if a.cmd == "lite":
         return run_lite(a)
+    if a.cmd == "auto":
+        return run_auto(a)
     if a.cmd == "compare":
         try:
             return compare(a.a, a.b)
