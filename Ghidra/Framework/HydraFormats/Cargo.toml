@@ -8,6 +8,7 @@ members = [
     "crates/ghidra-fmt-btree",
     "crates/ghidra-fmt-db",
     "crates/ghidra-fmt-pack",
+    "crates/ghidra-progdb",
 ]
 
 [workspace.package]
@@ -24,6 +25,8 @@ ghidra-fmt-chain = { path = "crates/ghidra-fmt-chain" }
 ghidra-fmt-field = { path = "crates/ghidra-fmt-field" }
 ghidra-fmt-btree = { path = "crates/ghidra-fmt-btree" }
 ghidra-fmt-db = { path = "crates/ghidra-fmt-db" }
+ghidra-fmt-pack = { path = "crates/ghidra-fmt-pack" }
+ghidra-progdb = { path = "crates/ghidra-progdb" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -12,9 +12,24 @@ and commons-lang3 jars of a stock Ghidra install):
   `gen_build_scripts.py <dir>` regenerates the scripts. Usage per script:
   `java db.OracleBuild x.script out.gbf` (prints `dbid=`), then `java db.buffers.Oracle out.gbf`
   and `java db.OracleDb out.gbf`; the concatenation is `x.expected`.
+* `OracleBuildIx.java` (package `db`): like `OracleBuild` for field-key tables and index tables; `GenIx.java`
+  (`java GenIx.java <dir>`) writes its scripts and `run_ix.sh <classes> <cp file> <dir> NAME...` the `.expected` files.
 * `PackOracle.java` (default package): `pack`/`unpack` through `ItemSerializer`/`ItemDeserializer`
   for the `.pdb` fixtures in `testdata/pack`.
 
 To check that Java reads what Rust wrote: `HYDRA_FMT_KEEP_DIR=<dir> cargo test -p ghidra-fmt-db
 --test build_diff` leaves `rust-built-<name>.gbf` files in `<dir>`; run `db.OracleDb` and
 `db.buffers.Oracle` on them and compare with the `.expected` files.
+
+## Program database oracle
+
+`OracleProgram.java` (default package) needs the stock Ghidra jars, because `ProgramDB` is not
+built from this repository's sources here. Build the classpath from every jar under the stock
+`Ghidra/Framework`, `Ghidra/Features/Base`, `Ghidra/Configurations` and `Ghidra/Processors/x86`
+(not the `-src` ones), then:
+
+    javac -cp "$CP" -d out OracleProgram.java
+    java -cp "out;$CP" OracleProgram <ghidra install dir> <db.gbf> 2>/dev/null | grep -v -E "^(INFO|WARN|ERROR|DEBUG) " > testdata/oracleprog-<name>.txt
+
+It opens the file with `OpenMode.IMMUTABLE` and prints the language, address spaces, memory blocks
+with their parts, and every symbol row by id. Log lines (stderr) are dropped.

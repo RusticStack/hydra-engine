@@ -1,0 +1,28 @@
+dbid=3761613214844231616
+bufferSize=16379 indexCount=8 free=[]
+buf 0 id=0 empty=false sha256=5950b383f8d1752bd9fe813a6ae887888664f48d0877fcc978b0533c273c6201
+buf 1 id=1 empty=false sha256=53dda2e27e13c71bad7939274f76ee0d47cec38422a26791b4796e910840d9a5
+buf 2 id=2 empty=false sha256=fee5bffb0a674b1b00909aaf095fbcda6815149e3ff61f0c329969c3eeca4cfc
+buf 3 id=3 empty=false sha256=26b73d07d819a7ff285ecb41461aab5b4fee84c727f28dca1e70d977793c8409
+buf 4 id=4 empty=false sha256=b7e8ed4119212534bff024def18a1c980c3b70aa8c9c18d80b61341743b964d2
+buf 5 id=5 empty=false sha256=e8a04326d35bd30fa12d4834778dad3d2b07759fff993383b53ebd1fcd724079
+buf 6 id=6 empty=false sha256=a217de0a637d8607290b32c4503ed23b814cab780965be8f47b792c587f449ec
+buf 7 id=7 empty=false sha256=8ad82d44994001b84251dcf551af24d15bc591f5a13158c22e18824b553e6ed1
+table A count=348 max=2997
+table B count=279 max=-9223372036854775808
+dbid=3761613214844231616
+dbid=3761613214844231616
+tr num=0 name=A idx=-1 root=2 keytype=3 version=1 max=2997 count=348 variable=false long=true varnodes=false fixednodes=false
+tr num=1 name=A idx=0 root=3 keytype=51 version=0 max=-9223372036854775808 count=348 variable=false long=false varnodes=false fixednodes=true
+tr num=2 name=A idx=1 root=4 keytype=50 version=0 max=-9223372036854775808 count=348 variable=false long=false varnodes=false fixednodes=true
+tr num=3 name=A idx=2 root=5 keytype=49 version=0 max=-9223372036854775808 count=348 variable=false long=false varnodes=false fixednodes=true
+tr num=4 name=B idx=-1 root=6 keytype=1 version=1 max=-9223372036854775808 count=279 variable=false long=false varnodes=false fixednodes=true
+tr num=5 name=B idx=1 root=7 keytype=18 version=0 max=-9223372036854775808 count=279 variable=false long=false varnodes=false fixednodes=true
+tbl num=0 name=A idx=-1 n=348 sha256=43867d2fd59bf488cbc905157a727909f66b4c9037a9955b064366ef48133d53
+tbl num=1 name=A idx=0 n=348 sha256=1294df97985327123a69ccd7970e231f57236e1d456a3b7dbd0c5db6de32a518
+tbl num=2 name=A idx=1 n=348 sha256=c5a45072f5e01708dc17cb3582368cfbbcf2a235aa630cabec99b5f87a3c6704
+tbl num=3 name=A idx=2 n=348 sha256=c6b376b90431e1ead6b564ca42e22f0d666ba86883cb09aa9ef65b9cd6c40c24
+tbl num=4 name=B idx=-1 n=279 sha256=47e3c5ea17939e8d0aa3b7e96533a0a1576ee1dbc35462ee515e990e28b86aa0
+tbl num=5 name=B idx=1 n=279 sha256=16c76ebc86fce55db8c87ecfab71df5c07281246230718b0b582e4170f9ef0aa
+consistent name=A true
+consistent name=B true
