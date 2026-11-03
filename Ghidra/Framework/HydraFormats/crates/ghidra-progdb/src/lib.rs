@@ -381,6 +381,64 @@ impl<S: BufferStore> ProgramDb<S> {
     }
 }
 
+/// What the project layer needs of a program file before it opens the program: the stored
+/// versions and the domain metadata, read from the database header without any table of the
+/// program itself (Java: `UpgradeCache.readStored` and `GhidraFileData.getMetadata`).
+#[derive(Debug, Clone, Default)]
+pub struct Header {
+    /// The "Program" table (`DB Version`, `Language ID`, `Language Version`, `Image Offset`, ...).
+    pub program: BTreeMap<String, String>,
+    /// The "DataTypeManager" table, when the database has one (`DB Version`).
+    pub data_type_manager: Option<BTreeMap<String, String>>,
+    /// The "Metadata" table (`MetadataManager`): `Key`/`Value` pairs in record order, empty when
+    /// absent. This is what a project lists as `Executable SHA256`, `Language ID` and so on.
+    pub metadata: Vec<(String, String)>,
+}
+
+/// Reads the [`Header`] of a database.
+///
+/// # Errors
+///
+/// [`ProgError::MissingTable`] when there is no "Program" table (not a program database), and the
+/// underlying database error when it cannot be read.
+pub fn read_header<S: BufferStore>(store: S) -> Result<Header> {
+    let db = Database::open(store)?;
+    let string_map = |name: &str| -> Result<Option<BTreeMap<String, String>>> {
+        let Ok(t) = db.table(name) else {
+            return Ok(None);
+        };
+        let mut map = BTreeMap::new();
+        for rec in t.records()? {
+            let rec = rec?;
+            let key = string_of(Some(&rec.key)).unwrap_or_default();
+            let value = rec
+                .values
+                .first()
+                .and_then(|v| string_of(v.as_ref()))
+                .unwrap_or_default();
+            map.insert(key, value);
+        }
+        Ok(Some(map))
+    };
+    let program =
+        string_map("Program")?.ok_or_else(|| ProgError::MissingTable("Program".into()))?;
+    let data_type_manager = string_map("DataTypeManager")?;
+    let mut metadata = Vec::new();
+    if let Ok(t) = db.table("Metadata") {
+        for rec in t.records()? {
+            let rec = rec?;
+            let key = rec.values.first().and_then(|v| string_of(v.as_ref()));
+            let value = rec.values.get(1).and_then(|v| string_of(v.as_ref()));
+            metadata.push((key.unwrap_or_default(), value.unwrap_or_default()));
+        }
+    }
+    Ok(Header {
+        program,
+        data_type_manager,
+        metadata,
+    })
+}
+
 /// Text of a string field.
 pub(crate) fn string_of(f: Option<&Field>) -> Option<String> {
     match f {

@@ -89,3 +89,19 @@ fn versions_before_19_need_a_java_upgrade() {
         }
     }
 }
+
+#[test]
+fn header_reads_versions_and_metadata_without_opening_the_program() {
+    let h = ghidra_progdb::read_header(BufferFile::open(fixture(), true).unwrap()).unwrap();
+    assert_eq!(h.program.get("DB Version").map(String::as_str), Some("32"));
+    assert!(h.program.contains_key("Language ID"));
+    let dtm = h
+        .data_type_manager
+        .expect("the fixture has a data type manager");
+    assert!(dtm.contains_key("DB Version"));
+    assert!(
+        h.metadata.iter().any(|(k, _)| k == "Executable SHA256"),
+        "{:?}",
+        h.metadata
+    );
+}
