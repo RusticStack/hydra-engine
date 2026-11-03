@@ -196,6 +196,9 @@ pub struct MemoryBufferStore {
     buffer_size: usize,
     buffers: Vec<DataBuffer>,
     free: Vec<i32>,
+    /// Contents of freed buffers. `BufferMgr` keeps a deleted buffer in its cache and hands the
+    /// same bytes out again, unchanged, when the index is reallocated.
+    stale: BTreeMap<i32, Vec<u8>>,
 }
 
 impl MemoryBufferStore {
@@ -205,12 +208,38 @@ impl MemoryBufferStore {
             buffer_size,
             buffers: Vec::new(),
             free: Vec::new(),
+            stale: BTreeMap::new(),
         }
     }
 
     /// Number of buffers currently allocated (not on the free list).
     pub fn in_use_count(&self) -> usize {
         self.buffers.len() - self.free.len()
+    }
+
+    /// Ids of the buffers on the free list (most recently freed last).
+    pub fn free_ids(&self) -> &[i32] {
+        &self.free
+    }
+
+    /// Write the store as a new buffer file at `path` (what `BufferMgr.saveAs` produces: buffers
+    /// in index order, empty buffers for freed indexes, the free list sorted ascending).
+    pub fn save_to_file(&self, path: impl AsRef<Path>, file_id: i64) -> Result<()> {
+        let mut out = BufferFile::create(path, self.buffer_size, file_id)?;
+        for (i, b) in self.buffers.iter().enumerate() {
+            let index = i as i32;
+            if b.empty {
+                out.put(&DataBuffer::empty(index), index)?;
+            } else {
+                out.put(
+                    &DataBuffer::new(index, b.data.clone().unwrap_or_default()),
+                    index,
+                )?;
+            }
+        }
+        out.set_free_indexes(&self.free);
+        out.flush()?;
+        out.close()
     }
 
     /// Mutable payload of buffer `id`.
@@ -230,7 +259,11 @@ impl BufferStoreMut for MemoryBufferStore {
     fn create_buffer(&mut self) -> Result<i32> {
         let fresh = DataBuffer::new(0, vec![0; self.buffer_size]);
         if let Some(id) = self.free.pop() {
-            self.buffers[id as usize] = DataBuffer { id, ..fresh };
+            let data = self
+                .stale
+                .remove(&id)
+                .unwrap_or_else(|| vec![0; self.buffer_size]);
+            self.buffers[id as usize] = DataBuffer::new(id, data);
             return Ok(id);
         }
         let id = self.buffers.len() as i32;
@@ -266,6 +299,9 @@ impl BufferStoreMut for MemoryBufferStore {
             .and_then(|i| self.buffers.get_mut(i))
             .ok_or(GbfError::IndexOutOfRange { index: id, count })?;
         if !slot.empty {
+            if let Some(old) = slot.data.take() {
+                self.stale.insert(id, old);
+            }
             *slot = DataBuffer::empty(id);
             self.free.push(id);
         }

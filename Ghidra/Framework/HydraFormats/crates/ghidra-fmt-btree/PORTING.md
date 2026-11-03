@@ -14,9 +14,16 @@ Source: `db.NodeMgr` (node type table), `LongKeyNode`, `LongKeyInteriorNode`,
 | 5, 6, 7 | `FixedKey*` | Read path ported in `fieldkey.rs` (fixed-length keys; leaf kind needs the schema fixed record length) |
 | 8, 9 | chained buffer nodes | in `ghidra-fmt-chain` |
 
-The write path (insert, delete, split, merge, rebalance) is NOT ported. Java has no JUnit test
-for nodes in isolation; they are exercised through `DBLongKeyTableTest` and friends, which need
-the `Table`/`Schema`/`DBRecord` layer. So there is no one-to-one test port at this level.
+Write path: DONE for long-key trees (node types 0-2, `longwrite.rs`, `LongKeyWriter`): insert,
+replace (with the direct/indirect transitions), delete, leaf split, append of a new right-most
+leaf, interior split, leaf removal, interior `deleteChild` and `balanceChild` (merge or
+redistribute). Java never merges leaves: an emptied leaf is unlinked and freed and the interior
+nodes above it are rebalanced, which is what is ported. NOT ported: the write path for
+field-key nodes (types 3-7); `Table` refuses to write field-key tables.
+
+Java has no JUnit test for nodes in isolation; they are exercised through `DBLongKeyTableTest`
+and friends, which need the `Table`/`Schema`/`DBRecord` layer. So there is no one-to-one test
+port at this level.
 
 ## Tests
 
@@ -27,6 +34,12 @@ the `Table`/`Schema`/`DBRecord` layer. So there is no one-to-one test port at th
 * Fixture walk: every long-key table of both legacy fixtures is walked; record counts match the
   master table RECORD_COUNT, max keys match, consistency is clean.
 * `tests/oracle_diff.rs`: differential check against the Java oracle, see below.
+* `src/longwrite/tests.rs`: model based (a `BTreeMap`) random put/replace/delete sequences, 128 to
+  16379 byte buffers, variable and fixed records, sequential, reverse and random orders, records
+  growing into and shrinking out of chained buffers; after each phase the tree must read back as
+  the model, pass the consistency check, hold no unreachable buffer, and after deleting every key
+  all buffers must be free again. The byte-for-byte comparison with Java lives in
+  `ghidra-fmt-db/tests/build_diff.rs`.
 
 ## Differential check
 
@@ -56,3 +69,19 @@ run `java -cp <out>;<jars> db.buffers.Oracle <copy> > testdata/oracle-<name>.txt
 
 * Depth and leaf-chain loops are bounded (`TooDeep`) where Java would recurse or spin.
 * Negative key counts and out-of-range offsets return `CorruptNode`/`Bytes` errors.
+
+## Write path notes
+
+* The `parent` pointers Java keeps while it descends are an explicit list of ancestor ids.
+* Buffers are allocated and freed in exactly the order Java does (new leaf before the new root,
+  chained buffers of a leaf before the leaf), because the free list is a stack and the ids
+  reused later determine the file bytes.
+* Java leaves stale bytes behind (moved-from regions of a leaf, the unused tail of a reused
+  buffer). They are reproduced, not cleared.
+* Quirk kept: `VarRecNode.updateRecord` stores the chained buffer id at `oldOffset + oldLen - 4`
+  and assumes the old record is at least 4 bytes. A variable-length schema always has a 4 byte
+  length prefix, so this holds for real tables; for a shorter raw record the port returns
+  `Assertion` where Java would corrupt the neighbouring record.
+* `deleteChild` on a non-root interior node with only two entries throws `AssertException` in
+  Java (`deleteEntry` needs 3); the port returns `Assertion`. It cannot occur in a balanced tree.
+* `Table` bookkeeping (root id, max key, record count) is in `ghidra-fmt-db`.

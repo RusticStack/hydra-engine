@@ -43,6 +43,14 @@ put, parameter name limit, the `getDataBuffer` flag quirk, and the fixture `db.1
   1029). The 512-multiple rounding lives in `BufferMgr`/`DBHandle`, which is not ported.
 * A parameter table that spills past block 0 is read from the following blocks, as in Java.
 
+## In-memory store
+
+`MemoryBufferStore` follows `BufferMgr`/`IndexProvider`: freed indexes go on a stack and the next
+`create_buffer` takes the most recently freed one. A freed buffer keeps its bytes in Java's cache
+and the reallocated buffer is NOT cleared, so the store hands the old bytes back (a never used
+index is zero filled). This is needed for byte-identical results of the B-tree write path.
+`save_to_file` writes the store the way `BufferMgr.saveAs` does.
+
 ## Deliberate differences
 
 * Parameters are written in name order (Java: `Hashtable` iteration order, unspecified). Files

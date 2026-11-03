@@ -13,6 +13,7 @@ use ghidra_fmt_gbf::GbfError;
 
 pub mod fieldkey;
 pub mod longkey;
+pub mod longwrite;
 
 /// Node type byte stored at offset 0 of every database buffer used by a table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +88,15 @@ pub enum BtreeError {
     MissingKeyType,
     /// A fixed-record leaf was found but no record length was supplied.
     MissingFixedLength,
+    /// A Java `AssertException` / invariant of the write path was violated.
+    Assertion(&'static str),
+    /// A record's length does not fit the table (wrong fixed length).
+    BadRecordLength {
+        /// Length the table requires.
+        expected: usize,
+        /// Length supplied.
+        actual: usize,
+    },
 }
 
 impl fmt::Display for BtreeError {
@@ -107,6 +117,10 @@ impl fmt::Display for BtreeError {
             Self::TooDeep => write!(f, "B-tree deeper than the supported limit"),
             Self::MissingKeyType => write!(f, "key type required for fixed-key nodes"),
             Self::MissingFixedLength => write!(f, "fixed record length required"),
+            Self::Assertion(w) => write!(f, "assertion failed: {w}"),
+            Self::BadRecordLength { expected, actual } => {
+                write!(f, "record length {actual}, table requires {expected}")
+            }
         }
     }
 }

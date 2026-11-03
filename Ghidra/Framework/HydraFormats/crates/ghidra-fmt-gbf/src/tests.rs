@@ -365,3 +365,22 @@ fn fixture_legacy_gbf_header_and_buffers() {
         assert!(b.empty || b.id == i, "index {i} has id {}", b.id);
     }
 }
+
+#[test]
+fn memory_store_reuses_freed_indexes_with_their_old_bytes() {
+    let mut s = MemoryBufferStore::new(64);
+    let a = s.create_buffer().unwrap();
+    let b = s.create_buffer().unwrap();
+    s.data_mut(a).unwrap().fill(7);
+    s.data_mut(b).unwrap().fill(9);
+    s.delete_buffer(a).unwrap();
+    s.delete_buffer(b).unwrap();
+    // stack order: most recently freed first, bytes are not cleared (BufferMgr cache)
+    assert_eq!(s.create_buffer().unwrap(), b);
+    assert_eq!(s.get_buffer(b).unwrap().data.unwrap(), vec![9; 64]);
+    assert_eq!(s.create_buffer().unwrap(), a);
+    assert_eq!(s.get_buffer(a).unwrap().data.unwrap(), vec![7; 64]);
+    // a never used index is zero filled
+    let c = s.create_buffer().unwrap();
+    assert_eq!(s.get_buffer(c).unwrap().data.unwrap(), vec![0; 64]);
+}
