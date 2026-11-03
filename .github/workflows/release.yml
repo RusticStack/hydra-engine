@@ -210,6 +210,10 @@ jobs:
           "GHIDRA_INSTALL=$($top[0].FullName)" >> $env:GITHUB_ENV
           Write-Output "Install: $($top[0].FullName)"
 
+      # The release carries the product, not its tests: fail before publishing if a test directory or script is in the zip
+      - name: No tests in the zip
+        run: python tools/check_release_contents.py "out/$ASSET"
+
       - name: session_smoke.py
         run: >
           python Ghidra/Features/HeadlessSession/examples/session_smoke.py

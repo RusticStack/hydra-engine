@@ -80,6 +80,9 @@ def HEADLESS_SKIPPED_MODULE_TASKS = [
 // Python stubs.
 def HEADLESS_SKIPPED_FILES = [
 	'ghidraRun', 'ghidraRun.bat', 'support/GhidraGo/**', 'docs/**', 'GettingStarted.*',
+	// Test sources and test data that stock Ghidra leaves in the install: a release carries the product, not its tests
+	// (tools/check_release_contents.py fails the release workflow if one is back).
+	'**/pypkg/tests/**', '**/data/test/**', '**/src/test/**',
 ]
 
 boolean headlessRequested = gradle.startParameter.taskNames.any { n ->
