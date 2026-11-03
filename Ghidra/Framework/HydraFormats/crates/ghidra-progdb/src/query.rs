@@ -43,8 +43,10 @@ use std::sync::OnceLock;
 use ghidra_fmt_gbf::{BufferFile, BufferStore};
 
 use crate::{
-    Address, AddressRange, AddressSpaces, Component, DataType, DataTypes, EnumValue, Function,
-    FunctionDef, ProgError, ProgramDb, Reference, Result, Symbol, SymbolTable, Variable,
+    Address, AddressRange, AddressSpaces, Bookmark, Component, DataType, DataTypes, EnumValue,
+    Equate, ExternalLibrary, ExternalLocation, Function, FunctionDef, NamespaceInfo, ProgError,
+    ProgramDb, ProgramOption, PropertyMap, Reference, RegisterValueRange, Relocation, Result,
+    Symbol, SymbolTable, Variable,
 };
 
 /// A function with everything the stored tables say about it.
@@ -88,6 +90,22 @@ pub struct Program<S: BufferStore> {
     refs_to: HashMap<Address, Vec<Reference>>,
     datatypes: OnceLock<DataTypes>,
     data_at: OnceLock<HashMap<Address, i64>>,
+    equates: OnceLock<Vec<Equate>>,
+    bookmarks: OnceLock<Vec<Bookmark>>,
+    relocations: OnceLock<Vec<Relocation>>,
+    register_values: OnceLock<Vec<RegisterValueRange>>,
+    options: OnceLock<Vec<ProgramOption>>,
+    property_maps: OnceLock<Vec<PropertyMap>>,
+    namespaces: OnceLock<Vec<NamespaceInfo>>,
+}
+
+/// Compute a value on first use and keep it; nothing is kept when `f` fails.
+fn lazy<T>(cell: &OnceLock<T>, f: impl FnOnce() -> Result<T>) -> Result<&T> {
+    if let Some(v) = cell.get() {
+        return Ok(v);
+    }
+    let value = f()?;
+    Ok(cell.get_or_init(|| value))
 }
 
 impl Program<BufferFile> {
@@ -171,6 +189,13 @@ impl<S: BufferStore> Program<S> {
             refs_to,
             datatypes: OnceLock::new(),
             data_at: OnceLock::new(),
+            equates: OnceLock::new(),
+            bookmarks: OnceLock::new(),
+            relocations: OnceLock::new(),
+            register_values: OnceLock::new(),
+            options: OnceLock::new(),
+            property_maps: OnceLock::new(),
+            namespaces: OnceLock::new(),
         })
     }
 
@@ -369,5 +394,210 @@ impl<S: BufferStore> Program<S> {
             }
         };
         Ok(rows.get(addr).and_then(|&id| types.get(id)))
+    }
+
+    /// Every equate with its references, in record key order (`EquateTable.getEquates`).
+    ///
+    /// # Errors
+    ///
+    /// The error reading the equate tables (nothing is cached on failure).
+    pub fn equates(&self) -> Result<&[Equate]> {
+        lazy(&self.equates, || self.db.equates()).map(Vec::as_slice)
+    }
+
+    /// The equate with this name.
+    ///
+    /// # Errors
+    ///
+    /// See [`Program::equates`].
+    pub fn equate_by_name(&self, name: &str) -> Result<Option<&Equate>> {
+        Ok(self.equates()?.iter().find(|e| e.name == name))
+    }
+
+    /// The equates applied at `addr`, with the operand each is applied to
+    /// (`EquateTable.getEquates(Address)`).
+    ///
+    /// # Errors
+    ///
+    /// See [`Program::equates`].
+    pub fn equates_at(&self, addr: &Address) -> Result<Vec<(&Equate, i16)>> {
+        Ok(self
+            .equates()?
+            .iter()
+            .flat_map(|e| {
+                e.references
+                    .iter()
+                    .filter(|r| &r.address == addr)
+                    .map(move |r| (e, r.op_index))
+            })
+            .collect())
+    }
+
+    /// Every bookmark in id order.
+    ///
+    /// # Errors
+    ///
+    /// The error reading the bookmark tables.
+    pub fn bookmarks(&self) -> Result<&[Bookmark]> {
+        lazy(&self.bookmarks, || self.db.bookmarks()).map(Vec::as_slice)
+    }
+
+    /// The bookmarks at `addr`, id order.
+    ///
+    /// # Errors
+    ///
+    /// See [`Program::bookmarks`].
+    pub fn bookmarks_at(&self, addr: &Address) -> Result<Vec<&Bookmark>> {
+        Ok(self
+            .bookmarks()?
+            .iter()
+            .filter(|b| &b.address == addr)
+            .collect())
+    }
+
+    /// Every relocation in index order (by address).
+    ///
+    /// # Errors
+    ///
+    /// The error reading the "Relocations" table.
+    pub fn relocations(&self) -> Result<&[Relocation]> {
+        lazy(&self.relocations, || self.db.relocations()).map(Vec::as_slice)
+    }
+
+    /// The relocations at `addr` (`RelocationTable.getRelocations(Address)`).
+    ///
+    /// # Errors
+    ///
+    /// See [`Program::relocations`].
+    pub fn relocations_at(&self, addr: &Address) -> Result<Vec<&Relocation>> {
+        Ok(self
+            .relocations()?
+            .iter()
+            .filter(|r| &r.address == addr)
+            .collect())
+    }
+
+    /// `Relocation.getBytes`: the stored bytes or, for a status that has bytes, the original
+    /// file bytes at the relocation address.
+    ///
+    /// # Errors
+    ///
+    /// A damaged "File Bytes" table.
+    pub fn relocation_bytes(&self, r: &Relocation) -> Result<Option<Vec<u8>>> {
+        let spaces = self.db.address_map().spaces();
+        let pointer = spaces
+            .find(&spaces.default_space)
+            .map_or(8, |s| (s.bits / 8) as i32);
+        r.bytes(&self.db.memory()?, pointer)
+    }
+
+    /// The register value ranges stored in the database ("Range Map - Register_*"): registers by
+    /// name, ranges in address key order. Defaults from the language are not included.
+    ///
+    /// # Errors
+    ///
+    /// The error reading the range map tables.
+    pub fn register_values(&self) -> Result<&[RegisterValueRange]> {
+        lazy(&self.register_values, || self.db.register_values()).map(Vec::as_slice)
+    }
+
+    /// The stored value ranges of register `name` that contain `addr`.
+    ///
+    /// # Errors
+    ///
+    /// See [`Program::register_values`].
+    pub fn register_values_at(
+        &self,
+        name: &str,
+        addr: &Address,
+    ) -> Result<Vec<&RegisterValueRange>> {
+        let Address::Space { space, offset } = addr else {
+            return Ok(Vec::new());
+        };
+        Ok(self
+            .register_values()?
+            .iter()
+            .filter(|v| {
+                v.register == name
+                    && &v.range.space == space
+                    && v.range.min <= *offset
+                    && *offset <= v.range.max
+            })
+            .collect())
+    }
+
+    /// The program options (`Program Information.*`, analysis options, ...), sorted by key.
+    ///
+    /// # Errors
+    ///
+    /// The error reading the "Property Table".
+    pub fn options(&self) -> Result<&[ProgramOption]> {
+        lazy(&self.options, || self.db.options()).map(Vec::as_slice)
+    }
+
+    /// The option with this key, for example `Program Information.Executable Format`.
+    ///
+    /// # Errors
+    ///
+    /// See [`Program::options`].
+    pub fn option(&self, key: &str) -> Result<Option<&ProgramOption>> {
+        Ok(self.options()?.iter().find(|o| o.key == key))
+    }
+
+    /// The registered user and analysis property maps, sorted by name.
+    ///
+    /// # Errors
+    ///
+    /// The error reading the property map tables.
+    pub fn property_maps(&self) -> Result<&[PropertyMap]> {
+        lazy(&self.property_maps, || self.db.property_maps()).map(Vec::as_slice)
+    }
+
+    /// The property map with this name.
+    ///
+    /// # Errors
+    ///
+    /// See [`Program::property_maps`].
+    pub fn property_map(&self, name: &str) -> Result<Option<&PropertyMap>> {
+        Ok(self.property_maps()?.iter().find(|m| m.name == name))
+    }
+
+    /// Libraries, namespaces and classes in symbol id order, with their `::` paths.
+    ///
+    /// # Errors
+    ///
+    /// The error reading the symbol table.
+    pub fn namespaces(&self) -> Result<&[NamespaceInfo]> {
+        lazy(&self.namespaces, || {
+            Ok(crate::externals::namespaces(
+                &self.symbols,
+                &self.db.symbols()?,
+            ))
+        })
+        .map(Vec::as_slice)
+    }
+
+    /// `Symbol.getName(true)` of the symbol with this id: the `::` path from the outermost
+    /// namespace.
+    pub fn symbol_path(&self, id: i64) -> Option<String> {
+        self.symbols.get(id).map(|s| self.symbols.path(s))
+    }
+
+    /// The external libraries sorted by name, with their associated program paths.
+    ///
+    /// # Errors
+    ///
+    /// The error reading the symbol table.
+    pub fn external_libraries(&self) -> Result<Vec<ExternalLibrary>> {
+        self.db.external_libraries()
+    }
+
+    /// The external locations directly under a library, symbol id ascending.
+    ///
+    /// # Errors
+    ///
+    /// The error reading the symbol table.
+    pub fn external_locations(&self, library: &str) -> Result<Vec<ExternalLocation>> {
+        self.db.external_locations(library)
     }
 }

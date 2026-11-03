@@ -9,6 +9,10 @@ use ghidra_progdb::query::Program;
 use ghidra_progdb::{AddressSpaces, SpaceDef};
 
 fn fixture(dir: &str) -> PathBuf {
+    if dir == "synth-33" {
+        return Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../testdata/synth/progdb-synth-33.gbf");
+    }
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../../../Features/HeadlessSession/examples/fixtures")
         .join(dir)
@@ -157,6 +161,8 @@ fn check(dir: &str) {
     assert!(resolved > 0);
     assert!(p.data_type(-12345).unwrap().is_none());
 
+    annotations_and_more(&p, &text, &lines);
+
     // bytes
     for l in lines.iter().filter(|l| l.starts_with(" memread ")) {
         let a = p.parse_address(field(l, "addr")).unwrap();
@@ -169,6 +175,117 @@ fn check(dir: &str) {
             Err(_) => assert!(l.ends_with(" error"), "{l}"),
         }
     }
+}
+
+fn count(text: &str, key: &str) -> usize {
+    text.lines()
+        .find_map(|l| l.strip_prefix(key))
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// Equates, bookmarks, relocations, register values, options, property maps, externals and
+/// namespaces through the facade, against the oracle lines.
+fn annotations_and_more(p: &Program<ghidra_fmt_gbf::BufferFile>, text: &str, lines: &[String]) {
+    // equates: name, value, reference count, and the equates at each reference address
+    let mut equate_lines = 0;
+    for l in lines.iter().filter(|l| l.starts_with(" equate name=")) {
+        let e = p.equate_by_name(field(l, "name")).unwrap().unwrap();
+        assert_eq!(e.value.to_string(), field(l, "value"));
+        assert_eq!(e.references.len().to_string(), field(l, "refs"));
+        for r in &e.references {
+            assert!(
+                p.equates_at(&r.address)
+                    .unwrap()
+                    .iter()
+                    .any(|(x, op)| x.id == e.id && *op == r.op_index)
+            );
+        }
+        equate_lines += 1;
+    }
+    assert_eq!(p.equates().unwrap().len(), equate_lines);
+
+    // bookmarks
+    assert_eq!(p.bookmarks().unwrap().len(), count(text, "bookmarks="));
+    for l in lines.iter().filter(|l| l.starts_with(" bookmark id=")) {
+        let id: i64 = field(l, "id").parse().unwrap();
+        let a = p.parse_address(field(l, "addr")).unwrap();
+        assert!(p.bookmarks_at(&a).unwrap().iter().any(|b| b.id == id));
+    }
+
+    // relocations: count and the original bytes of every relocation
+    assert_eq!(p.relocations().unwrap().len(), count(text, "relocations="));
+    let reloc_lines: Vec<&String> = lines
+        .iter()
+        .filter(|l| l.starts_with(" reloc addr="))
+        .collect();
+    for (r, l) in p.relocations().unwrap().iter().zip(reloc_lines) {
+        assert_eq!(r.address.to_string(), field(l, "addr"));
+        assert_eq!(r.status.name(), field(l, "status"));
+        let want = field(l, "bytes");
+        match p.relocation_bytes(r).unwrap() {
+            Some(b) => assert_eq!(hex(&b), want),
+            None => assert_eq!(want, "null"),
+        }
+        assert!(p.relocations_at(&r.address).unwrap().contains(&r));
+    }
+
+    // register values
+    assert_eq!(
+        p.register_values().unwrap().len(),
+        count(text, "register_values=")
+    );
+    for l in lines.iter().filter(|l| l.starts_with(" regvalue reg=")) {
+        let a = p.parse_address(field(l, "min")).unwrap();
+        let found = p.register_values_at(field(l, "reg"), &a).unwrap();
+        assert!(
+            found.iter().any(|v| hex(&v.bytes) == field(l, "bytes")),
+            "{l}"
+        );
+    }
+
+    // options and property maps
+    assert_eq!(p.options().unwrap().len(), count(text, "options="));
+    for l in lines.iter().filter(|l| l.starts_with(" option key=")) {
+        let o = p.option(field(l, "key")).unwrap().unwrap();
+        assert_eq!(o.type_id.to_string(), field(l, "type"));
+    }
+    for l in lines.iter().filter(|l| l.starts_with(" propmap name=")) {
+        let m = p.property_map(field(l, "name")).unwrap().unwrap();
+        assert_eq!(m.kind.name(), field(l, "kind"));
+        assert_eq!(m.entries.len().to_string(), field(l, "size"));
+    }
+
+    // externals and namespaces
+    let mut locations = 0;
+    for lib in p.external_libraries().unwrap() {
+        locations += p.external_locations(&lib.name).unwrap().len();
+    }
+    let want_locs = lines
+        .iter()
+        .filter(|l| l.starts_with(" extloc id="))
+        .count();
+    assert_eq!(locations, want_locs);
+    for l in lines.iter().filter(|l| l.starts_with(" sympath id=")) {
+        let id: i64 = field(l, "id").parse().unwrap();
+        assert_eq!(p.symbol_path(id).unwrap(), field(l, "path"));
+    }
+    for l in lines.iter().filter(|l| l.starts_with(" namespace id=")) {
+        let id: i64 = field(l, "id").parse().unwrap();
+        let n = p.namespaces().unwrap().iter().find(|n| n.id == id).unwrap();
+        assert_eq!(n.path, field(l, "path"));
+        assert_eq!(n.parent_id.to_string(), field(l, "parent"));
+    }
+}
+
+#[test]
+fn synthetic_v33_fixture() {
+    check("synth-33");
 }
 
 #[test]

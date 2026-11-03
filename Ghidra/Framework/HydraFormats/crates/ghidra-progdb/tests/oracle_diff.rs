@@ -10,6 +10,10 @@ use ghidra_fmt_gbf::BufferFile;
 use ghidra_progdb::{Address, AddressSpaces, ProgramDb, RefKind, SpaceDef};
 
 fn fixture(dir: &str) -> PathBuf {
+    if dir == "synth-33" {
+        return Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../testdata/synth/progdb-synth-33.gbf");
+    }
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../../../Features/HeadlessSession/examples/fixtures")
         .join(dir)
@@ -149,6 +153,7 @@ fn check(dir: &str) {
     got.extend(memory_lines(&db));
     got.extend(symbol_query_lines(&db));
     got.extend(datatype_lines(&db));
+    got.extend(extras_lines(&db));
     let got_refs: Vec<&str> = got.iter().map(String::as_str).collect();
     for (i, (g, w)) in got_refs.iter().zip(&want).enumerate() {
         assert_eq!(g, w, "line {i}");
@@ -645,9 +650,242 @@ fn datatype_lines(db: &ProgramDb<BufferFile>) -> Vec<String> {
     out
 }
 
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+fn extras_lines(db: &ProgramDb<BufferFile>) -> Vec<String> {
+    use ghidra_progdb::{PropertyKind, PropertyValue};
+    let mut out = Vec::new();
+
+    let mut rows = Vec::new();
+    for e in db.equates().unwrap() {
+        rows.push((
+            e.name.clone(),
+            format!(
+                "equate name=[{}] value={} refs={}",
+                esc(&e.name),
+                e.value,
+                e.references.len()
+            ),
+        ));
+        for r in &e.references {
+            let tail = format!(
+                "{} {} {:08} {:020}",
+                e.name, r.address, r.op_index, r.dynamic_hash
+            );
+            rows.push((
+                format!("{}\u{1}{tail}", e.name),
+                format!(
+                    "equateref name=[{}] addr={} op={} hash={}",
+                    esc(&e.name),
+                    r.address,
+                    r.op_index,
+                    r.dynamic_hash
+                ),
+            ));
+        }
+    }
+    out.push(format!("equates={}", rows.len()));
+    emit(&mut out, rows);
+
+    let rows: Vec<_> = db
+        .bookmark_types()
+        .unwrap()
+        .into_iter()
+        .map(|n| (n.clone(), format!("booktype name=[{}]", esc(&n))))
+        .collect();
+    out.push(format!("bookmark_types={}", rows.len()));
+    emit(&mut out, rows);
+    let rows: Vec<_> = db
+        .bookmarks()
+        .unwrap()
+        .into_iter()
+        .map(|b| {
+            (
+                format!("{:020}", b.id),
+                format!(
+                    "bookmark id={} addr={} type=[{}] cat=[{}] comment=[{}]",
+                    b.id,
+                    b.address,
+                    esc(&b.type_name),
+                    esc(&b.category),
+                    esc(&b.comment)
+                ),
+            )
+        })
+        .collect();
+    out.push(format!("bookmarks={}", rows.len()));
+    emit(&mut out, rows);
+
+    let relocs = db.relocations().unwrap();
+    let memory = db.memory().unwrap();
+    out.push(format!("relocations={}", relocs.len()));
+    let spaces = db.address_map().spaces();
+    let pointer = spaces.find(&spaces.default_space).unwrap().bits as i32 / 8;
+    for r in &relocs {
+        let values = r.values.as_ref().map_or(String::new(), |v| {
+            v.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
+        });
+        let bytes = r
+            .bytes(&memory, pointer)
+            .unwrap()
+            .map_or("null".to_owned(), |b| hex(&b));
+        out.push(format!(
+            "reloc addr={} status={} type={} values=[{values}]{} bytes={bytes} symbol=[{}]",
+            r.address,
+            r.status.name(),
+            r.kind,
+            if r.values.is_none() {
+                " valuesnull"
+            } else {
+                ""
+            },
+            esc_opt(r.symbol_name.as_deref())
+        ));
+    }
+
+    let mut rows = Vec::new();
+    let mut last = String::new();
+    let mut i = 0;
+    for v in db.register_values().unwrap() {
+        if v.register != last {
+            last = v.register.clone();
+            i = 0;
+        }
+        rows.push((
+            format!("{} {:08}", v.register, i),
+            format!(
+                "regvalue reg={} min={}:{:x} max={}:{:x} bytes={}",
+                v.register,
+                v.range.space,
+                v.range.min,
+                v.range.space,
+                v.range.max,
+                hex(&v.bytes)
+            ),
+        ));
+        i += 1;
+    }
+    out.push(format!("register_values={}", rows.len()));
+    emit(&mut out, rows);
+
+    let mut rows = Vec::new();
+    for m in db.property_maps().unwrap() {
+        assert!(m.kind != PropertyKind::Object);
+        rows.push((
+            m.name.clone(),
+            format!(
+                "propmap name=[{}] kind={} size={}",
+                esc(&m.name),
+                m.kind.name(),
+                m.entries.len()
+            ),
+        ));
+        for (a, v) in &m.entries {
+            let text = match v {
+                PropertyValue::Int(n) => n.to_string(),
+                PropertyValue::Long(n) => n.to_string(),
+                PropertyValue::String(s) => esc(s),
+                _ => String::new(),
+            };
+            rows.push((
+                format!("{}\u{1}{a}", m.name),
+                format!("propval map=[{}] addr={a} value=[{text}]", esc(&m.name)),
+            ));
+        }
+    }
+    out.push(format!("property_maps={}", rows.len()));
+    emit(&mut out, rows);
+
+    let rows: Vec<_> = db
+        .options()
+        .unwrap()
+        .into_iter()
+        .map(|o| {
+            (
+                o.key.clone(),
+                format!(
+                    "option key=[{}] type={} value=[{}]",
+                    esc(&o.key),
+                    o.type_id,
+                    esc(&o.value)
+                ),
+            )
+        })
+        .collect();
+    out.push(format!("options={}", rows.len()));
+    emit(&mut out, rows);
+
+    let mut rows = Vec::new();
+    for lib in db.external_libraries().unwrap() {
+        rows.push((
+            lib.name.clone(),
+            format!(
+                "extlib name=[{}] path=[{}]",
+                esc(&lib.name),
+                esc_opt(lib.path.as_deref())
+            ),
+        ));
+        for x in db.external_locations(&lib.name).unwrap() {
+            rows.push((
+                format!("{}\u{1}{:020}", lib.name, x.symbol_id),
+                format!(
+                    "extloc id={} lib=[{}] label=[{}] orig=[{}] addr={} extaddr={} src={} func={} ns=[{}]",
+                    x.symbol_id,
+                    esc(&x.library),
+                    esc(&x.label),
+                    esc_opt(x.original_imported_name.as_deref()),
+                    x.program_address
+                        .as_ref()
+                        .map_or("null".to_owned(), |a| a.to_string()),
+                    x.external_address,
+                    x.source.name(),
+                    x.is_function,
+                    esc(&x.namespace_path)
+                ),
+            ));
+        }
+    }
+    out.push(format!("externals={}", rows.len()));
+    emit(&mut out, rows);
+
+    let table = db.symbol_table().unwrap();
+    let mut rows = Vec::new();
+    for n in db.namespaces().unwrap() {
+        rows.push((
+            format!("{:020}", n.id),
+            format!(
+                "namespace id={} kind={} path=[{}] parent={} class={}",
+                n.id,
+                n.kind.name(),
+                esc(&n.path),
+                n.parent_id,
+                n.kind == ghidra_progdb::NamespaceKind::Class
+            ),
+        ));
+    }
+    for s in db.symbols().unwrap() {
+        if matches!(s.symbol_type, 0 | 5) && s.parent_id != 0 {
+            rows.push((
+                format!("{:020}", s.id),
+                format!("sympath id={} path=[{}]", s.id, esc(&table.path(&s))),
+            ));
+        }
+    }
+    out.push(format!("namespaces={}", rows.len()));
+    emit(&mut out, rows);
+    out
+}
+
 #[test]
 fn legacy_fixture_matches_java() {
     check("legacy-12.1.4");
+}
+
+#[test]
+fn synthetic_v33_fixture_matches_java() {
+    check("synth-33");
 }
 
 #[test]

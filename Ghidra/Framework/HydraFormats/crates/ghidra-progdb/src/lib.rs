@@ -11,13 +11,17 @@
 //! is refused with a descriptive [`ProgError`] instead of being guessed at.
 
 mod addrmap;
+mod annotations;
 mod bodies;
+mod context;
 mod datatypes;
 mod error;
+mod externals;
 mod functions;
 mod listing;
 mod memory;
 mod memread;
+mod props;
 pub mod query;
 mod references;
 mod symbols;
@@ -30,16 +34,20 @@ use ghidra_fmt_field::{Field, Record, Schema};
 use ghidra_fmt_gbf::BufferStore;
 
 pub use addrmap::{Address, AddressMap, AddressSpaces, SpaceDef};
+pub use annotations::{Bookmark, Equate, EquateReference, Relocation, RelocationStatus};
 pub use bodies::{AddressRange, Variable};
+pub use context::RegisterValueRange;
 pub use datatypes::{
     Component, DataOrganization, DataType, DataTypeKind, DataTypes, EnumValue, FunctionDef,
     ParameterDef,
 };
 pub use error::ProgError;
+pub use externals::{ExternalLibrary, ExternalLocation, NamespaceInfo, NamespaceKind};
 pub use functions::Function;
 pub use listing::{Comments, DataRow, InstructionRow};
 pub use memory::{MemoryBlock, SubBlock, SubBlockKind};
 pub use memread::{ByteMappingScheme, Memory};
+pub use props::{ProgramOption, PropertyKind, PropertyMap, PropertyValue};
 pub use references::{RefKind, Reference, ref_type_name};
 pub use symbols::{SourceType, Symbol};
 pub use symtab::SymbolTable;
@@ -171,7 +179,22 @@ impl<S: BufferStore> ProgramDb<S> {
         optional("Function Parameters", &[1])?;
         optional("Pointers", &[2])?;
         optional("Enumeration Data Types", &[1])?;
-        optional("Enumeration Values", &[1])
+        optional("Enumeration Values", &[1])?;
+        optional("Equates", &[0])?;
+        optional("Equate References", &[1])?;
+        optional("Relocations", &[6])?;
+        optional("Bookmark Types", &[0])?;
+        optional("Properties", &[0])?;
+        optional("Property Table", &[0])?;
+        for t in self.db.tables() {
+            if t.name().starts_with("Bookmarks") && !t.schema().version().eq(&3) {
+                return Err(ProgError::UnsupportedTableVersion {
+                    table: t.name().into(),
+                    version: t.schema().version(),
+                });
+            }
+        }
+        Ok(())
     }
 
     /// The underlying database (for raw table access).
@@ -290,6 +313,66 @@ impl<S: BufferStore> ProgramDb<S> {
     /// takes them from the compiler specification's `DataOrganization`).
     pub fn data_types_with(&self, org: DataOrganization) -> Result<DataTypes> {
         datatypes::read(&self.db, org)
+    }
+
+    /// Every equate with its references (`EquateTable.getEquates`), in record key order.
+    pub fn equates(&self) -> Result<Vec<Equate>> {
+        annotations::read_equates(&self.db, &self.address_map)
+    }
+
+    /// Every bookmark in id order.
+    pub fn bookmarks(&self) -> Result<Vec<Bookmark>> {
+        annotations::read_bookmarks(&self.db, &self.address_map)
+    }
+
+    /// The names of the defined bookmark types, sorted.
+    pub fn bookmark_types(&self) -> Result<Vec<String>> {
+        annotations::read_bookmark_types(&self.db)
+    }
+
+    /// Every relocation in index order (by encoded address, then record key).
+    pub fn relocations(&self) -> Result<Vec<Relocation>> {
+        annotations::read_relocations(&self.db, &self.address_map)
+    }
+
+    /// The register values stored in the database ("Range Map - Register_*"), registers by name
+    /// and ranges in key order. Language and compiler specification defaults are not included.
+    pub fn register_values(&self) -> Result<Vec<RegisterValueRange>> {
+        context::read_register_values(&self.db, &self.address_map)
+    }
+
+    /// The program options ("Property Table"), sorted by key.
+    pub fn options(&self) -> Result<Vec<ProgramOption>> {
+        props::read_options(&self.db)
+    }
+
+    /// The registered user and analysis property maps with their entries, sorted by name.
+    pub fn property_maps(&self) -> Result<Vec<PropertyMap>> {
+        props::read_property_maps(&self.db, &self.address_map)
+    }
+
+    /// Libraries, namespaces and classes in symbol id order.
+    pub fn namespaces(&self) -> Result<Vec<NamespaceInfo>> {
+        let symbols = self.symbols()?;
+        let table = SymbolTable::build(&self.db, &self.address_map, symbols.clone())?;
+        Ok(externals::namespaces(&table, &symbols))
+    }
+
+    /// The external libraries (`ExternalManager.getExternalLibraryNames`), sorted by name.
+    pub fn external_libraries(&self) -> Result<Vec<ExternalLibrary>> {
+        Ok(externals::libraries(&self.symbols()?))
+    }
+
+    /// The external locations directly under library `library`
+    /// (`ExternalManager.getExternalLocations(String)`), symbol id ascending.
+    pub fn external_locations(&self, library: &str) -> Result<Vec<ExternalLocation>> {
+        let symbols = self.symbols()?;
+        let table = SymbolTable::build(&self.db, &self.address_map, symbols.clone())?;
+        Ok(symbols
+            .iter()
+            .filter(|s| s.symbol_type == 1 && s.name == library)
+            .flat_map(|lib| externals::locations(&table, &self.address_map, lib))
+            .collect())
     }
 
     /// Rows of "Comments" in key order.

@@ -33,3 +33,7 @@ built from this repository's sources here. Build the classpath from every jar un
 
 It opens the file with `OpenMode.IMMUTABLE` and prints the language, address spaces, memory blocks
 with their parts, every symbol row by id, the listing, memory and symbol query sections, and the data types (categories, every stored type with kind, name, path, length and base, structure / union components, enum values, function definition parameters; defined data rows carry the resolved type path). Log lines (stderr) are dropped.
+
+`OracleMutate.java` builds the synthetic fixture `testdata/synth/progdb-synth-33.gbf` (see
+`crates/ghidra-progdb/PORTING.md`): `java -cp "mut;$CP" OracleMutate <install dir> <source db.1.gbf>
+<scratch copy.gbf> <out.gbf>`; run `OracleProgram` on the result for `testdata/oracleprog-synth-33.txt`.

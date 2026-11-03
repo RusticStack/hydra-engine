@@ -106,6 +106,7 @@ public class OracleProgram {
         dumpMemory(p);
         dumpSymbolQueries(p);
         dumpDataTypes(p);
+        dumpExtras(p);
         p.release(OracleProgram.class);
         System.exit(0);
     }
@@ -431,6 +432,201 @@ public class OracleProgram {
         // the default type and the kinds the data rows use
         System.out.println("dt_default name=[" + DataType.DEFAULT.getName() + "] len="
             + DataType.DEFAULT.getLength());
+    }
+
+    static String hex(byte[] b) {
+        if (b == null) {
+            return "null";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (byte x : b) {
+            sb.append(String.format("%02x", x));
+        }
+        return sb.toString();
+    }
+
+    static void dumpExtras(ProgramDB p) throws Exception {
+        List<String[]> rows = new ArrayList<>();
+        // equates
+        for (ghidra.program.model.symbol.Equate e : iterable(p.getEquateTable().getEquates())) {
+            rows.add(new String[] { e.getName(), "equate name=[" + esc(e.getName()) + "] value="
+                + e.getValue() + " refs=" + e.getReferenceCount() });
+            List<String[]> refs = new ArrayList<>();
+            for (ghidra.program.model.symbol.EquateReference r : e.getReferences()) {
+                String line = "equateref name=[" + esc(e.getName()) + "] addr=" + addr(r.getAddress())
+                    + " op=" + r.getOpIndex() + " hash=" + r.getDynamicHashValue();
+                refs.add(new String[] { String.format("%s %s %08d %020d", e.getName(), addr(r.getAddress()),
+                    r.getOpIndex(), r.getDynamicHashValue()), line });
+            }
+            refs.sort(Comparator.comparing((String[] r) -> r[0]));
+            for (String[] r : refs) {
+                rows.add(new String[] { e.getName() + "\u0001" + r[0], r[1] });
+            }
+        }
+        System.out.println("equates=" + rows.size());
+        emit(rows);
+
+        // bookmarks
+        BookmarkManager bm = p.getBookmarkManager();
+        rows = new ArrayList<>();
+        for (BookmarkType t : bm.getBookmarkTypes()) {
+            rows.add(new String[] { t.getTypeString(), "booktype name=[" + esc(t.getTypeString()) + "]" });
+        }
+        System.out.println("bookmark_types=" + rows.size());
+        emit(rows);
+        rows = new ArrayList<>();
+        for (java.util.Iterator<Bookmark> it = bm.getBookmarksIterator(); it.hasNext();) {
+            Bookmark b = it.next();
+            rows.add(new String[] { String.format("%020d", b.getId()), "bookmark id=" + b.getId()
+                + " addr=" + addr(b.getAddress()) + " type=[" + esc(b.getTypeString()) + "] cat=["
+                + esc(b.getCategory()) + "] comment=[" + esc(b.getComment()) + "]" });
+        }
+        System.out.println("bookmarks=" + rows.size());
+        emit(rows);
+
+        // relocations (index order: by address, then stored order)
+        rows = new ArrayList<>();
+        int n = 0;
+        for (java.util.Iterator<ghidra.program.model.reloc.Relocation> it = p.getRelocationTable()
+            .getRelocations(); it.hasNext();) {
+            ghidra.program.model.reloc.Relocation r = it.next();
+            StringBuilder vs = new StringBuilder();
+            for (long v : r.getValues() == null ? new long[0] : r.getValues()) {
+                if (vs.length() > 0) {
+                    vs.append(',');
+                }
+                vs.append(v);
+            }
+            rows.add(new String[] { String.format("%08d", n++), "reloc addr=" + addr(r.getAddress())
+                + " status=" + r.getStatus().name() + " type=" + r.getType() + " values=[" + vs
+                + "]" + (r.getValues() == null ? " valuesnull" : "") + " bytes=" + hex(r.getBytes()) + " symbol=[" + esc(r.getSymbolName()) + "]" });
+        }
+        System.out.println("relocations=" + rows.size());
+        for (String[] r : rows) {
+            System.out.println(r[1]);
+        }
+
+        // register values stored in "Range Map - Register_*"
+        ProgramContext ctx = p.getProgramContext();
+        rows = new ArrayList<>();
+        for (ghidra.program.model.lang.Register reg : p.getLanguage().getRegisters()) {
+            if (!reg.isBaseRegister()) {
+                continue;
+            }
+            int i = 0;
+            for (ghidra.program.model.address.AddressRangeIterator it = ctx
+                .getRegisterValueAddressRanges(reg); it.hasNext();) {
+                AddressRange r = it.next();
+                ghidra.program.model.lang.RegisterValue v = ctx.getNonDefaultValue(reg, r.getMinAddress());
+                rows.add(new String[] { reg.getName() + " " + String.format("%08d", i++),
+                    "regvalue reg=" + reg.getName() + " min=" + addr(r.getMinAddress()) + " max="
+                        + addr(r.getMaxAddress()) + " bytes=" + (v == null ? "null" : hex(v.toBytes())) });
+            }
+        }
+        System.out.println("register_values=" + rows.size());
+        emit(rows);
+
+        // user / analysis property maps
+        ghidra.program.model.util.PropertyMapManager pm = p.getUsrPropertyManager();
+        rows = new ArrayList<>();
+        List<String> names = new ArrayList<>();
+        for (java.util.Iterator<String> it = pm.propertyManagers(); it.hasNext();) {
+            names.add(it.next());
+        }
+        Collections.sort(names);
+        for (String name : names) {
+            ghidra.program.model.util.PropertyMap<?> m = pm.getPropertyMap(name);
+            String kind = m instanceof ghidra.program.model.util.IntPropertyMap ? "INT"
+                : m instanceof ghidra.program.model.util.LongPropertyMap ? "LONG"
+                : m instanceof ghidra.program.model.util.StringPropertyMap ? "STRING"
+                : m instanceof ghidra.program.model.util.VoidPropertyMap ? "VOID" : "OBJECT";
+            rows.add(new String[] { name, "propmap name=[" + esc(name) + "] kind=" + kind + " size="
+                + m.getSize() });
+            for (AddressIterator it = m.getPropertyIterator(); it.hasNext();) {
+                Address at = it.next();
+                String v = m instanceof ghidra.program.model.util.IntPropertyMap im ? "" + im.getInt(at)
+                    : m instanceof ghidra.program.model.util.LongPropertyMap lm ? "" + lm.getLong(at)
+                    : m instanceof ghidra.program.model.util.StringPropertyMap sm ? esc(sm.getString(at))
+                    : "";
+                rows.add(new String[] { name + "\u0001" + addr(at), "propval map=[" + esc(name)
+                    + "] addr=" + addr(at) + " value=[" + v + "]" });
+            }
+        }
+        System.out.println("property_maps=" + rows.size());
+        emit(rows);
+
+        // program options
+        rows = new ArrayList<>();
+        for (String list : p.getOptionsNames()) {
+            ghidra.framework.options.Options o = p.getOptions(list);
+            for (String on : o.getOptionNames()) {
+                String key = list + "." + on;
+                // options Java registers with defaults are not rows of the table; the
+                // custom ones have a display form, so print the stored string for all
+                db.DBRecord stored = p.getDBHandle().getTable("Property Table")
+                    .getRecord(new db.StringField(key));
+                if (stored == null) {
+                    continue;
+                }
+                rows.add(new String[] { key, "option key=[" + esc(key) + "] type="
+                    + o.getType(on).ordinal() + " value=[" + esc(stored.getString(0)) + "]" });
+            }
+        }
+        System.out.println("options=" + rows.size());
+        emit(rows);
+
+        // external manager
+        ghidra.program.model.symbol.ExternalManager em = p.getExternalManager();
+        rows = new ArrayList<>();
+        List<String> libs = new ArrayList<>();
+        for (String s : em.getExternalLibraryNames()) {
+            libs.add(s);
+        }
+        Collections.sort(libs);
+        for (String lib : libs) {
+            rows.add(new String[] { lib, "extlib name=[" + esc(lib) + "] path=["
+                + esc(em.getExternalLibraryPath(lib)) + "]" });
+            for (java.util.Iterator<ghidra.program.model.symbol.ExternalLocation> it = em
+                .getExternalLocations(lib); it.hasNext();) {
+                ghidra.program.model.symbol.ExternalLocation x = it.next();
+                rows.add(new String[] { lib + "\u0001" + String.format("%020d", x.getSymbol().getID()),
+                    "extloc id=" + x.getSymbol().getID() + " lib=[" + esc(x.getLibraryName())
+                        + "] label=[" + esc(x.getLabel()) + "] orig=[" + esc(x.getOriginalImportedName())
+                        + "] addr=" + addr(x.getAddress()) + " extaddr=" + addr(x.getExternalSpaceAddress())
+                        + " src=" + x.getSource().name() + " func=" + x.isFunction() + " ns=["
+                        + esc(x.getParentNameSpace().getName(true)) + "]" });
+            }
+        }
+        System.out.println("externals=" + rows.size());
+        emit(rows);
+
+        // namespaces, classes, libraries and symbols nested in them
+        rows = new ArrayList<>();
+        long maxId = p.getDBHandle().getTable("Symbols").getMaxKey();
+        for (long id = 1; id <= maxId; id++) {
+            Symbol s = p.getSymbolTable().getSymbol(id);
+            if (s == null) {
+                continue;
+            }
+            int t = s.getSymbolType().getID();
+            Symbol par = s.getParentSymbol();
+            long parId = par == null ? 0 : par.getID();
+            if (t == 1 || t == 3 || t == 4) {
+                rows.add(new String[] { String.format("%020d", id), "namespace id=" + id + " kind="
+                    + s.getSymbolType().toString() + " path=[" + esc(s.getName(true)) + "] parent=" + parId
+                    + " class=" + (s.getObject() instanceof GhidraClass) });
+            }
+            else if ((t == 0 || t == 5) && parId != 0) {
+                rows.add(new String[] { String.format("%020d", id), "sympath id=" + id + " path=["
+                    + esc(s.getName(true)) + "]" });
+            }
+        }
+        System.out.println("namespaces=" + rows.size());
+        emit(rows);
+    }
+
+    static <T> Iterable<T> iterable(java.util.Iterator<T> it) {
+        return () -> it;
     }
 
     static String esc(String s) {
