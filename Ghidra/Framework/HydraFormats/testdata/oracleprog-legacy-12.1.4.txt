@@ -4426,3 +4426,45 @@ comment addr=ram:1400198fe kind=PLATE text=[IMAGE_IMPORT_BY_NAME]
 comment addr=ram:140019912 kind=PLATE text=[IMAGE_IMPORT_BY_NAME]
 comment addr=ram:140019920 kind=PLATE text=[IMAGE_IMPORT_BY_NAME]
 comment addr=ram:14001992e kind=PLATE text=[IMAGE_IMPORT_BY_NAME]
+memblock name=Headers n=1024 sha256=a73903c212a1411db25f01e1e3ef72c4c8048a54ee4c83085f67f8c74027ff8d
+memread addr=ram:140000000 len=16 n=16 sha256=74228703d2d0dcf060d50f1046edb9d7273d901e50b728afd50a4d42be752674
+memread addr=ram:1400003f8 len=32 n=8 sha256=af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc
+memread addr=ram:1400003fc len=4096 n=4 sha256=df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119
+memread addr=ram:140000200 len=4096 n=512 sha256=b2e9408bbecadb1afbc247be9031f20e148aa07cc25648df5a12df3534e3e6de
+memread addr=ram:13fffffff len=8 error
+memblock name=.text n=57856 sha256=1cc09b7d85ca5f04036fe0dd39e1efe1e8c1a9b80e40b0f5f9e52821361f50d5
+memread addr=ram:140001000 len=16 n=16 sha256=15ca3d4c0987c50113f8781b3220d546deb08200a6168ae7c0ac66c7483d4baa
+memread addr=ram:14000f1f8 len=32 n=8 sha256=af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc
+memread addr=ram:14000f1fc len=4096 n=4 sha256=df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119
+memread addr=ram:140008100 len=4096 n=4096 sha256=edc7f770646bd4f87c168424db2f41097f987d6715b0bab447034b85dcfd02ad
+memread addr=ram:140000fff len=8 error
+memblock name=.rdata n=39424 sha256=1619c6dad98db2258899c6aac16fb21db6ebba507925e639d73f00b49f55f9ad
+memread addr=ram:140010000 len=16 n=16 sha256=09f171b6b51aaedc44ad8a44f6393f4eb72fada106fe3f3469f716d6220aec4b
+memread addr=ram:1400199f8 len=32 n=8 sha256=af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc
+memread addr=ram:1400199fc len=4096 n=4 sha256=df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119
+memread addr=ram:140014d00 len=4096 n=4096 sha256=c71cc3fcd431d539a198d79b35c7e34d00075cd6f66ca67bf253d2045f7fd0ee
+memread addr=ram:14000ffff len=8 error
+memblock name=.data n=5576 sha256=6cd272d396359eb25522c174f3d3e959db74bb0f13a13883cf01e935b9faf459
+memread addr=ram:14001a000 len=16 n=16 sha256=0c9381ecab64c8e2e76bde813d76286f79dc9f2643afe4ec861a367368ce4618
+memread addr=ram:14001b5c0 len=32 n=8 sha256=af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc
+memread addr=ram:14001b5c4 len=4096 n=4 sha256=df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119
+memread addr=ram:14001aae4 len=4096 n=2788 sha256=03cc8ebf288e31c4c32b6a1416d2378b27352fc63a986ba67a2b30101b4b39c4
+memread addr=ram:140019fff len=8 error
+memblock name=.pdata n=4096 sha256=08d70f8d69f6c69dce644516989b26ebbbd742a247f75db458d5249b6eb32638
+memread addr=ram:14001c000 len=16 n=16 sha256=e42e663eb96fe04727216c6ed1c83f136a8acdb6d32b87c4268bbd1207654a1d
+memread addr=ram:14001cff8 len=32 n=32 sha256=3572b4fe693c13cc12a699d3eb9c45a3984c5eae6f6e5a08f02ff12f0ebb9ea1
+memread addr=ram:14001cffc len=4096 n=516 sha256=6fccf64883a8a1239c04e92532142750460e412d3e8d93bbe5f2d83b82f5e145
+memread addr=ram:14001c800 len=4096 n=2560 sha256=549d4840a5578960e65e0c07d3b8562953f69b2d05c885f80d46150c51706388
+memread addr=ram:14001bfff len=8 error
+memblock name=.fptable n=512 sha256=076a27c79e5ace2a3d47f9dd2e83e4ff6ea8872b3c2218f66c92b89b55f36560
+memread addr=ram:14001d000 len=16 n=16 sha256=374708fff7719dd5979ec875d56cd2286f6d3cf7ec317a3b25632aab28ec37bb
+memread addr=ram:14001d1f8 len=32 n=8 sha256=af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc
+memread addr=ram:14001d1fc len=4096 n=4 sha256=df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119
+memread addr=ram:14001d100 len=4096 n=256 sha256=5341e6b2646979a70e57653007a1f310169421ec9bdd9f1a5648f75ade005af1
+memread addr=ram:14001cfff len=8 n=8 sha256=af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc
+memblock name=.reloc n=2048 sha256=139f8c1d0d815ed04a631bd04b00e52b194539527c1aaf2efa129decf7c024d4
+memread addr=ram:14001e000 len=16 n=16 sha256=d3c9503ae0e79d9f85597b5a3a9f9c02d3d3ec8c6a024a3e9a18caa5c01fbd67
+memread addr=ram:14001e7f8 len=32 n=8 sha256=af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc
+memread addr=ram:14001e7fc len=4096 n=4 sha256=df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119
+memread addr=ram:14001e400 len=4096 n=1024 sha256=936139a8c9e8d6c91eae26104664278e3c84a824263d99a64cec49cae93b1057
+memread addr=ram:14001dfff len=8 error

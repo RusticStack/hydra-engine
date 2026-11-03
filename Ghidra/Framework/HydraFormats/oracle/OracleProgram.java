@@ -102,8 +102,58 @@ public class OracleProgram {
                 + s.isPrimary() + " pinned=" + s.isPinned());
         }
         dumpListing(p);
+        dumpMemory(p);
         p.release(OracleProgram.class);
         System.exit(0);
+    }
+
+    static String sha(byte[] b, int n) throws Exception {
+        java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+        md.update(b, 0, n);
+        StringBuilder sb = new StringBuilder();
+        for (byte x : md.digest()) {
+            sb.append(String.format("%02x", x));
+        }
+        return sb.toString();
+    }
+
+    static void memRead(ghidra.program.model.mem.Memory mem, Address a, int len) throws Exception {
+        byte[] buf = new byte[len];
+        try {
+            int n = mem.getBytes(a, buf, 0, len);
+            System.out.println("memread addr=" + addr(a) + " len=" + len + " n=" + n + " sha256="
+                + sha(buf, n));
+        }
+        catch (ghidra.program.model.mem.MemoryAccessException e) {
+            System.out.println("memread addr=" + addr(a) + " len=" + len + " error");
+        }
+    }
+
+    static void dumpMemory(ProgramDB p) throws Exception {
+        ghidra.program.model.mem.Memory mem = p.getMemory();
+        for (MemoryBlock b : mem.getBlocks()) {
+            Address s = b.getStart();
+            int size = (int) b.getSize();
+            byte[] buf = new byte[size];
+            try {
+                int n = mem.getBytes(s, buf, 0, size);
+                System.out.println("memblock name=" + b.getName() + " n=" + n + " sha256="
+                    + sha(buf, n));
+            }
+            catch (ghidra.program.model.mem.MemoryAccessException e) {
+                System.out.println("memblock name=" + b.getName() + " error");
+            }
+            memRead(mem, s, 16);
+            memRead(mem, b.getEnd().subtract(7), 32);
+            memRead(mem, b.getEnd().subtract(3), 4096);
+            memRead(mem, s.add(size / 2), 4096);
+            try {
+                memRead(mem, s.subtract(1), 8);
+            }
+            catch (Exception e) {
+                System.out.println("memread before-start skipped");
+            }
+        }
     }
 
     static String esc(String s) {

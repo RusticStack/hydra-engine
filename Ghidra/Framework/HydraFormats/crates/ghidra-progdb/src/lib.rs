@@ -15,6 +15,7 @@ mod error;
 mod functions;
 mod listing;
 mod memory;
+mod memread;
 mod references;
 mod symbols;
 
@@ -29,6 +30,7 @@ pub use error::ProgError;
 pub use functions::Function;
 pub use listing::{Comments, DataRow, InstructionRow};
 pub use memory::{MemoryBlock, SubBlock, SubBlockKind};
+pub use memread::{ByteMappingScheme, Memory};
 pub use references::{RefKind, Reference, ref_type_name};
 pub use symbols::{SourceType, Symbol};
 
@@ -144,6 +146,7 @@ impl<S: BufferStore> ProgramDb<S> {
         optional("TO REFS", &[1])?;
         optional("Instructions", &[1])?;
         optional("Data", &[0])?;
+        optional("File Bytes", &[0])?;
         optional("Comments", &[1])
     }
 
@@ -185,6 +188,15 @@ impl<S: BufferStore> ProgramDb<S> {
     /// Memory blocks in memory map order (sorted by start address).
     pub fn memory_blocks(&self) -> Result<Vec<MemoryBlock>> {
         memory::read_blocks(&self.db, &self.address_map)
+    }
+
+    /// The bytes of the program (`Memory.getBytes` and friends).
+    pub fn memory(&self) -> Result<Memory<'_, S>> {
+        Ok(Memory::new(
+            &self.db,
+            &self.address_map,
+            self.memory_blocks()?,
+        ))
     }
 
     /// Every record of the symbol table in id order.

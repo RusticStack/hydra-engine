@@ -4,8 +4,10 @@
 
 use std::path::{Path, PathBuf};
 
+mod common;
+
 use ghidra_fmt_gbf::BufferFile;
-use ghidra_progdb::{AddressSpaces, ProgramDb, RefKind, SpaceDef};
+use ghidra_progdb::{Address, AddressSpaces, ProgramDb, RefKind, SpaceDef};
 
 fn fixture(dir: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -144,6 +146,7 @@ fn check(dir: &str) {
         })
         .collect();
     got.extend(listing_lines(&db));
+    got.extend(memory_lines(&db));
     let got_refs: Vec<&str> = got.iter().map(String::as_str).collect();
     for (i, (g, w)) in got_refs.iter().zip(&want).enumerate() {
         assert_eq!(g, w, "line {i}");
@@ -277,6 +280,54 @@ fn listing_lines(db: &ProgramDb<BufferFile>) -> Vec<String> {
     }
     out.push(format!("comments={}", rows.len()));
     emit(&mut out, rows);
+    out
+}
+
+fn mem_read_line(
+    mem: &ghidra_progdb::Memory<'_, BufferFile>,
+    addr: &Address,
+    len: usize,
+) -> String {
+    match mem.read(addr, len) {
+        Ok(b) => format!(
+            "memread addr={addr} len={len} n={} sha256={}",
+            b.len(),
+            common::sha256_hex(&b)
+        ),
+        Err(_) => format!("memread addr={addr} len={len} error"),
+    }
+}
+
+fn shift(addr: &Address, delta: i64) -> Address {
+    match addr {
+        Address::Space { space, offset } => Address::Space {
+            space: space.clone(),
+            offset: offset.wrapping_add_signed(delta),
+        },
+        other => other.clone(),
+    }
+}
+
+fn memory_lines(db: &ProgramDb<BufferFile>) -> Vec<String> {
+    let mem = db.memory().unwrap();
+    let mut out = Vec::new();
+    for b in mem.blocks() {
+        match mem.read(&b.start, b.length as usize) {
+            Ok(bytes) => out.push(format!(
+                "memblock name={} n={} sha256={}",
+                b.name,
+                bytes.len(),
+                common::sha256_hex(&bytes)
+            )),
+            Err(_) => out.push(format!("memblock name={} error", b.name)),
+        }
+        let end = shift(&b.start, b.length - 1);
+        out.push(mem_read_line(&mem, &b.start, 16));
+        out.push(mem_read_line(&mem, &shift(&end, -7), 32));
+        out.push(mem_read_line(&mem, &shift(&end, -3), 4096));
+        out.push(mem_read_line(&mem, &shift(&b.start, b.length / 2), 4096));
+        out.push(mem_read_line(&mem, &shift(&b.start, -1), 8));
+    }
     out
 }
 
