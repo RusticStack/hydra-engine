@@ -10,9 +10,15 @@ use ghidra_fmt_gbf::BufferFile;
 use ghidra_progdb::{Address, AddressSpaces, ProgramDb, RefKind, SpaceDef};
 
 fn fixture(dir: &str) -> PathBuf {
-    if dir == "synth-33" {
+    if dir == "synth-33" || dir == "overlay-33" {
+        let file = if dir == "synth-33" {
+            "progdb-synth-33.gbf"
+        } else {
+            "progdb-overlay-33.gbf"
+        };
         return Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../testdata/synth/progdb-synth-33.gbf");
+            .join("../../testdata/synth")
+            .join(file);
     }
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../../../Features/HeadlessSession/examples/fixtures")
@@ -40,7 +46,15 @@ fn field<'a>(line: &'a str, key: &str) -> &'a str {
     }
 }
 
+/// The language's spaces from the oracle output. The overlay spaces Java lists too (the start
+/// address of an overlay block is in its overlay space) are left out: the port reads them from
+/// the "Overlay Spaces" table.
 fn spaces_of(text: &str) -> AddressSpaces {
+    let overlays: Vec<&str> = text
+        .lines()
+        .filter(|l| l.starts_with("block ") && l.contains(" overlay=true "))
+        .map(|l| field(l, "start").split(':').next().unwrap())
+        .collect();
     let mut defs = Vec::new();
     let mut default = String::new();
     for l in text.lines() {
@@ -49,6 +63,9 @@ fn spaces_of(text: &str) -> AddressSpaces {
         }
         if l.starts_with("space ") {
             let l = format!(" {l}");
+            if overlays.contains(&field(&l, "name")) {
+                continue;
+            }
             defs.push(SpaceDef {
                 name: field(&l, "name").to_owned(),
                 id: field(&l, "id").parse().unwrap(),
@@ -88,7 +105,7 @@ fn check(dir: &str) {
             other => other.clone(),
         };
         got.push(format!(
-            "block name={} start={} end={} size={} r={} w={} x={} vol={} art={} init={} overlay=false mapped={} comment=[{}] source=[{}] subs={}",
+            "block name={} start={} end={} size={} r={} w={} x={} vol={} art={} init={} overlay={} mapped={} comment=[{}] source=[{}] subs={}",
             b.name,
             b.start,
             end,
@@ -99,6 +116,7 @@ fn check(dir: &str) {
             b.is_volatile(),
             b.is_artificial(),
             b.is_initialized(),
+            b.is_overlay(),
             b.is_mapped(),
             b.comment.as_deref().unwrap_or("null"),
             b.source_name.as_deref().unwrap_or("null"),
@@ -113,7 +131,49 @@ fn check(dir: &str) {
                 s.start_offset
             ));
         }
+        if b.is_overlay() || b.is_mapped() {
+            let mut line = format!(
+                "blockx name={} overlay_base={} init={}",
+                b.name,
+                b.overlay_base.as_deref().unwrap_or("-"),
+                b.is_initialized()
+            );
+            for s in &b.sub_blocks {
+                match s.mapped_range(db.address_map()).unwrap() {
+                    Some(r) => line.push_str(&format!(" part=mapped:{r}")),
+                    None => line.push_str(" part=data"),
+                }
+            }
+            got.push(line);
+        }
     }
+    // every address space, overlays included, in the order and with the ids Java gives them
+    let mut spaces: Vec<String> = db
+        .address_map()
+        .spaces()
+        .spaces
+        .iter()
+        .filter(|s| s.name != "VARIABLE")
+        .map(|s| (s.id, format!("{} {} {}", s.name, s.id, s.bits)))
+        .collect::<std::collections::BTreeMap<_, _>>()
+        .into_values()
+        .collect();
+    let mut want_spaces: Vec<String> = text
+        .lines()
+        .filter(|l| l.starts_with("space "))
+        .map(|l| {
+            let l = format!(" {l}");
+            format!(
+                "{} {} {}",
+                field(&l, "name"),
+                field(&l, "id"),
+                field(&l, "bits")
+            )
+        })
+        .collect();
+    spaces.sort();
+    want_spaces.sort();
+    assert_eq!(spaces, want_spaces);
 
     let symbols = db.symbols().unwrap();
     for s in &symbols {
@@ -881,6 +941,15 @@ fn extras_lines(db: &ProgramDb<BufferFile>) -> Vec<String> {
 #[test]
 fn legacy_fixture_matches_java() {
     check("legacy-12.1.4");
+}
+
+/// Overlay and mapped memory blocks (`oracle/OracleOverlay.java`, stock Ghidra 12.2): overlay
+/// spaces with their ids, overlay blocks (initialized and not), byte mapped blocks (1:1 and 2:4),
+/// bit mapped blocks, mapped blocks that point into an overlay, and an overlay block that is
+/// mapped; the bytes of every block and the edge reads are compared by SHA-256 as for the others.
+#[test]
+fn overlay_and_mapped_blocks_match_java() {
+    check("overlay-33");
 }
 
 #[test]

@@ -62,6 +62,16 @@ impl ByteMappingScheme {
     fn is_one_to_one(self) -> bool {
         self.source <= 1
     }
+
+    /// Offset in the mapped-to memory of byte `offset` of the mapping
+    /// (`ByteMappingScheme.getMappedSourceAddress`).
+    pub(crate) fn source_offset(self, offset: i64) -> i64 {
+        if self.is_one_to_one() {
+            offset
+        } else {
+            self.source * (offset / self.mapped) + offset % self.mapped
+        }
+    }
 }
 
 impl<'a, S: BufferStore> Memory<'a, S> {

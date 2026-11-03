@@ -4,7 +4,7 @@
 use ghidra_fmt_db::Database;
 use ghidra_fmt_gbf::BufferStore;
 
-use crate::{Address, AddressMap, Cols, ProgError, Result};
+use crate::{Address, AddressMap, AddressRange, ByteMappingScheme, Cols, ProgError, Result};
 
 /// `MemoryBlock.EXECUTE`.
 pub const EXECUTE: u8 = 0x1;
@@ -75,6 +75,46 @@ pub struct SubBlock {
     pub source_offset: i64,
 }
 
+impl SubBlock {
+    /// For a mapped part, the range of the mapped-to memory that backs it
+    /// (`MemoryBlockSourceInfo.getMappedRange`): the byte mapped part covers
+    /// `ByteMappingScheme.getMappedSourceAddress` of its last byte, a bit mapped part one source
+    /// byte for every 8 bytes. `None` for a part that is not mapped.
+    ///
+    /// # Errors
+    ///
+    /// The errors of decoding the stored address; [`ProgError::Corrupt`] when the range leaves
+    /// the address space.
+    pub fn mapped_range(&self, map: &AddressMap) -> Result<Option<AddressRange>> {
+        if self.length <= 0 {
+            return Err(ProgError::Corrupt("mapped part without a length".into()));
+        }
+        let span = match self.kind {
+            SubBlockKind::ByteMapped => {
+                ByteMappingScheme::from_encoded(self.source_id)?.source_offset(self.length - 1)
+            }
+            SubBlockKind::BitMapped => (self.length - 1) / 8,
+            _ => return Ok(None),
+        };
+        let Address::Space { space, offset } = map.decode(self.source_offset)? else {
+            return Err(ProgError::Corrupt(
+                "mapped part without a source address".into(),
+            ));
+        };
+        let bits = map.spaces().find(&space).map_or(64, |s| s.bits);
+        let max = u64::try_from(span)
+            .ok()
+            .and_then(|span| offset.checked_add(span))
+            .filter(|m| bits >= 64 || *m < (1u64 << bits))
+            .ok_or_else(|| ProgError::Corrupt("mapped range leaves its address space".into()))?;
+        Ok(Some(AddressRange {
+            space,
+            min: offset,
+            max,
+        }))
+    }
+}
+
 /// A memory block with its sub blocks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryBlock {
@@ -90,6 +130,8 @@ pub struct MemoryBlock {
     pub flags: u8,
     /// Decoded start address.
     pub start: Address,
+    /// The space an overlay block overlays (`None` for a block in an ordinary space).
+    pub overlay_base: Option<String>,
     /// Length in bytes.
     pub length: i64,
     /// Parts, sorted by start offset.
@@ -117,14 +159,18 @@ impl MemoryBlock {
     pub fn is_artificial(&self) -> bool {
         self.flags & ARTIFICIAL != 0
     }
+    /// True for a block in an overlay space (`MemoryBlockDB.isOverlay`).
+    pub fn is_overlay(&self) -> bool {
+        self.overlay_base.is_some()
+    }
     /// True for blocks mapped onto other memory (`MemoryBlockDB.isMapped`).
     pub fn is_mapped(&self) -> bool {
         self.sub_blocks
             .first()
             .is_some_and(|s| matches!(s.kind, SubBlockKind::BitMapped | SubBlockKind::ByteMapped))
     }
-    /// True when the first part holds bytes (`MemoryBlockDB.isInitialized`; mapped blocks defer
-    /// to their source in Java and report false here).
+    /// True when the first part holds bytes (`MemoryBlockDB.isInitialized`; a mapped block is
+    /// never initialized, whatever it is mapped onto, checked against stock Ghidra 12.2).
     pub fn is_initialized(&self) -> bool {
         self.sub_blocks
             .first()
@@ -180,17 +226,22 @@ pub(crate) fn read_blocks<S: BufferStore>(
         let mut sub_blocks: Vec<SubBlock> =
             subs.iter().filter(|s| s.parent_id == id).cloned().collect();
         sub_blocks.sort_by_key(|s| s.start_offset);
+        let start = map.decode(start_key)?;
         blocks.push(MemoryBlock {
             id,
             name: bc.string(&rec, "Name")?.unwrap_or_default(),
             comment: bc.string(&rec, "Comments")?,
             source_name: bc.string(&rec, "Source Name")?,
             flags: bc.byte(&rec, "Flags")?.unwrap_or(0) as u8,
-            start: map.decode(start_key)?,
+            overlay_base: match &start {
+                Address::Space { space, .. } => map.spaces().overlay_base(space).map(str::to_owned),
+                _ => None,
+            },
+            start,
             length: bc.long(&rec, "Length")?.unwrap_or(0),
             sub_blocks,
         });
     }
-    blocks.sort_by_key(|b| map.sort_key(&b.start));
+    blocks.sort_by_cached_key(|b| map.sort_key(&b.start));
     Ok(blocks)
 }

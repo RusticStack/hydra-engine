@@ -177,6 +177,7 @@ public class OracleTx {
                 break;
             case "snap": {
                 File f = scratch.resolve("snap" + (snaps++) + ".gbf").toFile();
+                f.delete(); // a repeated run (ORACLETX_REPS) writes the same names again
                 h.saveAs(f, false, TaskMonitor.DUMMY);
                 System.out.println("== " + t[1]);
                 db.buffers.Oracle.main(new String[] { f.getPath() });
@@ -238,14 +239,21 @@ public class OracleTx {
         }
     }
 
-    public static void main(String[] a) throws Exception {
-        String keep = System.getenv("ORACLETX_KEEP"); // keep the snapshot files for inspection
-        scratch = keep != null ? Path.of(keep) : Files.createTempDirectory("oracletx");
-        try (BufferedReader r = Files.newBufferedReader(new File(a[0]).toPath())) {
+    /** Runs one script; `snap` is skipped when `ORACLETX_NOSNAP` is set (timing runs). */
+    static void runScript(String path) throws Exception {
+        boolean noSnap = System.getenv("ORACLETX_NOSNAP") != null;
+        h = null;
+        tx = 0;
+        active = false;
+        fixed.clear();
+        keyKind.clear();
+        snaps = 0;
+        try (BufferedReader r = Files.newBufferedReader(new File(path).toPath())) {
             String line;
             while ((line = r.readLine()) != null) {
                 line = line.trim();
                 if (line.isEmpty() || line.startsWith("#")) continue;
+                if (noSnap && line.startsWith("snap ")) continue;
                 try {
                     run(line.split(" "));
                 }
@@ -259,6 +267,32 @@ public class OracleTx {
             }
         }
         h.close();
+    }
+
+    /**
+     * `ORACLETX_REPS=n` runs the script n times in this JVM and prints the time of every run in
+     * nanoseconds to stderr (the first is cold, the last warm); only the first run prints a
+     * transcript.
+     */
+    public static void main(String[] a) throws Exception {
+        String keep = System.getenv("ORACLETX_KEEP"); // keep the snapshot files for inspection
+        scratch = keep != null ? Path.of(keep) : Files.createTempDirectory("oracletx");
+        String reps = System.getenv("ORACLETX_REPS");
+        if (reps == null) {
+            runScript(a[0]);
+        }
+        else {
+            java.io.PrintStream out = System.out;
+            StringBuilder times = new StringBuilder("ns");
+            for (int i = 0; i < Integer.parseInt(reps); i++) {
+                if (i == 1) System.setOut(new java.io.PrintStream(java.io.OutputStream.nullOutputStream()));
+                long t0 = System.nanoTime();
+                runScript(a[0]);
+                times.append(' ').append(System.nanoTime() - t0);
+            }
+            System.setOut(out);
+            System.err.println(times);
+        }
         if (keep != null) return;
         try (var s = Files.walk(scratch)) {
             s.sorted(java.util.Comparator.reverseOrder()).forEach(p -> p.toFile().delete());

@@ -45,6 +45,11 @@ with their parts, every symbol row by id, the listing, memory and symbol query s
 `crates/ghidra-progdb/PORTING.md`): `java -cp "mut;$CP" OracleMutate <install dir> <source db.1.gbf>
 <scratch copy.gbf> <out.gbf>`; run `OracleProgram` on the result for `testdata/oracleprog-synth-33.txt`.
 
+`OracleOverlay.java` builds `testdata/synth/progdb-overlay-33.gbf` on stock Ghidra (overlay and mapped
+memory blocks; `java -cp "cls;$CP" OracleOverlay <install dir> out.gbf`); `OracleProgram` on it gives
+`testdata/oracleprog-overlay-33.txt`. `OracleTx` takes `ORACLETX_REPS=n` (n runs in one JVM, times in
+nanoseconds on stderr) and `ORACLETX_NOSNAP=1` (no `snap`) for timing.
+
 `OracleOpenBench.java` times `new DBHandle` + `new ProgramDB` and a few queries on stock Ghidra, the
 counterpart of `crates/ghidra-progdb/examples/open_bench.rs`; peak memory is sampled from outside
 (`Process.PeakWorkingSet64`). Use the real `java.exe` of the JDK, not the `javapath` shim, which

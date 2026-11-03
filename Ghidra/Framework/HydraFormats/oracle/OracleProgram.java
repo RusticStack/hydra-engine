@@ -82,6 +82,26 @@ public class OracleProgram {
                 System.out.println("  sub kind=" + kind + " len=" + si.getLength() + " off="
                     + (si.getMinAddress().subtract(b.getStart())));
             }
+            if (b.isOverlay() || b.isMapped()) {
+                // overlay blocks and mapped blocks only (the older fixtures have neither): the
+                // space the overlay covers and the source range of every mapped part
+                String base = b.getStart().getAddressSpace() instanceof
+                    ghidra.program.model.address.OverlayAddressSpace os
+                        ? os.getOverlayedSpace().getName() : "-";
+                StringBuilder sb = new StringBuilder("blockx name=" + b.getName() + " overlay_base="
+                    + base + " init=" + b.isInitialized());
+                for (MemoryBlockSourceInfo si : b.getSourceInfos()) {
+                    sb.append(" part=");
+                    if (si.getMappedRange().isPresent()) {
+                        sb.append("mapped:" + addr(si.getMappedRange().get().getMinAddress()) + "-"
+                            + addr(si.getMappedRange().get().getMaxAddress()));
+                    }
+                    else {
+                        sb.append("data");
+                    }
+                }
+                System.out.println(sb);
+            }
         }
         List<Symbol> syms = new ArrayList<>();
         // every row of the symbol table, by id (getAllSymbols leaves out parameters and locals)

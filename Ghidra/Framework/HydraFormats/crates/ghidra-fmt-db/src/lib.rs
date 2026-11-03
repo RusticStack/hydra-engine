@@ -1250,6 +1250,24 @@ impl Database<CheckpointStore> {
     /// # Errors
     /// [`DbError::IllegalState`] while a transaction is open; store or file errors.
     pub fn save_as(&mut self, path: impl AsRef<std::path::Path>) -> Result<()> {
+        self.saving(|store| store.save_to_file(path, 1))
+    }
+
+    /// The image `save_as` would write, kept in memory ([`CheckpointStore::save_to_memory`]):
+    /// same transaction handling and cache effects, no file.
+    ///
+    /// # Errors
+    /// As [`Database::save_as`], without the file errors.
+    pub fn save_to_memory(&mut self) -> Result<ghidra_fmt_gbf::MemoryImage> {
+        self.saving(CheckpointStore::save_to_memory)
+    }
+
+    /// The part of `saveAs` around the write: flush the master rows in a hidden transaction,
+    /// write, and undo that transaction's checkpoint when it was added.
+    fn saving<T>(
+        &mut self,
+        write: impl FnOnce(&CheckpointStore) -> ghidra_fmt_gbf::Result<T>,
+    ) -> Result<T> {
         if self.tx_started {
             return Err(DbError::IllegalState("Can't save during transaction"));
         }
@@ -1258,7 +1276,7 @@ impl Database<CheckpointStore> {
         let added = self.end_transaction(id, true);
         flushed?;
         let added = added?;
-        let written = self.store.save_to_file(path, 1);
+        let written = write(&self.store);
         if added {
             self.undo()?;
         }

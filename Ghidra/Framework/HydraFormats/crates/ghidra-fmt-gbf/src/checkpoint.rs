@@ -806,19 +806,91 @@ impl CheckpointStore {
     /// File errors.
     pub fn save_to_file(&self, path: impl AsRef<Path>, file_id: i64) -> Result<()> {
         let mut out = BufferFile::create(path, self.buffer_size, file_id)?;
+        self.for_each_saved(|id, data| match data {
+            Some(d) => out.put(&DataBuffer::new(id, d.to_vec()), id),
+            None => out.put(&DataBuffer::empty(id), id),
+        })?;
+        out.set_free_indexes(&self.free);
+        // `close` flushes (header, free list, length, one `fsync`); flushing first as well made
+        // two `fsync`s per save, where `BufferMgr.saveAs` does one
+        out.close()
+    }
+}
+
+impl CheckpointStore {
+    /// Calls `f` for every index in order with the bytes `saveAs` stores (`None` for an empty
+    /// buffer). Like `doSave` it loads each stored node into the memory cache.
+    fn for_each_saved(&self, mut f: impl FnMut(i32, Option<&[u8]>) -> Result<()>) -> Result<()> {
         for id in 0..self.next_index {
             match self.current(id) {
                 Some(n) if !n.empty => {
-                    // `doSave` loads every stored node into the memory cache, in index order
                     self.access((id, n.serial))?;
-                    out.put(&DataBuffer::new(id, n.data.clone()), id)?;
+                    f(id, Some(&n.data))?;
                 }
-                _ => out.put(&DataBuffer::empty(id), id)?,
+                _ => f(id, None)?,
             }
         }
-        out.set_free_indexes(&self.free);
-        out.flush()?;
-        out.close()
+        Ok(())
+    }
+
+    /// What [`CheckpointStore::save_to_file`] writes, kept in memory: the same buffers and free
+    /// list without the file (the cost of a snapshot in a timing run).
+    ///
+    /// # Errors
+    /// Bookkeeping errors of the cache model.
+    pub fn save_to_memory(&self) -> Result<MemoryImage> {
+        let mut buffers = Vec::with_capacity(usize::try_from(self.next_index).unwrap_or(0));
+        self.for_each_saved(|_, d| {
+            buffers.push(d.map(<[u8]>::to_vec));
+            Ok(())
+        })?;
+        let mut free = self.free.clone();
+        free.sort_unstable();
+        Ok(MemoryImage {
+            buffer_size: self.buffer_size,
+            buffers,
+            free,
+        })
+    }
+}
+
+/// A saved database image held in memory: a read-only [`BufferStore`] with the contents of the
+/// buffer file [`CheckpointStore::save_to_file`] would have written (`None` is an empty buffer).
+#[derive(Debug, Clone)]
+pub struct MemoryImage {
+    buffer_size: usize,
+    buffers: Vec<Option<Vec<u8>>>,
+    free: Vec<i32>,
+}
+
+impl MemoryImage {
+    /// The free index list, ascending (what `BufferFile::free_indexes` returns).
+    pub fn free_indexes(&self) -> &[i32] {
+        &self.free
+    }
+}
+
+impl BufferStore for MemoryImage {
+    fn buffer_size(&self) -> usize {
+        self.buffer_size
+    }
+
+    fn index_count(&self) -> i32 {
+        i32::try_from(self.buffers.len()).unwrap_or(i32::MAX)
+    }
+
+    fn get_buffer(&self, index: i32) -> Result<DataBuffer> {
+        let slot = usize::try_from(index)
+            .ok()
+            .and_then(|i| self.buffers.get(i))
+            .ok_or(GbfError::IndexOutOfRange {
+                index,
+                count: self.index_count(),
+            })?;
+        Ok(match slot {
+            Some(d) => DataBuffer::new(index, d.clone()),
+            None => DataBuffer::empty(-1),
+        })
     }
 }
 
