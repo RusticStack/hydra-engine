@@ -67,3 +67,16 @@ to the Java-built file.
 * Table creation writes the master row immediately (so the master root exists after the first
   `create_table`) and stores the new master root in parameter 0; `commit` does not touch the
   parameter in Java (it cannot change there), the port refreshes it if it ever did.
+
+## Next: field-key and index writes (stage 4 item 1, not started in code)
+
+Size of what is left, from the Java sources: `VarKeyInteriorNode` 841 lines, `VarKeyRecordNode`
+885, `FixedKeyInteriorNode` 610, `FixedKeyRecordNode` 508, `FixedKeyVarRecNode` 458,
+`FixedKeyFixedRecNode` 199, `FieldIndexTable` 596, plus the index hooks in `Table.putRecord` /
+`deleteRecord`. Plan that keeps byte parity (same approach as `longwrite.rs`): a node cache with
+explicit `parent` ids because the var-key `split` / `keyChanged` reassign parent pointers; fixed-key
+family first (it serves the index tables, key type 51, primary keys are long), then var-key (string
+keyed tables, string-indexed columns, key type 52); `Table.putRecord` must call
+`FieldIndexTable.insertedRecord/updatedRecord/deletedRecord` in Java order; extend `OracleBuild`
+with a string-key table and an indexed table and compare per-buffer SHA-256 as for the long-key
+scripts.
