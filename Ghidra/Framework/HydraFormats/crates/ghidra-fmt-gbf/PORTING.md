@@ -16,6 +16,7 @@ Test source: `db.buffers.LocalBufferFileTest`.
 | `close()` (flush + commit) | `close(self)`; `flush()` is also public. Nothing is committed without it, as in Java |
 | `LocalBufferFile.getDataBuffer(BufferFileBlock)` | `data_buffer_from_block` |
 | `BufferMgr` allocation (needed by ChainedBuffer) | `BufferStoreMut` + `MemoryBufferStore` |
+| `BufferMgr` with checkpoints: `checkpoint`, `undo(redoable)`, `redo`, `setMaxUndos`, `clearCheckpoints`, `atCheckpoint`, `isChanged`, `getModCount`, `getAvailableUndoCount/RedoCount`, `IndexProvider` | `CheckpointStore` (`src/checkpoint.rs`), trait `Checkpointed` |
 
 ## Test mapping
 
@@ -51,6 +52,32 @@ and the reallocated buffer is NOT cleared, so the store hands the old bytes back
 index is zero filled). This is needed for byte-identical results of the B-tree write path.
 `save_to_file` writes the store the way `BufferMgr.saveAs` does.
 
+## Checkpoints, undo and redo (`CheckpointStore`)
+
+`BufferMgr` keeps, per buffer id, a list of versions (one per checkpoint that changed the buffer) and per
+checkpoint a list of its nodes. `CheckpointStore` keeps the same two structures without the memory cache and the disk
+cache: every version holds its bytes. What it reproduces, and what `tests/tx_diff.rs` in `ghidra-fmt-db` compares
+against the repository's Java classes, line by line, on 9 scripts plus 23 more (see the db notes):
+
+* the free index stack and the index count after any sequence of commit, rollback (`undo(false)`), `undo`, `redo`,
+  `setMaxUndos` and packing, including the **order** of the stack (Java frees the nodes of an undone checkpoint newest
+  first, and releases the nodes of one table operation in the slot order of `NodeMgr.NodeTable`; both are modelled,
+  `NodeTable` is ported with its hash, linear probing, growth and backward shift deletion);
+* the bytes of every buffer, including the stale bytes a re-created node shows (a buffer freed in the same version
+  chain keeps its content; a buffer whose version Java moved to the disk cache comes back zero filled);
+* `getAvailableUndoCount/RedoCount`, `hasUndoCheckpoints`, `hasRedoCheckpoints`, `atCheckpoint`, `isChanged`;
+* quirks: `clearCheckpoints` passes the checkpoint limit (undos + 1) to `setMaxUndos`, so the limit is 12 after
+  `new DBHandle(int)` (the default 10 undos become 11); with a limit of one checkpoint Java packs the new, empty
+  checkpoint away at once and writes into a detached list (no undo history, `isChanged` stays true).
+
+Limits: exact only while Java's 4 MiB buffer cache is not exhausted (beyond it Java recycles cached buffers and the
+stale bytes of a new buffer differ); the touched-node set of a table operation is the set of nodes the writers load
+or create, so a collision with a node Java touches that the Rust writers do not would permute the release order (not
+seen in 32 scripts). Measured divergences are listed in the db notes.
+
+`BufferStoreMut` gained `put_held`, `begin_group`, `end_group` (default: plain `put_buffer`, no grouping) and
+`BufferStore::note_node`; the B-tree writers call them, only `CheckpointStore` does something with them.
+
 ## Deliberate differences
 
 * Parameters are written in name order (Java: `Hashtable` iteration order, unspecified). Files
@@ -65,5 +92,5 @@ index is zero filled). This is needed for byte-identical results of the B-tree w
 
 Block streams (`InputBlockStream`/`OutputBlockStream`), `copyFile`/`clone`, `poke`/`peek`
 (use `put`/`get_buffer` on an opened file), `truncate`, `flushAhead`, `copyBuffersFrom`,
-`BufferMgr` (cache, checkpoints, undo), `VersionFile`, `RecoveryFile`, `ChangeMapFile`,
+`BufferMgr` cache and disk cache file, source file association (`saveAs(.., true)`), `VersionFile`, `RecoveryFile`, `ChangeMapFile`,
 `LocalManagedBufferFile`, `SharedPages`, `.ps` pre-save files and `cleanupOldPreSaveFiles`.

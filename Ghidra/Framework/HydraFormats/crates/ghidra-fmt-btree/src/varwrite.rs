@@ -36,6 +36,9 @@ fn max_key_length(buffer_len: usize) -> i64 {
 #[derive(Clone)]
 struct N {
     d: Vec<u8>,
+    /// The bytes as loaded: only a node that differs from them is written back (Java writes
+    /// only buffers it marked dirty).
+    orig: Vec<u8>,
     parent: Option<i32>,
 }
 
@@ -82,6 +85,19 @@ impl VarKeyWriter {
         Ok(!existed)
     }
 
+    /// Delete every node of the tree and the chained buffers of its indirect records
+    /// (`BTreeNode.delete` on the root, `Table.deleteAll`). The root becomes `-1`.
+    pub fn delete_all<S: BufferStoreMut + ?Sized>(&mut self, s: &mut S) -> Result<()> {
+        if self.root < 0 {
+            return Ok(());
+        }
+        let mut c = Ctx::new(s, &self.key_type);
+        c.delete_tree(self.root, 0)?;
+        c.flush()?;
+        self.root = -1;
+        Ok(())
+    }
+
     /// Remove the record for `key`; returns whether it existed.
     pub fn delete<S: BufferStoreMut + ?Sized>(&mut self, s: &mut S, key: &Field) -> Result<bool> {
         if self.root < 0 {
@@ -118,7 +134,9 @@ impl<'a, S: BufferStoreMut + ?Sized> Ctx<'a, S> {
         ids.sort_unstable();
         for id in ids {
             let n = &self.c[&id];
-            self.s.put_buffer(&DataBuffer::new(id, n.d.clone()))?;
+            if n.d != n.orig {
+                self.s.put_held(&DataBuffer::new(id, n.d.clone()))?;
+            }
         }
         self.c.clear();
         Ok(())
@@ -128,12 +146,20 @@ impl<'a, S: BufferStoreMut + ?Sized> Ctx<'a, S> {
 
     fn load(&mut self, id: i32) -> Result<()> {
         if !self.c.contains_key(&id) {
+            self.s.note_node(id);
             let d = self
                 .s
                 .get_buffer(id)?
                 .data
                 .ok_or(BtreeError::CorruptNode("node buffer is empty"))?;
-            self.c.insert(id, N { d, parent: None });
+            self.c.insert(
+                id,
+                N {
+                    orig: d.clone(),
+                    d,
+                    parent: None,
+                },
+            );
         }
         Ok(())
     }
@@ -240,6 +266,7 @@ impl<'a, S: BufferStoreMut + ?Sized> Ctx<'a, S> {
 
     fn new_node(&mut self, ty: NodeType) -> Result<i32> {
         let id = self.s.create_buffer()?;
+        self.s.note_node(id);
         let mut d = self
             .s
             .get_buffer(id)?
@@ -248,8 +275,50 @@ impl<'a, S: BufferStoreMut + ?Sized> Ctx<'a, S> {
         d[0] = ty as u8;
         d[KEY_TYPE_OFFSET] = self.kt.code();
         bytes::put_i32(&mut d, KEY_COUNT_OFFSET, 0)?;
-        self.c.insert(id, N { d, parent: None });
+        // a new node is always written: it has no original to compare with
+        self.c.insert(
+            id,
+            N {
+                d,
+                orig: Vec::new(),
+                parent: None,
+            },
+        );
         Ok(id)
+    }
+
+    /// `VarKeyInteriorNode.delete` / `VarKeyRecordNode.delete`: children first, in key order.
+    fn delete_tree(&mut self, id: i32, depth: usize) -> Result<()> {
+        if depth > MAX_DEPTH {
+            return Err(BtreeError::TooDeep);
+        }
+        let kc = self.cnt(id)?;
+        if self.is_leaf(id)? {
+            for index in 0..kc {
+                if self.indirect(id, index)? {
+                    let off = self.data_offset(id, index)?;
+                    let chained = self.geti(id, off as usize)?;
+                    self.remove_chained(chained)?;
+                    self.puti(id, off as usize, -1)?;
+                }
+            }
+            // the buffer is written back (with the -1) before it is freed, so its stale bytes
+            // are the ones Java leaves
+            self.c.remove(&id).map_or(Ok(()), |n| {
+                if n.d != n.orig {
+                    self.s.put_buffer(&DataBuffer::new(id, n.d))
+                } else {
+                    Ok(())
+                }
+            })?;
+            self.s.delete_buffer(id)?;
+            return Ok(());
+        }
+        for index in 0..kc {
+            let child = self.geti(id, NODE_HEADER + index * INT_ENTRY + 4)?;
+            self.delete_tree(child, depth + 1)?;
+        }
+        self.delete_node(id)
     }
 
     fn delete_node(&mut self, id: i32) -> Result<()> {

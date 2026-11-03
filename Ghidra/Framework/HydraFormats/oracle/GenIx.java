@@ -71,6 +71,19 @@ public class GenIx {
         return "put " + name + " " + k + " " + (below(50) - 25) + " " + blob(len) + " " + text;
     }
 
+    static String widePut(String name, String k) {
+        return "put " + name + " " + k + " " + below(5000);
+    }
+
+    static String sparsePut(String name, String k) {
+        return "put " + name + " " + k + " " + (below(20) - 10) + " "
+            + (below(3) == 0 ? "-" : word(6)) + " " + (below(3) == 0 ? "-" : Integer.toString(below(30) - 15));
+    }
+
+    static String binPut(String name, String k) {
+        return "put " + name + " " + k + " " + (below(50) - 25) + " " + blob(below(30)) + " " + (below(3) == 0 ? "-" : word(12));
+    }
+
     static void write(File dir, String name, List<String> lines) throws Exception {
         Files.write(new File(dir, name + ".script").toPath(), (String.join("\n", lines) + "\n").getBytes());
     }
@@ -170,5 +183,41 @@ public class GenIx {
         l.add("table T string var -");
         ops(l, "T", "string", GenIx::varPut, 3000, 0, 40, 500);
         write(dir, "vk-string-var-stress", l);
+
+        // 40 column tables: the index tables are visited in IntObjectHashtable order (column % 37,
+        // newest first), which only differs from creation order with columns above 36
+        s = 0xdddd;
+        l = new ArrayList<>();
+        l.add("buffer 507");
+        l.add("table W long wide 1,38,13,14,0,39,25");
+        ops(l, "W", "long", GenIx::widePut, 400, 120, 25, 100);
+        write(dir, "ix-wide-order", l);
+
+        s = 0xeeee;
+        l = new ArrayList<>();
+        l.add("buffer 507");
+        l.add("table W int wide 38,1,22,35");
+        l.add("table X short wide 37,0");
+        ops(l, "W", "int", GenIx::widePut, 300, 100, 20, 100);
+        ops(l, "X", "short", GenIx::widePut, 300, 100, 20, 100);
+        write(dir, "ix-wide-two-tables", l);
+
+        // indexes on sparse columns skip null values; an index on a binary column
+        s = 0xffff;
+        l = new ArrayList<>();
+        l.add("buffer 507");
+        l.add("table S long sparse 1,2");
+        l.add("table Q int sparse 2,1,0");
+        ops(l, "S", "long", GenIx::sparsePut, 500, 150, 25, 100);
+        ops(l, "Q", "int", GenIx::sparsePut, 400, 120, 25, 100);
+        write(dir, "ix-sparse", l);
+
+        s = 0x1234;
+        keyMax = 12;
+        l = new ArrayList<>();
+        l.add("buffer 507");
+        l.add("table T long var 1");
+        ops(l, "T", "long", GenIx::binPut, 600, 300, 25, 200);
+        write(dir, "ix-binary-column", l);
     }
 }

@@ -1,0 +1,72 @@
+buffer 507
+status
+snap empty
+begin
+table A long fixed 1
+put A 1 5 6 7
+put A 2 5 6 7
+try begin
+status
+end commit
+status
+try put A 3 1 1 1
+try end commit
+try end rollback
+begin
+put A 3 1 1 1
+del A 1
+status
+end rollback
+status
+snap after-rollback
+begin
+put A 9 9 9 9
+end commit
+undo
+status
+snap after-undo
+redo
+status
+try rename A B
+begin
+rename A B
+try rename A Z
+try rename B B
+rename B C
+status
+end commit
+status
+snap after-rename
+begin
+deltable C
+status
+end commit
+status
+snap after-deltable
+undo
+snap undo-deltable
+undo
+snap undo-rename
+undo
+undo
+undo
+status
+redo
+redo
+redo
+redo
+status
+snap redone
+begin
+terminate commit
+try put C 1 1 1 1
+begin
+try put C 1 1 1 1
+terminate rollback
+try put C 1 1 1 1
+try end commit
+begin
+try put C 1 1 1 1
+end commit
+status
+snap final

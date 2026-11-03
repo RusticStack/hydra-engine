@@ -86,6 +86,7 @@ struct Page {
 
 impl Page {
     fn load<S: BufferStore + ?Sized>(s: &S, id: i32) -> Result<Self> {
+        s.note_node(id);
         let d = s
             .get_buffer(id)?
             .data
@@ -94,7 +95,7 @@ impl Page {
     }
 
     fn save<S: BufferStoreMut + ?Sized>(&self, s: &mut S) -> Result<()> {
-        s.put_buffer(&DataBuffer::new(self.id, self.d.clone()))?;
+        s.put_held(&DataBuffer::new(self.id, self.d.clone()))?;
         Ok(())
     }
 
@@ -154,6 +155,7 @@ impl Page {
 
 fn new_page<S: BufferStoreMut + ?Sized>(s: &mut S, ty: NodeType) -> Result<Page> {
     let id = s.create_buffer()?;
+    s.note_node(id);
     let d = s
         .get_buffer(id)?
         .data
@@ -506,6 +508,12 @@ impl LongKeyWriter {
     pub fn delete<S: BufferStoreMut + ?Sized>(&mut self, s: &mut S, key: i64) -> Result<bool> {
         self.inner.delete(s, &key.to_be_bytes())
     }
+
+    /// Delete every node of the tree and the chained buffers of its indirect records
+    /// (`BTreeNode.delete` on the root, as `Table.deleteAll` does). The root becomes `-1`.
+    pub fn delete_all<S: BufferStoreMut + ?Sized>(&mut self, s: &mut S) -> Result<()> {
+        self.inner.delete_all(s)
+    }
 }
 
 /// Writer for one fixed-key table tree (node types 5 to 7): the key type must have a fixed
@@ -555,6 +563,11 @@ impl FixedKeyWriter {
     /// Remove the record for `key`. Returns whether it existed.
     pub fn delete<S: BufferStoreMut + ?Sized>(&mut self, s: &mut S, key: &Field) -> Result<bool> {
         self.inner.delete(s, &key.to_bytes())
+    }
+
+    /// Delete every node of the tree and the chained buffers of its indirect records.
+    pub fn delete_all<S: BufferStoreMut + ?Sized>(&mut self, s: &mut S) -> Result<()> {
+        self.inner.delete_all(s)
     }
 }
 
@@ -657,6 +670,56 @@ impl TreeWriter {
         let existed = leaf_search(&self.g, &leaf, key, self.entry(&leaf)?)?.is_ok();
         self.root = self.put_record(s, leaf_id, path, key, data)?;
         Ok(!existed)
+    }
+
+    fn delete_all<S: BufferStoreMut + ?Sized>(&mut self, s: &mut S) -> Result<()> {
+        if self.root < 0 {
+            return Ok(());
+        }
+        self.delete_tree(s, self.root, 0)?;
+        self.root = -1;
+        Ok(())
+    }
+
+    /// `interior.delete()` / `leaf.delete()`: children first in key order, chained buffers of
+    /// indirect records before the leaf itself.
+    fn delete_tree<S: BufferStoreMut + ?Sized>(
+        &self,
+        s: &mut S,
+        id: i32,
+        depth: usize,
+    ) -> Result<()> {
+        if depth > MAX_DEPTH {
+            return Err(BtreeError::TooDeep);
+        }
+        let mut p = Page::load(s, id)?;
+        let kc = p.count()?;
+        if p.ty() == self.g.interior as u8 {
+            for i in 0..kc {
+                let child = ichild(&self.g, &p, i)?;
+                self.delete_tree(s, child, depth + 1)?;
+            }
+        } else if p.ty() == self.g.var_leaf as u8 {
+            let mut changed = false;
+            for i in 0..kc {
+                if var_indirect(&self.g, &p, i)? {
+                    let off = var_off(&self.g, &p, i)? as usize;
+                    remove_chained(s, p.i32(off)?)?;
+                    p.set_i32(off, -1)?;
+                    changed = true;
+                }
+            }
+            if changed {
+                p.save(s)?;
+            }
+        } else if p.ty() != self.g.fixed_leaf as u8 {
+            return Err(BtreeError::UnexpectedNodeType {
+                found: p.ty(),
+                buffer_id: id,
+            });
+        }
+        s.delete_buffer(id)?;
+        Ok(())
     }
 
     fn delete<S: BufferStoreMut + ?Sized>(&mut self, s: &mut S, key: &[u8]) -> Result<bool> {

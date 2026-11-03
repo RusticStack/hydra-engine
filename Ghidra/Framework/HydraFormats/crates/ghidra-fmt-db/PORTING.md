@@ -16,8 +16,8 @@ Source: `db.DBHandle` (open path), `MasterTable`, `TableRecord`, `Table` (read s
 | `Table.putRecord`, `deleteRecord` (long, fixed-length and variable-length keys) | `put_record`, `delete_record`, `delete_record_field` | done, with index maintenance in Java order (update: index first; insert: index after; delete: index first) |
 | `endTransaction` / `saveAs` master flush | `commit`; `MemoryBufferStore::save_to_file` | done |
 | field-key table writes (fixed-key 5-7, var-key 3-4), `FieldIndexTable.addEntry/deleteEntry`, `createTable` with index columns | `create_indexed_table`, `Tree` | done; byte-identical to Java on 16 scripts (see below) |
-| transactions, undo/redo, `deleteTable`, `setTableName` | none | NOT ported |
-| `Table.isConsistent`, statistics, `RecordIterator` seek/bounds, `DBLongIterator` | none | NOT ported |
+| `startTransaction`, `endTransaction` (commit and rollback), `terminateTransaction`, `checkTransaction`, `undo`, `redo`, `canUndo`, `canRedo`, `getAvailableUndoCount/RedoCount`, `setMaxUndos`, `hasUncommittedChanges`, `isChanged` (`cachedChangedState`), `getModCount`, `reloadTables`, `deleteTable`, `setTableName`, `saveAs(file, false)` | `Database<CheckpointStore>`: `start_transaction`, `end_transaction`, `terminate_transaction`, `undo`, `redo`, `can_undo`, `can_redo`, `available_undo_count`, `available_redo_count`, `set_max_undos`, `has_uncommitted_changes`, `is_changed`, `mod_count`, `delete_table`, `set_table_name`, `save_as` | done; byte-identical to Java on the scripts of `tests/tx_diff.rs` (see below) |
+| `Table.isConsistent`, statistics, `RecordIterator` seek/bounds, `DBLongIterator`, a public `Table.deleteAll`, schema changes | none (`delete_all` exists inside `delete_table`) | NOT ported |
 
 ## Tests
 
@@ -28,6 +28,42 @@ legacy fixtures: master rows (including the node family Java selects), per table
 and a SHA-256 over key bytes and record bytes. Rust decodes each record and re-encodes it, so a
 match proves the Field and Schema encoders reproduce the file bytes. Also checked: every index
 table equals the entries derived from its primary table (all columns), and `find_primary_keys`.
+
+## Transactions, undo and redo: `tests/tx_diff.rs`
+
+`oracle/OracleTx.java` runs a script on `DBHandle` and prints every observable: the result of each `end`, `undo`,
+`redo` and `rename`, expected errors (`try`, with the exception class), `status` (undo and redo counts, `canUndo`,
+`canRedo`, `uncommitted`, `changed`, `tx` and the free index stack in stack order, read by reflection) and, at every
+`snap`, the output of `db.buffers.Oracle` and `db.OracleDb` on a file written with `saveAs(file, false)`. The Rust test
+replays the script and builds the same transcript; for a snapshot it calls `Database::save_as`, reads the written file
+back with `BufferFile` and `Database::open`, so the comparison is on the bytes Rust wrote. Every line must be equal:
+buffer geometry, free list, SHA-256 of each buffer, master rows, table counts, status and the stack order.
+
+Scripts (`oracle/gen_tx_scripts.py`; expected files by `oracle/run_tx.sh`; in `testdata/tx`): `tx-basic` (commit,
+rollback, undo, redo, rename, deleteTable, terminate, errors outside a transaction, snapshots), `tx-many-commits` (40
+transactions, packing, redo dropped by a new transaction, `maxundos 2`), `tx-delete-heavy` (three indexed tables with
+chained records, deleteTable committed and rolled back, undo of the deletion) and six random sequences of 60 to 120
+steps over four tables (long, int and string keys, fixed and variable records, 0 to 3 indexes, chained records) with 507,
+1019, 2043 and 16379 byte buffers and `maxundos` 0, 1, 3 and 30. All 9 are byte-identical to Java.
+
+Sweep: `oracle/gen_tx_scripts.py <dir> sweep` writes 24 more random scripts (100 steps, random `maxundos` 0 to 5);
+`HYDRA_TX_SWEEP_DIR=<dir> cargo test -p ghidra-fmt-db --test tx_diff sweep -- --ignored` replays them. Java itself
+fails one (tx-sweep-03: the file it saves has an unreadable chained buffer after `maxundos 0`; a Java problem). Of the
+other 23, 20 are byte-identical and 3 differ: tx-sweep-00 and tx-sweep-15 (both contain `maxundos 0`, where Java keeps
+an unreachable checkpoint list; sweep-00 ends with a different index count) and tx-sweep-18 (a node created after a
+rollback holds 3 stale bytes in Java where Rust zero fills; delta debugging reduced it to `maxundos 1`, one committed
+transaction, one rolled back transaction that creates and deletes tables, and one more transaction; the cause in
+`BufferMgr` was not found). Those three are read-compatible, not byte-identical.
+
+Behaviour with `CheckpointStore`:
+
+* identical to Java: the result of every transaction call, the errors, the counters, the free stack order and every
+  buffer byte for commit, rollback, undo, redo, packing, `setMaxUndos`, `deleteTable`, `setTableName` and `saveAs`;
+* `setTableName` only marks the master row dirty. `endTransaction` flushes master rows only when a buffer changed, so a
+  transaction that only renames adds no checkpoint (`end added=false`) and the row is written by the next flush; `saveAs`
+  flushes it in a hidden transaction and undoes that, which reads the old name back (kept, and covered by `tx-basic`);
+* read-compatible only: the three sweep scripts above, and any run that exhausts Java's 4 MiB cache;
+* `Database<MemoryBufferStore>` has no transactions (`commit` is the master flush, as before).
 
 ## Kept from Java
 
@@ -82,8 +118,17 @@ indexes on string columns (var-key index nodes), two stress runs of 3000 operati
 Every buffer SHA-256, the free list, the master rows and the table counts match Java, and Java (`OracleDb` incl.
 `isConsistent`) reads the files Rust saved identically.
 
-Known gaps: the index iteration order of `Table.indexedColumns` is modelled as `column % 13` then creation order
-(`IntObjectHashtable` with its default capacity of 13; verified for columns 0 to 2 only). Indexed tables are only
-partially verified for binary-column indexes (Java refuses long ones, as the key then exceeds the node limit).
-Sparse-column indexes (`isSparseIndex`) are implemented but not covered by a script. Legacy index fields and
-`forceUseOfVariableLengthKeyNodes` tables cannot be created.
+Field-key tail (transactions round). The index iteration order of `Table.indexedColumns` is `IntObjectHashtable.getKeys`
+order: `column % 37` (the initial capacity `Prime.nextPrime(3)` is 17 and `IntKeyIndexer` rounds that up to the next
+prime, 37), newest key first inside one hash list. The earlier model (`% 13`, creation order) agreed only for columns 0
+to 2. New scripts, all byte-identical to Java: `ix-wide-order` (a 40 column table indexed on 1, 38, 13, 14, 0, 39, 25,
+where 1 and 38 share a hash list) and `ix-wide-two-tables`, both of which fail with the old order; `ix-sparse` (long and
+int key tables with indexes on sparse String and Int columns; `FieldIndexTable` skips null values); `ix-binary-column`
+(index on a Binary column with values up to 29 bytes; Java asserts above 54 bytes, and a string key table cannot have
+indexes at all: "variable length primaryKey not supported"). The sparse tables exposed one Java quirk, now reproduced:
+`Table.updatedRecord` compares columns with `Field.equals`, which finds an absent (null state) integer equal to an
+explicit zero, so an update between the two leaves a stale or missing index entry (`same_column`). The index of a sparse
+column is therefore compared with Java but not with its primary table.
+
+Still not covered: legacy index fields (`LegacyIndexField`) and `forceUseOfVariableLengthKeyNodes` tables cannot be
+created; `Table.isConsistent`, statistics and iterator seek/bounds are not ported.

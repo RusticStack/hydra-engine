@@ -16,7 +16,7 @@ use ghidra_fmt_btree::{
 };
 use ghidra_fmt_chain::{ChainError, DbParms};
 use ghidra_fmt_field::{Field, FieldError, FieldType, IndexValue, JString, Record, Schema};
-use ghidra_fmt_gbf::{BufferStore, BufferStoreMut, GbfError};
+use ghidra_fmt_gbf::{BufferStore, BufferStoreMut, CheckpointStore, Checkpointed, GbfError};
 
 /// Database errors.
 #[derive(Debug)]
@@ -37,6 +37,15 @@ pub enum DbError {
     TableExists(String),
     /// Not supported by this port (for example writing field-key tables).
     Unsupported(&'static str),
+    /// A change outside a transaction (`NoTransactionException`).
+    NoTransaction,
+    /// The transaction was ended by `terminate_transaction` and no new one was started
+    /// (`TerminatedTransactionException`).
+    TerminatedTransaction,
+    /// A transaction call that does not fit the state (`IllegalStateException`).
+    IllegalState(&'static str),
+    /// A table with that name exists already (`DuplicateNameException`).
+    DuplicateName(String),
 }
 
 impl fmt::Display for DbError {
@@ -50,6 +59,10 @@ impl fmt::Display for DbError {
             Self::TableNotFound(n) => write!(f, "table not found: {n}"),
             Self::TableExists(n) => write!(f, "Table already exists: {n}"),
             Self::Unsupported(w) => write!(f, "unsupported: {w}"),
+            Self::NoTransaction => write!(f, "Transaction has not been started"),
+            Self::TerminatedTransaction => write!(f, "Transaction has been terminated"),
+            Self::IllegalState(w) => write!(f, "{w}"),
+            Self::DuplicateName(n) => write!(f, "Table already exists: {n}"),
         }
     }
 }
@@ -133,6 +146,8 @@ pub struct TableRecord {
     pub max_key: i64,
     /// Record count.
     pub record_count: i32,
+    /// Changed since the row was last written (`DBRecord.isDirty`); `commit` writes dirty rows.
+    pub(crate) dirty: bool,
 }
 
 fn col_str(r: &Record, i: usize) -> Result<String> {
@@ -183,6 +198,7 @@ impl TableRecord {
             indexed_column: col_int(r, 6)?,
             max_key,
             record_count: col_int(r, 8)?,
+            dirty: false,
         })
     }
 }
@@ -245,6 +261,15 @@ impl Tree {
         })
     }
 
+    fn delete_all<S: BufferStoreMut>(&mut self, s: &mut S) -> Result<()> {
+        match self {
+            Self::Long(w) => w.delete_all(s)?,
+            Self::Fixed(w) => w.delete_all(s)?,
+            Self::Var(w) => w.delete_all(s)?,
+        }
+        Ok(())
+    }
+
     fn root(&self) -> i32 {
         match self {
             Self::Long(w) => w.root(),
@@ -261,6 +286,13 @@ pub struct Database<S: BufferStore> {
     tables: Vec<TableRecord>,
     master_root: i32,
     next_table_num: i64,
+    tx_started: bool,
+    tx_terminated: bool,
+    last_tx: i64,
+    /// `DBHandle.cachedChangedState`.
+    cached_changed: bool,
+    /// `DBHandle.txStartingModCount`.
+    tx_start_mod: u64,
 }
 
 impl<S: BufferStore> Database<S> {
@@ -285,6 +317,11 @@ impl<S: BufferStore> Database<S> {
             tables,
             master_root: root,
             next_table_num,
+            tx_started: false,
+            tx_terminated: false,
+            last_tx: 0,
+            cached_changed: false,
+            tx_start_mod: 0,
         })
     }
 
@@ -347,13 +384,28 @@ impl<S: BufferStoreMut> Database<S> {
         params.set(&mut store, 0, -1)?;
         params.set(&mut store, 1, (database_id >> 32) as i32)?;
         params.set(&mut store, 2, database_id as i32)?;
+        // `DBHandle(int)` ends with `bufferMgr.clearCheckpoints()`: what exists now is the baseline
+        store.clear_checkpoints();
         Ok(Self {
             store,
             params,
             tables: Vec::new(),
             master_root: -1,
             next_table_num: 0,
+            tx_started: false,
+            tx_terminated: false,
+            last_tx: 0,
+            cached_changed: false,
+            tx_start_mod: 0,
         })
+    }
+
+    /// Run one table operation (`NodeMgr` holds its nodes until `releaseNodes` at the end).
+    fn grouped<T>(&mut self, f: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        self.store.begin_group();
+        let r = f(self);
+        self.store.end_group();
+        r
     }
 
     fn master_row(t: &TableRecord) -> Record {
@@ -379,10 +431,12 @@ impl<S: BufferStoreMut> Database<S> {
         let row = Self::master_row(&self.tables[i]);
         let mut data = Vec::new();
         master_schema().write_record(&row, &mut data)?;
-        let mut w = LongKeyWriter::new(self.master_root, None);
-        w.put(&mut self.store, self.tables[i].table_num, &data)?;
-        self.master_root = w.root();
-        Ok(())
+        self.grouped(|db| {
+            let mut w = LongKeyWriter::new(db.master_root, None);
+            w.put(&mut db.store, db.tables[i].table_num, &data)?;
+            db.master_root = w.root();
+            Ok(())
+        })
     }
 
     /// Define a new primary table without indexes (`DBHandle.createTable(name, schema)`).
@@ -406,6 +460,7 @@ impl<S: BufferStoreMut> Database<S> {
         {
             return Err(DbError::TableExists(name.to_owned()));
         }
+        self.check_transaction()?;
         let mut index_schemas = Vec::new();
         for &col in indexed_columns {
             let indexed = schema
@@ -435,6 +490,7 @@ impl<S: BufferStoreMut> Database<S> {
             indexed_column,
             max_key: i64::MIN,
             record_count: 0,
+            dirty: false,
         });
         self.next_table_num += 1;
         let i = self.tables.len() - 1;
@@ -453,7 +509,9 @@ impl<S: BufferStoreMut> Database<S> {
     }
 
     /// Positions of the index tables of table `i`, in the order `Table.indexedColumns` visits
-    /// them (`IntObjectHashtable.getKeys`: by hash list, `column % 13`, then insertion order).
+    /// them (`IntObjectHashtable.getKeys`): by hash list, `column % 37` (the table starts with
+    /// capacity `Prime.nextPrime(3)` = 17 and its `IntKeyIndexer` rounds that up to the next
+    /// prime, 37), and inside a list the most recently added key first.
     fn index_positions(&self, i: usize) -> Vec<usize> {
         let name = &self.tables[i].name;
         let mut v: Vec<(i32, usize)> = self
@@ -463,7 +521,7 @@ impl<S: BufferStoreMut> Database<S> {
             .filter(|(_, t)| t.indexed_column >= 0 && &t.name == name)
             .map(|(p, t)| (t.indexed_column, p))
             .collect();
-        v.sort_by_key(|(col, p)| (col % 13, *p));
+        v.sort_by_key(|(col, p)| ((col & 0x7fff_ffff) % 37, std::cmp::Reverse(*p)));
         v.into_iter().map(|(_, p)| p).collect()
     }
 
@@ -483,33 +541,51 @@ impl<S: BufferStoreMut> Database<S> {
         })
     }
 
-    /// Put one record into table `i` and track root, count and (long keys) maximum key.
+    /// Put one record into table `i` and track root, count and (long keys) maximum key, as one
+    /// table operation.
     fn put_raw(&mut self, i: usize, record: &Record) -> Result<bool> {
+        self.grouped(|db| db.put_raw_in_group(i, record))
+    }
+
+    fn put_raw_in_group(&mut self, i: usize, record: &Record) -> Result<bool> {
         let mut data = Vec::new();
         self.tables[i].schema.write_record(record, &mut data)?;
         let mut w = self.tree_for(i)?;
         let inserted = w.put(&mut self.store, &record.key, &data)?;
         let t = &mut self.tables[i];
-        t.root_buffer_id = w.root();
+        if t.root_buffer_id != w.root() {
+            t.root_buffer_id = w.root();
+            t.dirty = true;
+        }
         if let Field::Long(k) = record.key
             && t.schema.use_long_key_nodes()
             && t.max_key < k
         {
             t.max_key = k;
+            t.dirty = true;
         }
         if inserted {
             t.record_count += 1;
+            t.dirty = true;
         }
         Ok(inserted)
     }
 
     fn delete_raw(&mut self, i: usize, key: &Field) -> Result<bool> {
+        self.grouped(|db| db.delete_raw_in_group(i, key))
+    }
+
+    fn delete_raw_in_group(&mut self, i: usize, key: &Field) -> Result<bool> {
         let mut w = self.tree_for(i)?;
         let existed = w.delete(&mut self.store, key)?;
         let t = &mut self.tables[i];
-        t.root_buffer_id = w.root();
+        if t.root_buffer_id != w.root() {
+            t.root_buffer_id = w.root();
+            t.dirty = true;
+        }
         if existed {
             t.record_count -= 1;
+            t.dirty = true;
         }
         Ok(existed)
     }
@@ -553,6 +629,34 @@ impl<S: BufferStoreMut> Database<S> {
         Ok(())
     }
 
+    /// `Field.equals` of two values of column `col`. A sparse column that is absent (the null
+    /// state) holds the type's default, so Java finds an absent integer equal to an explicit
+    /// zero and a null string equal to a null string, whatever the record says.
+    fn same_column(
+        &self,
+        primary: usize,
+        col: usize,
+        a: Option<&Field>,
+        b: Option<&Field>,
+    ) -> bool {
+        let ty = self.tables[primary].schema.fields().get(col);
+        let norm = |v: Option<&Field>| -> Option<Field> {
+            v.cloned().or_else(|| {
+                Some(match ty? {
+                    FieldType::Byte => Field::Byte(0),
+                    FieldType::Short => Field::Short(0),
+                    FieldType::Int => Field::Int(0),
+                    FieldType::Long => Field::Long(0),
+                    FieldType::Boolean => Field::Boolean(0),
+                    FieldType::String => Field::String(None),
+                    FieldType::Binary => Field::Binary(None),
+                    _ => return None,
+                })
+            })
+        };
+        norm(a) == norm(b)
+    }
+
     /// `Table.updatedRecord`: for each index whose column changed, delete the old entry and add
     /// the new one.
     fn index_update(&mut self, primary: usize, old: &Record, new: &Record) -> Result<()> {
@@ -560,7 +664,7 @@ impl<S: BufferStoreMut> Database<S> {
             let col = self.tables[idx].indexed_column as usize;
             let a = old.values.get(col).and_then(Option::as_ref);
             let b = new.values.get(col).and_then(Option::as_ref);
-            if a != b {
+            if !self.same_column(primary, col, a, b) {
                 if let Some(k) = self.index_key(primary, idx, old)? {
                     self.delete_raw(idx, &k)?;
                 }
@@ -590,6 +694,7 @@ impl<S: BufferStoreMut> Database<S> {
     /// Java does: an update changes the index entries first, an insert adds them afterwards.
     pub fn put_record(&mut self, table: &str, record: &Record) -> Result<()> {
         let i = self.table_index(table)?;
+        self.check_transaction()?;
         let indexed = !self.index_positions(i).is_empty();
         let old = if indexed {
             self.current_record(i, &record.key)?
@@ -599,11 +704,15 @@ impl<S: BufferStoreMut> Database<S> {
         if let Some(old) = &old {
             self.index_update(i, old, record)?;
         }
-        let inserted = self.put_raw(i, record)?;
-        if inserted && indexed {
-            self.index_add(i, record)?;
-        }
-        Ok(())
+        // the index entries of an insert are added while the table still holds its nodes, so
+        // they are released first
+        self.grouped(|db| {
+            let inserted = db.put_raw_in_group(i, record)?;
+            if inserted && indexed {
+                db.index_add(i, record)?;
+            }
+            Ok(())
+        })
     }
 
     /// Delete the record with long `key` (`Table.deleteRecord`); returns whether it existed.
@@ -614,6 +723,7 @@ impl<S: BufferStoreMut> Database<S> {
     /// Delete the record with `key` (`Table.deleteRecord(Field)`); index entries go first.
     pub fn delete_record_field(&mut self, table: &str, key: &Field) -> Result<bool> {
         let i = self.table_index(table)?;
+        self.check_transaction()?;
         if !self.index_positions(i).is_empty() {
             let Some(old) = self.current_record(i, key)? else {
                 return Ok(false);
@@ -623,18 +733,279 @@ impl<S: BufferStoreMut> Database<S> {
         self.delete_raw(i, key)
     }
 
-    /// End of a transaction (`MasterTable.flush`): store every table root, maximum key and
-    /// record count in the master table.
-    pub fn commit(&mut self) -> Result<()> {
-        for i in 0..self.tables.len() {
-            self.put_master_row(i)?;
-        }
-        // Java does not refresh the parameter here. The root cannot change because the rows
-        // already exist, but keep the two in step should it ever.
-        if self.params.master_table_root()? != self.master_root {
-            self.params.set(&mut self.store, 0, self.master_root)?;
+    /// `DBHandle.checkTransaction`: a store with checkpoints only accepts changes inside a
+    /// transaction.
+    fn check_transaction(&self) -> Result<()> {
+        if self.store.requires_transaction() && !self.tx_started {
+            return Err(if self.tx_terminated {
+                DbError::TerminatedTransaction
+            } else {
+                DbError::NoTransaction
+            });
         }
         Ok(())
+    }
+
+    /// `MasterTable.flush`: write the master row of every table whose record changed since it
+    /// was last written (root, record count, maximum key or name), in table number order.
+    pub fn commit(&mut self) -> Result<()> {
+        for i in 0..self.tables.len() {
+            if self.tables[i].dirty {
+                self.put_master_row(i)?;
+                self.tables[i].dirty = false;
+            }
+        }
+        // Java does not store the master root in the parameters here (only when a table is
+        // created or deleted), and neither does this port.
+        Ok(())
+    }
+
+    /// `Table.deleteAll` for table `i`: free every node, then reset root, count and maximum key.
+    fn delete_all_raw(&mut self, i: usize) -> Result<()> {
+        if self.tables[i].root_buffer_id < 0 {
+            return Ok(());
+        }
+        let mut w = self.tree_for(i)?;
+        self.grouped(|db| w.delete_all(&mut db.store))?;
+        let t = &mut self.tables[i];
+        t.root_buffer_id = -1;
+        t.record_count = 0;
+        t.max_key = i64::MIN;
+        t.dirty = true;
+        Ok(())
+    }
+
+    /// `MasterTable.deleteTableRecord`: drop the master row of the (empty) table `i`.
+    fn delete_table_record(&mut self, i: usize) -> Result<()> {
+        if self.tables[i].root_buffer_id >= 0 {
+            return Err(DbError::Corrupt("Can not delete non-empty table".into()));
+        }
+        let num = self.tables[i].table_num;
+        self.grouped(|db| {
+            let mut w = LongKeyWriter::new(db.master_root, None);
+            w.delete(&mut db.store, num)?;
+            db.master_root = w.root();
+            Ok(())
+        })?;
+        self.params.set(&mut self.store, 0, self.master_root)?;
+        self.tables.remove(i);
+        Ok(())
+    }
+
+    /// `DBHandle.deleteTable`: remove the table, its index tables and every record. Does nothing
+    /// when the table does not exist.
+    ///
+    /// # Errors
+    /// [`DbError::NoTransaction`] or [`DbError::TerminatedTransaction`] outside a transaction
+    /// (only for a store with checkpoints); store errors.
+    pub fn delete_table(&mut self, name: &str) -> Result<()> {
+        let Ok(i) = self.table_index(name) else {
+            return Ok(());
+        };
+        self.check_transaction()?;
+        let num = self.tables[i].table_num;
+        // `removeIndex` per indexed column, in `IntObjectHashtable` order
+        let index_nums: Vec<i64> = self
+            .index_positions(i)
+            .into_iter()
+            .map(|p| self.tables[p].table_num)
+            .collect();
+        for n in index_nums {
+            let p = self.position_of(n)?;
+            self.delete_all_raw(p)?;
+            self.delete_table_record(p)?;
+        }
+        let i = self.position_of(num)?;
+        self.delete_all_raw(i)?;
+        self.delete_table_record(i)
+    }
+
+    fn position_of(&self, table_num: i64) -> Result<usize> {
+        self.tables
+            .iter()
+            .position(|t| t.table_num == table_num)
+            .ok_or_else(|| DbError::Corrupt("Table not found".into()))
+    }
+
+    /// `DBHandle.setTableName`: rename a table and its index tables (their master rows are
+    /// written by the next `commit`). False when `old_name` is not a table.
+    ///
+    /// # Errors
+    /// [`DbError::NoTransaction`] / [`DbError::TerminatedTransaction`] outside a transaction,
+    /// [`DbError::DuplicateName`] when `new_name` is a table.
+    pub fn set_table_name(&mut self, old_name: &str, new_name: &str) -> Result<bool> {
+        if self.table_index(old_name).is_err() {
+            return Ok(false);
+        }
+        self.check_transaction()?;
+        if self.table_index(new_name).is_ok() {
+            return Err(DbError::DuplicateName(new_name.to_owned()));
+        }
+        for t in &mut self.tables {
+            if t.name == old_name {
+                new_name.clone_into(&mut t.name);
+                t.dirty = true;
+            }
+        }
+        Ok(true)
+    }
+}
+
+impl<S: Checkpointed> Database<S> {
+    /// `DBHandle.startTransaction`; returns the transaction id.
+    ///
+    /// # Errors
+    /// [`DbError::IllegalState`] when a transaction is open already.
+    pub fn start_transaction(&mut self) -> Result<i64> {
+        if self.tx_started {
+            return Err(DbError::IllegalState("Transaction already started"));
+        }
+        self.tx_terminated = false;
+        self.tx_started = true;
+        self.tx_start_mod = self.store.mod_count();
+        self.last_tx += 1;
+        Ok(self.last_tx)
+    }
+
+    /// `DBHandle.endTransaction`: with `commit` the master rows are written and a checkpoint is
+    /// established (true), unless nothing changed (false); without it everything since the last
+    /// checkpoint is discarded and the tables are read again (false).
+    ///
+    /// # Errors
+    /// [`DbError::IllegalState`] when `id` is not the open transaction.
+    pub fn end_transaction(&mut self, id: i64, commit: bool) -> Result<bool> {
+        self.do_end_transaction(id, commit)
+    }
+
+    /// `DBHandle.terminateTransaction`: like [`Database::end_transaction`], and further changes
+    /// fail with [`DbError::TerminatedTransaction`] until a new transaction starts.
+    ///
+    /// # Errors
+    /// As [`Database::end_transaction`].
+    pub fn terminate_transaction(&mut self, id: i64, commit: bool) -> Result<()> {
+        self.do_end_transaction(id, commit)?;
+        self.tx_terminated = true;
+        Ok(())
+    }
+
+    fn do_end_transaction(&mut self, id: i64, commit: bool) -> Result<bool> {
+        if !self.tx_started || id != self.last_tx {
+            return Err(DbError::IllegalState("Transaction id is not active"));
+        }
+        let result = (|| {
+            if self.store.at_checkpoint() {
+                return Ok(false);
+            }
+            if commit {
+                self.commit()?;
+                if self.store.checkpoint() {
+                    self.cached_changed = self.is_changed();
+                    return Ok(true);
+                }
+                return Ok(false);
+            }
+            self.store.undo(false)?;
+            self.reload_tables()?;
+            Ok(false)
+        })();
+        self.tx_started = false;
+        result
+    }
+
+    /// `DBHandle.reloadTables` after an undo, redo or rollback: parameters and master rows are
+    /// read again. The next table number is not touched (Java keeps it too).
+    fn reload_tables(&mut self) -> Result<()> {
+        self.params = DbParms::read(&self.store)?;
+        let root = self.params.master_table_root()?;
+        self.master_root = root;
+        let schema = master_schema();
+        let mut tables = Vec::new();
+        if root >= 0 {
+            let tree = LongKeyTree::new(&self.store, root, None);
+            for rec in tree.records()? {
+                let rec = rec?;
+                let (r, _) = schema.read_record(Field::Long(rec.key), &rec.data, 0)?;
+                tables.push(TableRecord::from_record(&self.store, &r)?);
+            }
+        }
+        self.tables = tables;
+        Ok(())
+    }
+
+    /// `DBHandle.canUndo`.
+    pub fn can_undo(&self) -> bool {
+        !self.tx_started && self.store.has_undo_checkpoints()
+    }
+
+    /// `DBHandle.undo`: go back one checkpoint. False when that is not possible.
+    ///
+    /// # Errors
+    /// Store or table errors.
+    pub fn undo(&mut self) -> Result<bool> {
+        if self.can_undo() && self.store.undo(true)? {
+            self.reload_tables()?;
+            self.cached_changed = self.store.is_changed();
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// `DBHandle.canRedo`.
+    pub fn can_redo(&self) -> bool {
+        !self.tx_started && self.store.has_redo_checkpoints()
+    }
+
+    /// `DBHandle.redo`: move forward one checkpoint. False when that is not possible.
+    ///
+    /// # Errors
+    /// Store or table errors.
+    pub fn redo(&mut self) -> Result<bool> {
+        if self.can_redo() && self.store.redo()? {
+            self.reload_tables()?;
+            self.cached_changed = self.store.is_changed();
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// `DBHandle.getAvailableUndoCount`.
+    pub fn available_undo_count(&self) -> usize {
+        self.store.available_undo_count()
+    }
+
+    /// `DBHandle.getAvailableRedoCount`.
+    pub fn available_redo_count(&self) -> usize {
+        self.store.available_redo_count()
+    }
+
+    /// `DBHandle.setMaxUndos`.
+    pub fn set_max_undos(&mut self, max_undos: i32) {
+        self.store.set_max_undos(max_undos);
+        self.cached_changed = self.store.is_changed();
+    }
+
+    /// `DBHandle.hasUncommittedChanges`.
+    pub fn has_uncommitted_changes(&self) -> bool {
+        !self.store.at_checkpoint()
+    }
+
+    /// `DBHandle.isChanged`: the state cached at the last commit, undo, redo or save; while a
+    /// transaction is open also true once it has modified a buffer.
+    pub fn is_changed(&self) -> bool {
+        if self.tx_started {
+            return self.cached_changed || self.tx_start_mod != self.store.mod_count();
+        }
+        self.cached_changed
+    }
+
+    /// `DBHandle.getModCount`.
+    pub fn mod_count(&self) -> u64 {
+        self.store.mod_count()
+    }
+
+    /// `DBHandle.isTransactionActive`.
+    pub fn is_transaction_active(&self) -> bool {
+        self.tx_started
     }
 }
 
@@ -808,3 +1179,29 @@ impl<'a, S: BufferStore> Table<'a, S> {
 
 #[cfg(test)]
 mod tests;
+
+impl Database<CheckpointStore> {
+    /// `DBHandle.saveAs(file, false, monitor)`: write the committed state to a new buffer file
+    /// without changing what this handle is associated with. A hidden transaction flushes the
+    /// master rows first; when that adds a checkpoint it is undone afterwards (which also reads
+    /// the tables again, so a master row change that was never flushed is lost, as in Java).
+    ///
+    /// # Errors
+    /// [`DbError::IllegalState`] while a transaction is open; store or file errors.
+    pub fn save_as(&mut self, path: impl AsRef<std::path::Path>) -> Result<()> {
+        if self.tx_started {
+            return Err(DbError::IllegalState("Can't save during transaction"));
+        }
+        let id = self.start_transaction()?;
+        let flushed = self.commit();
+        let added = self.end_transaction(id, true);
+        flushed?;
+        let added = added?;
+        let written = self.store.save_to_file(path, 1);
+        if added {
+            self.undo()?;
+        }
+        self.cached_changed = self.store.is_changed();
+        written.map_err(DbError::from)
+    }
+}

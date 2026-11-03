@@ -20,6 +20,10 @@ use std::sync::Mutex;
 
 use ghidra_fmt_bytes::BytesError;
 
+mod checkpoint;
+
+pub use checkpoint::{CheckpointStore, DEFAULT_CHECKPOINT_COUNT};
+
 /// File magic number (`LocalBufferFile.MAGIC_NUMBER`).
 pub const MAGIC_NUMBER: i64 = 0x2f30_312c_3429_2c2a;
 /// Only header format version that exists.
@@ -84,6 +88,8 @@ pub enum GbfError {
     UnsupportedBufferSize(usize),
     /// Offset arithmetic failed inside a buffer.
     Bytes(BytesError),
+    /// The version bookkeeping of a [`CheckpointStore`] is inconsistent.
+    Invalid(&'static str),
 }
 
 impl fmt::Display for GbfError {
@@ -108,6 +114,7 @@ impl fmt::Display for GbfError {
             Self::HeaderTooLarge => write!(f, "Buffer size too small"),
             Self::UnsupportedBufferSize(s) => write!(f, "Unsupported buffer size: {s}"),
             Self::Bytes(e) => write!(f, "{e}"),
+            Self::Invalid(w) => write!(f, "inconsistent checkpoint store: {w}"),
         }
     }
 }
@@ -177,6 +184,9 @@ pub trait BufferStore {
     fn index_count(&self) -> i32;
     /// Fetch buffer `index`.
     fn get_buffer(&self, index: i32) -> Result<DataBuffer>;
+    /// A B-tree writer loaded or created node `id` (`NodeMgr` keeps it until the end of the
+    /// table operation). Only a store with checkpoints uses this, to order releases.
+    fn note_node(&self, _id: i32) {}
 }
 
 /// A [`BufferStore`] that can also allocate, overwrite and free buffers (the part of
@@ -188,6 +198,62 @@ pub trait BufferStoreMut: BufferStore {
     fn put_buffer(&mut self, buf: &DataBuffer) -> Result<()>;
     /// Free buffer `id`.
     fn delete_buffer(&mut self, id: i32) -> Result<()>;
+    /// Make the buffers as they are now the baseline for undo (`BufferMgr.clearCheckpoints`);
+    /// only a store with checkpoints does anything.
+    fn clear_checkpoints(&mut self) {}
+    /// True when a change must happen inside a transaction (a store with checkpoints): the
+    /// database then refuses writes outside `start_transaction` .. `end_transaction`, as
+    /// `DBHandle.checkTransaction` does.
+    fn requires_transaction(&self) -> bool {
+        false
+    }
+    /// Like [`BufferStoreMut::put_buffer`] for a B-tree node that `NodeMgr` holds until the end
+    /// of the table operation: a store with checkpoints orders the first change of the buffer
+    /// within the checkpoint by the group it belongs to ([`BufferStoreMut::end_group`]).
+    ///
+    /// # Errors
+    /// As [`BufferStoreMut::put_buffer`].
+    fn put_held(&mut self, buf: &DataBuffer) -> Result<()> {
+        self.put_buffer(buf)
+    }
+    /// Start one table operation (`Table.putRecord`, `deleteRecord`, ...); operations nest.
+    fn begin_group(&mut self) {}
+    /// End the operation started last: its held nodes are released now, in the order
+    /// `NodeMgr.releaseNodes` visits them.
+    fn end_group(&mut self) {}
+}
+
+/// A store whose changes are grouped into checkpoints that can be undone and redone
+/// (`db.buffers.BufferMgr`), implemented by [`CheckpointStore`].
+pub trait Checkpointed: BufferStoreMut {
+    /// True when nothing changed since the last checkpoint.
+    fn at_checkpoint(&self) -> bool;
+    /// Close the open checkpoint; false when there was nothing to close.
+    fn checkpoint(&mut self) -> bool;
+    /// Remove the newest checkpoint (optionally keeping it for redo); false when none is left.
+    ///
+    /// # Errors
+    /// [`GbfError::Invalid`] on inconsistent bookkeeping.
+    fn undo(&mut self, redoable: bool) -> Result<bool>;
+    /// Put the newest undone checkpoint back; false when there is none.
+    ///
+    /// # Errors
+    /// [`GbfError::Invalid`] on inconsistent bookkeeping.
+    fn redo(&mut self) -> Result<bool>;
+    /// True when at least one checkpoint can be undone.
+    fn has_undo_checkpoints(&self) -> bool;
+    /// True when at least one undone checkpoint can be redone.
+    fn has_redo_checkpoints(&self) -> bool;
+    /// Number of undoable checkpoints (the open one counts).
+    fn available_undo_count(&self) -> usize;
+    /// Number of redoable checkpoints.
+    fn available_redo_count(&self) -> usize;
+    /// Limit the undo stack (`setMaxUndos`; negative restores the default).
+    fn set_max_undos(&mut self, max_undos: i32);
+    /// True when there are unsaved changes.
+    fn is_changed(&self) -> bool;
+    /// Count of buffer releases that changed something.
+    fn mod_count(&self) -> u64;
 }
 
 /// In-memory store used by tests and by callers that already hold the buffers.
