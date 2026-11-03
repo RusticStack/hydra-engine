@@ -43,7 +43,14 @@ final class TraceNative {
 	static final String SETTING = "trace";
 	private static final int OK = 0;
 	private static final int ERR_BUFFER = -5;
+	/** A Rust panic was caught inside the call (HYDRA_TRACE_ERR_PANIC); nothing was written. */
+	private static final int ERR_PANIC = -6;
 	private static final int FIRST_BUFFER = 64 << 10;
+
+	private static String describe(String call, int rc) {
+		return call + (rc == ERR_PANIC ? " hit a panic in the trace engine (code " + rc + "); the request was not recorded"
+				: " returned " + rc);
+	}
 
 	private static final Linker LINKER = Linker.nativeLinker();
 
@@ -332,7 +339,7 @@ final class TraceNative {
 				bytes = big.toArray(ValueLayout.JAVA_BYTE);
 			}
 			else {
-				throw new IllegalStateException("hydra_trace_request returned " + rc);
+				throw new IllegalStateException(describe("hydra_trace_request", rc));
 			}
 			calls.incrementAndGet();
 			replyBytes.addAndGet(bytes.length);
@@ -488,7 +495,7 @@ final class TraceNative {
 				bytes = big.toArray(ValueLayout.JAVA_BYTE);
 			}
 			else {
-				throw new IllegalStateException("hydra_trace_route returned " + rc);
+				throw new IllegalStateException(describe("hydra_trace_route", rc));
 			}
 			calls.incrementAndGet();
 			replyBytes.addAndGet(bytes.length);

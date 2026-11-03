@@ -2,7 +2,7 @@
 """Fail if a release zip carries tests.
 
 A Hydra Engine release is the install, not the repository: no test sources, test data, fixtures or example
-test scripts. This lists every entry of the given zips whose path looks like a test and exits 1 if there is one.
+test scripts. This lists every file entry of the given zips whose path looks like a test and exits 1 if there is one.
 
     python tools/check_release_contents.py out/hydra-engine-*.zip
 """
@@ -19,8 +19,10 @@ TESTLIKE = re.compile(
 )
 
 
+# A directory entry (trailing slash) holds no bytes: the build leaves the empty folder of an excluded test file behind.
+# Only files count.
 def offenders(names):
-    return sorted(n for n in names if TESTLIKE.search(n))
+    return sorted(n for n in names if not n.endswith("/") and TESTLIKE.search(n))
 
 
 def main(argv):
