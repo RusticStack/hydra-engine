@@ -1,0 +1,154 @@
+stored_version=33
+language=x86:LE:64:default
+compiler=windows
+image_base=ram:0
+default_space=ram
+space name=EXTERNAL id=42 bits=32 type=10
+space name=const id=48 bits=64 type=0
+space name=stack id=53 bits=64 type=5
+space name=HASH id=126 bits=60 type=14
+space name=OTHER id=183 bits=64 type=7
+space name=unique id=291 bits=32 type=3
+space name=ram id=433 bits=64 type=1
+space name=register id=548 bits=32 type=4
+space name=ovl id=689 bits=64 type=1
+space name=ovl_bss id=817 bits=64 type=1
+space name=ovl2 id=945 bits=64 type=1
+space name=ovl_bm id=1073 bits=64 type=1
+blocks=12
+block name=main start=ram:1000 end=ram:11ff size=512 r=true w=true x=false vol=false art=false init=true overlay=false mapped=false comment=[null] source=[null] subs=1
+  sub kind=init len=512 off=0
+block name=bss start=ram:2000 end=ram:20ff size=256 r=true w=false x=false vol=false art=false init=false overlay=false mapped=false comment=[null] source=[null] subs=1
+  sub kind=uninit len=256 off=0
+block name=bm_1_1 start=ram:8000 end=ram:807f size=128 r=true w=false x=false vol=false art=false init=false overlay=false mapped=true comment=[null] source=[null] subs=1
+  sub kind=mapped len=128 off=0
+blockx name=bm_1_1 overlay_base=- init=false part=mapped:ram:1010-ram:108f
+block name=bm_2_4 start=ram:8200 end=ram:823f size=64 r=true w=false x=false vol=false art=false init=false overlay=false mapped=true comment=[null] source=[null] subs=1
+  sub kind=mapped len=64 off=0
+blockx name=bm_2_4 overlay_base=- init=false part=mapped:ram:1020-ram:109d
+block name=bm_ovl start=ram:8400 end=ram:841f size=32 r=true w=false x=false vol=false art=false init=false overlay=false mapped=true comment=[null] source=[null] subs=1
+  sub kind=mapped len=32 off=0
+blockx name=bm_ovl overlay_base=- init=false part=mapped:ovl:1010-ovl:102f
+block name=bits start=ram:9000 end=ram:903f size=64 r=true w=false x=false vol=false art=false init=false overlay=false mapped=true comment=[null] source=[null] subs=1
+  sub kind=mapped len=64 off=0
+blockx name=bits overlay_base=- init=false part=mapped:ram:1000-ram:1007
+block name=bits_ovl start=ram:9400 end=ram:941f size=32 r=true w=false x=false vol=false art=false init=false overlay=false mapped=true comment=[null] source=[null] subs=1
+  sub kind=mapped len=32 off=0
+blockx name=bits_ovl overlay_base=- init=false part=mapped:ovl2:6000-ovl2:6003
+block name=bm_bss start=ram:a000 end=ram:a03f size=64 r=true w=false x=false vol=false art=false init=false overlay=false mapped=true comment=[null] source=[null] subs=1
+  sub kind=mapped len=64 off=0
+blockx name=bm_bss overlay_base=- init=false part=mapped:ram:2000-ram:203f
+block name=ovl start=ovl:1000 end=ovl:10ff size=256 r=true w=false x=false vol=false art=false init=true overlay=true mapped=false comment=[null] source=[null] subs=1
+  sub kind=init len=256 off=0
+blockx name=ovl overlay_base=ram init=true part=data
+block name=ovl2 start=ovl2:6000 end=ovl2:603f size=64 r=true w=false x=true vol=false art=false init=true overlay=true mapped=false comment=[null] source=[null] subs=1
+  sub kind=init len=64 off=0
+blockx name=ovl2 overlay_base=ram init=true part=data
+block name=ovl_bm start=ovl_bm:c000 end=ovl_bm:c02f size=48 r=true w=false x=false vol=false art=false init=false overlay=true mapped=true comment=[null] source=[null] subs=1
+  sub kind=mapped len=48 off=0
+blockx name=ovl_bm overlay_base=ram init=false part=mapped:ram:1040-ram:106f
+block name=ovl_bss start=ovl_bss:4000 end=ovl_bss:407f size=128 r=true w=false x=false vol=false art=false init=false overlay=true mapped=false comment=[null] source=[null] subs=1
+  sub kind=uninit len=128 off=0
+blockx name=ovl_bss overlay_base=ram init=false part=data
+symbols=0
+functions=0
+fnvars=0
+ref_sources=0
+ref_destinations=0
+instructions=0
+data=0
+comments=0
+memblock name=main n=512 sha256=7635c2226fd41b2abb17c09f4078537e004dad04ce79ec4d724277a4799927e5
+memread addr=ram:1000 len=16 n=16 sha256=37fcdd5d69ca06e3187c0c2b4ae2e7c480b88f2d54592a08f1f04e6a67869b92
+memread addr=ram:11f8 len=32 n=8 sha256=c078715a74c7e1d831215128655dc49f183545478a22106ee80d659624dd31b3
+memread addr=ram:11fc len=4096 n=4 sha256=8592955881fd961b0b4969888c21e384770284cee292fefbcfeff15992416135
+memread addr=ram:1100 len=4096 n=256 sha256=1708a54e39a356639156e11f7f3cab0ff58da03ac0aae5b15f83ae1b9c3fc806
+memread addr=ram:fff len=8 error
+memblock name=bss error
+memread addr=ram:2000 len=16 error
+memread addr=ram:20f8 len=32 error
+memread addr=ram:20fc len=4096 error
+memread addr=ram:2080 len=4096 error
+memread addr=ram:1fff len=8 error
+memblock name=bm_1_1 n=128 sha256=cb18b5b517ad5c329566b550b71eff486a1344d86ffd7270390126b130a9fc5b
+memread addr=ram:8000 len=16 n=16 sha256=c7239e9254fbf00f34b58a76b7d3e24ed548c28d2d7a46317d196e903439e8e6
+memread addr=ram:8078 len=32 n=8 sha256=055d88f406c7880535651008d2064f1a03daccacdda71726b72ddc952aa049c0
+memread addr=ram:807c len=4096 n=4 sha256=3ecb225545b247392dec2630ee07bb7f56abde74d97031930e1b7492ebd832bc
+memread addr=ram:8040 len=4096 n=64 sha256=36051253c937728af47087d086e4f808c0a96efd798c5f9aa7f483d364bdd0dc
+memread addr=ram:7fff len=8 error
+memblock name=bm_2_4 n=64 sha256=1d8a378845db3b4389fe233d90d092d8dc9e70b159e26eff6476900d3c5ec49d
+memread addr=ram:8200 len=16 n=16 sha256=a9bb7db87e96fdd88e927dccf17caf8a70cbe9cc6633ff7a565ea0aa9f707b6d
+memread addr=ram:8238 len=32 n=8 sha256=213ef720ad7054c4e594e8f38191ba0257411b8d25a786edd602a6281a4007fe
+memread addr=ram:823c len=4096 n=4 sha256=39d75e7f7c05f42a21788d21e9dac48911a95eaecfb73bea07b09796343ec370
+memread addr=ram:8220 len=4096 n=32 sha256=ae5a5b456a01faccb0e95152e29efdd55b27a900a26b905d0e26cb849a7e3d75
+memread addr=ram:81ff len=8 error
+memblock name=bm_ovl n=32 sha256=ff4e2ad67f05e971c2b326a62a5ea50407effd13bd35314f4ba1623611e003b5
+memread addr=ram:8400 len=16 n=16 sha256=5674dfe738d2f90130eada5fd5111d59242922a01d72229188d950571b954e38
+memread addr=ram:8418 len=32 n=8 sha256=99b3008aa21cff036192ac9e26ffe914c95a91200039b92f864a9ff5e98a33e9
+memread addr=ram:841c len=4096 n=4 sha256=cef2521063b2b3b21be9881bb15322c10e4a193396e81252fe1af3f7785ee9c5
+memread addr=ram:8410 len=4096 n=16 sha256=67a0d9fd8a7a00950eef5f572dd3fa05d61c552590873d1130cc13fcf3a82d47
+memread addr=ram:83ff len=8 error
+memblock name=bits n=64 sha256=a364f448ad1b4ee280556513df65bb442b00c7c0c38916aa1b50797bc684c7bd
+memread addr=ram:9000 len=16 n=16 sha256=5269e3fb89ae257d20cc46b6761dd220e8a825b08147cedba1698a817d4eb600
+memread addr=ram:9038 len=32 n=8 sha256=895ccbbed029d7bc8466f68f15e375a9eb389e457b532cd6c27e2a4a1ae4ebc4
+memread addr=ram:903c len=4096 n=4 sha256=a0454a24dd4bc418448ca19320519ea3fe544fa1a910868b62ca210614f119f8
+memread addr=ram:9020 len=4096 n=32 sha256=726ca81027a3a72e3742cd0405e1bd55d05ca2093db87b6982ec3b5c5d690e39
+memread addr=ram:8fff len=8 error
+memblock name=bits_ovl n=32 sha256=ed1425e1ce4525e28503cbe4410540a0767e5bd67bf5b379bc3d176863fdc903
+memread addr=ram:9400 len=16 n=16 sha256=4e8bb232d93e43b83105e0603e62a084dd18f0aeb9589f71262edc8afebdc3bd
+memread addr=ram:9418 len=32 n=8 sha256=ebc80175c7d2d155a96a1b6a8ed40ecdb7d3f66d68f8f55a78064dc371ca0678
+memread addr=ram:941c len=4096 n=4 sha256=52a5c4a10657220cac05c63adfa923c7771c55d868a58ee360eb3d1511985c3e
+memread addr=ram:9410 len=4096 n=16 sha256=10179764276a17154262bf6a26c847a6c1c5d582b7776f20ef4fddc46f2401ce
+memread addr=ram:93ff len=8 error
+memblock name=bm_bss error
+memread addr=ram:a000 len=16 error
+memread addr=ram:a038 len=32 error
+memread addr=ram:a03c len=4096 error
+memread addr=ram:a020 len=4096 error
+memread addr=ram:9fff len=8 error
+memblock name=ovl n=256 sha256=2798e19da619fd4f60c2d397850325a4a5c7d726a4a5e3259f4195b69377f00b
+memread addr=ovl:1000 len=16 n=16 sha256=611d2796f6bc15de107a725cf04ea75cd9d6f055311018734096aa9f744cda48
+memread addr=ovl:10f8 len=32 n=8 sha256=f26821291c64e14acfa32735beb9b27f4845947a9216c22d515ce2fa25e830d3
+memread addr=ovl:10fc len=4096 n=4 sha256=4292a69c038f9a561957e7f348235d322a36f6eb73f5b21cd2bfdcbb663cc6f7
+memread addr=ovl:1080 len=4096 n=128 sha256=3a208de875e2d5d37bc962ece9b31a5ed2102bc2f1b59f7c4f351b82ef3c90c3
+memread addr=ovl:fff len=8 error
+memblock name=ovl2 n=64 sha256=8298e43948868053f0ab80c2ee0a2ce35d78da64b7d5f9421d16ce0e8c09939b
+memread addr=ovl2:6000 len=16 n=16 sha256=2de7c97ba3d6e00b60e4271af5b96b2f3155a2236f4547905486a8b9925007dc
+memread addr=ovl2:6038 len=32 n=8 sha256=e6c83122bee3f6767c9fd389e76a87ceb471a9282aa845495d9e8a29337301cf
+memread addr=ovl2:603c len=4096 n=4 sha256=fc1732a029c1295bb8a335b43e32ba208451c53763410e83692dfac60826aeff
+memread addr=ovl2:6020 len=4096 n=32 sha256=7bf817912b423a2547e1eece9cf68661ce309b6c911de74556c7f3914f37ab3a
+memread addr=ovl2:5fff len=8 error
+memblock name=ovl_bm n=48 sha256=f8d0b3cc1ee163a5fe8f3b77068116d404404f9e12b12f229726476b495214e8
+memread addr=ovl_bm:c000 len=16 n=16 sha256=6f0889330000152c3cbc3df9244ddb3af0aaa75e641e955a9c108f86c8bdafca
+memread addr=ovl_bm:c028 len=32 n=8 sha256=9d1b7d81121dbe3d48cf2a821f894826c90586b01d679eb34f93aa4debb7418a
+memread addr=ovl_bm:c02c len=4096 n=4 sha256=cc91969ee8b9da49f3933da02bec0a0d76371ef157f714b13631bb2f407a4973
+memread addr=ovl_bm:c018 len=4096 n=24 sha256=60f9d989b9a3cf0bffad864f1c1cb31cefd83677d87aabd6e5829b02d949ab65
+memread addr=ovl_bm:bfff len=8 error
+memblock name=ovl_bss error
+memread addr=ovl_bss:4000 len=16 error
+memread addr=ovl_bss:4078 len=32 error
+memread addr=ovl_bss:407c len=4096 error
+memread addr=ovl_bss:4040 len=4096 error
+memread addr=ovl_bss:3fff len=8 error
+symnames=0
+symat=0
+symbynames=0
+symbyns=0
+symchildren=1
+symchildren ns=0 ids=[]
+categories=1
+category id=0 path=[/]
+datatypes=0
+datatype_details=0
+dt_default name=[undefined] len=1
+equates=0
+bookmark_types=0
+bookmarks=0
+relocations=0
+register_values=0
+property_maps=0
+options=2
+option key=[Program Information.Created With Ghidra Version] type=2 value=[12.2]
+option key=[Program Information.Date Created] type=5 value=[1793728587684]
+externals=0
+namespaces=0

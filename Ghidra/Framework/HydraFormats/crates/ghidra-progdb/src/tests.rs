@@ -109,3 +109,27 @@ fn byte_mapped_reads_follow_the_scheme_over_real_memory() {
         want[3..11]
     );
 }
+
+#[test]
+fn overlay_spaces_get_the_next_unique_id_and_sort_after_the_others() {
+    let space = |name: &str, id: i32| SpaceDef {
+        name: name.into(),
+        id,
+        bits: 64,
+    };
+    let mut spaces = AddressSpaces::new(vec![space("ram", 433), space("register", 548)], "ram");
+    // ram has unique 3 (433 >> 7), register 4; the overlays count on from 5
+    spaces.add_overlay("zz", "ram").unwrap();
+    spaces.add_overlay("aa", "ram").unwrap();
+    assert_eq!(spaces.find("zz").unwrap().id, (5 << 7) | (433 & 0x7f));
+    assert_eq!(spaces.find("aa").unwrap().id, (6 << 7) | (433 & 0x7f));
+    assert!(spaces.is_overlay("aa"));
+    assert_eq!(spaces.overlay_base("aa"), Some("ram"));
+    // refused: duplicate name, unknown base, an overlay of an overlay
+    assert!(spaces.add_overlay("ram", "ram").is_err());
+    assert!(matches!(
+        spaces.add_overlay("x", "nope"),
+        Err(ProgError::UnknownSpace(_))
+    ));
+    assert!(spaces.add_overlay("x", "aa").is_err());
+}

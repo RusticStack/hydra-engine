@@ -117,6 +117,7 @@ impl<S: BufferStore> ProgramDb<S> {
         let image_base = metadata
             .get("Image Offset")
             .map_or(Ok(0), |s| parse_hex_i64(s))?;
+        let spaces = read_overlay_spaces(&db, spaces)?;
         let address_map = AddressMap::read(&db, spaces, image_base)?;
         let me = Self {
             db,
@@ -160,6 +161,7 @@ impl<S: BufferStore> ProgramDb<S> {
                 _ => Ok(()),
             }
         };
+        optional("Overlay Spaces", &[1])?;
         optional("Function Data", &[3])?;
         optional("Thunk Functions", &[0])?;
         optional("Variable Storage", &[2])?;
@@ -518,3 +520,34 @@ impl<'a> Cols<'a> {
 
 #[cfg(test)]
 mod tests;
+
+/// `OverlaySpaceDBAdapterV1.getOverlayRecords` + `ProgramAddressFactory.addOverlaySpace`: the
+/// "Overlay Spaces" table (created with the first overlay block) adds one space per row, in key
+/// order, to the language's spaces.
+fn read_overlay_spaces<S: BufferStore>(
+    db: &Database<S>,
+    mut spaces: AddressSpaces,
+) -> Result<AddressSpaces> {
+    let Ok(table) = db.table("Overlay Spaces") else {
+        return Ok(spaces);
+    };
+    let version = table.schema().version();
+    if version != 1 {
+        return Err(ProgError::UnsupportedTableVersion {
+            table: "Overlay Spaces".into(),
+            version,
+        });
+    }
+    let cols = Cols::new(table.schema());
+    for rec in table.records()? {
+        let rec = rec?;
+        let name = cols
+            .string(&rec, "Overlay Space Name")?
+            .ok_or_else(|| ProgError::Corrupt("overlay space without a name".into()))?;
+        let base = cols
+            .string(&rec, "Base Space Name")?
+            .ok_or_else(|| ProgError::Corrupt("overlay space without a base space".into()))?;
+        spaces.add_overlay(&name, &base)?;
+    }
+    Ok(spaces)
+}

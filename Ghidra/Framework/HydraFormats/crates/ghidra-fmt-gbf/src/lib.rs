@@ -22,7 +22,7 @@ use ghidra_fmt_bytes::BytesError;
 
 mod checkpoint;
 
-pub use checkpoint::{CheckpointStore, DEFAULT_CHECKPOINT_COUNT};
+pub use checkpoint::{CheckpointStore, DEFAULT_CHECKPOINT_COUNT, MemoryImage};
 
 /// File magic number (`LocalBufferFile.MAGIC_NUMBER`).
 pub const MAGIC_NUMBER: i64 = 0x2f30_312c_3429_2c2a;

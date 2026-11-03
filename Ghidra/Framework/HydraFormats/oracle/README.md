@@ -17,7 +17,9 @@ and commons-lang3 jars of a stock Ghidra install):
 * `OracleTx.java` (package `db`): transactions, rollback, undo, redo, `setMaxUndos`, `deleteTable`, `setTableName`,
   `saveAs` snapshots and expected errors (see `crates/ghidra-fmt-db/PORTING.md`). `gen_tx_scripts.py <dir> [sweep]`
   writes `testdata/tx/*.script` and `run_tx.sh <classes> <cp file> <dir> NAME...` the `.expected` files;
-  `ORACLETX_KEEP=<dir>` keeps the snapshot files. `OracleBuildIx` also has the `wide` (40 Int columns) and `sparse`
+  `ORACLETX_KEEP=<dir>` keeps the snapshot files. Expected files are generated with
+  `-Dhydra.db.sharedPages=false` (run_tx.sh does that). `buffer N CACHE` sets the memory cache size in bytes
+  (`tx-cache-*` scripts use 65536); `cachedump` prints the buffer manager's cache. `OracleBuildIx` also has the `wide` (40 Int columns) and `sparse`
   layouts.
 * `PackOracle.java` (default package): `pack`/`unpack` through `ItemSerializer`/`ItemDeserializer`
   for the `.pdb` fixtures in `testdata/pack`.
@@ -42,6 +44,11 @@ with their parts, every symbol row by id, the listing, memory and symbol query s
 `OracleMutate.java` builds the synthetic fixture `testdata/synth/progdb-synth-33.gbf` (see
 `crates/ghidra-progdb/PORTING.md`): `java -cp "mut;$CP" OracleMutate <install dir> <source db.1.gbf>
 <scratch copy.gbf> <out.gbf>`; run `OracleProgram` on the result for `testdata/oracleprog-synth-33.txt`.
+
+`OracleOverlay.java` builds `testdata/synth/progdb-overlay-33.gbf` on stock Ghidra (overlay and mapped
+memory blocks; `java -cp "cls;$CP" OracleOverlay <install dir> out.gbf`); `OracleProgram` on it gives
+`testdata/oracleprog-overlay-33.txt`. `OracleTx` takes `ORACLETX_REPS=n` (n runs in one JVM, times in
+nanoseconds on stderr) and `ORACLETX_NOSNAP=1` (no `snap`) for timing.
 
 `OracleOpenBench.java` times `new DBHandle` + `new ProgramDB` and a few queries on stock Ghidra, the
 counterpart of `crates/ghidra-progdb/examples/open_bench.rs`; peak memory is sampled from outside

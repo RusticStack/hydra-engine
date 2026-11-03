@@ -1,6 +1,7 @@
 //! Port of the read side of `ghidra.program.database.map.AddressMapDB` (address key decoding)
 //! and `AddressMapDBAdapterV1` (the "ADDRESS MAP" table of base addresses).
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 use ghidra_fmt_db::Database;
@@ -47,6 +48,10 @@ pub struct AddressSpaces {
     pub register_space: String,
     /// Name of the stack space.
     pub stack_space: String,
+    /// The overlay spaces of the program: overlay name to the name of the space it overlays.
+    /// They are also in [`AddressSpaces::spaces`]. Read from the "Overlay Spaces" table by
+    /// [`crate::ProgramDb::open`] ([`AddressSpaces::add_overlay`]).
+    pub overlays: BTreeMap<String, String>,
 }
 
 impl AddressSpaces {
@@ -57,6 +62,7 @@ impl AddressSpaces {
             default_space: default_space.to_owned(),
             register_space: "register".to_owned(),
             stack_space: "stack".to_owned(),
+            overlays: BTreeMap::new(),
         };
         for (name, id, bits) in [
             ("EXTERNAL", 42, 32),
@@ -77,6 +83,53 @@ impl AddressSpaces {
     /// Look a space up by name.
     pub fn find(&self, name: &str) -> Option<&SpaceDef> {
         self.spaces.iter().find(|s| s.name == name)
+    }
+
+    /// True for an overlay space (`AddressSpace.isOverlaySpace`).
+    pub fn is_overlay(&self, name: &str) -> bool {
+        self.overlays.contains_key(name)
+    }
+
+    /// The name of the space `name` overlays (`OverlayAddressSpace.getOverlayedSpace`).
+    pub fn overlay_base(&self, name: &str) -> Option<&str> {
+        self.overlays.get(name).map(String::as_str)
+    }
+
+    /// Add an overlay space the way `ProgramAddressFactory.addOverlaySpace` does: it has the
+    /// size and type of its base space and the next unique id (one more than the largest of
+    /// all spaces so far), so its id is `unique << 7 | (base id & 0x7f)`.
+    ///
+    /// # Errors
+    ///
+    /// [`ProgError::UnknownSpace`] when the base space does not exist, [`ProgError::Corrupt`]
+    /// when the name is taken, the base is an overlay itself or the unique id would not fit.
+    pub fn add_overlay(&mut self, name: &str, base: &str) -> Result<()> {
+        let Some(b) = self.find(base) else {
+            return Err(ProgError::UnknownSpace(base.to_owned()));
+        };
+        if self.find(name).is_some() {
+            return Err(ProgError::Corrupt(format!(
+                "overlay space {name} duplicates the name of another space"
+            )));
+        }
+        if self.is_overlay(base) {
+            return Err(ProgError::Corrupt(format!(
+                "overlay space {name} is based on the overlay space {base}"
+            )));
+        }
+        let unique = self.spaces.iter().map(|s| s.id >> 7).max().unwrap_or(0) + 1;
+        if unique > i32::from(i16::MAX) {
+            // `AbstractAddressSpace`: the unique id must fit 0..=Short.MAX_VALUE
+            return Err(ProgError::Corrupt("too many address spaces".into()));
+        }
+        let def = SpaceDef {
+            name: name.to_owned(),
+            id: (unique << 7) | (b.id & 0x7f),
+            bits: b.bits,
+        };
+        self.spaces.push(def);
+        self.overlays.insert(name.to_owned(), base.to_owned());
+        Ok(())
     }
 }
 
@@ -224,14 +277,27 @@ impl AddressMap {
         &self.spaces
     }
 
-    /// Sort key of an address (`Address.compareTo`): space id, then unsigned offset.
-    pub fn sort_key(&self, a: &Address) -> (i32, u64) {
+    /// Sort key of an address (`Address.compareTo`): non-overlay spaces by id, then the overlay
+    /// spaces (`OverlayAddressSpace.compareOverlay`: by the id of the space they overlay, then
+    /// by name), then the unsigned offset.
+    pub fn sort_key(&self, a: &Address) -> (bool, i32, String, u64) {
         match a {
-            Address::Space { space, offset } => {
-                (self.spaces.find(space).map_or(i32::MAX, |s| s.id), *offset)
-            }
-            Address::NoAddress => (i32::MIN, 0),
-            Address::ExtFrom => (i32::MIN, 1),
+            Address::Space { space, offset } => match self.spaces.overlay_base(space) {
+                Some(base) => (
+                    true,
+                    self.spaces.find(base).map_or(i32::MAX, |s| s.id),
+                    space.clone(),
+                    *offset,
+                ),
+                None => (
+                    false,
+                    self.spaces.find(space).map_or(i32::MAX, |s| s.id),
+                    String::new(),
+                    *offset,
+                ),
+            },
+            Address::NoAddress => (false, i32::MIN, String::new(), 0),
+            Address::ExtFrom => (false, i32::MIN, String::new(), 1),
         }
     }
 

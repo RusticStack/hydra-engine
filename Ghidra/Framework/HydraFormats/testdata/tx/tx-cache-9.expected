@@ -1,0 +1,766 @@
+dbid=3761718981605964704
+status undo=0 redo=0 canUndo=false canRedo=false uncommitted=false changed=true tx=false stack=[]
+end added=true
+status undo=1 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15]
+== s310
+bufferSize=2043 indexCount=25 free=[15]
+buf 0 id=0 empty=false sha256=ecf6eba1a6dc166037e7ed2189562b7d21a17fb43ed27b2ce261b73d968b3a3b
+buf 1 id=1 empty=false sha256=29fde2e6145fab92761a0509b981dd11dc9c13708493e089a8d73956f9daab5b
+buf 2 id=2 empty=false sha256=aee7f90cd3ebd8347194fc2ddb3f7d3f22134ffefb835e01333857cd37f496f2
+buf 3 id=3 empty=false sha256=2d01f7e51eccfc669d0965f03c9dff70b77d9344c120fc23403ddb9c6976a606
+buf 4 id=4 empty=false sha256=3259e03e47c2bc159ed4a8bac60759733c7cf61a283e8edb54fe930c6da13733
+buf 5 id=5 empty=false sha256=772b1abac68947d1c198ab5b5f223ea701b46ad61769fe526425cd810ffa763b
+buf 6 id=6 empty=false sha256=21652f8ea1ad2d77b7542a919b18b6aa743b07169bde7767829f1ae395aa435b
+buf 7 id=7 empty=false sha256=ab69993ff695a14e8e4a7b5b8c97d9eec29bb1324ca6bd9868671ee34b053624
+buf 8 id=8 empty=false sha256=0e68f4395c76040dbbb180ce6aa6f5a9ee49bc473d51041d2fb5ce92ad81b805
+buf 9 id=9 empty=false sha256=847cd6e72753ac31273eeaeea1cb257231f98b00ab6f154a0cc0c524c0d92893
+buf 10 id=10 empty=false sha256=635de4020c4c4265bbc5c0fcf1b157ebf52db12b694bbfb886b87092622aa920
+buf 11 id=11 empty=false sha256=d1f2c4591ef8aed3449d8d23ce017be8abc31b0c275475912829e9fd950dd93e
+buf 12 id=12 empty=false sha256=165f0cea6b2458a1a11493d45bb67d1714c0fe1060c347d7bc676f2fcfb6e5e7
+buf 13 id=13 empty=false sha256=97d9ae79d23f85adee69e90db0b374ffb005c3e3845d5d54a83469b159a91e4b
+buf 14 id=14 empty=false sha256=fc728167473977022b51298f3314c14e59687e9b68a1b1ea4e79cd374b49519d
+buf 15 id=-1 empty=true sha256=-
+buf 16 id=16 empty=false sha256=f9870c834836cd5e6bb0bde999391d0e321cf1af3049b71473b5b27c81c59cd4
+buf 17 id=17 empty=false sha256=fab03a0f524aed9bcbfc00d900693b8c97caecf64d8026baeb42001e4022069c
+buf 18 id=18 empty=false sha256=45bdbae4f591a43f62f31464012c3e9c85358cfaa8eceee169f080bbf54a2ea0
+buf 19 id=19 empty=false sha256=a7566f10c0f95a0dcf52e6a568958b4a4c6914c1de6f8a265712864652c016f8
+buf 20 id=20 empty=false sha256=388cc535132fb410add1c738f422aac8edabcb8885566cd9f26d2b8422acfabd
+buf 21 id=21 empty=false sha256=20086d7879880a0c0f8302c7b85de27d97e82402079f6b262182ef9231b5b70f
+buf 22 id=22 empty=false sha256=6a71531bde415553d96fbb21f9b03cc416ba724f9ea56b1a092a18f0250b5d5b
+buf 23 id=23 empty=false sha256=0c438be6e79c8cca8753d2a8d94be8a54a1449b625a7b5bfbc45dbe07388b581
+buf 24 id=24 empty=false sha256=a948a73e559d31a47566391c41f11763caf8be1df924cb8d0349b1d2e2213567
+table T0 count=36 max=39
+table T1 count=36 max=39
+table T2 count=29 max=-9223372036854775808
+table T3 count=34 max=-9223372036854775808
+dbid=3761718981605964704
+dbid=3761718981605964704
+tr num=0 name=T0 idx=-1 root=3 keytype=3 version=1 max=39 count=36 variable=false long=true varnodes=false fixednodes=false
+tr num=1 name=T0 idx=1 root=4 keytype=50 version=0 max=-9223372036854775808 count=36 variable=false long=false varnodes=false fixednodes=true
+tr num=2 name=T1 idx=-1 root=21 keytype=3 version=1 max=39 count=36 variable=true long=true varnodes=false fixednodes=false
+tr num=3 name=T1 idx=0 root=6 keytype=50 version=0 max=-9223372036854775808 count=36 variable=false long=false varnodes=false fixednodes=true
+tr num=4 name=T1 idx=2 root=7 keytype=52 version=0 max=-9223372036854775808 count=36 variable=false long=false varnodes=true fixednodes=false
+tr num=5 name=T2 idx=-1 root=2 keytype=4 version=1 max=-9223372036854775808 count=29 variable=true long=false varnodes=true fixednodes=false
+tr num=6 name=T3 idx=-1 root=8 keytype=2 version=1 max=-9223372036854775808 count=34 variable=false long=false varnodes=false fixednodes=true
+tr num=7 name=T3 idx=0 root=9 keytype=35 version=0 max=-9223372036854775808 count=34 variable=false long=false varnodes=false fixednodes=true
+tr num=8 name=T3 idx=1 root=10 keytype=34 version=0 max=-9223372036854775808 count=34 variable=false long=false varnodes=false fixednodes=true
+tr num=9 name=T3 idx=2 root=11 keytype=33 version=0 max=-9223372036854775808 count=34 variable=false long=false varnodes=false fixednodes=true
+tbl num=0 name=T0 idx=-1 n=36 sha256=57df982425e87a7789f2fb44e08887201feaa09b58f9e2bb980a1a78c8021367
+tbl num=1 name=T0 idx=1 n=36 sha256=8e46af32cd0dcaf468a9a2118b58e9ff7db04cefccf5cc8615b50b7c529a6dee
+tbl num=2 name=T1 idx=-1 n=36 sha256=d169141561585572fda60ac2eab5f3e7eaba0a87e995f9da08e7d0cd1d10324c
+tbl num=3 name=T1 idx=0 n=36 sha256=b97ac0bf921bf194ac56d6dddc669a26b6f611eb0de1d870df06b62be9347b06
+tbl num=4 name=T1 idx=2 n=36 sha256=3434f090caaa0440f158a7ca53a35947f0df757880d3007306cb640f9e5ff803
+tbl num=5 name=T2 idx=-1 n=29 sha256=622f5a639b5b18370fe22f12976a7953c8a3b84159d2b9017402dc76dec3be60
+tbl num=6 name=T3 idx=-1 n=34 sha256=6b25e2634eefebfb7588de7d38ec4cbd1d74b95ae8af94ba443ecee2c2bc9ad3
+tbl num=7 name=T3 idx=0 n=34 sha256=dd8c990837b27a988dad12047f2202bb1ae0dd3cd873480c3ee23d2d911a8178
+tbl num=8 name=T3 idx=1 n=34 sha256=0f2b648688209a794a72b411325082c371bc57980677e81a84eee0fc2cb849da
+tbl num=9 name=T3 idx=2 n=34 sha256=b7d492c0554eb0556855caff76215eb69bb51f43a915ef71d6a65cc1a30439bf
+consistent name=T3 true
+consistent name=T2 true
+consistent name=T1 true
+consistent name=T0 true
+skip put
+skip put
+skip put
+skip put
+status undo=2 redo=0 canUndo=false canRedo=false uncommitted=true changed=true tx=true stack=[15, 18]
+skip put
+rename ok=false
+try ok
+try err IOException
+skip put
+skip put
+end added=true
+status undo=2 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23]
+rename ok=false
+try ok
+skip put
+skip put
+rename ok=false
+try ok
+status undo=2 redo=0 canUndo=false canRedo=false uncommitted=false changed=true tx=true stack=[15, 18, 9, 10, 11, 23]
+skip put
+skip put
+skip put
+try ok
+skip put
+skip put
+skip del
+rename ok=false
+try ok
+skip put
+skip put
+skip put
+skip del
+end added=true
+status undo=3 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23, 6, 7, 14, 12, 22, 4, 3]
+skip put
+skip del
+skip del
+skip put
+skip put
+skip put
+skip put
+skip put
+skip put
+skip put
+skip put
+skip del
+skip put
+skip put
+skip put
+rename ok=false
+try ok
+skip put
+skip put
+skip put
+skip put
+skip put
+skip put
+skip put
+skip put
+rename ok=false
+try ok
+end added=true
+status undo=4 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23, 6, 7, 14, 12, 22, 4, 3, 20, 17, 5, 13, 24, 8, 21, 16, 19, 2, 1]
+undo ok=true
+status undo=1 redo=1 canUndo=true canRedo=true uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23, 6, 7, 14, 12, 22, 4, 3]
+skip put
+skip put
+skip put
+skip put
+end added=false
+status undo=1 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23, 6, 7, 14, 12, 22, 4, 3]
+skip put
+end added=false
+status undo=1 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23, 6, 7, 14, 12, 22, 4, 3]
+skip put
+try ok
+try err IllegalStateException
+try ok
+try err IllegalStateException
+end added=false
+skip del
+skip put
+try err DuplicateNameException
+skip put
+skip put
+skip put
+skip put
+end added=true
+status undo=2 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23, 6, 7, 14, 12, 22, 4, 3]
+redo ok=false
+status undo=2 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23, 6, 7, 14, 12, 22, 4, 3]
+undo ok=true
+status undo=1 redo=1 canUndo=true canRedo=true uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23, 6, 7, 14, 12, 22, 4, 3]
+skip put
+skip put
+skip put
+end added=false
+status undo=1 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23, 6, 7, 14, 12, 22, 4, 3]
+skip put
+skip put
+rename ok=false
+try ok
+skip put
+skip put
+status undo=2 redo=0 canUndo=false canRedo=false uncommitted=true changed=true tx=true stack=[15, 18, 9, 10, 11, 23, 6, 7, 14, 12, 22, 4, 3]
+skip put
+skip put
+rename ok=true
+try ok
+skip put
+end added=true
+status undo=2 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23, 6, 7, 14, 12, 22, 4, 3]
+skip put
+skip put
+end added=false
+status undo=2 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23, 6, 7, 14, 12, 22, 4, 3]
+== s475
+bufferSize=2043 indexCount=25 free=[3, 4, 6, 7, 9, 10, 11, 12, 14, 15, 18, 22, 23]
+buf 0 id=0 empty=false sha256=ecf6eba1a6dc166037e7ed2189562b7d21a17fb43ed27b2ce261b73d968b3a3b
+buf 1 id=1 empty=false sha256=16d726ec247ce5cd3dfd4587cd5edc9bb85fc4e4e834d821de5b5136e104a5c1
+buf 2 id=2 empty=false sha256=e46d3598d1c1de628273a3c4b00719bdc22bb20d385d107aeb1f9fc42e449244
+buf 3 id=-1 empty=true sha256=-
+buf 4 id=-1 empty=true sha256=-
+buf 5 id=5 empty=false sha256=94a57a3afbaa363f18757a1f40781f46b3dbf40caf8838a76a070a86eeaf63a8
+buf 6 id=-1 empty=true sha256=-
+buf 7 id=-1 empty=true sha256=-
+buf 8 id=8 empty=false sha256=1ad7d40175659c146652c40ddcd0100d75a22b1d47fd4d4f423b95b120c8e989
+buf 9 id=-1 empty=true sha256=-
+buf 10 id=-1 empty=true sha256=-
+buf 11 id=-1 empty=true sha256=-
+buf 12 id=-1 empty=true sha256=-
+buf 13 id=13 empty=false sha256=d94c425b619f3151382812c2ac6771348160dcba22ccc19658f4f9621a35bb25
+buf 14 id=-1 empty=true sha256=-
+buf 15 id=-1 empty=true sha256=-
+buf 16 id=16 empty=false sha256=f9870c834836cd5e6bb0bde999391d0e321cf1af3049b71473b5b27c81c59cd4
+buf 17 id=17 empty=false sha256=53f96d5ee6cc207df87a29a737a971fa95a832a16ecff84fe309456de11ca9b5
+buf 18 id=-1 empty=true sha256=-
+buf 19 id=19 empty=false sha256=a7566f10c0f95a0dcf52e6a568958b4a4c6914c1de6f8a265712864652c016f8
+buf 20 id=20 empty=false sha256=f41dddf4e9340372b8e7189130bbbc171c8508286d4ab2fb902228f105babdf2
+buf 21 id=21 empty=false sha256=20d11689fefc40e3a111aba20c37f447ab23c04c2b498c9aba121dd733a907f9
+buf 22 id=-1 empty=true sha256=-
+buf 23 id=-1 empty=true sha256=-
+buf 24 id=24 empty=false sha256=a948a73e559d31a47566391c41f11763caf8be1df924cb8d0349b1d2e2213567
+table R2 count=31 max=-9223372036854775808
+table T3 count=6 max=-9223372036854775808
+dbid=3761718981605964704
+dbid=3761718981605964704
+tr num=5 name=R2 idx=-1 root=2 keytype=4 version=1 max=-9223372036854775808 count=31 variable=true long=false varnodes=true fixednodes=false
+tr num=10 name=T3 idx=-1 root=13 keytype=2 version=1 max=-9223372036854775808 count=6 variable=false long=false varnodes=false fixednodes=true
+tr num=11 name=T3 idx=0 root=20 keytype=35 version=0 max=-9223372036854775808 count=6 variable=false long=false varnodes=false fixednodes=true
+tr num=12 name=T3 idx=1 root=17 keytype=34 version=0 max=-9223372036854775808 count=6 variable=false long=false varnodes=false fixednodes=true
+tr num=13 name=T3 idx=2 root=5 keytype=33 version=0 max=-9223372036854775808 count=6 variable=false long=false varnodes=false fixednodes=true
+tbl num=5 name=R2 idx=-1 n=31 sha256=3c8c222ef376c779fb9d8597004ac7ba4a3ef4a1cdfe3e8a1ee6b312693adc81
+tbl num=10 name=T3 idx=-1 n=6 sha256=59930db3fe256f5713b9f035ad4c86a62cb53171a038a63c8ec58cdcd701ba75
+tbl num=11 name=T3 idx=0 n=6 sha256=9aa9c6c83ebae4a42bc7fe9398f8dfffa6b3ee7a3d23ef57af2dcc39ae0f8c4b
+tbl num=12 name=T3 idx=1 n=6 sha256=9a82ba5f8c5e4566a80a0dc7a8542941946d01bcdf68a1658b31fc0d9630995f
+tbl num=13 name=T3 idx=2 n=6 sha256=7b156c51dabf23e5586af98617337e8f00889b46e1cef09d44ad4aeb5d93960e
+consistent name=R2 true
+consistent name=T3 true
+try ok
+skip put
+try err IOException
+skip put
+skip put
+rename ok=false
+try ok
+skip put
+skip put
+skip put
+skip put
+skip put
+end added=true
+status undo=3 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23, 6, 7, 14, 12, 22, 4, 3]
+skip put
+skip put
+skip put
+skip del
+try err IOException
+skip put
+rename ok=false
+try ok
+skip put
+skip put
+status undo=4 redo=0 canUndo=false canRedo=false uncommitted=true changed=true tx=true stack=[15, 18, 9, 10, 11, 23, 6, 7, 14, 12, 22, 4, 3]
+skip put
+end added=true
+status undo=4 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23, 6, 7, 14, 12, 22, 4, 3]
+skip put
+skip del
+skip put
+skip del
+skip put
+skip put
+end added=true
+status undo=4 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23, 6, 7, 14, 12, 22, 4, 3]
+skip put
+skip del
+try ok
+skip put
+skip put
+skip put
+try ok
+try ok
+skip put
+skip put
+end added=true
+status undo=4 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23, 6]
+skip put
+try err IOException
+rename ok=false
+try ok
+status undo=4 redo=0 canUndo=false canRedo=false uncommitted=true changed=true tx=true stack=[15, 18, 9, 10, 11, 23, 6]
+skip put
+try err IOException
+skip put
+skip put
+skip put
+skip put
+end added=false
+status undo=3 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23, 6]
+skip put
+skip put
+status undo=4 redo=0 canUndo=false canRedo=false uncommitted=true changed=true tx=true stack=[15, 18, 9, 10, 11, 23, 6, 24]
+end added=false
+status undo=3 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23, 6]
+redo ok=false
+status undo=3 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23, 6]
+redo ok=false
+status undo=3 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23, 6]
+try err IOException
+skip put
+skip put
+skip put
+skip put
+try ok
+skip put
+end added=true
+status undo=4 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23, 20, 17, 5, 13]
+undo ok=true
+status undo=2 redo=1 canUndo=true canRedo=true uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23, 6]
+skip del
+end added=true
+status undo=3 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23]
+== s611
+bufferSize=2043 indexCount=25 free=[9, 10, 11, 15, 18, 23]
+buf 0 id=0 empty=false sha256=ecf6eba1a6dc166037e7ed2189562b7d21a17fb43ed27b2ce261b73d968b3a3b
+buf 1 id=1 empty=false sha256=b6b0f4cd1afd09ca6c46a9685f1abd802f4e57d26c741372924631d1bd443fb4
+buf 2 id=2 empty=false sha256=3100a405d08f6faacc3c70169fea27b56df079dac814d8c2ed5767d987888b22
+buf 3 id=3 empty=false sha256=2716306897a1caadfd0f71b0c845bd03ad8e399bd7bf5a74c12d0482b67ce8c3
+buf 4 id=4 empty=false sha256=f90b48a5333b2b2b69cedcc3dd7e93fb8d9d00b8e8a0d5d5daebc993a1d698e7
+buf 5 id=5 empty=false sha256=4c29be5226db9a8f659ed4309940aad546aadd5f7a903e710737c308a8843e5d
+buf 6 id=6 empty=false sha256=808d73cd44414f671b96927d93eb7ac015ec97a6dfb74bc8fb66775ab67d91cd
+buf 7 id=7 empty=false sha256=2bb442648561d3ed4f11dd7273858dbd010dd8d02ee2a024243268141716e903
+buf 8 id=8 empty=false sha256=1ad7d40175659c146652c40ddcd0100d75a22b1d47fd4d4f423b95b120c8e989
+buf 9 id=-1 empty=true sha256=-
+buf 10 id=-1 empty=true sha256=-
+buf 11 id=-1 empty=true sha256=-
+buf 12 id=12 empty=false sha256=8f6811fa5d647048fc2551fd67df076f1be10a3617cab3e263d68e3d62833d0d
+buf 13 id=13 empty=false sha256=c3111948eb9371abab112ab219810a10204144d501676dde078b69845af94b6f
+buf 14 id=14 empty=false sha256=fb7aad6f6594b7bb816e186de2b3d4668d22767926b6d143003aef6bc43b8ae9
+buf 15 id=-1 empty=true sha256=-
+buf 16 id=16 empty=false sha256=f9870c834836cd5e6bb0bde999391d0e321cf1af3049b71473b5b27c81c59cd4
+buf 17 id=17 empty=false sha256=15fe3f8215fdfa1d8f82077598634e3d3cdd389a5f1ee09a0cddb5ce6bd99055
+buf 18 id=-1 empty=true sha256=-
+buf 19 id=19 empty=false sha256=a7566f10c0f95a0dcf52e6a568958b4a4c6914c1de6f8a265712864652c016f8
+buf 20 id=20 empty=false sha256=99b2f3c1a5bae3e913fd73ff8b22798f5ecc8d29f1b902c0a5463bc6ee4ab375
+buf 21 id=21 empty=false sha256=20d11689fefc40e3a111aba20c37f447ab23c04c2b498c9aba121dd733a907f9
+buf 22 id=22 empty=false sha256=fc02be54ba475d9d4747eaf6edd3d567106799aa8e1dae92045595d351618a73
+buf 23 id=-1 empty=true sha256=-
+buf 24 id=24 empty=false sha256=a948a73e559d31a47566391c41f11763caf8be1df924cb8d0349b1d2e2213567
+table R2 count=31 max=-9223372036854775808
+table T0 count=3 max=37
+table T1 count=1 max=24
+table T2 count=2 max=-9223372036854775808
+table T3 count=8 max=-9223372036854775808
+dbid=3761718981605964704
+dbid=3761718981605964704
+tr num=5 name=R2 idx=-1 root=2 keytype=4 version=1 max=-9223372036854775808 count=31 variable=true long=false varnodes=true fixednodes=false
+tr num=10 name=T3 idx=-1 root=13 keytype=2 version=1 max=-9223372036854775808 count=8 variable=false long=false varnodes=false fixednodes=true
+tr num=11 name=T3 idx=0 root=20 keytype=35 version=0 max=-9223372036854775808 count=8 variable=false long=false varnodes=false fixednodes=true
+tr num=12 name=T3 idx=1 root=17 keytype=34 version=0 max=-9223372036854775808 count=8 variable=false long=false varnodes=false fixednodes=true
+tr num=13 name=T3 idx=2 root=5 keytype=33 version=0 max=-9223372036854775808 count=8 variable=false long=false varnodes=false fixednodes=true
+tr num=16 name=T1 idx=-1 root=22 keytype=3 version=1 max=24 count=1 variable=true long=true varnodes=false fixednodes=false
+tr num=17 name=T1 idx=0 root=14 keytype=50 version=0 max=-9223372036854775808 count=1 variable=false long=false varnodes=false fixednodes=true
+tr num=18 name=T1 idx=2 root=7 keytype=52 version=0 max=-9223372036854775808 count=1 variable=false long=false varnodes=true fixednodes=false
+tr num=19 name=T2 idx=-1 root=6 keytype=4 version=1 max=-9223372036854775808 count=2 variable=true long=false varnodes=true fixednodes=false
+tr num=20 name=T0 idx=-1 root=3 keytype=3 version=1 max=37 count=3 variable=false long=true varnodes=false fixednodes=false
+tr num=21 name=T0 idx=1 root=4 keytype=50 version=0 max=-9223372036854775808 count=3 variable=false long=false varnodes=false fixednodes=true
+tbl num=5 name=R2 idx=-1 n=31 sha256=3c943b10e4417ab9fd644befa481265746ed5eae309ba7a166d013d7b1b79e2f
+tbl num=10 name=T3 idx=-1 n=8 sha256=6993faa6833cd90c4ea5e3f1bc5efffedbb02e8081e76476b4dddfcde9c114fa
+tbl num=11 name=T3 idx=0 n=8 sha256=a65f91b18ac280ea05e28e0b99aa1c9fad9cff670e66a97d40de5d4fdfe2e977
+tbl num=12 name=T3 idx=1 n=8 sha256=c0ba921599a877c6e8de1471fe02b33fb016ee624b619d020f9be3750c12b0e3
+tbl num=13 name=T3 idx=2 n=8 sha256=c8296bbd7b905ad2aa446e8af52e10129ff0eefa7abe34f0eca5720c8d3bb508
+tbl num=16 name=T1 idx=-1 n=1 sha256=37d927a4ff5d615ed3228195dead00d9b2716b7857008b21b4b0e997a589767b
+tbl num=17 name=T1 idx=0 n=1 sha256=abfda9e04d21f5689bc743f3b4994646f3a6a343480854cfcce77000cdb39736
+tbl num=18 name=T1 idx=2 n=1 sha256=f9ebf3a0eca71e6288729807ccea952b7be89b1656fd86f59b139f6fda54a93a
+tbl num=19 name=T2 idx=-1 n=2 sha256=c1b192c68bfddb8753f491ddf0ab4eaf3a0f9ed02bf3d15438200cb544aa0fbd
+tbl num=20 name=T0 idx=-1 n=3 sha256=dd88b8d11d199d9a99bf4de22e3d9683b66a459290ec2baab423928d55ca2569
+tbl num=21 name=T0 idx=1 n=3 sha256=8a4f891814e35fac52d67e2a2d8fe5b7b65127b97199256ed38055ca15f51e7c
+consistent name=R2 true
+consistent name=T3 true
+consistent name=T2 true
+consistent name=T1 true
+consistent name=T0 true
+undo ok=true
+status undo=2 redo=1 canUndo=true canRedo=true uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23, 6]
+try err IOException
+skip put
+skip put
+skip put
+end added=true
+status undo=3 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23, 6]
+end added=true
+status undo=3 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23, 6, 14, 7, 12, 22]
+try err IOException
+skip put
+skip del
+skip put
+try err DuplicateNameException
+skip put
+skip put
+skip put
+skip del
+skip put
+skip put
+skip put
+skip put
+skip put
+status undo=3 redo=0 canUndo=false canRedo=false uncommitted=true changed=true tx=true stack=[15, 18, 9, 10, 11, 23, 6, 14, 7, 12, 22]
+skip put
+try ok
+skip put
+skip put
+end added=false
+status undo=2 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23, 6, 14, 7, 12, 22]
+skip put
+end added=true
+status undo=3 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23, 6, 14, 7, 12, 22]
+skip put
+try ok
+skip put
+skip put
+skip put
+skip put
+end added=true
+status undo=3 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23, 6, 14, 4, 3]
+undo ok=true
+status undo=2 redo=1 canUndo=true canRedo=true uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23, 6, 14, 22, 7, 12]
+skip put
+skip put
+rename ok=true
+try ok
+try err DuplicateNameException
+skip put
+skip put
+skip put
+rename ok=true
+try ok
+skip put
+end added=true
+status undo=3 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23, 6, 14, 22, 7, 12, 16]
+skip put
+skip del
+skip del
+skip put
+try ok
+end added=true
+status undo=3 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23, 6, 14, 22, 7, 12]
+redo ok=false
+status undo=3 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23, 6, 14, 22, 7, 12]
+== s727
+bufferSize=2043 indexCount=25 free=[6, 7, 9, 10, 11, 12, 14, 15, 18, 22, 23]
+buf 0 id=0 empty=false sha256=ecf6eba1a6dc166037e7ed2189562b7d21a17fb43ed27b2ce261b73d968b3a3b
+buf 1 id=1 empty=false sha256=eba8657d43615fb150654b18b8e527f3bea909cb2d75dbbaf3088d54f2ba613a
+buf 2 id=2 empty=false sha256=d5658bf91ab1f7fa8ff53461e8f56c41d8fb1e092a8cd8d19d6d157a5907385c
+buf 3 id=3 empty=false sha256=2711b8d576dd9fd845b037a830332f0eae614282652e7eb30a693303638831ee
+buf 4 id=4 empty=false sha256=25f3edbd5c06e3fd54b71aab2a1a3f5ccb35ed31f64551f2c8314b7d03dd7ca7
+buf 5 id=5 empty=false sha256=e6cf68c9fc0a4d74499c33937672c941ba062608a80a46249c21faa895fa1303
+buf 6 id=-1 empty=true sha256=-
+buf 7 id=-1 empty=true sha256=-
+buf 8 id=8 empty=false sha256=1ad7d40175659c146652c40ddcd0100d75a22b1d47fd4d4f423b95b120c8e989
+buf 9 id=-1 empty=true sha256=-
+buf 10 id=-1 empty=true sha256=-
+buf 11 id=-1 empty=true sha256=-
+buf 12 id=-1 empty=true sha256=-
+buf 13 id=13 empty=false sha256=2598141ff4632cadf00136b7621c614dcc5d89a613b9ef15a8b9e631c967909b
+buf 14 id=-1 empty=true sha256=-
+buf 15 id=-1 empty=true sha256=-
+buf 16 id=16 empty=false sha256=a40a979b0aa41023e46348b9e09377766ce47d6b55d71e15250bf2c8636b5e41
+buf 17 id=17 empty=false sha256=4cb1239f428d0e66b800ae482ae3b8765ba2cc1eb6a81b5c5f64f35fc2961eed
+buf 18 id=-1 empty=true sha256=-
+buf 19 id=19 empty=false sha256=ed08e1a8f34e6a9df88f1c043c69044a3a630ea623a189ad5f1bad576b6842f6
+buf 20 id=20 empty=false sha256=8d3c67aeed648055efd76e9353bfeb0aaf516442572711d4825bc8b6a7d698e9
+buf 21 id=21 empty=false sha256=20d11689fefc40e3a111aba20c37f447ab23c04c2b498c9aba121dd733a907f9
+buf 22 id=-1 empty=true sha256=-
+buf 23 id=-1 empty=true sha256=-
+buf 24 id=24 empty=false sha256=a948a73e559d31a47566391c41f11763caf8be1df924cb8d0349b1d2e2213567
+table R0 count=7 max=39
+table R2 count=31 max=-9223372036854775808
+table R3 count=9 max=-9223372036854775808
+table T3 count=0 max=-9223372036854775808
+dbid=3761718981605964704
+dbid=3761718981605964704
+tr num=5 name=R2 idx=-1 root=19 keytype=4 version=1 max=-9223372036854775808 count=31 variable=true long=false varnodes=true fixednodes=false
+tr num=10 name=R3 idx=-1 root=13 keytype=2 version=1 max=-9223372036854775808 count=9 variable=false long=false varnodes=false fixednodes=true
+tr num=11 name=R3 idx=0 root=20 keytype=35 version=0 max=-9223372036854775808 count=9 variable=false long=false varnodes=false fixednodes=true
+tr num=12 name=R3 idx=1 root=17 keytype=34 version=0 max=-9223372036854775808 count=9 variable=false long=false varnodes=false fixednodes=true
+tr num=13 name=R3 idx=2 root=5 keytype=33 version=0 max=-9223372036854775808 count=9 variable=false long=false varnodes=false fixednodes=true
+tr num=20 name=R0 idx=-1 root=3 keytype=3 version=1 max=39 count=7 variable=false long=true varnodes=false fixednodes=false
+tr num=21 name=R0 idx=1 root=4 keytype=50 version=0 max=-9223372036854775808 count=7 variable=false long=false varnodes=false fixednodes=true
+tr num=30 name=T3 idx=-1 root=-1 keytype=2 version=1 max=-9223372036854775808 count=0 variable=false long=false varnodes=false fixednodes=true
+tr num=31 name=T3 idx=0 root=-1 keytype=35 version=0 max=-9223372036854775808 count=0 variable=false long=false varnodes=false fixednodes=true
+tr num=32 name=T3 idx=1 root=-1 keytype=34 version=0 max=-9223372036854775808 count=0 variable=false long=false varnodes=false fixednodes=true
+tr num=33 name=T3 idx=2 root=-1 keytype=33 version=0 max=-9223372036854775808 count=0 variable=false long=false varnodes=false fixednodes=true
+tbl num=5 name=R2 idx=-1 n=31 sha256=bf907e687b79e7d0231fdd6446325e904c03a3709d5e32b391d078bb5a8158cb
+tbl num=10 name=R3 idx=-1 n=9 sha256=449ae4d0934acdb4fc540fd1645d3c2027bfff6a61587061af09619c9bfc0ea8
+tbl num=11 name=R3 idx=0 n=9 sha256=16fd39fc1aadfb5d3e6f6e2615ad5f99f78a2bbc11b918d48942e449de4201b7
+tbl num=12 name=R3 idx=1 n=9 sha256=d4f0a7fa1c61261f082de6bc185b9f8a5f59fcf90397b6f6beda8bdd0da07a4c
+tbl num=13 name=R3 idx=2 n=9 sha256=02ab4f06e49069cfd71f91f1905e4e4970e4175c7acffe0b832e6861930ee9b3
+tbl num=20 name=R0 idx=-1 n=7 sha256=aaab5b067b7714e6ca26061a7a279ff5c4312cb7bedc7b486f47c679aa7142f4
+tbl num=21 name=R0 idx=1 n=7 sha256=44d063c8970c04c7393e7285f9cee6dc072f7b11f9f91f8da1582b5881f4c8e8
+tbl num=30 name=T3 idx=-1 n=0 sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+tbl num=31 name=T3 idx=0 n=0 sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+tbl num=32 name=T3 idx=1 n=0 sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+tbl num=33 name=T3 idx=2 n=0 sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+consistent name=R3 true
+consistent name=R2 true
+consistent name=R0 true
+consistent name=T3 true
+skip put
+try err DuplicateNameException
+status undo=3 redo=0 canUndo=false canRedo=false uncommitted=true changed=true tx=true stack=[15, 18, 9, 10, 11, 23, 6, 14, 22, 7, 12]
+skip put
+end added=true
+status undo=3 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23, 6, 14, 22, 7, 12]
+undo ok=true
+status undo=2 redo=1 canUndo=true canRedo=true uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23, 6, 14, 22, 7, 12]
+skip del
+try ok
+skip del
+status undo=3 redo=0 canUndo=false canRedo=false uncommitted=true changed=true tx=true stack=[15, 18, 9, 10, 11, 23, 6, 14, 22, 7, 12]
+try err IOException
+skip put
+status undo=3 redo=0 canUndo=false canRedo=false uncommitted=true changed=true tx=true stack=[15, 18, 9, 10, 11, 23]
+skip put
+skip del
+try err DuplicateNameException
+skip put
+try ok
+end added=true
+status undo=3 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 23]
+try err IOException
+end added=true
+status undo=3 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11]
+skip put
+status undo=3 redo=0 canUndo=false canRedo=false uncommitted=true changed=true tx=true stack=[15, 18, 9]
+skip del
+status undo=3 redo=0 canUndo=false canRedo=false uncommitted=true changed=true tx=true stack=[15, 18, 9]
+status undo=3 redo=0 canUndo=false canRedo=false uncommitted=true changed=true tx=true stack=[15, 18, 9]
+skip put
+skip put
+skip put
+skip put
+try err IOException
+skip put
+end added=true
+status undo=3 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11]
+redo ok=false
+status undo=3 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11]
+skip put
+skip put
+try err IOException
+skip put
+skip put
+try err DuplicateNameException
+skip del
+status undo=3 redo=0 canUndo=false canRedo=false uncommitted=true changed=true tx=true stack=[15, 18, 9, 10, 11, 7, 22, 14, 12]
+skip put
+try ok
+skip put
+status undo=3 redo=0 canUndo=false canRedo=false uncommitted=true changed=true tx=true stack=[15, 18, 9, 10, 11, 7, 22, 14, 12]
+rename ok=false
+try ok
+end added=true
+status undo=3 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 7, 22, 14, 12]
+skip put
+status undo=3 redo=0 canUndo=false canRedo=false uncommitted=true changed=true tx=true stack=[15, 18, 9, 10, 11, 7, 22, 14, 12]
+end added=true
+status undo=3 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 7, 22, 14, 12]
+skip put
+skip put
+skip del
+skip del
+skip put
+end added=true
+status undo=3 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 7, 22]
+skip put
+skip put
+try err IOException
+skip put
+end added=true
+status undo=3 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 7]
+skip put
+skip put
+skip put
+skip del
+skip put
+skip put
+try err IOException
+skip del
+status undo=3 redo=0 canUndo=false canRedo=false uncommitted=true changed=true tx=true stack=[15, 18, 9, 10, 11, 7]
+skip del
+skip put
+skip put
+try ok
+end added=false
+status undo=2 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 7]
+try err DuplicateNameException
+end added=false
+status undo=2 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9, 10, 11, 7]
+skip put
+skip put
+skip put
+skip del
+skip put
+try ok
+skip put
+skip put
+try ok
+try err IOException
+skip put
+end added=true
+status undo=3 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 18, 9]
+== s938
+bufferSize=2043 indexCount=25 free=[9, 15, 18]
+buf 0 id=0 empty=false sha256=ecf6eba1a6dc166037e7ed2189562b7d21a17fb43ed27b2ce261b73d968b3a3b
+buf 1 id=1 empty=false sha256=380e110900b7951a9159d3bccb747f57c6b93dc413598ad2baac49bee6f37ba7
+buf 2 id=2 empty=false sha256=314612c21092186f4701cb6938b7c84ab08524073b73ac5827f297e7d7fafa9f
+buf 3 id=3 empty=false sha256=d8d2ea40509c03a58595d01c80f60b14b6d473eb77d19c052810dcc02adbea09
+buf 4 id=4 empty=false sha256=fa4193765e51d14ba6d683793ccacc370f85de36df45d938e68d5baa145a0e51
+buf 5 id=5 empty=false sha256=ccb28e18f6de51fbb27e103e5055e315d46e0b6bd1fbbb74df66166edb93fa28
+buf 6 id=6 empty=false sha256=8c39ef58e74e3bae48fda524c5e9782d53215180eb943f67a4f9fa0510ae311c
+buf 7 id=7 empty=false sha256=ac7053b9472f4b215ddd1fe8b13333abd68af5417200736eaaf06e2ab9f54da4
+buf 8 id=8 empty=false sha256=1ad7d40175659c146652c40ddcd0100d75a22b1d47fd4d4f423b95b120c8e989
+buf 9 id=-1 empty=true sha256=-
+buf 10 id=10 empty=false sha256=61b65e0d65e320309f23f51100d7c8ce49eade92a8bbcb1828bf7c02aaa078fe
+buf 11 id=11 empty=false sha256=d02128ef5a0741f8ffb6658bdd95be8d85216806dabd92231c349342d3d59b2a
+buf 12 id=12 empty=false sha256=73958770291cd5720e6987b90817a06a73465e9c16e594d16176040f51cb2655
+buf 13 id=13 empty=false sha256=93a289a33391766f3c970a60461bfffd60d2588d50610c9a1689bfde9787d2fa
+buf 14 id=14 empty=false sha256=973e3843f57bdd4d0cf20fae851c3244b77fbe51b28ddb3bc54bef755288aad6
+buf 15 id=-1 empty=true sha256=-
+buf 16 id=16 empty=false sha256=a40d3de47efaa06e50852aa4c552e84936e9713f6130bfd877f2af65cb59dfe2
+buf 17 id=17 empty=false sha256=95867339c812cea02cbdc24e470c6157491263f811d1bba1aa529ed360a1d826
+buf 18 id=-1 empty=true sha256=-
+buf 19 id=19 empty=false sha256=2638f917b9421a8913bf782410d028074e43e1718526f4a36d78d2b135b6d897
+buf 20 id=20 empty=false sha256=87328ff09cd3bb0ffeec7aea4d7238a8eba925a992e6aa7e008136bc674b9a52
+buf 21 id=21 empty=false sha256=20d11689fefc40e3a111aba20c37f447ab23c04c2b498c9aba121dd733a907f9
+buf 22 id=22 empty=false sha256=c2a9b2c2aa3f753ea74679ad583002c86b0ee8d2521d838e0b556ad52c9a69d4
+buf 23 id=23 empty=false sha256=c3e648e8529fb29f0cfe2334b94634084b47dcae339af84ed869452df6a61e70
+buf 24 id=24 empty=false sha256=1ea5fcbe73e83896fc92d7d3b3fc9a10162fc1297e15e0e1e1d467879a14efcc
+table R2 count=29 max=-9223372036854775808
+table R3 count=14 max=-9223372036854775808
+table T0 count=0 max=-9223372036854775808
+table T1 count=3 max=39
+table T2 count=7 max=-9223372036854775808
+table T3 count=1 max=-9223372036854775808
+dbid=3761718981605964704
+dbid=3761718981605964704
+tr num=5 name=R2 idx=-1 root=19 keytype=4 version=1 max=-9223372036854775808 count=29 variable=true long=false varnodes=true fixednodes=false
+tr num=10 name=R3 idx=-1 root=13 keytype=2 version=1 max=-9223372036854775808 count=14 variable=false long=false varnodes=false fixednodes=true
+tr num=11 name=R3 idx=0 root=20 keytype=35 version=0 max=-9223372036854775808 count=14 variable=false long=false varnodes=false fixednodes=true
+tr num=12 name=R3 idx=1 root=17 keytype=34 version=0 max=-9223372036854775808 count=14 variable=false long=false varnodes=false fixednodes=true
+tr num=13 name=R3 idx=2 root=5 keytype=33 version=0 max=-9223372036854775808 count=14 variable=false long=false varnodes=false fixednodes=true
+tr num=34 name=T2 idx=-1 root=24 keytype=4 version=1 max=-9223372036854775808 count=7 variable=true long=false varnodes=true fixednodes=false
+tr num=37 name=T1 idx=-1 root=3 keytype=3 version=1 max=39 count=3 variable=true long=true varnodes=false fixednodes=false
+tr num=38 name=T1 idx=0 root=4 keytype=50 version=0 max=-9223372036854775808 count=3 variable=false long=false varnodes=false fixednodes=true
+tr num=39 name=T1 idx=2 root=12 keytype=52 version=0 max=-9223372036854775808 count=3 variable=false long=false varnodes=true fixednodes=false
+tr num=42 name=T3 idx=-1 root=14 keytype=2 version=1 max=-9223372036854775808 count=1 variable=false long=false varnodes=false fixednodes=true
+tr num=43 name=T3 idx=0 root=7 keytype=35 version=0 max=-9223372036854775808 count=1 variable=false long=false varnodes=false fixednodes=true
+tr num=44 name=T3 idx=1 root=11 keytype=34 version=0 max=-9223372036854775808 count=1 variable=false long=false varnodes=false fixednodes=true
+tr num=45 name=T3 idx=2 root=10 keytype=33 version=0 max=-9223372036854775808 count=1 variable=false long=false varnodes=false fixednodes=true
+tr num=46 name=T0 idx=-1 root=-1 keytype=3 version=1 max=-9223372036854775808 count=0 variable=false long=true varnodes=false fixednodes=false
+tr num=47 name=T0 idx=1 root=-1 keytype=50 version=0 max=-9223372036854775808 count=0 variable=false long=false varnodes=false fixednodes=true
+tbl num=5 name=R2 idx=-1 n=29 sha256=75a5156fa4cb2feaa487a881d6d84c369b3c4e19255d417471beeea2825dc884
+tbl num=10 name=R3 idx=-1 n=14 sha256=9a43d480f724dc025e1c093434dc3c5ee7292996620c6f4cca43061393c052b6
+tbl num=11 name=R3 idx=0 n=14 sha256=8f7d1996f32b450f77ea0d06b440363b7457ba12eadf6a9f7f3b054f2a993035
+tbl num=12 name=R3 idx=1 n=14 sha256=dab4a62f424ed735cd3764bcd618bf8c6090f3de85fba4a61e66f286095d22b2
+tbl num=13 name=R3 idx=2 n=14 sha256=72430266e2c31d6de630c134bbfaf68b2c1b39581ff98d14c81978b7f325140c
+tbl num=34 name=T2 idx=-1 n=7 sha256=096ada5c4882e8d2386f24b79c29cefbd572dc5d0f289fe85ce80d6609fe79cc
+tbl num=37 name=T1 idx=-1 n=3 sha256=5ab5397eb435991f5b9cfd980d0f21ab357c1672ced68b355c59f2feddb7dd10
+tbl num=38 name=T1 idx=0 n=3 sha256=b329227e110055e0b11b91e70a55506af5086686099cd15594ee512efdb1625f
+tbl num=39 name=T1 idx=2 n=3 sha256=3179fa8dd77ed51a5e449df81d2fa5f2a749952aaca037728ad7a8422548070c
+tbl num=42 name=T3 idx=-1 n=1 sha256=a4665119e0fb0b8ef0806b503fdde06ff7c93679f31950ce3651788a95e457fa
+tbl num=43 name=T3 idx=0 n=1 sha256=ddbf80df23d40710950d9ba250900d16571b0b49c906393f14a0762df00a01fa
+tbl num=44 name=T3 idx=1 n=1 sha256=df710cf3de04b52077e66c13941ef0410495e0de48490eb83b30e76d39c838df
+tbl num=45 name=T3 idx=2 n=1 sha256=b6d5bcc8c8328d2d8b2dbba9dc0df66a8e34b5cfc42355c23efa7acc70839bec
+tbl num=46 name=T0 idx=-1 n=0 sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+tbl num=47 name=T0 idx=1 n=0 sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+consistent name=R3 true
+consistent name=R2 true
+consistent name=T3 true
+consistent name=T2 true
+consistent name=T1 true
+consistent name=T0 true
+try err IOException
+try ok
+skip put
+skip put
+try err DuplicateNameException
+skip put
+status undo=3 redo=0 canUndo=false canRedo=false uncommitted=true changed=true tx=true stack=[15]
+skip put
+status undo=3 redo=0 canUndo=false canRedo=false uncommitted=true changed=true tx=true stack=[15]
+end added=true
+status undo=3 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 8]
+status undo=3 redo=0 canUndo=false canRedo=false uncommitted=false changed=true tx=true stack=[15, 8]
+skip put
+skip put
+skip del
+skip put
+skip put
+skip put
+skip put
+skip put
+skip put
+skip put
+try err IOException
+end added=false
+status undo=2 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 8]
+try err DuplicateNameException
+status undo=3 redo=0 canUndo=false canRedo=false uncommitted=true changed=true tx=true stack=[15, 8]
+skip put
+try err DuplicateNameException
+end added=true
+status undo=3 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 8, 18]
+try ok
+try err DuplicateNameException
+status undo=3 redo=0 canUndo=false canRedo=false uncommitted=true changed=true tx=true stack=[15, 8, 18]
+skip put
+skip put
+skip put
+skip put
+skip put
+status undo=3 redo=0 canUndo=false canRedo=false uncommitted=true changed=true tx=true stack=[15, 8, 18]
+rename ok=false
+try ok
+skip put
+end added=true
+status undo=3 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[15, 8, 18, 7, 11, 10, 14]
+== final
+bufferSize=2043 indexCount=25 free=[7, 8, 10, 11, 14, 15, 18]
+buf 0 id=0 empty=false sha256=ecf6eba1a6dc166037e7ed2189562b7d21a17fb43ed27b2ce261b73d968b3a3b
+buf 1 id=1 empty=false sha256=f9b95543bbeb479845a16a99f7667caaf9bf6de5183263263b468793746c400b
+buf 2 id=2 empty=false sha256=799f3ac7cfcfbbb8f1471b70e04d0cb227072f070228a862a186f3df817bf83e
+buf 3 id=3 empty=false sha256=7bba2ba163fa276a67beded50c06a257e5981acf3ac71f39e9d6d9b922766275
+buf 4 id=4 empty=false sha256=85e22f4146a197385cc388aa811901813b1ba9862ca74d31467087faa0695cfc
+buf 5 id=5 empty=false sha256=7d409ac134d733320015c13570c49170313a443321598aa99dcab18858a51c0a
+buf 6 id=6 empty=false sha256=8c39ef58e74e3bae48fda524c5e9782d53215180eb943f67a4f9fa0510ae311c
+buf 7 id=-1 empty=true sha256=-
+buf 8 id=-1 empty=true sha256=-
+buf 9 id=9 empty=false sha256=0dafdfdbae27f597a66844f2a27a68166fbc61b9b29625b5137b2eb495418f53
+buf 10 id=-1 empty=true sha256=-
+buf 11 id=-1 empty=true sha256=-
+buf 12 id=12 empty=false sha256=dd34cf5e07133ac9321ced86147910c1d753568e123ba0c507354b044b6b1e86
+buf 13 id=13 empty=false sha256=107d7bda7e355551330d39253fa1c5ea699bf333d2ba8c0144c24909dc73092f
+buf 14 id=-1 empty=true sha256=-
+buf 15 id=-1 empty=true sha256=-
+buf 16 id=16 empty=false sha256=e7435985482f5fa417d2958897b5e2a7d3b4a59a3ac846ac3f1f49fa8639a8b7
+buf 17 id=17 empty=false sha256=7f3bc6adffa69f95ca4736adbcbd2cddb18db739ed12302ccf6eec8a73d9ff35
+buf 18 id=-1 empty=true sha256=-
+buf 19 id=19 empty=false sha256=2638f917b9421a8913bf782410d028074e43e1718526f4a36d78d2b135b6d897
+buf 20 id=20 empty=false sha256=e05e8eda2a1a9d3556ef43c69b978487e71b8d447e1060d028af1bf4d69532dd
+buf 21 id=21 empty=false sha256=20d11689fefc40e3a111aba20c37f447ab23c04c2b498c9aba121dd733a907f9
+buf 22 id=22 empty=false sha256=c2a9b2c2aa3f753ea74679ad583002c86b0ee8d2521d838e0b556ad52c9a69d4
+buf 23 id=23 empty=false sha256=c3e648e8529fb29f0cfe2334b94634084b47dcae339af84ed869452df6a61e70
+buf 24 id=24 empty=false sha256=acb78424948a8050d299cb7898c155efea3137b8981f8777dcffa8db9151997c
+table R2 count=30 max=-9223372036854775808
+table R3 count=15 max=-9223372036854775808
+table T1 count=3 max=35
+table T2 count=10 max=-9223372036854775808
+dbid=3761718981605964704
+dbid=3761718981605964704
+tr num=5 name=R2 idx=-1 root=19 keytype=4 version=1 max=-9223372036854775808 count=30 variable=true long=false varnodes=true fixednodes=false
+tr num=10 name=R3 idx=-1 root=13 keytype=2 version=1 max=-9223372036854775808 count=15 variable=false long=false varnodes=false fixednodes=true
+tr num=11 name=R3 idx=0 root=20 keytype=35 version=0 max=-9223372036854775808 count=15 variable=false long=false varnodes=false fixednodes=true
+tr num=12 name=R3 idx=1 root=17 keytype=34 version=0 max=-9223372036854775808 count=15 variable=false long=false varnodes=false fixednodes=true
+tr num=13 name=R3 idx=2 root=5 keytype=33 version=0 max=-9223372036854775808 count=15 variable=false long=false varnodes=false fixednodes=true
+tr num=34 name=T2 idx=-1 root=24 keytype=4 version=1 max=-9223372036854775808 count=10 variable=true long=false varnodes=true fixednodes=false
+tr num=48 name=T1 idx=-1 root=3 keytype=3 version=1 max=35 count=3 variable=true long=true varnodes=false fixednodes=false
+tr num=49 name=T1 idx=0 root=12 keytype=50 version=0 max=-9223372036854775808 count=3 variable=false long=false varnodes=false fixednodes=true
+tr num=50 name=T1 idx=2 root=4 keytype=52 version=0 max=-9223372036854775808 count=3 variable=false long=false varnodes=true fixednodes=false
+tbl num=5 name=R2 idx=-1 n=30 sha256=a3f61cd8c89d4f1dbf5442bbce095a6bb9701027992013ede24e4c4f1257a881
+tbl num=10 name=R3 idx=-1 n=15 sha256=0b21137925231faf6c9a9c60b92240a10ae0f05c4ee4b4bfc280874eb07abbd0
+tbl num=11 name=R3 idx=0 n=15 sha256=f30d878cec6c04ff15310483ba1d188f0ccad85d671dddfb51a7727f2d5969f5
+tbl num=12 name=R3 idx=1 n=15 sha256=e76a957359d4a7717e9d574b4a52b739260d0d57d39de68b0d16266bf90ac91f
+tbl num=13 name=R3 idx=2 n=15 sha256=3a52538fa0bc76f1d6242b82be8a0e1bff2457c134bdc998cbbb63c1ee344d19
+tbl num=34 name=T2 idx=-1 n=10 sha256=1870d36e2dc16391ea739b0096a7c9da754a2210653099015451433dd30bdeba
+tbl num=48 name=T1 idx=-1 n=3 sha256=c55755baa653d2dd06da2b4cbf139d81cd36540e81bfc06057d7b3b908086a11
+tbl num=49 name=T1 idx=0 n=3 sha256=cd1a6cd0eeca76c79908a2ed46c1d11e62ae505d92c30ddafc858f292ded43d1
+tbl num=50 name=T1 idx=2 n=3 sha256=3abbe1b627e2192dfb90629bc86034e33b343d19255d6221cc5041f5ce9f4c2e
+consistent name=R3 true
+consistent name=R2 true
+consistent name=T2 true
+consistent name=T1 true
