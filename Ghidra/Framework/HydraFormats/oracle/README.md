@@ -17,7 +17,9 @@ and commons-lang3 jars of a stock Ghidra install):
 * `OracleTx.java` (package `db`): transactions, rollback, undo, redo, `setMaxUndos`, `deleteTable`, `setTableName`,
   `saveAs` snapshots and expected errors (see `crates/ghidra-fmt-db/PORTING.md`). `gen_tx_scripts.py <dir> [sweep]`
   writes `testdata/tx/*.script` and `run_tx.sh <classes> <cp file> <dir> NAME...` the `.expected` files;
-  `ORACLETX_KEEP=<dir>` keeps the snapshot files. `OracleBuildIx` also has the `wide` (40 Int columns) and `sparse`
+  `ORACLETX_KEEP=<dir>` keeps the snapshot files. Expected files are generated with
+  `-Dhydra.db.sharedPages=false` (run_tx.sh does that). `buffer N CACHE` sets the memory cache size in bytes
+  (`tx-cache-*` scripts use 65536); `cachedump` prints the buffer manager's cache. `OracleBuildIx` also has the `wide` (40 Int columns) and `sparse`
   layouts.
 * `PackOracle.java` (default package): `pack`/`unpack` through `ItemSerializer`/`ItemDeserializer`
   for the `.pdb` fixtures in `testdata/pack`.

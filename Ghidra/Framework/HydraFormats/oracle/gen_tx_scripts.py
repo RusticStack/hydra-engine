@@ -67,16 +67,18 @@ def table(name):
     return "table %s %s %s %s" % (name, kind, layout, idx)
 
 
-def random_script(seed, buffer, steps, max_undos=None):
+def random_script(seed, buffer, steps, max_undos=None, cache=None, fill=30, per_tx=14):
+    """cache: memory cache size in bytes (64 KiB is the smallest Java accepts), so that the
+    cache is exhausted and Java recycles buffers; fill: records put in the first transaction."""
     r = Rng(seed)
-    out = ["buffer %d" % buffer]
+    out = ["buffer %d%s" % (buffer, "" if cache is None else " %d" % cache)]
     if max_undos is not None:
         out.append("maxundos %d" % max_undos)
     out.append("status")
     out.append("begin")
     for n in ("T0", "T1", "T2", "T3"):
         out.append(table(n))
-    for _ in range(30):
+    for _ in range(fill):
         out.append(put(r, "T" + str(r.below(4))))
     out += ["end commit", "status"]
     names = ["T0", "T1", "T2", "T3", "R0", "R1", "R2", "R3"]
@@ -84,7 +86,7 @@ def random_script(seed, buffer, steps, max_undos=None):
         a = r.below(100)
         if a < 62:
             out.append("begin")
-            for _ in range(1 + r.below(14)):
+            for _ in range(1 + r.below(per_tx)):
                 b = r.below(100)
                 nm = names[r.below(8)]
                 if b < 66:
@@ -244,6 +246,19 @@ SCRIPTS = {
     "tx-rand-5": random_script(15, 507, 120, 30),
     "tx-rand-6": random_script(16, 2043, 80, 1),
 }
+# the memory cache of the buffer manager is exhausted (64 KiB = 129 buffers of 507 bytes)
+CACHE = {
+    "tx-cache-1": random_script(21, 507, 40, None, 65536, 400, 30),
+    "tx-cache-2": random_script(22, 507, 40, 3, 65536, 400, 30),
+    "tx-cache-3": random_script(23, 1019, 40, 0, 65536, 300, 30),
+    "tx-cache-4": random_script(24, 507, 40, 1, 65536, 400, 30),
+    "tx-cache-5": random_script(25, 2043, 40, 30, 65536, 300, 30),
+    "tx-cache-6": random_script(26, 2043, 40, None, 65536, 300, 30),
+    "tx-cache-7": random_script(27, 4091, 40, 3, 65536, 200, 30),
+    "tx-cache-8": random_script(28, 1019, 50, 2, 65536, 500, 30),
+    "tx-cache-9": random_script(29, 2043, 60, 5, 65536, 300, 30),
+}
+SCRIPTS.update(CACHE)
 # extra seeds used to measure how often a random script diverges (see PORTING.md)
 SWEEP = {
     "tx-sweep-%02d" % i: random_script(100 + i, (507, 1019, 2043)[i % 3], 100, (None, 2, 5, 0, 12, 1)[i % 6])

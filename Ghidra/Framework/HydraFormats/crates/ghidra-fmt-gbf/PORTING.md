@@ -70,10 +70,38 @@ against the repository's Java classes, line by line, on 9 scripts plus 23 more (
   `new DBHandle(int)` (the default 10 undos become 11); with a limit of one checkpoint Java packs the new, empty
   checkpoint away at once and writes into a detached list (no undo history, `isChanged` stays true).
 
-Limits: exact only while Java's 4 MiB buffer cache is not exhausted (beyond it Java recycles cached buffers and the
-stale bytes of a new buffer differ); the touched-node set of a table operation is the set of nodes the writers load
-or create, so a collision with a node Java touches that the Rust writers do not would permute the release order (not
-seen in 32 scripts). Measured divergences are listed in the db notes.
+Memory cache (fmt3). `CheckpointStore` models the cache of `BufferMgr` (`CacheModel`): the number of buffer objects
+allocated (`cacheSize < maxCacheSize`, zero filled), the LRU order of the cached versions (`cacheHead` .. `cacheTail`),
+the free stack (`freeBuffers`, filled by `disposeNode` in checkpoint list order, newest first) and the three sources
+of a recycled buffer in the order `getCacheBuffer` uses them (new while the cache grows, then the free stack, then the
+buffer of the least recently used version, bytes unchanged). `createBuffer` hands a deleted node's buffer out again
+while the node is still cached. A version has its own serial (`BufferNode` identity), because packing renumbers
+checkpoints and a version parked for redo can have the number a new version gets. `new BufferMgr(.., approxCacheSize)`
+is `set_cache_bytes` (Java raises anything under 64 KiB to 64 KiB); `OracleTx` has `buffer N CACHE` for it.
+
+The order in which versions enter the cache follows `NodeMgr`: a node a table operation loads is held (out of the
+cache) until the operation ends and is then returned in the slot order of the operation's `NodeTable`; the checkpoint
+is started by the first release, which for held pages is the end of the operation (`start_pending`), so the loads of
+one operation are all done before redo checkpoints are disposed. `deleteNode` returns the node and takes it again.
+A page a writer changes without having read it through the store is loaded first. `saveAs` loads every stored node in
+index order. The `cachedump` command of `OracleTx` and of the replay prints the cache (versions with a hash of the
+buffer, size, free stack, misses) after any command, which is how the order was verified step by step.
+
+Limits: the touched-node set of a table operation is the set of nodes the writers load or create, so a collision with
+a node Java touches that the Rust writers do not would permute the release order (not seen in 41 scripts). The master
+table scan of `reloadTables` is modelled by touching the root last (what the last `hasNext` of Java's iterator does for
+the master tables of the scripts); deeper master trees were not tested. `SharedPages` (Hydra page interning) is not
+modelled, see below.
+
+`SharedPages` and byte identity. The Hydra engine interns pages by content (`-Dhydra.db.sharedPages`, on by default).
+A page read from a file that equals a page already held by another view is replaced by the shared array, and the
+private array it frees becomes the "spare" the next new `DataBuffer` takes without clearing: the unused tail of that
+new node then holds the bytes of an interned page. Which pages are interned depends on the other views in the process
+(the snapshot readers of the oracle are such views) and on garbage collection of weak references, so these stale bytes
+are not a function of the script. This is the cause of the sweep-18 divergence (3 bytes in the unused part of a node)
+found in the previous round, and of sweep-15. All Java expected files are therefore generated with
+`-Dhydra.db.sharedPages=false` (`oracle/run_tx.sh`), which is Ghidra's own behaviour; with sharing on, Java and Rust
+differ only in unused page tails (no record, key or header byte differs).
 
 `BufferStoreMut` gained `put_held`, `begin_group`, `end_group` (default: plain `put_buffer`, no grouping) and
 `BufferStore::note_node`; the B-tree writers call them, only `CheckpointStore` does something with them.

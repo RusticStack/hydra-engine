@@ -25,6 +25,7 @@ import ghidra.util.task.TaskMonitor;
  *   deltable NAME              deleteTable
  *   put / del on a missing table print "skip put" / "skip del"; rename copies the key and layout
  *   kinds of the old name to the new one
+ *   buffer N [CACHE]           new DBHandle(N [, cache bytes])
  *   status                     prints undo/redo counts, canUndo/canRedo, uncommitted, changed, tx and the free index stack
  *   snap TAG                   saveAs a scratch file (outside a transaction), then prints
  *                              "== TAG" and the output of db.buffers.Oracle and db.OracleDb on it
@@ -58,7 +59,8 @@ public class OracleTx {
     static void run(String[] t) throws Exception {
         switch (t[0]) {
             case "buffer":
-                h = new DBHandle(Integer.parseInt(t[1]));
+                h = t.length > 2 ? new DBHandle(Integer.parseInt(t[1]), Long.parseLong(t[2]))
+                    : new DBHandle(Integer.parseInt(t[1]));
                 System.out.println("dbid=" + h.getDatabaseId());
                 break;
             case "begin":
@@ -124,6 +126,49 @@ public class OracleTx {
                 }
                 break;
             }
+            case "cachedump": {
+                // debugging aid: the memory cache of the buffer manager, newest node first
+                java.lang.reflect.Field f = DBHandle.class.getDeclaredField("bufferMgr");
+                f.setAccessible(true);
+                Object bm = f.get(h);
+                Class<?> c = bm.getClass();
+                java.lang.reflect.Field ch = c.getDeclaredField("cacheHead");
+                ch.setAccessible(true);
+                Object n = ch.get(bm);
+                java.lang.reflect.Field nc = n.getClass().getDeclaredField("nextCached");
+                nc.setAccessible(true);
+                java.lang.reflect.Field fid = n.getClass().getDeclaredField("id");
+                fid.setAccessible(true);
+                java.lang.reflect.Field fcp = n.getClass().getDeclaredField("checkpoint");
+                fcp.setAccessible(true);
+                StringBuilder sb = new StringBuilder("cache [");
+                n = nc.get(n);
+                java.lang.reflect.Field fbuf = n.getClass().getDeclaredField("buffer");
+                fbuf.setAccessible(true);
+                java.lang.reflect.Field fdata = db.buffers.DataBuffer.class.getDeclaredField("data");
+                fdata.setAccessible(true);
+                while (n != null && (int) fid.get(n) >= 0) {
+                    sb.append(fid.get(n)).append('@').append(fcp.get(n)).append(':')
+                        .append(Integer.toHexString(
+                            Arrays.hashCode((byte[]) fdata.get(fbuf.get(n))))).append(' ');
+                    n = nc.get(n);
+                }
+                java.lang.reflect.Field cs = c.getDeclaredField("cacheSize");
+                cs.setAccessible(true);
+                java.lang.reflect.Field fb = c.getDeclaredField("freeBuffers");
+                fb.setAccessible(true);
+                StringBuilder fs = new StringBuilder();
+                for (Object b : (java.util.List<?>) fb.get(bm)) {
+                    fs.append(Integer.toHexString(Arrays.hashCode((byte[]) fdata.get(b)))).append(' ');
+                }
+                java.lang.reflect.Field fh = c.getDeclaredField("cacheHits");
+                fh.setAccessible(true);
+                java.lang.reflect.Field fm = c.getDeclaredField("cacheMisses");
+                fm.setAccessible(true);
+                System.out.println(sb.toString().trim() + "] size=" + cs.get(bm) + " free=["
+                    + fs.toString().trim() + "] misses=" + fm.get(bm));
+                break;
+            }
             case "status":
                 System.out.println("status undo=" + h.getAvailableUndoCount() + " redo="
                     + h.getAvailableRedoCount() + " canUndo=" + h.canUndo() + " canRedo="
@@ -135,7 +180,14 @@ public class OracleTx {
                 h.saveAs(f, false, TaskMonitor.DUMMY);
                 System.out.println("== " + t[1]);
                 db.buffers.Oracle.main(new String[] { f.getPath() });
-                OracleDb.main(new String[] { f.getPath() });
+                try {
+                    OracleDb.main(new String[] { f.getPath() });
+                }
+                catch (Throwable e) {
+                    // the file written is not readable as a database (a Java defect seen after
+                    // a rollback that cannot undo): record that, the buffers above still compare
+                    System.out.println("oracledb err " + e.getClass().getSimpleName());
+                }
                 break;
             }
             case "try":
@@ -194,7 +246,16 @@ public class OracleTx {
             while ((line = r.readLine()) != null) {
                 line = line.trim();
                 if (line.isEmpty() || line.startsWith("#")) continue;
-                run(line.split(" "));
+                try {
+                    run(line.split(" "));
+                }
+                catch (Throwable e) {
+                    // an operation outside "try" failed: the database is in a state Java could
+                    // not use any more (seen after a rollback that cannot undo). The script
+                    // stops here and the transcript says so.
+                    System.out.println("fatal");
+                    break;
+                }
             }
         }
         h.close();

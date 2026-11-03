@@ -5,6 +5,7 @@
 //! in-memory store), reads the database parameters and the master table, and hands out
 //! [`Table`] views. Tables are read through the B-tree family their schema selects.
 
+use std::collections::HashMap;
 use std::fmt;
 
 use ghidra_fmt_btree::{
@@ -148,6 +149,10 @@ pub struct TableRecord {
     pub record_count: i32,
     /// Changed since the row was last written (`DBRecord.isDirty`); `commit` writes dirty rows.
     pub(crate) dirty: bool,
+    /// Number of the primary table this row belongs to (its own number for a primary table).
+    /// Java attaches an index table to the table that has its name when the index is loaded or
+    /// created, so a renamed table keeps its indexes whatever the rows say afterwards.
+    pub(crate) owner: i64,
 }
 
 fn col_str(r: &Record, i: usize) -> Result<String> {
@@ -199,6 +204,7 @@ impl TableRecord {
             max_key,
             record_count: col_int(r, 8)?,
             dirty: false,
+            owner: table_num,
         })
     }
 }
@@ -284,6 +290,9 @@ pub struct Database<S: BufferStore> {
     store: S,
     params: DbParms,
     tables: Vec<TableRecord>,
+    /// `DBHandle.tables`: primary tables by name (a `Hashtable`, so a later row with the same
+    /// name replaces an earlier one). The value is the table number.
+    names: HashMap<String, i64>,
     master_root: i32,
     next_table_num: i64,
     tx_started: bool,
@@ -311,10 +320,19 @@ impl<S: BufferStore> Database<S> {
             }
         }
         let next_table_num = tables.last().map_or(0, |t| t.table_num + 1);
+        let mut names = HashMap::new();
+        for t in &mut tables {
+            if t.indexed_column == -1 {
+                names.insert(t.name.clone(), t.table_num);
+            } else if let Some(&p) = names.get(&t.name) {
+                t.owner = p;
+            }
+        }
         Ok(Self {
             store,
             params,
             tables,
+            names,
             master_root: root,
             next_table_num,
             tx_started: false,
@@ -345,11 +363,13 @@ impl<S: BufferStore> Database<S> {
         &self.tables
     }
 
-    /// Primary tables, ordered by table number.
+    /// Primary tables, ordered by table number. Java keeps them in a `Hashtable` keyed by name,
+    /// so when two master rows have the same name (a rename leaves the old row's name in the
+    /// file until the next flush) only one of them is a table.
     pub fn tables(&self) -> impl Iterator<Item = Table<'_, S>> {
         self.tables
             .iter()
-            .filter(|t| t.indexed_column == -1)
+            .filter(|t| t.indexed_column == -1 && self.names.get(&t.name) == Some(&t.table_num))
             .map(|record| Table { db: self, record })
     }
 
@@ -367,9 +387,12 @@ impl<S: BufferStore> Database<S> {
 
     /// Secondary index tables of `name`, ordered by table number.
     pub fn index_tables(&self, name: &str) -> Vec<Table<'_, S>> {
+        let Some(&num) = self.names.get(name) else {
+            return Vec::new();
+        };
         self.tables
             .iter()
-            .filter(|t| t.indexed_column >= 0 && t.name == name)
+            .filter(|t| t.indexed_column >= 0 && t.owner == num)
             .map(|record| Table { db: self, record })
             .collect()
     }
@@ -390,6 +413,7 @@ impl<S: BufferStoreMut> Database<S> {
             store,
             params,
             tables: Vec::new(),
+            names: HashMap::new(),
             master_root: -1,
             next_table_num: 0,
             tx_started: false,
@@ -453,11 +477,7 @@ impl<S: BufferStoreMut> Database<S> {
         schema: Schema,
         indexed_columns: &[usize],
     ) -> Result<()> {
-        if self
-            .tables
-            .iter()
-            .any(|t| t.indexed_column == -1 && t.name == name)
-        {
+        if self.names.contains_key(name) {
             return Err(DbError::TableExists(name.to_owned()));
         }
         self.check_transaction()?;
@@ -482,6 +502,9 @@ impl<S: BufferStoreMut> Database<S> {
     }
 
     fn push_table(&mut self, name: &str, schema: Schema, indexed_column: i32) -> Result<()> {
+        if indexed_column == -1 {
+            self.names.insert(name.to_owned(), self.next_table_num);
+        }
         self.tables.push(TableRecord {
             table_num: self.next_table_num,
             name: name.to_owned(),
@@ -491,6 +514,11 @@ impl<S: BufferStoreMut> Database<S> {
             max_key: i64::MIN,
             record_count: 0,
             dirty: false,
+            owner: if indexed_column == -1 {
+                self.next_table_num
+            } else {
+                self.names.get(name).copied().unwrap_or(self.next_table_num)
+            },
         });
         self.next_table_num += 1;
         let i = self.tables.len() - 1;
@@ -500,12 +528,12 @@ impl<S: BufferStoreMut> Database<S> {
     }
 
     fn table_index(&self, name: &str) -> Result<usize> {
-        let i = self
-            .tables
-            .iter()
-            .position(|t| t.indexed_column == -1 && t.name == name)
+        let num = *self
+            .names
+            .get(name)
             .ok_or_else(|| DbError::TableNotFound(name.to_owned()))?;
-        Ok(i)
+        self.position_of(num)
+            .map_err(|_| DbError::TableNotFound(name.to_owned()))
     }
 
     /// Positions of the index tables of table `i`, in the order `Table.indexedColumns` visits
@@ -513,12 +541,12 @@ impl<S: BufferStoreMut> Database<S> {
     /// capacity `Prime.nextPrime(3)` = 17 and its `IntKeyIndexer` rounds that up to the next
     /// prime, 37), and inside a list the most recently added key first.
     fn index_positions(&self, i: usize) -> Vec<usize> {
-        let name = &self.tables[i].name;
+        let num = self.tables[i].table_num;
         let mut v: Vec<(i32, usize)> = self
             .tables
             .iter()
             .enumerate()
-            .filter(|(_, t)| t.indexed_column >= 0 && &t.name == name)
+            .filter(|(_, t)| t.indexed_column >= 0 && t.owner == num)
             .map(|(p, t)| (t.indexed_column, p))
             .collect();
         v.sort_by_key(|(col, p)| ((col & 0x7fff_ffff) % 37, std::cmp::Reverse(*p)));
@@ -803,6 +831,7 @@ impl<S: BufferStoreMut> Database<S> {
             return Ok(());
         };
         self.check_transaction()?;
+        self.names.remove(name);
         let num = self.tables[i].table_num;
         // `removeIndex` per indexed column, in `IntObjectHashtable` order
         let index_nums: Vec<i64> = self
@@ -841,11 +870,15 @@ impl<S: BufferStoreMut> Database<S> {
         if self.table_index(new_name).is_ok() {
             return Err(DbError::DuplicateName(new_name.to_owned()));
         }
+        let num = self.names.remove(old_name);
         for t in &mut self.tables {
             if t.name == old_name {
                 new_name.clone_into(&mut t.name);
                 t.dirty = true;
             }
+        }
+        if let Some(num) = num {
+            self.names.insert(new_name.to_owned(), num);
         }
         Ok(true)
     }
@@ -927,7 +960,35 @@ impl<S: Checkpointed> Database<S> {
                 let (r, _) = schema.read_record(Field::Long(rec.key), &rec.data, 0)?;
                 tables.push(TableRecord::from_record(&self.store, &r)?);
             }
+            // the last `hasNext` of Java's iterator ends at the root: it is the most recently
+            // used node of the master table afterwards (matters only to the buffer cache)
+            self.store.get_buffer(root)?;
         }
+        // `reloadTables`: a table object is kept when its name is still a master row's name
+        // (and its row still exists), whatever number the row has
+        let mut names = HashMap::new();
+        for t in tables.iter().filter(|t| t.indexed_column == -1) {
+            let num = match self.names.get(&t.name) {
+                Some(&n) if tables.iter().any(|u| u.table_num == n) => n,
+                _ => t.table_num,
+            };
+            names.insert(t.name.clone(), num);
+        }
+        // index rows keep the table they were attached to; new ones attach by name
+        let old_owner: HashMap<i64, i64> = self
+            .tables
+            .iter()
+            .filter(|t| t.indexed_column >= 0)
+            .map(|t| (t.table_num, t.owner))
+            .collect();
+        for t in tables.iter_mut().filter(|t| t.indexed_column >= 0) {
+            if let Some(&o) = old_owner.get(&t.table_num) {
+                t.owner = o;
+            } else if let Some(&p) = names.get(&t.name) {
+                t.owner = p;
+            }
+        }
+        self.names = names;
         self.tables = tables;
         Ok(())
     }

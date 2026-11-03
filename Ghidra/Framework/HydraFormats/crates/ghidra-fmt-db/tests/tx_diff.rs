@@ -125,9 +125,16 @@ impl Replay {
     fn run(&mut self, t: &[&str]) -> Result<(), DbError> {
         match t[0] {
             "buffer" => {
-                let store = CheckpointStore::new(t[1].parse().unwrap());
+                let mut store = CheckpointStore::new(t[1].parse().unwrap());
+                if let Some(cache) = t.get(2) {
+                    store.set_cache_bytes(cache.parse().unwrap());
+                }
                 self.db = Some(Database::create(store, self.dbid).unwrap());
                 self.out.push(format!("dbid={}", self.dbid));
+            }
+            "cachedump" => {
+                let dump = self.db().store().cache_dump();
+                self.out.push(dump);
             }
             "begin" => self.tx = self.db().start_transaction()?,
             "end" => {
@@ -275,6 +282,14 @@ impl Replay {
                 r.record_count
             )
         }));
+        // OracleDb reads every record of every table; Java stops at the first one it cannot read
+        // (a chained buffer that is not in the file)
+        let unreadable = db
+            .all_tables()
+            .any(|t| t.records().map_or(true, |mut it| it.any(|r| r.is_err())));
+        if unreadable {
+            lines.push("oracledb err IOException".to_owned());
+        }
         self.out.append(&mut lines);
         drop(db);
         if let Some(keep) = std::env::var_os("HYDRA_FMT_KEEP_DIR") {
@@ -305,6 +320,9 @@ fn wanted(expected: &str) -> Vec<String> {
             "bufferSize=",
             "buf ",
             "table ",
+            "oracledb ",
+            "cache ",
+            "fatal",
             "end ",
             "undo ",
             "redo ",
@@ -353,8 +371,18 @@ fn check_in(dir: &Path, name: &str) {
     };
     for line in script.lines().filter(|l| !l.is_empty()) {
         let t: Vec<&str> = line.split(' ').collect();
-        r.run(&t)
-            .unwrap_or_else(|e| panic!("{name}: `{line}` failed: {e}"));
+        if let Err(e) = r.run(&t) {
+            // Java stops at an operation that fails outside `try` and prints `fatal`
+            assert!(
+                matches!(
+                    e,
+                    DbError::Corrupt(_) | DbError::Chain(_) | DbError::Btree(_) | DbError::Gbf(_)
+                ),
+                "{name}: `{line}` failed: {e}"
+            );
+            r.out.push("fatal".to_owned());
+            break;
+        }
     }
     let want = wanted(&expected);
     if let Some(keep) = std::env::var_os("HYDRA_FMT_KEEP_DIR").map(PathBuf::from) {
@@ -439,6 +467,87 @@ fn random_sequence_long_with_30_undos() {
 #[test]
 fn random_sequence_2k_buffers_one_undo() {
     check("tx-rand-6");
+}
+
+/// A limit of one checkpoint (`maxundos 0`): rollback cannot undo, the renamed tables keep their
+/// old names in the file, and a table created in the rolled back transaction is the one the name
+/// finds afterwards (`DBHandle.reloadTables`).
+#[test]
+fn limit_one_checkpoint_rollback_keeps_the_work_and_the_table_names() {
+    check("tx-sweep-00");
+}
+
+/// After a rollback that cannot undo, a chained buffer is gone while its record is not: Java
+/// fails at `deleteTable` ("Invalid Buffer") and so does the port, at the same operation.
+#[test]
+fn limit_one_checkpoint_corruption_fails_at_the_same_operation() {
+    check("tx-sweep-03");
+}
+
+#[test]
+fn limit_one_checkpoint_second_sequence() {
+    check("tx-sweep-15");
+}
+
+/// A node created after a rollback holds the stale bytes of a freed buffer in the unused part
+/// of the page (with `-Dhydra.db.sharedPages=false`; see the db notes).
+#[test]
+fn stale_bytes_of_a_recreated_node() {
+    check("tx-sweep-18");
+}
+
+/// The memory cache (64 KiB) is exhausted, so Java recycles buffers: default undo depth.
+#[test]
+fn cache_exhausted_1() {
+    check("tx-cache-1");
+}
+
+/// The memory cache (64 KiB) is exhausted, so Java recycles buffers: three undos.
+#[test]
+fn cache_exhausted_2() {
+    check("tx-cache-2");
+}
+
+/// The memory cache (64 KiB) is exhausted, so Java recycles buffers: one checkpoint, 1019 byte buffers.
+#[test]
+fn cache_exhausted_3() {
+    check("tx-cache-3");
+}
+
+/// The memory cache (64 KiB) is exhausted, so Java recycles buffers: one undo.
+#[test]
+fn cache_exhausted_4() {
+    check("tx-cache-4");
+}
+
+/// The memory cache (64 KiB) is exhausted, so Java recycles buffers: 30 undos, 2043 byte buffers.
+#[test]
+fn cache_exhausted_5() {
+    check("tx-cache-5");
+}
+
+/// The memory cache (64 KiB) is exhausted, so Java recycles buffers: 2043 byte buffers, default undo depth.
+#[test]
+fn cache_exhausted_6() {
+    check("tx-cache-6");
+}
+
+/// The memory cache (64 KiB) is exhausted, so Java recycles buffers: 4091 byte buffers (16 in the cache), three undos.
+#[test]
+fn cache_exhausted_7() {
+    check("tx-cache-7");
+}
+
+/// The memory cache (64 KiB) is exhausted, so Java recycles buffers: 1019 byte buffers, two undos.
+#[test]
+fn cache_exhausted_8() {
+    check("tx-cache-8");
+}
+
+/// The memory cache (64 KiB) is exhausted, so Java recycles buffers: 2043 byte buffers, five undos.
+#[test]
+fn cache_exhausted_9() {
+    check("tx-cache-9");
 }
 
 /// Replays every `*.script` of the directory in `HYDRA_TX_SWEEP_DIR` (written by

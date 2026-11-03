@@ -47,13 +47,24 @@ steps over four tables (long, int and string keys, fixed and variable records, 0
 1019, 2043 and 16379 byte buffers and `maxundos` 0, 1, 3 and 30. All 9 are byte-identical to Java.
 
 Sweep: `oracle/gen_tx_scripts.py <dir> sweep` writes 24 more random scripts (100 steps, random `maxundos` 0 to 5);
-`HYDRA_TX_SWEEP_DIR=<dir> cargo test -p ghidra-fmt-db --test tx_diff sweep -- --ignored` replays them. Java itself
-fails one (tx-sweep-03: the file it saves has an unreadable chained buffer after `maxundos 0`; a Java problem). Of the
-other 23, 20 are byte-identical and 3 differ: tx-sweep-00 and tx-sweep-15 (both contain `maxundos 0`, where Java keeps
-an unreachable checkpoint list; sweep-00 ends with a different index count) and tx-sweep-18 (a node created after a
-rollback holds 3 stale bytes in Java where Rust zero fills; delta debugging reduced it to `maxundos 1`, one committed
-transaction, one rolled back transaction that creates and deletes tables, and one more transaction; the cause in
-`BufferMgr` was not found). Those three are read-compatible, not byte-identical.
+`HYDRA_TX_SWEEP_DIR=<dir> cargo test -p ghidra-fmt-db --test tx_diff sweep -- --ignored` replays them. All 24 are now
+byte-identical to Java (run with `-Dhydra.db.sharedPages=false`), and four are committed as tests: tx-sweep-00, -03, -15
+and -18. Root causes of the three scripts that differed in the previous round:
+
+* tx-sweep-00 (`maxundos 0`, a rollback that cannot undo): the renamed tables keep their old name in the file, and a
+  table created in the rolled back transaction has the same name. Java keeps its tables in a `Hashtable` by name and
+  `reloadTables` reuses the table object found under a row's name, so the later table wins and its indexes stay its own.
+  `Database` now has the same `names` map (`DBHandle.tables`), index tables belong to the primary table they were
+  created for (`TableRecord::owner`), and `reload_tables` follows `DBHandle.reloadTables`.
+* tx-sweep-03: Java itself fails (`deleteTable` throws "Invalid Buffer": the rollback that cannot undo left a record
+  whose chained buffer is gone). The port fails at the same operation. `OracleTx` prints `fatal` and stops when an
+  operation outside `try` fails (and `oracledb err` when the saved file cannot be read); the replay does the same.
+* tx-sweep-15 and tx-sweep-18: stale bytes from `SharedPages` (see the gbf notes), not a modelling difference.
+
+Cache exhaustion. `tx-cache-1` .. `tx-cache-9` run with a 64 KiB memory cache (`buffer 507 65536`: 129 buffers of 507
+bytes, 32 of 2043, 16 of 4091) so that Java recycles buffers all the time; they cover rollback, undo, redo, packing,
+`maxundos` 0 to 30 and `saveAs`. All are byte-identical to Java, and `tx-cache-5`, `-6`, `-7` and `-9` fail when the
+cache model is switched off (the others do not show the recycled bytes; they stay as regression cases).
 
 Behaviour with `CheckpointStore`:
 
@@ -62,7 +73,7 @@ Behaviour with `CheckpointStore`:
 * `setTableName` only marks the master row dirty. `endTransaction` flushes master rows only when a buffer changed, so a
   transaction that only renames adds no checkpoint (`end added=false`) and the row is written by the next flush; `saveAs`
   flushes it in a hidden transaction and undoes that, which reads the old name back (kept, and covered by `tx-basic`);
-* read-compatible only: the three sweep scripts above, and any run that exhausts Java's 4 MiB cache;
+* read-compatible only: runs where `SharedPages` interns pages (default Java settings) differ in unused page tails;
 * `Database<MemoryBufferStore>` has no transactions (`commit` is the master flush, as before).
 
 ## Kept from Java

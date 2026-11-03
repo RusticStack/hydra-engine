@@ -1,11 +1,11 @@
-dbid=3761699210099426560
+dbid=3761718901599539616
 end added=true
 end added=true
 end added=true
 end added=true
 == filled
 bufferSize=507 indexCount=60 free=[16, 17, 37, 40, 54, 55]
-buf 0 id=0 empty=false sha256=b611161cdf2b4b4fbea5ea505e218592be5c18f72113cfa4e72a6a8cea7eec0d
+buf 0 id=0 empty=false sha256=d612264cf11e2ab53a8a56a530dbfad647efad5770ca948b910b335e714ed642
 buf 1 id=1 empty=false sha256=cdf6204599c2699e12c4b662afb19bec9e0ebd786315674c053a0fbff986a209
 buf 2 id=2 empty=false sha256=0ede89cfff24f4ad4b13cf14812d2263e916a348e7cc632ec7b143c0651cd2de
 buf 3 id=3 empty=false sha256=10e1cad294336a8f9ad93d24ebe089f8fa6d6a6a31b1d2f256ead043a6e072e8
@@ -68,8 +68,8 @@ buf 59 id=59 empty=false sha256=94a12b89a94e5823b40c33ca1fad05f5e513e596880faaf6
 table T1 count=40 max=39
 table T2 count=39 max=-9223372036854775808
 table T3 count=40 max=-9223372036854775808
-dbid=3761699210099426560
-dbid=3761699210099426560
+dbid=3761718901599539616
+dbid=3761718901599539616
 tr num=0 name=T1 idx=-1 root=24 keytype=3 version=1 max=39 count=40 variable=true long=true varnodes=false fixednodes=false
 tr num=1 name=T1 idx=0 root=8 keytype=50 version=0 max=-9223372036854775808 count=40 variable=false long=false varnodes=false fixednodes=true
 tr num=2 name=T1 idx=2 root=22 keytype=52 version=0 max=-9223372036854775808 count=40 variable=false long=false varnodes=true fixednodes=false
@@ -92,7 +92,7 @@ consistent name=T1 true
 end added=true
 == del-T1
 bufferSize=507 indexCount=60 free=[4, 5, 6, 7, 8, 9, 16, 17, 19, 20, 22, 23, 24, 27, 30, 31, 35, 36, 37, 38, 39, 40, 45, 50, 51, 52, 53, 54, 55, 56, 57, 58]
-buf 0 id=0 empty=false sha256=b611161cdf2b4b4fbea5ea505e218592be5c18f72113cfa4e72a6a8cea7eec0d
+buf 0 id=0 empty=false sha256=d612264cf11e2ab53a8a56a530dbfad647efad5770ca948b910b335e714ed642
 buf 1 id=1 empty=false sha256=2c38979f416099e9c9c2bea9a949a6e7dd1f7c46e5a1561e951abb6c956c075c
 buf 2 id=2 empty=false sha256=0ede89cfff24f4ad4b13cf14812d2263e916a348e7cc632ec7b143c0651cd2de
 buf 3 id=3 empty=false sha256=1f6ae55b110e10deb168627abd61ca2b723afe6668320e7e658e8c3b919eb422
@@ -154,8 +154,8 @@ buf 58 id=-1 empty=true sha256=-
 buf 59 id=59 empty=false sha256=94a12b89a94e5823b40c33ca1fad05f5e513e596880faaf6ee339869f6732a2c
 table T2 count=39 max=-9223372036854775808
 table T3 count=40 max=-9223372036854775808
-dbid=3761699210099426560
-dbid=3761699210099426560
+dbid=3761718901599539616
+dbid=3761718901599539616
 tr num=3 name=T2 idx=-1 root=26 keytype=4 version=1 max=-9223372036854775808 count=39 variable=true long=false varnodes=true fixednodes=false
 tr num=4 name=T3 idx=-1 root=33 keytype=2 version=1 max=-9223372036854775808 count=40 variable=false long=false varnodes=false fixednodes=true
 tr num=5 name=T3 idx=0 root=12 keytype=35 version=0 max=-9223372036854775808 count=40 variable=false long=false varnodes=false fixednodes=true
@@ -171,7 +171,7 @@ consistent name=T2 true
 end added=false
 == rolled-back
 bufferSize=507 indexCount=60 free=[4, 5, 6, 7, 8, 9, 16, 17, 19, 20, 22, 23, 24, 27, 30, 31, 35, 36, 37, 38, 39, 40, 45, 50, 51, 52, 53, 54, 55, 56, 57, 58]
-buf 0 id=0 empty=false sha256=b611161cdf2b4b4fbea5ea505e218592be5c18f72113cfa4e72a6a8cea7eec0d
+buf 0 id=0 empty=false sha256=d612264cf11e2ab53a8a56a530dbfad647efad5770ca948b910b335e714ed642
 buf 1 id=1 empty=false sha256=2c38979f416099e9c9c2bea9a949a6e7dd1f7c46e5a1561e951abb6c956c075c
 buf 2 id=2 empty=false sha256=0ede89cfff24f4ad4b13cf14812d2263e916a348e7cc632ec7b143c0651cd2de
 buf 3 id=3 empty=false sha256=1f6ae55b110e10deb168627abd61ca2b723afe6668320e7e658e8c3b919eb422
@@ -233,8 +233,8 @@ buf 58 id=-1 empty=true sha256=-
 buf 59 id=59 empty=false sha256=94a12b89a94e5823b40c33ca1fad05f5e513e596880faaf6ee339869f6732a2c
 table T2 count=39 max=-9223372036854775808
 table T3 count=40 max=-9223372036854775808
-dbid=3761699210099426560
-dbid=3761699210099426560
+dbid=3761718901599539616
+dbid=3761718901599539616
 tr num=3 name=T2 idx=-1 root=26 keytype=4 version=1 max=-9223372036854775808 count=39 variable=true long=false varnodes=true fixednodes=false
 tr num=4 name=T3 idx=-1 root=33 keytype=2 version=1 max=-9223372036854775808 count=40 variable=false long=false varnodes=false fixednodes=true
 tr num=5 name=T3 idx=0 root=12 keytype=35 version=0 max=-9223372036854775808 count=40 variable=false long=false varnodes=false fixednodes=true
@@ -250,7 +250,7 @@ consistent name=T2 true
 end added=true
 == del-all
 bufferSize=507 indexCount=60 free=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59]
-buf 0 id=0 empty=false sha256=d538f0901e08d630c6fc7d7b3184a6e8efab6a44f38043e5497789ca5635f85f
+buf 0 id=0 empty=false sha256=f83b2e039adc257c7402e504a1b93ed5e1f16e522cf4d704a1b5eda7d7af80db
 buf 1 id=-1 empty=true sha256=-
 buf 2 id=-1 empty=true sha256=-
 buf 3 id=-1 empty=true sha256=-
@@ -310,12 +310,12 @@ buf 56 id=-1 empty=true sha256=-
 buf 57 id=-1 empty=true sha256=-
 buf 58 id=-1 empty=true sha256=-
 buf 59 id=-1 empty=true sha256=-
-dbid=3761699210099426560
-dbid=3761699210099426560
+dbid=3761718901599539616
+dbid=3761718901599539616
 end added=true
 == new-table
 bufferSize=507 indexCount=60 free=[2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27, 28, 29, 30, 31, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59]
-buf 0 id=0 empty=false sha256=f4bb6981f8b0d61d923288e1deecb7b56d65c9935c17953b4625381b81adf3ad
+buf 0 id=0 empty=false sha256=c18f5f0026f1e99a67af3463310279bfd3098b15fed7eac04e383442e605c350
 buf 1 id=1 empty=false sha256=3d7d6e8c0876ced85ff24bea9a6560b3799adee65a442da8d0b50a14d6ac516d
 buf 2 id=-1 empty=true sha256=-
 buf 3 id=-1 empty=true sha256=-
@@ -376,8 +376,8 @@ buf 57 id=-1 empty=true sha256=-
 buf 58 id=-1 empty=true sha256=-
 buf 59 id=-1 empty=true sha256=-
 table T0 count=1 max=16
-dbid=3761699210099426560
-dbid=3761699210099426560
+dbid=3761718901599539616
+dbid=3761718901599539616
 tr num=8 name=T0 idx=-1 root=26 keytype=3 version=1 max=16 count=1 variable=false long=true varnodes=false fixednodes=false
 tr num=9 name=T0 idx=1 root=32 keytype=50 version=0 max=-9223372036854775808 count=1 variable=false long=false varnodes=false fixednodes=true
 tbl num=8 name=T0 idx=-1 n=1 sha256=8294e4035f58937afd4c540a3b43802eb67231fbb8e652ff5a288a9b4c02424c
@@ -387,7 +387,7 @@ undo ok=true
 undo ok=true
 == undo2
 bufferSize=507 indexCount=60 free=[4, 5, 6, 7, 8, 9, 16, 17, 19, 20, 22, 23, 24, 27, 30, 31, 35, 36, 37, 38, 39, 40, 45, 50, 51, 52, 53, 54, 55, 56, 57, 58]
-buf 0 id=0 empty=false sha256=b611161cdf2b4b4fbea5ea505e218592be5c18f72113cfa4e72a6a8cea7eec0d
+buf 0 id=0 empty=false sha256=d612264cf11e2ab53a8a56a530dbfad647efad5770ca948b910b335e714ed642
 buf 1 id=1 empty=false sha256=2c38979f416099e9c9c2bea9a949a6e7dd1f7c46e5a1561e951abb6c956c075c
 buf 2 id=2 empty=false sha256=0ede89cfff24f4ad4b13cf14812d2263e916a348e7cc632ec7b143c0651cd2de
 buf 3 id=3 empty=false sha256=1f6ae55b110e10deb168627abd61ca2b723afe6668320e7e658e8c3b919eb422
@@ -449,8 +449,8 @@ buf 58 id=-1 empty=true sha256=-
 buf 59 id=59 empty=false sha256=94a12b89a94e5823b40c33ca1fad05f5e513e596880faaf6ee339869f6732a2c
 table T2 count=39 max=-9223372036854775808
 table T3 count=40 max=-9223372036854775808
-dbid=3761699210099426560
-dbid=3761699210099426560
+dbid=3761718901599539616
+dbid=3761718901599539616
 tr num=3 name=T2 idx=-1 root=26 keytype=4 version=1 max=-9223372036854775808 count=39 variable=true long=false varnodes=true fixednodes=false
 tr num=4 name=T3 idx=-1 root=33 keytype=2 version=1 max=-9223372036854775808 count=40 variable=false long=false varnodes=false fixednodes=true
 tr num=5 name=T3 idx=0 root=12 keytype=35 version=0 max=-9223372036854775808 count=40 variable=false long=false varnodes=false fixednodes=true
@@ -466,7 +466,7 @@ consistent name=T2 true
 undo ok=true
 == undo3
 bufferSize=507 indexCount=60 free=[16, 17, 37, 40, 54, 55]
-buf 0 id=0 empty=false sha256=b611161cdf2b4b4fbea5ea505e218592be5c18f72113cfa4e72a6a8cea7eec0d
+buf 0 id=0 empty=false sha256=d612264cf11e2ab53a8a56a530dbfad647efad5770ca948b910b335e714ed642
 buf 1 id=1 empty=false sha256=cdf6204599c2699e12c4b662afb19bec9e0ebd786315674c053a0fbff986a209
 buf 2 id=2 empty=false sha256=0ede89cfff24f4ad4b13cf14812d2263e916a348e7cc632ec7b143c0651cd2de
 buf 3 id=3 empty=false sha256=10e1cad294336a8f9ad93d24ebe089f8fa6d6a6a31b1d2f256ead043a6e072e8
@@ -529,8 +529,8 @@ buf 59 id=59 empty=false sha256=94a12b89a94e5823b40c33ca1fad05f5e513e596880faaf6
 table T1 count=40 max=39
 table T2 count=39 max=-9223372036854775808
 table T3 count=40 max=-9223372036854775808
-dbid=3761699210099426560
-dbid=3761699210099426560
+dbid=3761718901599539616
+dbid=3761718901599539616
 tr num=0 name=T1 idx=-1 root=24 keytype=3 version=1 max=39 count=40 variable=true long=true varnodes=false fixednodes=false
 tr num=1 name=T1 idx=0 root=8 keytype=50 version=0 max=-9223372036854775808 count=40 variable=false long=false varnodes=false fixednodes=true
 tr num=2 name=T1 idx=2 root=22 keytype=52 version=0 max=-9223372036854775808 count=40 variable=false long=false varnodes=true fixednodes=false
@@ -555,7 +555,7 @@ redo ok=true
 redo ok=true
 == redo3
 bufferSize=507 indexCount=60 free=[2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27, 28, 29, 30, 31, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59]
-buf 0 id=0 empty=false sha256=f4bb6981f8b0d61d923288e1deecb7b56d65c9935c17953b4625381b81adf3ad
+buf 0 id=0 empty=false sha256=c18f5f0026f1e99a67af3463310279bfd3098b15fed7eac04e383442e605c350
 buf 1 id=1 empty=false sha256=3d7d6e8c0876ced85ff24bea9a6560b3799adee65a442da8d0b50a14d6ac516d
 buf 2 id=-1 empty=true sha256=-
 buf 3 id=-1 empty=true sha256=-
@@ -616,8 +616,8 @@ buf 57 id=-1 empty=true sha256=-
 buf 58 id=-1 empty=true sha256=-
 buf 59 id=-1 empty=true sha256=-
 table T0 count=1 max=16
-dbid=3761699210099426560
-dbid=3761699210099426560
+dbid=3761718901599539616
+dbid=3761718901599539616
 tr num=8 name=T0 idx=-1 root=26 keytype=3 version=1 max=16 count=1 variable=false long=true varnodes=false fixednodes=false
 tr num=9 name=T0 idx=1 root=32 keytype=50 version=0 max=-9223372036854775808 count=1 variable=false long=false varnodes=false fixednodes=true
 tbl num=8 name=T0 idx=-1 n=1 sha256=8294e4035f58937afd4c540a3b43802eb67231fbb8e652ff5a288a9b4c02424c
