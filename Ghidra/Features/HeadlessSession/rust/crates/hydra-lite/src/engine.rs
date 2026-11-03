@@ -765,6 +765,11 @@ impl Engine {
             ));
         }
         self.identity()?;
+        if req.bool_opt("parallel")? == Some(true) {
+            return Err(unsupported_request(
+                "parallel requests are not served by the lite daemon (their replies may overtake each other)",
+            ));
+        }
         if req.has("overlay") && matches!(cmd, "open_program" | "switch" | "info" | "functions") {
             return Err(unsupported_request(
                 "overlays are not served by the lite daemon",
@@ -1862,12 +1867,13 @@ impl Engine {
             more: false,
         };
         q.walk(&folder, &mut page)?;
+        let returned = page.out.len();
         Ok(Json::obj()
             .with("project", Json::str(&pid))
             .with("folder", Json::str(&folder))
-            .with("returned", count(page.out.len()))
             .with("entries", Json::Arr(page.out))
             .with("offset", count(offset))
+            .with("returned", count(returned))
             .with("truncated", Json::Bool(page.more)))
     }
 }

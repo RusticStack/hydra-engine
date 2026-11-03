@@ -116,10 +116,12 @@ import argparse
 import contextlib
 import difflib
 import json
+import os
 import pathlib
 import re
 import shutil
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -274,6 +276,8 @@ class Conn:
             if dog is not None:
                 dog.cancel()
         line = self.replies.pop(rid, None)
+        if line is not None and getattr(self.rec, "raws", None) is not None:
+            self.rec.raws.append((self.who, cmd, line))
         if line is None:
             reply = f"<no reply: {code or 'missing'}>"
             obj = None
@@ -724,6 +728,368 @@ def compare(pa, pb, out=sys.stdout):
     return 0 if same else 1
 
 
+# ---- hydra-lite: the same corpus against the Java daemon and the JVM-free one --------------
+
+#: Reasons ``error.details.reason`` may carry in a ``use_full_daemon`` refusal (HYDRA-LITE.md).
+LITE_REASONS = {"unsupported_command", "unsupported_request", "unparsable_request", "inexact_value",
+                "diverged_connection", "no_identity", "unsupported_project", "unsupported_program",
+                "capacity", "unsupported_engine"}
+
+
+def sec_lite(a, b, rec, P, P2):
+    """What hydra-lite answers: every request here must get the Java daemon's bytes."""
+    rec.start("lite-session", "v3")
+    a.ok("ping")
+    a.ok("hello", client="rp-a", harness="rp-h", clientVersion="1.1.0", protocol=3)
+    a.ok("projects")
+    a.ok("programs")
+    for cmd, extra in (("list", {}), ("project", {}), ("close_project", {}),
+                       ("open_program", {"path": "/alpha.exe"}), ("switch", {"path": "/alpha.exe"}),
+                       ("info", {}), ("functions", {}), ("close_program", {})):
+        a.q(cmd, **extra)
+    a.q("open_project")
+    a.q("open_project", path=str(a.work / NOWHERE))
+    a.q("ping", client=5)
+    a.ok("ping", client="labelled", harness="other")
+    a.q("hello", client=5)
+    rec.start("lite-read", "v3")
+    a.ok("open_project", path=P)
+    a.ok("open_project", path=P)  # joins
+    a.ok("project")
+    a.ok("projects")
+    a.ok("list")
+    a.ok("list", programsOnly=True, metadata=False)
+    a.ok("list", folder="/", recursive=False, offset=0, limit=10)
+    a.ok("list", folder="/", recursive=True, limit=1)
+    a.q("list", folder="/nope")
+    a.q("list", limit="many")
+    a.q("list", offset=-1)
+    a.q("info")
+    a.q("functions")
+    a.ok("programs")
+    a.ok("open_program", path="/alpha.exe")
+    a.ok("info")
+    a.ok("info", program="p1:/alpha.exe")
+    a.q("info", program="p1:/nothing.exe")
+    a.ok("programs")
+    a.ok("functions")
+    a.ok("functions", limit=2, offset=1)
+    a.ok("functions", contains="FUN")
+    a.ok("functions", contains="entry", limit=1)
+    a.ok("functions", contains="zzzz")
+    a.q("functions", limit=0)
+    a.q("functions", limit=10001)
+    a.q("functions", offset=-1)
+    a.q("functions", limit="x")
+    a.ok("open_program", path="/frag.exe")
+    a.ok("info")
+    a.ok("functions")
+    a.ok("switch", path="p1:/alpha.exe")
+    a.ok("info")
+    a.ok("programs")
+    a.q("open_program", path="/nothing.exe")
+    a.ok("open_project", path=P2)
+    a.ok("projects")
+    a.ok("project")
+    a.ok("list")
+    a.ok("open_program", path="/beta.exe")
+    a.ok("info")
+    a.ok("functions", limit=3)
+    a.ok("programs")
+    a.ok("close_program")
+    a.ok("programs")
+    a.ok("projects")
+    rec.start("lite-multi-client", "v3")
+    b.ok("projects")
+    b.ok("open_project", path=P)
+    b.ok("project")
+    b.ok("open_program", path="/alpha.exe")
+    b.ok("info")
+    b.ok("functions", limit=2)
+    a.ok("projects")
+    a.ok("programs")
+    b.ok("close_project")
+    a.ok("projects")
+    a.ok("close_program")
+    a.ok("close_project")
+    a.ok("projects")
+    a.ok("close_project")
+    a.ok("projects")
+
+
+#: (name, setup, command, fields): each runs on its own connection to hydra-lite and must be
+#: refused with ``use_full_daemon``; the Java daemon's answer is recorded alongside for reference.
+LITE_REFUSALS = [
+    ("unknown command", "none", "bogus", {}),
+    ("status", "none", "status", {}),
+    ("health", "none", "health", {}),
+    ("cancel", "none", "cancel", {"all": True}),
+    ("overlays", "none", "overlays", {}),
+    ("import", "none", "import", {"file": "x"}),
+    ("decompile", "program", "decompile", {"name": "entry"}),
+    ("journal", "project", "journal", {}),
+    ("script", "none", "script", {"script": "x.java"}),
+    ("trace_list", "none", "trace_list", {}),
+    ("writable project", "none", "open_project", {"writable": True}),
+    ("older program format", "none", "open_project", {}),
+    ("regex functions", "program", "functions", {"regex": "^entry$"}),
+    ("overlay info", "program", "info", {"overlay": "o"}),
+    ("parallel", "none", "projects", {"parallel": True}),
+    ("writable program", "project", "open_program", {"path": "/alpha.exe", "writable": True}),
+]
+
+
+def lite_refusals(gs, daemon, rec, P, legacy):
+    """Runs LITE_REFUSALS against ``daemon``; returns (name, reason or problem) pairs."""
+    seen = []
+    for name, setup, cmd, fields in LITE_REFUSALS:
+        c = Conn(rec, daemon.connect("rp-r", "rp-h"), "r", gs.SessionError)
+        rec.start("lite-refusal " + name, "v3")
+        try:
+            if setup in ("project", "program"):
+                c.ok("open_project", path=P)
+            if setup == "program":
+                c.ok("open_program", path="/alpha.exe")
+            fields = dict(fields)
+            if name == "writable project":
+                fields["path"] = P
+            if name == "older program format":
+                fields["path"] = legacy
+            obj = c.q(cmd, **fields)
+            err = (obj or {}).get("error") or {}
+            reason = (err.get("details") or {}).get("reason")
+            if err.get("code") != "use_full_daemon" or reason not in LITE_REASONS:
+                seen.append((name, f"not refused: {json.dumps(obj)[:200]}"))
+                continue
+            seen.append((name, reason))
+            after = c.q("info")  # a refused connection is diverged: everything but ping is refused
+            err = (after or {}).get("error") or {}
+            if (err.get("details") or {}).get("reason") != "diverged_connection":
+                seen.append((name + " (after)", f"not diverged: {json.dumps(after)[:200]}"))
+            pong = c.q("ping")
+            if not (pong or {}).get("ok"):
+                seen.append((name + " (ping)", f"ping refused: {json.dumps(pong)[:200]}"))
+        finally:
+            c.close()
+    return seen
+
+
+NARROW = [(re.compile(r'^\{"id":\d+,'), '{"id":0,'),
+          (re.compile(r'"(ms|openMs|idleMs|uptimeMs)":\d+'), r'"\1":0')]
+
+
+def narrow(line, subs):
+    """A raw reply line with only the ids, the timings and the work directory replaced."""
+    for needle, token in subs:
+        for n in {needle, needle.replace("\\", "\\\\"), needle.replace("\\", "/"),
+                  needle.replace("/", "\\\\")}:
+            line = line.replace(n, token)
+    for rx, to in NARROW:
+        line = rx.sub(to, line)
+    return line
+
+
+def compare_lite(jrec, lrec, jraw, lraw, jwork, lwork, out=sys.stdout):
+    """Java records against lite records of the same corpus: the masked reply with the key order
+    kept, and the raw line with only ids, timings and the work directory replaced. Returns the
+    number of differences."""
+    diffs = 0
+    if len(jrec) != len(lrec) or len(jraw) != len(lraw):
+        out.write(f"record counts differ: java {len(jrec)}/{len(jraw)}, "
+                  f"lite {len(lrec)}/{len(lraw)}\n")
+        return 1
+    for i, (x, y) in enumerate(zip(jrec, lrec), 1):
+        sx = json.dumps({k: v for k, v in x.items() if k != "n"}, ensure_ascii=True)
+        sy = json.dumps({k: v for k, v in y.items() if k != "n"}, ensure_ascii=True)
+        if sx != sy:
+            diffs += 1
+            out.write(f"--- request {i}: {x.get('cmd')} [{x.get('section')}] masked reply differs\n")
+            out.writelines(line + "\n" for line in difflib.unified_diff(
+                _block(x), _block(y), fromfile="java", tofile="lite", lineterm=""))
+    # the raw lines: hello carries per-process figures the mask hides, so it is compared masked only
+    for i, ((_w, cj, lj), (_w2, _cl, ll)) in enumerate(zip(jraw, lraw), 1):
+        if cj == "hello":
+            continue
+        x = narrow(lj, [(str(jwork), "<WORK>")])
+        y = narrow(ll, [(str(lwork), "<WORK>"), (str(jwork), "<WORK>")])
+        if x != y:
+            diffs += 1
+            out.write(f"--- raw line {i}: {cj}\n  java: {x[:600]}\n  lite: {y[:600]}\n")
+    return diffs
+
+
+def process_name(pid):
+    """The image name of a process on Windows (None when it cannot be asked)."""
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.windll.kernel32
+    k32.OpenProcess.restype = wintypes.HANDLE
+    h = k32.OpenProcess(0x1000, False, int(pid))
+    if not h:
+        return None
+    try:
+        buf = ctypes.create_unicode_buffer(1024)
+        n = wintypes.DWORD(1024)
+        k32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(n))
+        return pathlib.Path(buf.value).name.lower()
+    finally:
+        k32.CloseHandle(h)
+
+
+def legacy_copy(work):
+    """A copy of the Ghidra 12.1.4 project fixture (program databases of version 32, which Java
+    upgrades on open and hydra-lite refuses)."""
+    dst = work / "legacy"
+    shutil.copytree(HERE / "fixtures" / "legacy-12.1.4", dst)
+    return dst / "legacy.gpr"
+
+
+def load_repo_client():
+    """The client of this source tree (``../support/ghidra_session.py``), under its own module
+    name. It knows ``GHIDRA_SESSION_FRONT``; an older install's own copy does not, and would start
+    the JVM instead of hydra-lite without saying so."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("ghidra_session_repo",
+                                                  HERE.parent / "support" / "ghidra_session.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    if not hasattr(mod, "front_door_argv"):
+        raise Harness("the client of this tree has no GHIDRA_SESSION_FRONT support")
+    return mod
+
+
+def run_lite(a):
+    install = str(pathlib.Path(a.ghidra).absolute())
+    work = pathlib.Path(a.work).absolute()
+    exe = pathlib.Path(a.lite).absolute()
+    if work.exists() and any(work.iterdir()):
+        print(f"error: --work {work} is not empty", file=sys.stderr)
+        return 2
+    if not exe.is_file():
+        print(f"error: --lite {exe} is not a file", file=sys.stderr)
+        return 2
+    work.mkdir(parents=True, exist_ok=True)
+    t0 = time.monotonic()
+
+    def log(msg):
+        print(f"[{time.monotonic() - t0:7.1f}s] {msg}", file=sys.stderr, flush=True)
+
+    gs = ct.load_client("install", install)
+    gl = load_repo_client()
+    side = {n: work / n for n in ("java", "lite")}
+    for w in side.values():
+        w.mkdir()
+    scripts, bins, jstate = write_inputs(side["java"])
+    _scripts, _bins, lstate = write_inputs(side["lite"])
+    base = build_fixture(gs, install, side["java"], jstate, scripts, bins, log)
+    outs = {}
+    jd = ld = None
+    try:
+        for n, w in side.items():
+            # the fixture was built under the Java side's directory: its programs remember the
+            # path they were imported from, for both sides
+            masker = ParityMasker([(str(w), "<WORK>"), (install, "<INSTALL>"),
+                                   (str(w.resolve()), "<WORK>"), (str(side["java"]), "<WORK>")])
+            path = pathlib.Path(a.out_dir or work) / f"lite-{n}.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            outs[n] = (masker, path)
+        jd = gs.Daemon(install, str(jstate), "rp-lite")
+        jfh = outs["java"][1].open("w", encoding="utf-8", newline="\n")
+        jrec = Recorder(outs["java"][0], jfh, log)
+        jrec.raws = []
+        ja = Conn(jrec, jd.connect("rp-a", "rp-h"), "a", gs.SessionError)
+        ja.work = side["java"]
+        jb = Conn(jrec, jd.connect("rp-b", "rp-h"), "b", gs.SessionError)
+        # The launcher starts hydra-lite once without an identity (it refuses to start); the
+        # command line it used is what `hydra-lite learn` needs, and a running Java daemon is
+        # what it learns from: the deployment recipe of HYDRA-LITE.md.
+        argvs = []
+        orig_front = gl.front_door_argv
+
+        def spy(argv, info, environ=None):
+            argvs.append(list(argv))
+            return orig_front(argv, info, environ)
+
+        gl.front_door_argv = spy
+        os.environ["GHIDRA_SESSION_FRONT"] = str(exe)
+        try:
+            gl.Daemon(install, str(lstate), "rp-lite").connect("rp-probe", "rp-h")
+            raise Harness("hydra-lite started without a learned identity")
+        except gl.LaunchError:
+            pass
+        finally:
+            gl.front_door_argv = orig_front
+            os.environ.pop("GHIDRA_SESSION_FRONT", None)
+        if not argvs:
+            raise Harness("the launcher did not run the front door")
+        learn = subprocess.run([str(exe), "learn", "--from", str(jd.endpoint_file), "--",
+                                *argvs[0]], capture_output=True, text=True, timeout=60, check=False)
+        if learn.returncode != 0:
+            raise Harness(f"hydra-lite learn failed: {learn.stderr.strip()}")
+        log("identity learned from the Java daemon")
+        jp = copy_project(base, side["java"] / "project")
+        jp2 = copy_project(base, side["java"] / "project2")
+        sec_lite(ja, jb, jrec, str(jp), str(jp2))
+        n_java_flow, flow_java_records = len(jrec.raws), jrec.n
+        ja.close()
+        jb.close()
+        lite_refusals(gs, jd, jrec, str(copy_project(base, side["java"] / "project-r")),
+                      str(legacy_copy(side["java"])))
+        jfh.close()
+        log("java side done")
+        stop(jd)
+        jd = None
+        os.environ["GHIDRA_SESSION_FRONT"] = str(exe)
+        ld = gl.Daemon(install, str(lstate), "rp-lite")
+        lfh = outs["lite"][1].open("w", encoding="utf-8", newline="\n")
+        lrec = Recorder(outs["lite"][0], lfh, log)
+        lrec.raws = []
+        la = Conn(lrec, ld.connect("rp-a", "rp-h"), "a", gl.SessionError)
+        la.work = side["lite"]
+        lpid = la.s.hello.get("pid")
+        if not lpid or "hydra-lite" not in (process_name(lpid) or ""):
+            raise Harness(f"the daemon that answered is not hydra-lite: pid {lpid}, "
+                          f"{process_name(lpid)}")
+        lb = Conn(lrec, ld.connect("rp-b", "rp-h"), "b", gl.SessionError)
+        lp = copy_project(base, side["lite"] / "project")
+        lp2 = copy_project(base, side["lite"] / "project2")
+        sec_lite(la, lb, lrec, str(lp), str(lp2))
+        n_lite_flow, flow_lite_records = len(lrec.raws), lrec.n
+        la.close()
+        lb.close()
+        refusals = lite_refusals(gl, ld, lrec, str(copy_project(base, side["lite"] / "project-r")),
+                                 str(legacy_copy(side["lite"])))
+        lfh.close()
+        log("lite side done")
+    except (Harness, ct.Fail) as e:
+        print(f"HARNESS ERROR: {e}", file=sys.stderr)
+        return 2
+    finally:
+        os.environ.pop("GHIDRA_SESSION_FRONT", None)
+        for d in (jd, ld):
+            if d is not None:
+                stop(d)
+    jr, lr = load(outs["java"][1]), load(outs["lite"][1])
+    jflow, lflow = jr[:flow_java_records], lr[:flow_lite_records]
+    refused = [r for r in lflow if isinstance(r.get("reply"), dict)
+               and (r["reply"].get("error") or {}).get("code") == "use_full_daemon"]
+    diffs = compare_lite(jflow, lflow, jrec.raws[:n_java_flow], lrec.raws[:n_lite_flow],
+                         side["java"], side["lite"])
+    print(f"flow: {len(lflow)} requests, {len(refused)} refused by lite, {diffs} differences")
+    for r in refused:
+        print(f"  refused where Java answers: {r['cmd']} {r['request']} -> {r['reply']['error']}")
+    problems = diffs + len(refused)
+    print(f"refusal probes: {len(refusals)} checks")
+    for name, what in refusals:
+        ok = what in LITE_REASONS or what == "diverged_connection"
+        print(f"  {'ok  ' if ok else 'FAIL'} {name}: {what}")
+        problems += 0 if ok else 1
+    log(f"{'PASS' if problems == 0 else 'FAIL'}: {problems} problems; "
+        f"records in {outs['java'][1]} and {outs['lite'][1]}")
+    return 0 if problems == 0 else 1
+
+
 # ---- selftest ------------------------------------------------------------------------------
 
 def selftest():
@@ -797,6 +1163,11 @@ def main(argv=None):
     r.add_argument("--out", required=True, help="JSON-lines corpus to write")
     r.add_argument("--kotor", help=f"KotOR project (default {DEFAULT_KOTOR})")
     r.add_argument("--no-kotor", action="store_true", help="leave the KotOR section out")
+    lt = sub.add_parser("lite", help="the lite corpus against the Java daemon and hydra-lite")
+    lt.add_argument("--ghidra", required=True, help="install root (holds Ghidra/)")
+    lt.add_argument("--work", required=True, help="empty work directory")
+    lt.add_argument("--lite", required=True, help="the hydra-lite executable")
+    lt.add_argument("--out-dir", help="where lite-java.jsonl and lite-lite.jsonl go (default: work)")
     c = sub.add_parser("compare", help="diff two corpora; exit 1 on any difference")
     c.add_argument("a")
     c.add_argument("b")
@@ -805,6 +1176,8 @@ def main(argv=None):
         return selftest()
     if a.cmd == "record":
         return run_record(a)
+    if a.cmd == "lite":
+        return run_lite(a)
     if a.cmd == "compare":
         try:
             return compare(a.a, a.b)
