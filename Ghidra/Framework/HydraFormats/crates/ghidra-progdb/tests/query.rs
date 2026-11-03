@@ -283,6 +283,69 @@ fn annotations_and_more(p: &Program<ghidra_fmt_gbf::BufferFile>, text: &str, lin
     }
 }
 
+/// A lazily opened program answers like an eagerly opened one, and builds only what is asked.
+fn lazy_matches_eager(dir: &str) {
+    let text = oracle(dir);
+    let eager = open(dir, &text);
+    let mut defs = Vec::new();
+    let mut default = String::new();
+    for l in text.lines() {
+        if let Some(d) = l.strip_prefix("default_space=") {
+            default = d.to_owned();
+        }
+        if l.starts_with("space ") {
+            let l = format!(" {l}");
+            defs.push(SpaceDef {
+                name: field(&l, "name").to_owned(),
+                id: field(&l, "id").parse().unwrap(),
+                bits: field(&l, "bits").parse().unwrap(),
+            });
+        }
+    }
+    let lazy = Program::open_file_lazy(fixture(dir), AddressSpaces::new(defs, &default)).unwrap();
+    // bytes need no index
+    let first = eager.functions().first().map(|f| f.entry.clone());
+    if let Some(entry) = &first {
+        assert_eq!(
+            lazy.read_bytes(entry, 16).unwrap(),
+            eager.read_bytes(entry, 16).unwrap()
+        );
+    }
+    // everything else builds on first use and agrees
+    let ids = |p: &Program<ghidra_fmt_gbf::BufferFile>| -> Vec<i64> {
+        p.functions().iter().map(|f| f.function.id).collect()
+    };
+    assert_eq!(ids(&lazy), ids(&eager));
+    for f in eager.functions().iter().take(50) {
+        assert_eq!(
+            lazy.function_at(&f.entry).map(|x| x.function.id),
+            Some(f.function.id)
+        );
+        assert_eq!(lazy.xrefs_to(&f.entry), eager.xrefs_to(&f.entry));
+        assert_eq!(lazy.xrefs_from(&f.entry), eager.xrefs_from(&f.entry));
+        let a: Vec<i64> = lazy.symbols_at(&f.entry).iter().map(|s| s.id).collect();
+        let b: Vec<i64> = eager.symbols_at(&f.entry).iter().map(|s| s.id).collect();
+        assert_eq!(a, b);
+        assert_eq!(
+            lazy.function_at(&f.entry).unwrap().parameters.len(),
+            f.parameters.len()
+        );
+        assert_eq!(
+            lazy.function_at(&f.entry).unwrap().locals.len(),
+            f.locals.len()
+        );
+    }
+    assert!(lazy.deferred_error().is_none());
+    lazy.prepare().unwrap();
+}
+
+#[test]
+fn lazy_open_agrees_with_eager_open() {
+    lazy_matches_eager("legacy-12.1.4");
+    lazy_matches_eager("legacy-12.1.4-analysed");
+    lazy_matches_eager("synth-33");
+}
+
 #[test]
 fn synthetic_v33_fixture() {
     check("synth-33");

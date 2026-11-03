@@ -37,3 +37,8 @@ with their parts, every symbol row by id, the listing, memory and symbol query s
 `OracleMutate.java` builds the synthetic fixture `testdata/synth/progdb-synth-33.gbf` (see
 `crates/ghidra-progdb/PORTING.md`): `java -cp "mut;$CP" OracleMutate <install dir> <source db.1.gbf>
 <scratch copy.gbf> <out.gbf>`; run `OracleProgram` on the result for `testdata/oracleprog-synth-33.txt`.
+
+`OracleOpenBench.java` times `new DBHandle` + `new ProgramDB` and a few queries on stock Ghidra, the
+counterpart of `crates/ghidra-progdb/examples/open_bench.rs`; peak memory is sampled from outside
+(`Process.PeakWorkingSet64`). Use the real `java.exe` of the JDK, not the `javapath` shim, which
+starts the JVM as a child process.

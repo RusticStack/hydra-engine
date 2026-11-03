@@ -77,6 +77,18 @@ impl SymbolTable {
         })
     }
 
+    /// A table without symbols (what the lazy facade answers from after a failed read).
+    pub(crate) fn empty(spaces: AddressSpaces) -> Self {
+        Self {
+            symbols: Vec::new(),
+            by_id: HashMap::new(),
+            by_address: HashMap::new(),
+            children: BTreeMap::new(),
+            thunks: HashMap::new(),
+            spaces,
+        }
+    }
+
     /// Every symbol in id order.
     pub fn all(&self) -> &[Symbol] {
         &self.symbols

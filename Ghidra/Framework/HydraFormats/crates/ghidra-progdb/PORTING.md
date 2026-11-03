@@ -26,8 +26,37 @@ Read-only. Upgrades stay in Java.
 | `ProgramRegisterContextDB` ("Range Map - Register_*"), `AddressRangeMapDB` | `ProgramDb::register_values`, `RegisterValueRange` | done and equal to Java for the stored base register ranges (address range, mask and value bytes): 37 GS_OFFSET ranges in the analysed fixture, RAX / GS_OFFSET in the synthetic one (a sub register `AL` write shows up merged into the RAX mask). NOT ported: language and compiler specification default values, per-instruction context ("ContextTable", "Prototypes"), values of sub registers computed from the base value |
 | `OptionsDB` ("Property Table"), `DBPropertyMapManager` ("Properties", "Property Map - *") | `ProgramDb::{options, property_maps}`, `ProgramOption`, `PropertyMap`, `PropertyKind`, `PropertyValue` | done and equal to Java: option key, `OptionType` ordinal and stored string value (a date is milliseconds, a custom option its stored XML); registered Int / Long / String / Void maps with every address and value. Options Java only registers with defaults are not stored and not listed. NOT ported: object (`Saveable`) maps beyond their kind and entry addresses, internal maps that are not registered (for example "Property Map - Lengths", "Property Map - CallFixup" is registered and is read), decoding of option values by type |
 | `ExternalManagerDB`, `NamespaceManager`, `LibraryDB`, `GhidraClassDB` (all symbol rows) | `ProgramDb::{namespaces, external_libraries, external_locations}`, `SymbolTable::path`, `NamespaceInfo`, `NamespaceKind`, `ExternalLibrary`, `ExternalLocation` | done and equal to Java on all three fixtures: 73 external locations (one library) in each real fixture, libraries and their paths, locations with original imported name / external program address / source / function flag / namespace, namespaces and classes with `::` paths and parents, and the path of every label and function that lives in a namespace. `getExternalLocations(lib)` returns only the library's direct children, as Java does (locations in a namespace below the library are not listed). NOT ported: external location lookups by address or by label, the `<UNKNOWN>` library, the class hierarchy beyond the parent chain (Ghidra stores no inheritance), writes |
-| Query facade for bindings | `ghidra_progdb::query::Program` (`open_file`, `open`, `parse_address`, `functions`, `function_at`, `function_containing`, `function_by_id`, `symbols_by_name`, `symbols_at`, `children`, `xrefs_to`, `xrefs_from`, `read_bytes`, plus the lazily read data types, equates, bookmarks, relocations, register values, options, property maps, namespaces, external libraries and locations above) | done. Owned data only, builds every index once at open (memory use is proportional to the program), `Send + Sync` whenever the buffer store is. `tests/query.rs` checks it against the oracle output on both fixtures. Module docs state the ordering of every list |
+| Query facade for bindings | `ghidra_progdb::query::Program` (`open_file`, `open`, `parse_address`, `functions`, `function_at`, `function_containing`, `function_by_id`, `symbols_by_name`, `symbols_at`, `children`, `xrefs_to`, `xrefs_from`, `read_bytes`, plus the lazily read data types, equates, bookmarks, relocations, register values, options, property maps, namespaces, external libraries and locations above) | done. Owned data only, `Send + Sync` whenever the buffer store is. `Program::open` builds the symbol table, the function index and the reference maps up front (errors surface at open; the Symbols table is now read once instead of four times); `Program::open_lazy` / `open_file_lazy` build nothing at open (cost: header, address map, table directory) and each index on first use, with the infallible accessors answering empty and `deferred_error()` keeping the message if a table turns out to be damaged (`prepare()` builds everything and returns the error). Numbers in "Open cost" below. `tests/query.rs` checks it against the oracle output on both fixtures. Module docs state the ordering of every list |
 | older table versions (symbol V0..V3, memory V0..V2, address map V0) | `UnsupportedTableVersion` | refused on purpose: Java upgrades these |
+
+## Open cost
+
+Measured on Windows 11 (NTFS, warm file cache, release build, `examples/open_bench.rs` for Rust,
+`oracle/OracleOpenBench.java` on stock Ghidra 12.2 / JDK 27 for Java), three runs each, peak
+working set sampled from outside every 5-10 ms while the process holds for 250-400 ms after the
+work. "open" is the time of `Program::open*` (Rust) and of `new DBHandle` + `new ProgramDB`
+(Java, `OpenMode.IMMUTABLE`) after the Ghidra application was initialized. The Java open (1.5-1.7 s)
+is mostly class loading and language definitions; application initialization adds 1.04-1.15 s and the
+whole Java process is ready after 2.6-2.9 s.
+
+| fixture | program size | Java open | Java peak RSS | Rust eager open | Rust lazy open | Rust eager peak RSS | Rust lazy peak RSS |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| legacy-12.1.4 | 385 symbols, 0 instructions, 1.5 MB file | 1.49-1.65 s | 263-309 MB | 2.2-2.8 ms (before the single symbol read: 3.1-4.3 ms) | 0.24-0.52 ms | 6.6 MB (before: 6.7-7.2 MB) | 4.9 MB |
+| legacy-12.1.4-analysed | 2912 symbols, 15014 instructions, 9813 reference rows, 3.7 MB file | 1.54-1.67 s | 330-343 MB | 12.2-14.6 ms (before: 15.2-25.5 ms, one 46 ms outlier) | 0.32-0.47 ms | 15.7-15.8 MB (before: 16.1-16.2 MB) | 7.2-7.3 MB |
+
+* After open, the first query that needs an index pays for it: functions (symbol table, function
+  index, bodies, variables) 1.2-1.6 ms and 4.1-4.5 ms, references 1.1-1.9 ms and 7.2-7.8 ms, for
+  the two fixtures. `read_bytes` and everything outside the symbol / function / reference
+  accessors need no index (0.05-0.16 ms). Java answers the same five queries (function count,
+  first function's references to and from, 16 bytes, symbols at the entry) in 6.8-8.1 ms and
+  10.6-12.8 ms in the same JVM right after the open.
+* Eager open grows linearly with the program (about 4-5 ms per 1000 symbols plus reference rows
+  here); lazy open does not (it reads the "Program" table, the address map and the table
+  directory). A multi-million-symbol program was not measured: no such fixture exists here, so
+  larger sizes are an extrapolation of the two points above.
+* Memory of an index is dominated by `Address` values (an owned space name per address) in the
+  symbol and reference maps; `Address` is public API, so it was not changed. Peak RSS includes
+  the process image (about 4.9 MB for an empty run).
 
 ## Address spaces
 

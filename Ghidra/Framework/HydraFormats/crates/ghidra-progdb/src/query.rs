@@ -78,16 +78,33 @@ impl std::ops::Deref for FunctionInfo {
     }
 }
 
-/// An open Program database with all query indexes built.
-pub struct Program<S: BufferStore> {
-    db: ProgramDb<S>,
-    symbols: SymbolTable,
+/// The function index: every function with its joined data, by entry and by body range.
+struct FunctionIndex {
     functions: Vec<FunctionInfo>,
     by_entry: HashMap<Address, usize>,
     /// (space, min, max, index into `functions`), sorted by space then min.
     ranges: Vec<(String, u64, u64, usize)>,
-    refs_from: HashMap<Address, Vec<Reference>>,
-    refs_to: HashMap<Address, Vec<Reference>>,
+}
+
+/// Both reference directions, by owner address.
+struct RefIndex {
+    from: HashMap<Address, Vec<Reference>>,
+    to: HashMap<Address, Vec<Reference>>,
+}
+
+/// An open Program database.
+///
+/// The query indexes (symbols, functions with bodies and variables, references) are built on
+/// first use. [`Program::open`] builds all of them up front so that every error surfaces at
+/// open time and the infallible accessors cannot fail afterwards; [`Program::open_lazy`] builds
+/// none of them, so opening costs only the header, the address map and the table directory,
+/// independent of the size of the program. See [`Program::open_lazy`] for the error behaviour.
+pub struct Program<S: BufferStore> {
+    db: ProgramDb<S>,
+    symbols: OnceLock<SymbolTable>,
+    index: OnceLock<FunctionIndex>,
+    refs: OnceLock<RefIndex>,
+    deferred: OnceLock<String>,
     datatypes: OnceLock<DataTypes>,
     data_at: OnceLock<HashMap<Address, i64>>,
     equates: OnceLock<Vec<Equate>>,
@@ -97,6 +114,66 @@ pub struct Program<S: BufferStore> {
     options: OnceLock<Vec<ProgramOption>>,
     property_maps: OnceLock<Vec<PropertyMap>>,
     namespaces: OnceLock<Vec<NamespaceInfo>>,
+}
+
+/// Join every function with its symbol, body and variables.
+fn build_function_index<S: BufferStore>(
+    db: &ProgramDb<S>,
+    symbols: &SymbolTable,
+) -> Result<FunctionIndex> {
+    let all = symbols.all();
+    let addresses = all
+        .iter()
+        .filter(|s| s.symbol_type == 5)
+        .map(|s| (s.id, s.address.clone()))
+        .collect();
+    let rows = crate::functions::read_functions(db.database(), &addresses)?;
+    let ids: Vec<i64> = rows.iter().map(|f| f.id).collect();
+    let bodies = crate::bodies::function_bodies(db.database(), db.address_map(), all, &ids)?;
+    let mut parameters: HashMap<i64, Vec<Variable>> = HashMap::new();
+    let mut locals: HashMap<i64, Vec<Variable>> = HashMap::new();
+    for v in crate::bodies::read_variables(db.database(), all)? {
+        let target = if v.is_parameter {
+            &mut parameters
+        } else {
+            &mut locals
+        };
+        target.entry(v.function_id).or_default().push(v);
+    }
+    let mut functions = Vec::with_capacity(rows.len());
+    for f in rows {
+        let sym = symbols.get(f.id);
+        let name = sym.and_then(|s| symbols.name(s));
+        let namespace_id = sym.map_or(0, |s| symbols.parent_namespace_id(s));
+        let entry = f.entry.clone().unwrap_or(Address::NoAddress);
+        let mut params = parameters.remove(&f.id).unwrap_or_default();
+        params.sort_by_key(|v| (v.ordinal, v.symbol_id));
+        let own_locals = locals.remove(&f.id).unwrap_or_default();
+        functions.push(FunctionInfo {
+            body: bodies.get(&f.id).cloned().unwrap_or_default(),
+            function: f,
+            name,
+            entry,
+            namespace_id,
+            parameters: params,
+            locals: own_locals,
+        });
+    }
+    functions.sort_by_key(|f| f.function.id);
+    let mut by_entry = HashMap::new();
+    let mut ranges = Vec::new();
+    for (i, f) in functions.iter().enumerate() {
+        by_entry.entry(f.entry.clone()).or_insert(i);
+        for r in &f.body {
+            ranges.push((r.space.clone(), r.min, r.max, i));
+        }
+    }
+    ranges.sort();
+    Ok(FunctionIndex {
+        functions,
+        by_entry,
+        ranges,
+    })
 }
 
 /// Compute a value on first use and keep it; nothing is kept when `f` fails.
@@ -109,7 +186,7 @@ fn lazy<T>(cell: &OnceLock<T>, f: impl FnOnce() -> Result<T>) -> Result<&T> {
 }
 
 impl Program<BufferFile> {
-    /// Open the `db.N.gbf` file at `path` read-only.
+    /// Open the `db.N.gbf` file at `path` read-only and build the indexes.
     ///
     /// # Errors
     ///
@@ -118,6 +195,18 @@ impl Program<BufferFile> {
         let file = BufferFile::open(path, true)
             .map_err(|e| ProgError::Db(ghidra_fmt_db::DbError::from(e)))?;
         Self::open(file, spaces)
+    }
+
+    /// Open the `db.N.gbf` file at `path` read-only without building any index
+    /// (see [`Program::open_lazy`]).
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`Program::open_lazy`], or the file error when `path` cannot be read.
+    pub fn open_file_lazy(path: impl AsRef<Path>, spaces: AddressSpaces) -> Result<Self> {
+        let file = BufferFile::open(path, true)
+            .map_err(|e| ProgError::Db(ghidra_fmt_db::DbError::from(e)))?;
+        Self::open_lazy(file, spaces)
     }
 }
 
@@ -130,63 +219,36 @@ impl<S: BufferStore> Program<S> {
     ///
     /// See [`ProgramDb::open`]; also any error reading the tables the indexes are built from.
     pub fn open(store: S, spaces: AddressSpaces) -> Result<Self> {
-        let db = ProgramDb::open(store, spaces)?;
-        let symbols = db.symbol_table()?;
-        let bodies = db.function_bodies()?;
-        let variables = db.variables()?;
-        let mut functions = Vec::new();
-        for f in db.functions()? {
-            let sym = symbols.get(f.id);
-            let name = sym.and_then(|s| symbols.name(s));
-            let namespace_id = sym.map_or(0, |s| symbols.parent_namespace_id(s));
-            let entry = f.entry.clone().unwrap_or(Address::NoAddress);
-            let mut parameters: Vec<Variable> = variables
-                .iter()
-                .filter(|v| v.function_id == f.id && v.is_parameter)
-                .cloned()
-                .collect();
-            parameters.sort_by_key(|v| (v.ordinal, v.symbol_id));
-            let locals = variables
-                .iter()
-                .filter(|v| v.function_id == f.id && !v.is_parameter)
-                .cloned()
-                .collect();
-            functions.push(FunctionInfo {
-                body: bodies.get(&f.id).cloned().unwrap_or_default(),
-                function: f,
-                name,
-                entry,
-                namespace_id,
-                parameters,
-                locals,
-            });
-        }
-        functions.sort_by_key(|f| f.function.id);
-        let mut by_entry = HashMap::new();
-        let mut ranges = Vec::new();
-        for (i, f) in functions.iter().enumerate() {
-            by_entry.entry(f.entry.clone()).or_insert(i);
-            for r in &f.body {
-                ranges.push((r.space.clone(), r.min, r.max, i));
-            }
-        }
-        ranges.sort();
-        let mut refs_from: HashMap<Address, Vec<Reference>> = HashMap::new();
-        for (owner, list) in db.references_from()? {
-            refs_from.entry(owner).or_default().extend(list);
-        }
-        let mut refs_to: HashMap<Address, Vec<Reference>> = HashMap::new();
-        for (owner, list) in db.references_to()? {
-            refs_to.entry(owner).or_default().extend(list);
-        }
+        let program = Self::open_lazy(store, spaces)?;
+        program.prepare()?;
+        Ok(program)
+    }
+
+    /// Open the Program database in `store` without building any index.
+    ///
+    /// Opening reads the "Program" metadata, the address map and the table directory only, so it
+    /// costs the same for a small and for a huge program. Each index is built by the first call
+    /// that needs it: the symbol table (`symbol_table`, `symbols_by_name`, `symbols_at`,
+    /// `children`, `namespaces`, `symbol_path`), the function index (`functions`, `function_at`,
+    /// `function_containing`, `function_by_id`; it also builds the symbol table) and the
+    /// reference maps (`xrefs_to`, `xrefs_from`). `read_bytes` and the data type, equate,
+    /// bookmark, relocation, register value, option and property map accessors never build one.
+    ///
+    /// Those accessors keep their infallible signatures, so a damaged table found while building
+    /// an index cannot be returned from them: the index stays empty, the accessor answers as if
+    /// there were nothing, and the error text is kept for [`Program::deferred_error`]. Call
+    /// [`Program::prepare`] to build everything now and get the error as a `Result` instead.
+    ///
+    /// # Errors
+    ///
+    /// See [`ProgramDb::open`].
+    pub fn open_lazy(store: S, spaces: AddressSpaces) -> Result<Self> {
         Ok(Self {
-            db,
-            symbols,
-            functions,
-            by_entry,
-            ranges,
-            refs_from,
-            refs_to,
+            db: ProgramDb::open(store, spaces)?,
+            symbols: OnceLock::new(),
+            index: OnceLock::new(),
+            refs: OnceLock::new(),
+            deferred: OnceLock::new(),
             datatypes: OnceLock::new(),
             data_at: OnceLock::new(),
             equates: OnceLock::new(),
@@ -199,6 +261,90 @@ impl<S: BufferStore> Program<S> {
         })
     }
 
+    /// Build the symbol table, the function index and the reference maps now.
+    ///
+    /// # Errors
+    ///
+    /// Any error reading the tables the indexes are built from; nothing is kept for an index
+    /// that failed, so a later call tries again.
+    pub fn prepare(&self) -> Result<()> {
+        self.symbols_built()?;
+        self.index_built()?;
+        self.refs_built()?;
+        Ok(())
+    }
+
+    /// The first error an infallible accessor met while building an index lazily, if any.
+    pub fn deferred_error(&self) -> Option<&str> {
+        self.deferred.get().map(String::as_str)
+    }
+
+    fn defer(&self, e: &ProgError) {
+        let _ = self.deferred.set(e.to_string());
+    }
+
+    fn symbols_built(&self) -> Result<&SymbolTable> {
+        lazy(&self.symbols, || self.db.symbol_table())
+    }
+
+    fn index_built(&self) -> Result<&FunctionIndex> {
+        let symbols = self.symbols_built()?;
+        lazy(&self.index, || build_function_index(&self.db, symbols))
+    }
+
+    fn refs_built(&self) -> Result<&RefIndex> {
+        lazy(&self.refs, || {
+            let mut from: HashMap<Address, Vec<Reference>> = HashMap::new();
+            for (owner, list) in self.db.references_from()? {
+                from.entry(owner).or_default().extend(list);
+            }
+            let mut to: HashMap<Address, Vec<Reference>> = HashMap::new();
+            for (owner, list) in self.db.references_to()? {
+                to.entry(owner).or_default().extend(list);
+            }
+            Ok(RefIndex { from, to })
+        })
+    }
+
+    /// The symbol table for the infallible accessors: an empty one after a failure.
+    fn symbols_or_empty(&self) -> &SymbolTable {
+        match self.symbols_built() {
+            Ok(t) => t,
+            Err(e) => {
+                self.defer(&e);
+                self.symbols
+                    .get_or_init(|| SymbolTable::empty(self.db.address_map().spaces().clone()))
+            }
+        }
+    }
+
+    fn index_or_empty(&self) -> &FunctionIndex {
+        match self.index_built() {
+            Ok(i) => i,
+            Err(e) => {
+                self.defer(&e);
+                self.index.get_or_init(|| FunctionIndex {
+                    functions: Vec::new(),
+                    by_entry: HashMap::new(),
+                    ranges: Vec::new(),
+                })
+            }
+        }
+    }
+
+    fn refs_or_empty(&self) -> &RefIndex {
+        match self.refs_built() {
+            Ok(r) => r,
+            Err(e) => {
+                self.defer(&e);
+                self.refs.get_or_init(|| RefIndex {
+                    from: HashMap::new(),
+                    to: HashMap::new(),
+                })
+            }
+        }
+    }
+
     /// The underlying reader, for anything the facade does not cover.
     pub fn db(&self) -> &ProgramDb<S> {
         &self.db
@@ -206,7 +352,7 @@ impl<S: BufferStore> Program<S> {
 
     /// The symbol table with its `SymbolManager` queries.
     pub fn symbol_table(&self) -> &SymbolTable {
-        &self.symbols
+        self.symbols_or_empty()
     }
 
     /// The "Language ID" of the program, when stored.
@@ -246,12 +392,13 @@ impl<S: BufferStore> Program<S> {
 
     /// Every function, id ascending (`FunctionManager.getFunctions` plus external functions).
     pub fn functions(&self) -> &[FunctionInfo] {
-        &self.functions
+        &self.index_or_empty().functions
     }
 
     /// The function whose entry point is `addr` (`FunctionManager.getFunctionAt`).
     pub fn function_at(&self, addr: &Address) -> Option<&FunctionInfo> {
-        self.by_entry.get(addr).map(|&i| &self.functions[i])
+        let index = self.index_or_empty();
+        index.by_entry.get(addr).map(|&i| &index.functions[i])
     }
 
     /// The function whose body contains `addr` (`FunctionManager.getFunctionContaining`).
@@ -259,50 +406,55 @@ impl<S: BufferStore> Program<S> {
         let Address::Space { space, offset } = addr else {
             return None;
         };
-        let at = self
+        let index = self.index_or_empty();
+        let at = index
             .ranges
             .partition_point(|(s, min, _, _)| (s.as_str(), *min) <= (space.as_str(), *offset));
         // bodies of different functions do not overlap, but nested ranges are possible in odd
         // databases, so look back over a few candidates
-        self.ranges[..at]
+        index.ranges[..at]
             .iter()
             .rev()
             .take(8)
             .find(|(s, min, max, _)| s == space && *min <= *offset && *offset <= *max)
-            .map(|&(_, _, _, i)| &self.functions[i])
+            .map(|&(_, _, _, i)| &index.functions[i])
     }
 
     /// The function with this id.
     pub fn function_by_id(&self, id: i64) -> Option<&FunctionInfo> {
-        self.functions
+        let functions = &self.index_or_empty().functions;
+        functions
             .binary_search_by_key(&id, |f| f.function.id)
             .ok()
-            .map(|i| &self.functions[i])
+            .map(|i| &functions[i])
     }
 
     /// Symbols with this name (`SymbolManager.getSymbols(String)`).
     pub fn symbols_by_name(&self, name: &str) -> Vec<&Symbol> {
-        self.symbols.by_name(name)
+        self.symbols_or_empty().by_name(name)
     }
 
     /// Symbols at an address, primary first (`SymbolManager.getSymbols(Address)`).
     pub fn symbols_at(&self, addr: &Address) -> Vec<&Symbol> {
-        self.symbols.at(addr)
+        self.symbols_or_empty().at(addr)
     }
 
     /// The symbols directly inside a namespace (0 is the global namespace).
     pub fn children(&self, namespace_id: i64) -> Vec<&Symbol> {
-        self.symbols.children(namespace_id)
+        self.symbols_or_empty().children(namespace_id)
     }
 
     /// References pointing at `addr` (`ReferenceManager.getReferencesTo`), stored order.
     pub fn xrefs_to(&self, addr: &Address) -> &[Reference] {
-        self.refs_to.get(addr).map_or(&[], Vec::as_slice)
+        self.refs_or_empty().to.get(addr).map_or(&[], Vec::as_slice)
     }
 
     /// References made from `addr` (`ReferenceManager.getReferencesFrom`), stored order.
     pub fn xrefs_from(&self, addr: &Address) -> &[Reference] {
-        self.refs_from.get(addr).map_or(&[], Vec::as_slice)
+        self.refs_or_empty()
+            .from
+            .get(addr)
+            .map_or(&[], Vec::as_slice)
     }
 
     /// Up to `len` bytes at `addr` (`Memory.getBytes`): fewer where memory ends.
@@ -569,10 +721,8 @@ impl<S: BufferStore> Program<S> {
     /// The error reading the symbol table.
     pub fn namespaces(&self) -> Result<&[NamespaceInfo]> {
         lazy(&self.namespaces, || {
-            Ok(crate::externals::namespaces(
-                &self.symbols,
-                &self.db.symbols()?,
-            ))
+            let symbols = self.symbols_built()?;
+            Ok(crate::externals::namespaces(symbols, symbols.all()))
         })
         .map(Vec::as_slice)
     }
@@ -580,7 +730,8 @@ impl<S: BufferStore> Program<S> {
     /// `Symbol.getName(true)` of the symbol with this id: the `::` path from the outermost
     /// namespace.
     pub fn symbol_path(&self, id: i64) -> Option<String> {
-        self.symbols.get(id).map(|s| self.symbols.path(s))
+        let symbols = self.symbols_or_empty();
+        symbols.get(id).map(|s| symbols.path(s))
     }
 
     /// The external libraries sorted by name, with their associated program paths.
