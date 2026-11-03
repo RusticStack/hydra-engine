@@ -7,10 +7,12 @@
 
 use std::fmt;
 
-use ghidra_fmt_btree::{BtreeError, NodeType, fieldkey::FieldKeyTree, longkey::LongKeyTree};
+use ghidra_fmt_btree::{
+    BtreeError, NodeType, fieldkey::FieldKeyTree, longkey::LongKeyTree, longwrite::LongKeyWriter,
+};
 use ghidra_fmt_chain::{ChainError, DbParms};
-use ghidra_fmt_field::{Field, FieldError, FieldType, IndexValue, Record, Schema};
-use ghidra_fmt_gbf::{BufferStore, GbfError};
+use ghidra_fmt_field::{Field, FieldError, FieldType, IndexValue, JString, Record, Schema};
+use ghidra_fmt_gbf::{BufferStore, BufferStoreMut, GbfError};
 
 /// Database errors.
 #[derive(Debug)]
@@ -27,6 +29,10 @@ pub enum DbError {
     Corrupt(String),
     /// No table with that name.
     TableNotFound(String),
+    /// A table with that name exists already.
+    TableExists(String),
+    /// Not supported by this port (for example writing field-key tables).
+    Unsupported(&'static str),
 }
 
 impl fmt::Display for DbError {
@@ -38,6 +44,8 @@ impl fmt::Display for DbError {
             Self::Field(e) => write!(f, "{e}"),
             Self::Corrupt(m) => write!(f, "corrupt database: {m}"),
             Self::TableNotFound(n) => write!(f, "table not found: {n}"),
+            Self::TableExists(n) => write!(f, "Table already exists: {n}"),
+            Self::Unsupported(w) => write!(f, "unsupported: {w}"),
         }
     }
 }
@@ -214,6 +222,8 @@ pub struct Database<S: BufferStore> {
     store: S,
     params: DbParms,
     tables: Vec<TableRecord>,
+    master_root: i32,
+    next_table_num: i64,
 }
 
 impl<S: BufferStore> Database<S> {
@@ -231,11 +241,19 @@ impl<S: BufferStore> Database<S> {
                 tables.push(TableRecord::from_record(&store, &r)?);
             }
         }
+        let next_table_num = tables.last().map_or(0, |t| t.table_num + 1);
         Ok(Self {
             store,
             params,
             tables,
+            master_root: root,
+            next_table_num,
         })
+    }
+
+    /// Give back the store (to save it, for example).
+    pub fn into_store(self) -> S {
+        self.store
     }
 
     /// The underlying store.
@@ -280,6 +298,157 @@ impl<S: BufferStore> Database<S> {
             .filter(|t| t.indexed_column >= 0 && t.name == name)
             .map(|record| Table { db: self, record })
             .collect()
+    }
+}
+
+impl<S: BufferStoreMut> Database<S> {
+    /// Create an empty database in `store`, which must hold no buffers (`new DBHandle(size)`):
+    /// buffer 0 becomes the parameter buffer, the master table is empty and the database id is
+    /// `database_id` (Java draws it from `UniversalIdGenerator`).
+    pub fn create(mut store: S, database_id: i64) -> Result<Self> {
+        let mut params = DbParms::create(&mut store)?;
+        params.set(&mut store, 0, -1)?;
+        params.set(&mut store, 1, (database_id >> 32) as i32)?;
+        params.set(&mut store, 2, database_id as i32)?;
+        Ok(Self {
+            store,
+            params,
+            tables: Vec::new(),
+            master_root: -1,
+            next_table_num: 0,
+        })
+    }
+
+    fn master_row(t: &TableRecord) -> Record {
+        let s = &t.schema;
+        Record {
+            key: Field::Long(t.table_num),
+            values: vec![
+                Some(Field::String(Some(JString::new(&t.name)))),
+                Some(Field::Int(s.version())),
+                Some(Field::Int(t.root_buffer_id)),
+                Some(Field::Byte(s.encoded_key_field_type() as i8)),
+                Some(Field::Binary(Some(s.encoded_field_types()))),
+                Some(Field::String(Some(JString::new(&s.packed_field_names())))),
+                Some(Field::Int(t.indexed_column)),
+                Some(Field::Long(t.max_key)),
+                Some(Field::Int(t.record_count)),
+            ],
+        }
+    }
+
+    /// Write master table row `i` (`Table.putRecord` on the master table).
+    fn put_master_row(&mut self, i: usize) -> Result<()> {
+        let row = Self::master_row(&self.tables[i]);
+        let mut data = Vec::new();
+        master_schema().write_record(&row, &mut data)?;
+        let mut w = LongKeyWriter::new(self.master_root, None);
+        w.put(&mut self.store, self.tables[i].table_num, &data)?;
+        self.master_root = w.root();
+        Ok(())
+    }
+
+    /// Define a new primary table (`DBHandle.createTable`). Only long-key tables can be written.
+    pub fn create_table(&mut self, name: &str, schema: Schema) -> Result<()> {
+        if self
+            .tables
+            .iter()
+            .any(|t| t.indexed_column == -1 && t.name == name)
+        {
+            return Err(DbError::TableExists(name.to_owned()));
+        }
+        if !schema.use_long_key_nodes() {
+            return Err(DbError::Unsupported("writing tables with field keys"));
+        }
+        self.tables.push(TableRecord {
+            table_num: self.next_table_num,
+            name: name.to_owned(),
+            schema,
+            root_buffer_id: -1,
+            indexed_column: -1,
+            max_key: i64::MIN,
+            record_count: 0,
+        });
+        self.next_table_num += 1;
+        let i = self.tables.len() - 1;
+        self.put_master_row(i)?;
+        self.params.set(&mut self.store, 0, self.master_root)?;
+        Ok(())
+    }
+
+    fn table_index(&self, name: &str) -> Result<usize> {
+        let i = self
+            .tables
+            .iter()
+            .position(|t| t.indexed_column == -1 && t.name == name)
+            .ok_or_else(|| DbError::TableNotFound(name.to_owned()))?;
+        if !self.tables[i].schema.use_long_key_nodes() {
+            return Err(DbError::Unsupported("writing tables with field keys"));
+        }
+        if self
+            .tables
+            .iter()
+            .any(|t| t.indexed_column >= 0 && t.name == name)
+        {
+            return Err(DbError::Unsupported("writing indexed tables"));
+        }
+        Ok(i)
+    }
+
+    fn writer_for(&self, i: usize) -> LongKeyWriter {
+        let t = &self.tables[i];
+        let fixed = (!t.schema.is_variable_length()).then(|| t.schema.fixed_length());
+        LongKeyWriter::new(t.root_buffer_id, fixed)
+    }
+
+    /// Insert or replace a record (`Table.putRecord`). Index tables are not maintained, so
+    /// indexed tables are refused.
+    pub fn put_record(&mut self, table: &str, record: &Record) -> Result<()> {
+        let i = self.table_index(table)?;
+        let key = match record.key {
+            Field::Long(k) => k,
+            _ => return Err(FieldError::TypeMismatch.into()),
+        };
+        let mut data = Vec::new();
+        self.tables[i].schema.write_record(record, &mut data)?;
+        let mut w = self.writer_for(i);
+        let inserted = w.put(&mut self.store, key, &data)?;
+        let t = &mut self.tables[i];
+        t.root_buffer_id = w.root();
+        if t.max_key < key {
+            t.max_key = key;
+        }
+        if inserted {
+            t.record_count += 1;
+        }
+        Ok(())
+    }
+
+    /// Delete the record with `key` (`Table.deleteRecord`); returns whether it existed.
+    pub fn delete_record(&mut self, table: &str, key: i64) -> Result<bool> {
+        let i = self.table_index(table)?;
+        let mut w = self.writer_for(i);
+        let existed = w.delete(&mut self.store, key)?;
+        let t = &mut self.tables[i];
+        t.root_buffer_id = w.root();
+        if existed {
+            t.record_count -= 1;
+        }
+        Ok(existed)
+    }
+
+    /// End of a transaction (`MasterTable.flush`): store every table root, maximum key and
+    /// record count in the master table.
+    pub fn commit(&mut self) -> Result<()> {
+        for i in 0..self.tables.len() {
+            self.put_master_row(i)?;
+        }
+        // Java does not refresh the parameter here. The root cannot change because the rows
+        // already exist, but keep the two in step should it ever.
+        if self.params.master_table_root()? != self.master_root {
+            self.params.set(&mut self.store, 0, self.master_root)?;
+        }
+        Ok(())
     }
 }
 
