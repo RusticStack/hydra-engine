@@ -476,6 +476,12 @@ fn failure_json(f: &Failure, cmd: &str) -> Json {
 }
 
 impl Connection {
+    /// True once the connection has presented the token (its first request was an accepted `hello`).
+    #[must_use]
+    pub fn is_authenticated(&self) -> bool {
+        self.authenticated
+    }
+
     /// The id of this connection's client.
     #[must_use]
     pub fn client_id(&self) -> u32 {

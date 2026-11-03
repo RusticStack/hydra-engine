@@ -314,39 +314,41 @@ pub unsafe extern "C" fn hydra_rp_ft_new(
     sizes: *const i64,
     flags: *const u8,
 ) -> *mut FunctionTable {
-    let n = n as usize;
-    if n > 0
-        && (names.is_null()
-            || name_ends.is_null()
-            || entries.is_null()
-            || entry_ends.is_null()
-            || sizes.is_null()
-            || flags.is_null())
-    {
-        return ptr::null_mut();
-    }
-    // SAFETY: the caller guarantees each pointer is valid for its length (null only when n == 0
-    // and the length is 0, where an empty slice is made instead).
-    let (na, ne, ea, ee, sz, fl) = unsafe {
-        (
-            slice_or_empty(names, names_len as usize),
-            slice_or_empty(name_ends, n),
-            slice_or_empty(entries, entries_len as usize),
-            slice_or_empty(entry_ends, n),
-            slice_or_empty(sizes, n),
-            slice_or_empty(flags, n),
-        )
-    };
-    let Some(ni) = arena_iter(na, ne) else {
-        return ptr::null_mut();
-    };
-    let Some(ei) = arena_iter(ea, ee) else {
-        return ptr::null_mut();
-    };
-    match FunctionTable::new(ni, ei, sz, fl) {
-        Some(t) => Box::into_raw(Box::new(t)),
-        None => ptr::null_mut(),
-    }
+    crate::guard(ptr::null_mut(), || {
+        let n = n as usize;
+        if n > 0
+            && (names.is_null()
+                || name_ends.is_null()
+                || entries.is_null()
+                || entry_ends.is_null()
+                || sizes.is_null()
+                || flags.is_null())
+        {
+            return ptr::null_mut();
+        }
+        // SAFETY: the caller guarantees each pointer is valid for its length (null only when n == 0
+        // and the length is 0, where an empty slice is made instead).
+        let (na, ne, ea, ee, sz, fl) = unsafe {
+            (
+                slice_or_empty(names, names_len as usize),
+                slice_or_empty(name_ends, n),
+                slice_or_empty(entries, entries_len as usize),
+                slice_or_empty(entry_ends, n),
+                slice_or_empty(sizes, n),
+                slice_or_empty(flags, n),
+            )
+        };
+        let Some(ni) = arena_iter(na, ne) else {
+            return ptr::null_mut();
+        };
+        let Some(ei) = arena_iter(ea, ee) else {
+            return ptr::null_mut();
+        };
+        match FunctionTable::new(ni, ei, sz, fl) {
+            Some(t) => Box::into_raw(Box::new(t)),
+            None => ptr::null_mut(),
+        }
+    })
 }
 
 /// # Safety
@@ -384,8 +386,10 @@ fn arena_iter<'a>(
 /// `t` must come from [`hydra_rp_ft_new`] and not be freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hydra_rp_ft_len(t: *const FunctionTable) -> u64 {
-    // SAFETY: guaranteed by the caller.
-    unsafe { t.as_ref() }.map_or(0, |t| t.len() as u64)
+    crate::guard(0, || {
+        // SAFETY: guaranteed by the caller.
+        unsafe { t.as_ref() }.map_or(0, |t| t.len() as u64)
+    })
 }
 
 /// Bytes held by the table.
@@ -394,8 +398,10 @@ pub unsafe extern "C" fn hydra_rp_ft_len(t: *const FunctionTable) -> u64 {
 /// As [`hydra_rp_ft_len`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hydra_rp_ft_weight(t: *const FunctionTable) -> u64 {
-    // SAFETY: guaranteed by the caller.
-    unsafe { t.as_ref() }.map_or(0, |t| t.weight() as u64)
+    crate::guard(0, || {
+        // SAFETY: guaranteed by the caller.
+        unsafe { t.as_ref() }.map_or(0, |t| t.weight() as u64)
+    })
 }
 
 /// The last render of this thread, and the request it answers when it did not fit the caller's
@@ -429,42 +435,44 @@ pub unsafe extern "C" fn hydra_rp_ft_page(
     out: *mut u8,
     out_cap: u64,
 ) -> i64 {
-    // SAFETY: guaranteed by the caller.
-    let Some(t) = (unsafe { t.as_ref() }) else {
-        return -1;
-    };
-    let needle = if contains.is_null() {
-        None
-    } else {
+    crate::guard(-1, || {
         // SAFETY: guaranteed by the caller.
-        Some(unsafe { slice_or_empty(contains, contains_len as usize) })
-    };
-    let key = (
-        t as *const FunctionTable as usize,
-        needle.map_or_else(Vec::new, <[u8]>::to_vec),
-        needle.is_some(),
-        offset,
-        limit,
-    );
-    PAGE.with(|cell| {
-        let mut pb = cell.borrow_mut();
-        let pb = &mut *pb;
-        if pb.pending.take().as_ref() != Some(&key) {
-            t.page(needle, offset as usize, limit as usize, &mut pb.buf);
-        }
-        let len = pb.buf.len();
-        if len as u64 <= out_cap && !out.is_null() {
-            // SAFETY: out is valid for out_cap >= len bytes.
-            unsafe { ptr::copy_nonoverlapping(pb.buf.as_ptr(), out, len) };
+        let Some(t) = (unsafe { t.as_ref() }) else {
+            return -1;
+        };
+        let needle = if contains.is_null() {
+            None
         } else {
-            pb.pending = Some(key);
-            return len as i64; // kept for the retry
-        }
-        if pb.buf.capacity() > (8 << 20) {
-            // do not keep a huge one-off page alive on this thread
-            pb.buf = Vec::new();
-        }
-        len as i64
+            // SAFETY: guaranteed by the caller.
+            Some(unsafe { slice_or_empty(contains, contains_len as usize) })
+        };
+        let key = (
+            t as *const FunctionTable as usize,
+            needle.map_or_else(Vec::new, <[u8]>::to_vec),
+            needle.is_some(),
+            offset,
+            limit,
+        );
+        PAGE.with(|cell| {
+            let mut pb = cell.borrow_mut();
+            let pb = &mut *pb;
+            if pb.pending.take().as_ref() != Some(&key) {
+                t.page(needle, offset as usize, limit as usize, &mut pb.buf);
+            }
+            let len = pb.buf.len();
+            if len as u64 <= out_cap && !out.is_null() {
+                // SAFETY: out is valid for out_cap >= len bytes.
+                unsafe { ptr::copy_nonoverlapping(pb.buf.as_ptr(), out, len) };
+            } else {
+                pb.pending = Some(key);
+                return len as i64; // kept for the retry
+            }
+            if pb.buf.capacity() > (8 << 20) {
+                // do not keep a huge one-off page alive on this thread
+                pb.buf = Vec::new();
+            }
+            len as i64
+        })
     })
 }
 
@@ -474,10 +482,12 @@ pub unsafe extern "C" fn hydra_rp_ft_page(
 /// `t` must come from [`hydra_rp_ft_new`] and not be used afterwards (null is ignored).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hydra_rp_ft_free(t: *mut FunctionTable) {
-    if !t.is_null() {
-        // SAFETY: t came from Box::into_raw in hydra_rp_ft_new.
-        drop(unsafe { Box::from_raw(t) });
-    }
+    crate::guard((), || {
+        if !t.is_null() {
+            // SAFETY: t came from Box::into_raw in hydra_rp_ft_new.
+            drop(unsafe { Box::from_raw(t) });
+        }
+    })
 }
 
 #[cfg(test)]

@@ -114,13 +114,13 @@ struct Rd<'a>(&'a [u8]);
 
 impl Rd<'_> {
     fn u16(&self, at: usize) -> Option<u16> {
-        Some(u16::from_le_bytes(self.0.get(at..at + 2)?.try_into().ok()?))
+        Some(u16::from_le_bytes(self.bytes(at, 2)?.try_into().ok()?))
     }
     fn u32(&self, at: usize) -> Option<u32> {
-        Some(u32::from_le_bytes(self.0.get(at..at + 4)?.try_into().ok()?))
+        Some(u32::from_le_bytes(self.bytes(at, 4)?.try_into().ok()?))
     }
     fn u64(&self, at: usize) -> Option<u64> {
-        Some(u64::from_le_bytes(self.0.get(at..at + 8)?.try_into().ok()?))
+        Some(u64::from_le_bytes(self.bytes(at, 8)?.try_into().ok()?))
     }
     fn bytes(&self, at: usize, len: usize) -> Option<&[u8]> {
         self.0.get(at..at.checked_add(len)?)
@@ -320,14 +320,22 @@ fn scan_stack(
     if let Some(rip) = rip.filter(|r| in_module(modules, *r)) {
         frames.push(rip);
     }
-    let start = rsp.saturating_sub(base) as usize;
+    // `rsp` and `base` both come from the dump: an offset past the end of the stack (or past `usize`) means
+    // "no frames", never an overflow or an inverted slice range.
+    let start = usize::try_from(rsp.saturating_sub(base)).unwrap_or(usize::MAX);
     let mut off = start & !7;
-    while off + 8 <= stack.len() && frames.len() < MAX_FRAMES {
-        let v = u64::from_le_bytes(stack[off..off + 8].try_into().unwrap_or([0; 8]));
+    while frames.len() < MAX_FRAMES {
+        let Some(word) = stack.get(off..).and_then(|s| s.first_chunk::<8>()) else {
+            break;
+        };
+        let v = u64::from_le_bytes(*word);
         if in_module(modules, v) {
             frames.push(v);
         }
-        off += 8;
+        let Some(next) = off.checked_add(8) else {
+            break;
+        };
+        off = next;
     }
     frames
 }
@@ -962,6 +970,93 @@ mod tests {
         let mut bad = good.clone();
         bad[12..16].copy_from_slice(&0xffff_fff0u32.to_le_bytes());
         assert!(parse(&bad).is_err());
+    }
+
+    #[test]
+    fn a_crafted_stack_pointer_cannot_overflow_the_frame_scan() {
+        // rsp - base is near u64::MAX (rsp = u64::MAX - 7, base = 0x1000): the offset arithmetic must not wrap.
+        for (sbase, rsp_off) in [
+            (0x1000u64, u64::MAX - 0x1000 - 7),
+            (0, u64::MAX),
+            (0, u64::MAX - 7),
+        ] {
+            let bytes = dump(vec![(
+                1,
+                0,
+                sbase,
+                rsp_off,
+                vec![BASE + 0x1010, BASE + 0x2010],
+            )]);
+            let d = parse(&bytes)
+                .unwrap_or_else(|e| panic!("sbase {sbase:#x} rsp_off {rsp_off:#x}: {e:?}"));
+            assert_eq!(d.threads.len(), 1);
+            assert!(
+                d.threads[0].frames.len() <= 1,
+                "no stack words are reachable from rsp {:#x}",
+                d.threads[0].rsp.unwrap_or(0)
+            );
+        }
+        // base == rsp == u64::MAX is a valid zero offset: the words are scanned and nothing wraps
+        let bytes = dump(vec![(
+            1,
+            0,
+            u64::MAX,
+            0,
+            vec![BASE + 0x1010, BASE + 0x2010],
+        )]);
+        assert!(parse(&bytes).unwrap().threads[0].frames.len() >= 2);
+        // the scan itself, directly, with the extreme offsets
+        let stack = [0u8; 64];
+        assert!(scan_stack(&stack, 0, u64::MAX, None, &[]).is_empty());
+        assert!(scan_stack(&stack, 0, u64::MAX - 7, None, &[]).is_empty());
+        assert!(scan_stack(&stack, 8, 7, None, &[]).len() <= MAX_FRAMES);
+    }
+
+    #[test]
+    fn truncated_flipped_and_garbage_dumps_never_panic() {
+        let good = dump(vec![
+            thread(1, 0, &[BASE + 0x4010, 0xdead, BASE + 0x1010, 7]),
+            thread(2, 1, &[BASE + 0x2010]),
+        ]);
+        // every possible truncation
+        for cut in 0..=good.len() {
+            let _ = parse(&good[..cut]);
+        }
+        // deterministic mutation fuzz: random bytes (biased to 0x00/0xff, the values that overflow) written into the
+        // header, directory, stream bodies and thread records
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..4000 {
+            let mut bytes = good.clone();
+            for _ in 0..1 + next() % 6 {
+                let at = (next() % bytes.len() as u64) as usize;
+                bytes[at] = match next() % 4 {
+                    0 => 0x00,
+                    1 => 0xff,
+                    2 => 0x80,
+                    _ => next() as u8,
+                };
+            }
+            if next() % 4 == 0 {
+                bytes.truncate((next() % bytes.len() as u64) as usize);
+            }
+            if let Ok(d) = parse(&bytes) {
+                let _ = to_events(&d, "fuzz");
+            }
+        }
+        // pure garbage with a valid signature
+        for len in [0usize, 4, 32, 64, 4096] {
+            let mut junk: Vec<u8> = (0..len).map(|_| next() as u8).collect();
+            if len >= 4 {
+                junk[0..4].copy_from_slice(&SIGNATURE.to_le_bytes());
+            }
+            let _ = parse(&junk);
+        }
     }
 
     #[test]

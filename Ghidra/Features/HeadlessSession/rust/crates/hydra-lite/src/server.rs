@@ -279,26 +279,44 @@ pub fn run(o: &Options) -> Result<(), String> {
     Ok(())
 }
 
+/// How long a connection may stay silent before its first accepted request. Without it any local process could hold
+/// every worker slot with idle connections.
+const PRE_AUTH_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// One of the `workers` connection slots, released when dropped: on a normal end, when the thread cannot be spawned
+/// (the closure holding it is dropped) and when the connection's thread panics (it is dropped while unwinding).
+struct Slot(Arc<Shared>);
+
+impl Slot {
+    /// Takes a slot, or `None` when all `workers` are in use.
+    fn take(shared: &Arc<Shared>) -> Option<Slot> {
+        let n = shared.active.fetch_add(1, Ordering::SeqCst);
+        let slot = Slot(Arc::clone(shared));
+        (n < shared.workers).then_some(slot) // a refused `slot` is dropped here and gives the count back
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.active.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 fn accept(shared: &Arc<Shared>, stream: TcpStream) {
     let _ = stream.set_nodelay(true);
-    let n = shared.active.fetch_add(1, Ordering::SeqCst);
-    if n >= shared.workers {
-        shared.active.fetch_sub(1, Ordering::SeqCst);
+    let Some(slot) = Slot::take(shared) else {
         refuse_capacity(stream, shared.workers);
         return;
-    }
+    };
     let conn = shared.engine.connect();
     let s = Arc::clone(shared);
-    let spawned = std::thread::Builder::new()
+    let _ = std::thread::Builder::new()
         .name("conn".into())
         .stack_size(512 * 1024)
         .spawn(move || {
-            serve(&s, &stream, conn);
-            s.active.fetch_sub(1, Ordering::SeqCst);
+            let _slot = slot;
+            serve(&s, &stream, conn, PRE_AUTH_READ_TIMEOUT);
         });
-    if spawned.is_err() {
-        shared.active.fetch_sub(1, Ordering::SeqCst);
-    }
 }
 
 /// All workers are busy: say so in the protocol's structured error and close.
@@ -361,10 +379,20 @@ fn trim_cr(mut b: Vec<u8>) -> Vec<u8> {
     b
 }
 
-fn serve(shared: &Arc<Shared>, stream: &TcpStream, mut conn: Connection) {
+fn serve(
+    shared: &Arc<Shared>,
+    stream: &TcpStream,
+    mut conn: Connection,
+    pre_auth_timeout: Duration,
+) {
     let Ok(read_half) = stream.try_clone() else {
         return;
     };
+    // A timed-out read ends the connection like a closed one (`Err(_) => break` below). The timeout is dropped once
+    // the client has authenticated: a logged-in client may think for as long as it likes.
+    // Set on the handle that reads: on Windows a cloned socket handle does not share the timeout of the original.
+    let _ = read_half.set_read_timeout(Some(pre_auth_timeout));
+    let mut timed = true;
     let mut reader = BufReader::with_capacity(1 << 16, read_half);
     let mut writer = io::BufWriter::with_capacity(1 << 16, stream);
     loop {
@@ -378,6 +406,10 @@ fn serve(shared: &Arc<Shared>, stream: &TcpStream, mut conn: Connection) {
             Ok(Line::Eof) | Err(_) => break,
         };
         let out = conn.handle(&line);
+        if timed && conn.is_authenticated() {
+            let _ = reader.get_ref().set_read_timeout(None);
+            timed = false;
+        }
         if send(&mut writer, out.line.as_deref()).is_err() {
             break;
         }
@@ -466,6 +498,72 @@ mod tests {
             "learn needs a source"
         );
         assert!(parse_args(args(&["--bogus"])).is_err(), "unknown option");
+    }
+
+    fn shared(workers: usize) -> Arc<Shared> {
+        let cfg = Config {
+            instance: "t".into(),
+            endpoint_file: "t.json".into(),
+            token: "tok".into(),
+            port: 0,
+            pid: 1,
+            started_at: 0,
+            keep_warm_ms: 0,
+        };
+        Arc::new(Shared {
+            engine: Engine::new(cfg, None),
+            endpoint_file: PathBuf::from("t.json"),
+            pid: 1,
+            active: AtomicUsize::new(0),
+            workers,
+        })
+    }
+
+    #[test]
+    fn slots_are_limited_and_freed_on_drop_and_on_a_panicking_thread() {
+        let s = shared(2);
+        let a = Slot::take(&s).expect("first");
+        let b = Slot::take(&s).expect("second");
+        assert!(Slot::take(&s).is_none(), "full");
+        assert_eq!(
+            s.active.load(Ordering::SeqCst),
+            2,
+            "a refused attempt gives its count back"
+        );
+        drop(a);
+        let c = Slot::take(&s).expect("a freed slot is reusable");
+        // a connection thread that panics while holding its slot must not leak it (64 of these used to refuse
+        // every later client with `capacity`)
+        let panicked = std::thread::spawn(move || {
+            let _slot = c;
+            panic!("conn.handle panicked");
+        })
+        .join();
+        assert!(panicked.is_err());
+        assert_eq!(s.active.load(Ordering::SeqCst), 1, "only `b` is still held");
+        drop(b);
+        assert_eq!(s.active.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_connection_that_never_speaks_is_dropped_after_the_pre_auth_timeout() {
+        let s = shared(4);
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let idle = TcpStream::connect(addr).expect("connect");
+        let (stream, _) = listener.accept().expect("accept");
+        let conn = s.engine.connect();
+        let started = std::time::Instant::now();
+        let served =
+            std::thread::spawn(move || serve(&s, &stream, conn, Duration::from_millis(150)));
+        served
+            .join()
+            .expect("serve returns instead of waiting forever");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "returned by the timeout, not by luck"
+        );
+        drop(idle);
     }
 
     #[test]

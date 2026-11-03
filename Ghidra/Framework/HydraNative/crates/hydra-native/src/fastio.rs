@@ -680,14 +680,16 @@ pub unsafe extern "C" fn hydra_io_flush_start(
     len: u64,
     threads: u32,
 ) -> *mut IoJob {
-    // SAFETY: forwarded from the caller.
-    let Some(bytes) = (unsafe { blob_of(blob, len) }) else {
-        return std::ptr::null_mut();
-    };
-    match parse_flush(bytes) {
-        Some(ops) => start_flush(ops, threads as usize),
-        None => std::ptr::null_mut(),
-    }
+    crate::guard(std::ptr::null_mut(), || {
+        // SAFETY: forwarded from the caller.
+        let Some(bytes) = (unsafe { blob_of(blob, len) }) else {
+            return std::ptr::null_mut();
+        };
+        match parse_flush(bytes) {
+            Some(ops) => start_flush(ops, threads as usize),
+            None => std::ptr::null_mut(),
+        }
+    })
 }
 
 /// Starts a copy job described by `blob`; see [`hydra_io_flush_start`].
@@ -700,14 +702,16 @@ pub unsafe extern "C" fn hydra_io_copy_start(
     len: u64,
     threads: u32,
 ) -> *mut IoJob {
-    // SAFETY: forwarded from the caller.
-    let Some(bytes) = (unsafe { blob_of(blob, len) }) else {
-        return std::ptr::null_mut();
-    };
-    match parse_copy(bytes) {
-        Some(ops) => start_copy(ops, threads as usize),
-        None => std::ptr::null_mut(),
-    }
+    crate::guard(std::ptr::null_mut(), || {
+        // SAFETY: forwarded from the caller.
+        let Some(bytes) = (unsafe { blob_of(blob, len) }) else {
+            return std::ptr::null_mut();
+        };
+        match parse_copy(bytes) {
+            Some(ops) => start_copy(ops, threads as usize),
+            None => std::ptr::null_mut(),
+        }
+    })
 }
 
 /// Waits up to `timeout_ms` for the job to end: [`JOB_RUNNING`], [`JOB_OK`] or [`JOB_FAILED`].
@@ -716,19 +720,21 @@ pub unsafe extern "C" fn hydra_io_copy_start(
 /// `job` must come from a `hydra_io_*_start` and not be freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hydra_io_wait(job: *const IoJob, timeout_ms: u32) -> i32 {
-    // SAFETY: guaranteed by the caller.
-    let Some(job) = (unsafe { job.as_ref() }) else {
-        return JOB_FAILED;
-    };
-    let inner = &job.inner;
-    if let Ok(g) = inner.ended.lock() {
-        let _ = inner.done_cv.wait_timeout_while(
-            g,
-            Duration::from_millis(u64::from(timeout_ms)),
-            |e| !*e,
-        );
-    }
-    inner.state()
+    crate::guard(JOB_FAILED, || {
+        // SAFETY: guaranteed by the caller.
+        let Some(job) = (unsafe { job.as_ref() }) else {
+            return JOB_FAILED;
+        };
+        let inner = &job.inner;
+        if let Ok(g) = inner.ended.lock() {
+            let _ = inner.done_cv.wait_timeout_while(
+                g,
+                Duration::from_millis(u64::from(timeout_ms)),
+                |e| !*e,
+            );
+        }
+        inner.state()
+    })
 }
 
 /// The bytes of the files done so far (copy jobs).
@@ -737,8 +743,10 @@ pub unsafe extern "C" fn hydra_io_wait(job: *const IoJob, timeout_ms: u32) -> i3
 /// `job` must come from a `hydra_io_*_start` and not be freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hydra_io_progress(job: *const IoJob) -> u64 {
-    // SAFETY: guaranteed by the caller.
-    unsafe { job.as_ref() }.map_or(0, |j| j.inner.bytes.load(Ordering::Relaxed))
+    crate::guard(0, || {
+        // SAFETY: guaranteed by the caller.
+        unsafe { job.as_ref() }.map_or(0, |j| j.inner.bytes.load(Ordering::Relaxed))
+    })
 }
 
 /// Asks the job to stop at its next op; ops under way end. The job then ends as failed with
@@ -748,10 +756,12 @@ pub unsafe extern "C" fn hydra_io_progress(job: *const IoJob) -> u64 {
 /// `job` must come from a `hydra_io_*_start` and not be freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hydra_io_cancel(job: *const IoJob) {
-    // SAFETY: guaranteed by the caller.
-    if let Some(j) = unsafe { job.as_ref() } {
-        j.inner.fail(Failure::cancelled());
-    }
+    crate::guard((), || {
+        // SAFETY: guaranteed by the caller.
+        if let Some(j) = unsafe { job.as_ref() } {
+            j.inner.fail(Failure::cancelled());
+        }
+    })
 }
 
 /// The failure of an ended job: its kind in `*kind` and its message (UTF-8, cut to `cap`) in
@@ -767,29 +777,31 @@ pub unsafe extern "C" fn hydra_io_error(
     out: *mut u8,
     cap: u64,
 ) -> u64 {
-    // SAFETY: guaranteed by the caller.
-    let Some(j) = (unsafe { job.as_ref() }) else {
-        return 0;
-    };
-    let failure = j.inner.failure.lock().ok().and_then(|f| f.clone());
-    let Some(f) = failure else {
+    crate::guard(0, || {
+        // SAFETY: guaranteed by the caller.
+        let Some(j) = (unsafe { job.as_ref() }) else {
+            return 0;
+        };
+        let failure = j.inner.failure.lock().ok().and_then(|f| f.clone());
+        let Some(f) = failure else {
+            if !kind.is_null() {
+                // SAFETY: `kind` is valid for one i32.
+                unsafe { *kind = KIND_NONE };
+            }
+            return 0;
+        };
         if !kind.is_null() {
             // SAFETY: `kind` is valid for one i32.
-            unsafe { *kind = KIND_NONE };
+            unsafe { *kind = f.kind };
         }
-        return 0;
-    };
-    if !kind.is_null() {
-        // SAFETY: `kind` is valid for one i32.
-        unsafe { *kind = f.kind };
-    }
-    let msg = f.message.as_bytes();
-    if !out.is_null() {
-        let n = msg.len().min(usize::try_from(cap).unwrap_or(usize::MAX));
-        // SAFETY: `out` is valid for `cap` bytes and `n <= cap`; `msg` has `n` bytes.
-        unsafe { std::ptr::copy_nonoverlapping(msg.as_ptr(), out, n) };
-    }
-    msg.len() as u64
+        let msg = f.message.as_bytes();
+        if !out.is_null() {
+            let n = msg.len().min(usize::try_from(cap).unwrap_or(usize::MAX));
+            // SAFETY: `out` is valid for `cap` bytes and `n <= cap`; `msg` has `n` bytes.
+            unsafe { std::ptr::copy_nonoverlapping(msg.as_ptr(), out, n) };
+        }
+        msg.len() as u64
+    })
 }
 
 /// The outcome bytes of an ended copy job, one per record, cut to `cap`; returns their count.
@@ -798,19 +810,21 @@ pub unsafe extern "C" fn hydra_io_error(
 /// `job` must be live and `out` valid for `cap` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hydra_io_outcomes(job: *const IoJob, out: *mut u8, cap: u64) -> u64 {
-    // SAFETY: guaranteed by the caller.
-    let Some(j) = (unsafe { job.as_ref() }) else {
-        return 0;
-    };
-    let n = j.inner.outcomes.len();
-    if !out.is_null() {
-        let m = n.min(usize::try_from(cap).unwrap_or(usize::MAX));
-        for (i, o) in j.inner.outcomes.iter().take(m).enumerate() {
-            // SAFETY: `i < m <= cap`, so the byte is inside the caller's buffer.
-            unsafe { *out.add(i) = o.load(Ordering::Acquire) };
+    crate::guard(0, || {
+        // SAFETY: guaranteed by the caller.
+        let Some(j) = (unsafe { job.as_ref() }) else {
+            return 0;
+        };
+        let n = j.inner.outcomes.len();
+        if !out.is_null() {
+            let m = n.min(usize::try_from(cap).unwrap_or(usize::MAX));
+            for (i, o) in j.inner.outcomes.iter().take(m).enumerate() {
+                // SAFETY: `i < m <= cap`, so the byte is inside the caller's buffer.
+                unsafe { *out.add(i) = o.load(Ordering::Acquire) };
+            }
         }
-    }
-    n as u64
+        n as u64
+    })
 }
 
 /// Frees a job. A job still running is cancelled and finishes on its own threads; it holds what it
@@ -820,14 +834,16 @@ pub unsafe extern "C" fn hydra_io_outcomes(job: *const IoJob, out: *mut u8, cap:
 /// `job` must come from a `hydra_io_*_start`, once.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hydra_io_free(job: *mut IoJob) {
-    if job.is_null() {
-        return;
-    }
-    // SAFETY: made by Box::into_raw in `start`, freed once.
-    let j = unsafe { Box::from_raw(job) };
-    if j.inner.state() == JOB_RUNNING {
-        j.inner.fail(Failure::cancelled());
-    }
+    crate::guard((), || {
+        if job.is_null() {
+            return;
+        }
+        // SAFETY: made by Box::into_raw in `start`, freed once.
+        let j = unsafe { Box::from_raw(job) };
+        if j.inner.state() == JOB_RUNNING {
+            j.inner.fail(Failure::cancelled());
+        }
+    })
 }
 
 #[cfg(test)]
