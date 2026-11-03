@@ -212,6 +212,53 @@ fn listing_lines(db: &ProgramDb<BufferFile>) -> Vec<String> {
         }
     }
 
+    // bodies, stack frame return offset and stored variables
+    let bodies = db.function_bodies().unwrap();
+    let variables = db.variables().unwrap();
+    let mut var_rows = Vec::new();
+    for f in &fns {
+        let body: String = bodies[&f.id]
+            .iter()
+            .map(|r| format!("{r};"))
+            .collect::<Vec<_>>()
+            .concat();
+        out.push(format!("fnbody id={} ranges=[{body}]", f.id));
+        if f.is_thunk() {
+            continue;
+        }
+        out.push(format!(
+            "fnframe id={} retoff={}",
+            f.id, f.stack_return_offset
+        ));
+        for v in variables.iter().filter(|v| v.function_id == f.id) {
+            let kind = if v.is_parameter { "param" } else { "local" };
+            let name = if v.source == ghidra_progdb::SourceType::Default {
+                ""
+            } else {
+                &v.name
+            };
+            let ord = v.ordinal.map_or("-".to_owned(), |o| o.to_string());
+            let first = v.first_use_offset.map_or("-".to_owned(), |o| o.to_string());
+            let storage = if v.is_parameter && !f.has_custom_storage() {
+                "-"
+            } else {
+                v.storage.as_deref().unwrap_or("")
+            };
+            var_rows.push((
+                format!("{:020} {kind} {:020}", f.id, v.symbol_id),
+                format!(
+                    "fnvar fn={} sym={} kind={kind} name=[{name}] src={} ord={ord} first={first} dt={} storage=[{storage}]",
+                    f.id,
+                    v.symbol_id,
+                    v.source.name(),
+                    v.datatype_id.unwrap_or(-1)
+                ),
+            ));
+        }
+    }
+    out.push(format!("fnvars={}", var_rows.len()));
+    emit(&mut out, var_rows);
+
     let mut rows = Vec::new();
     for (owner, refs) in db.references_from().unwrap() {
         for r in &refs {

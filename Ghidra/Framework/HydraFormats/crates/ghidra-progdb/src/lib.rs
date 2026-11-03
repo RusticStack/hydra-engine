@@ -11,6 +11,7 @@
 //! is refused with a descriptive [`ProgError`] instead of being guessed at.
 
 mod addrmap;
+mod bodies;
 mod error;
 mod functions;
 mod listing;
@@ -26,6 +27,7 @@ use ghidra_fmt_field::{Field, Record, Schema};
 use ghidra_fmt_gbf::BufferStore;
 
 pub use addrmap::{Address, AddressMap, AddressSpaces, SpaceDef};
+pub use bodies::{AddressRange, Variable};
 pub use error::ProgError;
 pub use functions::Function;
 pub use listing::{Comments, DataRow, InstructionRow};
@@ -142,6 +144,7 @@ impl<S: BufferStore> ProgramDb<S> {
         };
         optional("Function Data", &[3])?;
         optional("Thunk Functions", &[0])?;
+        optional("Variable Storage", &[2])?;
         optional("FROM REFS", &[0])?;
         optional("TO REFS", &[1])?;
         optional("Instructions", &[1])?;
@@ -213,6 +216,20 @@ impl<S: BufferStore> ProgramDb<S> {
             .map(|s| (s.id, s.address))
             .collect();
         functions::read_functions(&self.db, &addresses)
+    }
+
+    /// The body (merged address ranges) of every function, by function id.
+    ///
+    /// A body is the ranges painted for the function in "Range Map - SCOPE ADDRESSES" plus the
+    /// bodies of the namespaces nested under it (`NamespaceManager.getAddressSet`).
+    pub fn function_bodies(&self) -> Result<BTreeMap<i64, Vec<AddressRange>>> {
+        let ids: Vec<i64> = self.functions()?.iter().map(|f| f.id).collect();
+        bodies::function_bodies(&self.db, &self.address_map, &self.symbols()?, &ids)
+    }
+
+    /// Every parameter and local variable symbol in symbol id order.
+    pub fn variables(&self) -> Result<Vec<Variable>> {
+        bodies::read_variables(&self.db, &self.symbols()?)
     }
 
     /// Every "FROM REFS" row in key order: the from address and its references.

@@ -18,6 +18,7 @@ import ghidra.program.model.symbol.SourceType;
 import ghidra.program.model.symbol.Symbol;
 import ghidra.util.task.TaskMonitor;
 import ghidra.program.model.address.AddressIterator;
+import ghidra.program.model.address.AddressRange;
 import ghidra.program.model.address.AddressSetView;
 import ghidra.program.model.listing.*;
 import ghidra.program.model.symbol.*;
@@ -201,6 +202,53 @@ public class OracleProgram {
                     + " sigsrc=" + f.getSignatureSource().name());
             }
         }
+        // bodies, stack frame return offset, stored variables
+        List<String[]> varRows = new ArrayList<>();
+        for (Function f : fns) {
+            StringBuilder body = new StringBuilder();
+            for (AddressRange r : f.getBody().getAddressRanges()) {
+                body.append(addr(r.getMinAddress())).append('-').append(addr(r.getMaxAddress()))
+                    .append(';');
+            }
+            System.out.println("fnbody id=" + f.getID() + " ranges=[" + body + "]");
+            if (f.isThunk()) {
+                continue;
+            }
+            System.out.println("fnframe id=" + f.getID() + " retoff="
+                + f.getStackFrame().getReturnAddressOffset());
+            int autoCount = 0;
+            for (Parameter pr : f.getParameters()) {
+                if (pr.isAutoParameter()) {
+                    autoCount++;
+                }
+            }
+            boolean custom = f.hasCustomVariableStorage();
+            List<Variable> vars = new ArrayList<>();
+            for (Parameter pr : f.getParameters()) {
+                if (!pr.isAutoParameter()) {
+                    vars.add(pr);
+                }
+            }
+            for (Variable v : f.getLocalVariables()) {
+                vars.add(v);
+            }
+            for (Variable v : vars) {
+                boolean param = v instanceof Parameter;
+                Symbol sym = v.getSymbol();
+                String name = sym.getSource() == SourceType.DEFAULT ? "" : sym.getName();
+                String ord = param ? Integer.toString(((Parameter) v).getOrdinal() - autoCount) : "-";
+                String first = param ? "-" : Integer.toString(v.getFirstUseOffset());
+                String storage = param && !custom ? "-" : v.getVariableStorage().getSerializationString();
+                varRows.add(new String[] {
+                    String.format("%020d %s %020d", f.getID(), param ? "param" : "local", sym.getID()),
+                    "fnvar fn=" + f.getID() + " sym=" + sym.getID() + " kind=" + (param ? "param" : "local")
+                        + " name=[" + name + "] src=" + sym.getSource().name() + " ord=" + ord
+                        + " first=" + first + " dt=" + p.getDataTypeManager().getID(v.getDataType())
+                        + " storage=[" + storage + "]" });
+            }
+        }
+        System.out.println("fnvars=" + varRows.size());
+        emit(varRows);
         ghidra.program.model.address.AddressSet all = new ghidra.program.model.address.AddressSet();
         for (AddressSpace sp : p.getAddressFactory().getAllAddressSpaces()) {
             if (sp.isMemorySpace() || sp.isExternalSpace()) {
