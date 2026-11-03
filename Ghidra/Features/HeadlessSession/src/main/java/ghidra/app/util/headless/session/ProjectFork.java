@@ -764,6 +764,40 @@ final class ProjectFork {
 			}
 		});
 
+	/**
+	 * Copies the native copy has already forced (right after writing them, on the thread that
+	 * wrote them), by path, with the size and modification time they had then. {@link #forceTree}
+	 * skips such a file only when it still has both: a file written since (an upgrade in a copy of
+	 * the upgrade cache, say) has another time and is forced again, so E12 holds as before. Bounded.
+	 */
+	private static final Map<Path, long[]> PREFLUSHED =
+		java.util.Collections.synchronizedMap(new LinkedHashMap<>() {
+			private static final long serialVersionUID = 1L;
+
+			@Override
+			protected boolean removeEldestEntry(Map.Entry<Path, long[]> e) {
+				return size() > 4096;
+			}
+		});
+
+	/** Records that {@code f}, just copied, has been forced (see {@link #PREFLUSHED}). */
+	static void notePreflushed(Path f) {
+		try {
+			java.nio.file.attribute.BasicFileAttributes a =
+				Files.readAttributes(f, java.nio.file.attribute.BasicFileAttributes.class);
+			PREFLUSHED.put(f, new long[] { a.size(), a.lastModifiedTime().to(java.util.concurrent.TimeUnit.NANOSECONDS) });
+		}
+		catch (IOException e) {
+			// not recorded: the file is forced again by forceTree
+		}
+	}
+
+	private static boolean preflushed(Path f, java.nio.file.attribute.BasicFileAttributes a) {
+		long[] was = PREFLUSHED.remove(f);
+		return was != null && was[0] == a.size() &&
+			was[1] == a.lastModifiedTime().to(java.util.concurrent.TimeUnit.NANOSECONDS);
+	}
+
 	static String linkKey(Path source, java.nio.file.attribute.BasicFileAttributes a) {
 		return source + "|" + a.size() + "|" + a.lastModifiedTime().toMillis();
 	}
@@ -830,7 +864,9 @@ final class ProjectFork {
 					Path src = linked.get(f);
 					String key = src == null ? null : linkKey(src, a);
 					if (key == null) {
-						files.add(f);
+						if (!preflushed(f, a)) {
+							files.add(f);
+						}
 					}
 					else if (!FORCED_LINKS.containsKey(key)) {
 						linkedFiles.add(f);
@@ -895,6 +931,14 @@ final class ProjectFork {
 		int total = files.size() + linked.size();
 		if (total == 0) {
 			return;
+		}
+		if (total >= 2) {
+			// the byte mover in Rust: the same flushes on native threads, one job for the list,
+			// and this returns only when every one has ended (E12 is unchanged)
+			HydraIo io = HydraIo.get();
+			if (io != null && io.flush(files, linked, List.of(), FLUSH_THREADS)) {
+				return;
+			}
 		}
 		if (total == 1 || FLUSH_THREADS == 1) {
 			for (Path f : files) {

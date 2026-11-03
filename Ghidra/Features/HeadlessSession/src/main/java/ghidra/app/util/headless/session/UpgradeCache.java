@@ -1640,6 +1640,9 @@ final class UpgradeCache {
 		}
 		m.initialize(total);
 		m.setMessage("copying " + files.size() + " files");
+		if (copyNative(base, name, dest, m, sizes, skipGone, linked)) {
+			return;
+		}
 		java.util.Set<Path> made = new java.util.HashSet<>();
 		for (Map.Entry<Path, Long> e : sizes.entrySet()) {
 			Path src = e.getKey();
@@ -1681,6 +1684,81 @@ final class UpgradeCache {
 			});
 		}
 	}
+
+	/**
+	 * The copy or link of {@code sizes} by the native I/O module ({@link HydraIo}), on native
+	 * threads, with the same result as the loop of {@link #copyProject}: every folder of the
+	 * listing and of the {@code .rep} created, each shareable file hard-linked (copied when the
+	 * file system cannot link) and put in {@code linked}, the others copied with their attributes,
+	 * a file that is gone left out when {@code skipGone}. False when the module is off or cannot
+	 * take the list: nothing was done and the caller copies in Java.
+	 */
+	private static boolean copyNative(Path base, String name, Path dest, RequestMonitor m,
+			java.util.LinkedHashMap<Path, Long> sizes, boolean skipGone, Map<Path, Path> linked)
+			throws IOException, CancelledException {
+		HydraIo io = HydraIo.get();
+		if (io == null) {
+			return false;
+		}
+		// the module is for moving bytes: a fork of a project whose big files are hard-linked
+		// copies a few small files and links the rest, which takes longer on pooled threads than
+		// in a row (measured: 8 ms in a row, 12 to 14 ms on threads, the file system serialises
+		// the creates), so such a copy stays in Java
+		long moving = 0;
+		for (Map.Entry<Path, Long> e : sizes.entrySet()) {
+			if (linked == null || !shareable(e.getKey(), name, e.getValue())) {
+				moving += e.getValue();
+			}
+		}
+		if (moving < NATIVE_COPY_BYTES) {
+			return false;
+		}
+		java.util.Set<Path> folders = new java.util.LinkedHashSet<>();
+		List<HydraIo.Item> items = new ArrayList<>(sizes.size());
+		List<Path> targets = new ArrayList<>(sizes.size());
+		for (Map.Entry<Path, Long> e : sizes.entrySet()) {
+			Path src = e.getKey();
+			Path to = dest.resolve(base.relativize(src).toString());
+			folders.add(to.getParent());
+			boolean link = linked != null && shareable(src, name, e.getValue());
+			// a copy of real size is forced by the thread that wrote it, while the others copy:
+			// the later forceTree skips it when it is still as it was left (ProjectFork.preflushed)
+			items.add(new HydraIo.Item(src, to, e.getValue(), link, skipGone,
+				!link && e.getValue() >= PREFLUSH_MIN));
+			targets.add(to);
+		}
+		// empty folders of the .rep matter to the file system's layout
+		Path rep = base.resolve(name + ProjectLocator.getProjectDirExtension());
+		if (Files.isDirectory(rep)) {
+			Files.walkFileTree(rep, new SimpleFileVisitor<>() {
+				@Override
+				public FileVisitResult preVisitDirectory(Path d, BasicFileAttributes attrs)
+						throws IOException {
+					folders.add(dest.resolve(base.relativize(d).toString()));
+					return FileVisitResult.CONTINUE;
+				}
+			});
+		}
+		byte[] out = io.copy(folders, items, ProjectFork.FLUSH_THREADS, m);
+		if (out == null) {
+			return false;
+		}
+		for (int i = 0; i < out.length; i++) {
+			if (out[i] == HydraIo.OUT_LINKED && linked != null) {
+				linked.put(targets.get(i), items.get(i).src());
+			}
+			else if (out[i] == HydraIo.OUT_COPIED_FLUSHED) {
+				ProjectFork.notePreflushed(targets.get(i));
+			}
+		}
+		return true;
+	}
+
+	/** A copy of at least this many bytes is forced right after it is written ({@link HydraIo}). */
+	static final long PREFLUSH_MIN = Long.getLong("ghidra.session.preflushMin", 1L << 20);
+
+	/** A copy that moves fewer bytes than this (links are not moved) stays in Java. */
+	static final long NATIVE_COPY_BYTES = Long.getLong("ghidra.session.nativeCopyBytes", 4L << 20);
 
 	/** Opens the copy writable, upgrades the plan's program, saves it, and checks it. */
 	private void upgradeInCopy(Build b, ProjectLocator copy)

@@ -4327,6 +4327,22 @@ the publish order of D41, the flush-before-rename rule of E12 (A38) and the repl
   flush has ended. Nothing is moved before the whole tree is on the disk, as A38 requires. The fork's own thread
   forces files too and the pool's threads only help it (a helper that starts after the list is done does nothing),
   so a fork never waits behind the flushes of another fork.
+* (c2) **The byte mover in Rust (12.3-hydra.7).** The flush of (c) and the copy of a fork's big files run on pooled
+  native threads of `hydra_native` (`hydra_io_*`, `HydraIo.java`; C ABI in `include/hydra_native.h`, its own version,
+  `hydra_native_abi_version()` unchanged) when the library is present; `-set nativeIo=false` (or
+  `-Dhydra.nativeIo=false`) keeps the Java path, which is also the path when Rust refuses a list (a name that is not
+  UTF-8) and for a project with fewer than `ghidra.session.nativeCopyBytes` (default 4 MiB) of bytes to move: a fork
+  of a project whose big files are hard-linked copies a few small files and links the rest, and that is faster in a
+  row than on threads (8 ms against 12 to 14 ms measured: the creates serialise in the file system). Java still decides
+  what is linked, what is copied and what was forced before, and the crash-safety order (intent, staged copy, flush,
+  rename, intent clear) is unchanged. A job is polled in 25 ms slices with the request monitor and returns only when
+  every operation it started has ended (success, failure or cancel), so a staging folder is never removed under a
+  running operation. Owned files are forced with write access and left read-only if they were (as `forceFile`),
+  hard-linked files are never touched and a read-only one is skipped (as `forceLinked`), the folder flush stays a
+  no-op on Windows. A copy of at least 1 MiB (`ghidra.session.preflushMin`) that the mover wrote is forced by the
+  thread that wrote it, while the others copy; `forceTree` then skips that file only if its size and modification
+  time are still those it had at the end of the copy, so a file written since (an upgrade in a cache copy) is forced
+  again and A38 holds. Cancel and failure of the copy leave no running thread in the staging folder.
 * (d) **Admission per destination.** `ForkSweeper.admit` takes the monitor of its destination (striped, four to eight
   per CPU) instead of one monitor of the process; for one destination the decision is the same as before (V11).
 * (e) **`maintSlots` is unchanged** (default 4, D40). A larger maint lane also runs more `save`, `refresh`, `reopen`

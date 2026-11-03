@@ -24,6 +24,7 @@ libc.workspace = true
 workspace = true
 features = [
 	"Win32_Foundation",
+	"Win32_Storage_FileSystem",
 	"Win32_System_JobObjects",
 	"Win32_System_SystemInformation",
 	"Win32_System_Threading",
