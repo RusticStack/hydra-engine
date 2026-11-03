@@ -162,3 +162,31 @@ full multi-agent benchmark (`.../rustclient2/bench/`) runs the 16-agent shape wi
 agents on each client: **412/412 reply keys and one digest in all nine Python/Rust/mixed runs**,
 including the overlay and fork decompiles, and 0 differing keys on the same requests. The
 read/query agent shape measures 2.71 vs 13.90 MB private per agent and 531 vs 698 MB tree peak.
+
+# Porting notes: the daemon subset -> `hydra-lite`
+
+`crates/hydra-lite` re-implements, without a JVM, the part of the Java daemon
+(`ghidra.app.util.headless.session`) that `ghidra-progdb` can answer exactly. Design, refusal
+protocol and measurements are in [HYDRA-LITE.md](../HYDRA-LITE.md). The rule of the port: where the
+Java behaviour cannot be reproduced to the byte, the request is refused with `use_full_daemon`;
+there is no approximation.
+
+| Java | Rust | Notes |
+|---|---|---|
+| `Connection` (line reading, `MAX_LINE_BYTES`, `authenticate`, `annotate`, dispatch order) | `engine::Connection`, `server::read_line_limited` | `ms` 0 for pre-dispatch errors; `wait` read before the command for the slot-taking commands and after project selection for the others; `parallel` / `ordered` validated before dispatch |
+| Gson output (`JsonObject.toString`) | `json` | compact, insertion order, nulls written, ` `/` ` escaped and HTML characters left alone (HTML escaping off, as the daemon configures Gson), numbers keep their source text; strict parser, anything lenient is `unparsable_request` |
+| `Caller.of`, `MAX_LABEL` 128 | `request::Request::label` | |
+| `HeadlessSession` (instance lock, endpoint file, token, idle loop, reaper) | `server` | endpoint file via temporary file and rename, trailing newline; reaper lap clamp(keepWarm/4, 1 s .. 15 s) |
+| `hello` (`protocolMin/Max`, capabilities, limits, policy, paths, analysisIdentity) | `identity` | learned from a running Java daemon, cached in the `hydra-front` identity file |
+| `ProjectResolver`, `ProjectFormat`, `Revision`, `ProjectData` index / `.prp` / `db.N.gbf` | `project` | refuses sweep-pending staging files, fork sidecars, versioned items, non-Program items, more than 64 programs; SHA-256 revisions over file keys |
+| `ConcurrentHashMap` iteration order of the project map | `javaish::ChmOrder` | bins ascending, transfer splits with the `lastRun` rule, resize at 12 then 0.75 n; refuses when the order is inexact (a bin of 8) |
+| `HashMap` order of file names, `TreeSet` of folders | `javaish` | refuses on a bucket collision |
+| `ProgramView` facts, `functions` | `program` | via `ghidra_progdb::query::Program::open_lazy`; refuses mapped or non-RAM blocks, namespaced or unnamed functions, other languages and format versions |
+| `SessionException` codes and messages | `error::SessionError` | word for word |
+| none | `error::Refusal`, `Reason` | the `use_full_daemon` error |
+
+Verification: `cargo test -p hydra-lite` (34 tests), `cargo clippy --all-targets -- -D warnings`,
+`cargo fmt --check -p hydra-lite`, and `examples/reply_parity.py lite` (78 requests identical to
+the Java daemon, key order and raw bytes included; 16 refusal probes). The workspace's
+`cargo fmt --check` also reports formatting differences in `hydra-client` and `hydra-agent`; they
+predate this crate and are not touched here.
