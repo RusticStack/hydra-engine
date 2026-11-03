@@ -51,6 +51,7 @@ crates/hydra-trace/src/rawio.rs||GHIDRA||||END|
 crates/hydra-trace/src/relations.rs||GHIDRA||||END|
 crates/hydra-trace/src/relcount.rs||GHIDRA||||END|
 crates/hydra-trace/src/retention.rs||GHIDRA||||END|
+crates/hydra-trace/src/route.rs||GHIDRA||||END|
 crates/hydra-trace/src/service.rs||GHIDRA||||END|
 crates/hydra-trace/src/session.rs||GHIDRA||||END|
 crates/hydra-trace/src/store.rs||GHIDRA||||END|

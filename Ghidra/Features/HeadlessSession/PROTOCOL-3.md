@@ -4363,9 +4363,14 @@ Seventeen protocol 3 commands that record and read **semantic traces** (`TRACE-1
 **Who does what.** The Rust engine (`hydra-trace`'s `Service`, called through `hydra_trace_request`: request bytes in, reply bytes out)
 owns the store and the shapes of the requests and replies below; its replies are deterministic JSON (sorted keys, no floats) and go
 back as they are through the direct-reply path, with `"ok":true` inside the `result` object, so the Python and the Rust client see the same
-reply line (`daemon_tests.py trace_client_identity`). Java adds what only the daemon knows: the **writer lease**, the **symbol table** of a
-program, the **disk reserve**, the **lane**, the **cancel** flag and the **store root**. Fields only Java reads (`create`, `mode`, `cap`,
-`takeover`, `program`, `project`, `modules`, `background`, `name`) are removed before the request reaches the engine.
+reply line (`daemon_tests.py trace_client_identity`). Since `12.3-hydra.7` the daemon's own part is Rust as well, in the router in front
+of the engine (`hydra_trace_route`; the `route` module of `hydra-trace`): the validation of the fields the daemon reads, the **lane**, the
+**writer lease**, the request the engine sees, the disk-room decision, the wrapping of `trace_open`, `trace_info`, `trace_list` and
+`trace_resymbolize` replies, and the **cancel** flag and progress cell of the call. Java is a pump for the request line and keeps what
+only the daemon can do: the **symbol table** of a program (built when the router asks for it), the exact **disk reserve** check (the
+router is told how much room the volume has and asks for the check only when that is not enough), the **store root** and the request
+monitor. Fields only the daemon reads (`create`, `mode`, `cap`, `takeover`, `program`, `project`, `modules`, `background`, `name`) are
+removed before the request reaches the engine. Requests, replies, errors and their order are unchanged.
 
 | Command | Fields | Reply (`result`) | Lane |
 |---|---|---|---|

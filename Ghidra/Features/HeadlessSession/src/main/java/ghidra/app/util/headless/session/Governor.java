@@ -729,6 +729,15 @@ final class Governor {
 		return ProjectFork.fileStore(p.toPath()); // one volume query per volume, not per admission
 	}
 
+	/**
+	 * The room the volume of {@code at} has above the reserve ({@link Budgets#diskReserveBytes}):
+	 * what {@link #requireDisk} compares an estimate with. May be negative.
+	 */
+	static long diskHeadroom(File at) throws IOException {
+		FileStore fs = storeOf(at);
+		return fs.getUsableSpace() - Budgets.diskReserveBytes(fs.getTotalSpace());
+	}
+
 	static void requireDisk(File at, long estimate, String what) throws IOException {
 		FileStore fs = storeOf(at);
 		long usable = fs.getUsableSpace();

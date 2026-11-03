@@ -63,7 +63,7 @@ the package that owns it registers into it from its own files, so no class below
 | `Seals`, `ProjectBackup`, `ProjectFormat` | the sealed predicate (the union of the registry record, `SEALED.json` and the sidecars) and `seal_project`; the backup manifest and its canonical form; the per-project database-format block read without opening a program |
 | `ForkIntent`, `ForkSweeper` | the intent record in a fork's staging folder, the admission of `fork_project` publishers (`fork_in_progress`, `exists`) and the lazy sweeper of what a dead publisher left |
 | `PrivateInstance` | a throwaway program object opened from the stored file, shared by overlays and by `script` with `isolation:"private"` |
-| `TraceCommands`, `TraceLeases`, `TraceSymbols`, `TraceNative` | the `trace_*` commands (WS-C): the router that sends request bytes to Rust and the reply bytes back, the writer lease table (owner capability kept as a SHA-256, producer generation, orphan and takeover), the function table of a program as the engine's symbol table JSON, and the FFM bindings of `hydra_trace_*` (`init`, `request`, `reply_copy`, `set_cancel`) |
+| `TraceCommands`, `TraceFast`, `TraceSymbols`, `TraceNative` | the `trace_*` commands (WS-C): a pump that sends the request line to the Rust router (`hydra_trace_route`: validation, lanes, the writer lease table with its owner capability kept as a SHA-256, producer generation, orphan and takeover, the engine request, the disk-room decision, reply wrapping, cancel and progress cells) and the reply bytes back, the function table of a program as the engine's symbol table JSON (built on the router's call-back), and the FFM bindings of `hydra_trace_*` |
 
 Conventions:
 

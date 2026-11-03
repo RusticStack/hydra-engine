@@ -21,6 +21,7 @@ pub mod rawio;
 pub mod relations;
 pub mod relcount;
 pub mod retention;
+pub mod route;
 pub mod service;
 pub mod session;
 pub mod store;

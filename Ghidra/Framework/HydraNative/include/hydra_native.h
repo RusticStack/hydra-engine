@@ -219,4 +219,48 @@ uint64_t hydra_io_outcomes(const HydraIoJob *job, uint8_t *out, uint64_t cap);
 /* Frees a job; one still running is cancelled and ends on its own. */
 void hydra_io_free(HydraIoJob *job);
 
+/*
+ * The trace router (additive to ABI 2/3, no version bump): everything the daemon does around a
+ * trace command, so that it only reads a line, hands the bytes over and writes the reply.
+ * hydra_trace_route validates the request (the fields the daemon reads), checks the writer lease
+ * of the connection, shapes the request for the engine, runs it, and wraps the reply
+ * (trace_open, trace_info, trace_list, trace_resymbolize); it installs the cancel flag and the
+ * progress cell for the call itself (no hydra_trace_set_cancel / set_progress needed).
+ */
+#define HYDRA_TRACE_ROUTE_REPLY     0 /* *kind: the bytes are the client's result */
+#define HYDRA_TRACE_ROUTE_ERROR     1 /* {"code","message"[,"details"]}: a SessionException */
+#define HYDRA_TRACE_ROUTE_DISK      2 /* {"estimate":n,"what":".."}: check the volume, ask again */
+#define HYDRA_TRACE_ROUTE_CALLBACK  3 /* the symbols callback failed; nothing was written */
+#define HYDRA_TRACE_ROUTE_V3        1 /* flags: the connection speaks protocol 3 */
+#define HYDRA_TRACE_ROUTE_CHECK     2 /* flags: validate only (a preflight); run nothing */
+
+/* trace.quickMB (a trace_diff over it runs in the long lane) and trace.quotaMB (0: none). */
+void hydra_trace_configure(uint64_t quick_mb, uint64_t quota_mb);
+
+/* The lane of a command: 0 quick, 1 long, 2 depends on the request (when none is given: trace_diff,
+ * trace_relations), -1 a bad argument. */
+int32_t hydra_trace_lane(const uint8_t *cmd, size_t cmd_len, const uint8_t *req, size_t req_len);
+
+/* Registers the function-table callbacks used by trace_open / trace_resymbolize with a program.
+ * build(session, len, revision) builds the table on the calling thread and returns the size of its
+ * payload {"symbols":{..},"summary":{..}}, or a negative number on failure; copy(out, n) copies
+ * the payload. */
+void hydra_trace_set_symbols(int64_t (*build)(const uint8_t *, size_t, int64_t),
+	void (*copy)(uint8_t *, size_t));
+
+/* Runs one command for connection `client`. `label` names the connection (used when a writer lease
+ * is granted). `headroom` is the free space of the store's volume above the reserve
+ * (INT64_MAX: not measured). Returns as hydra_trace_request does (reply kept on ERR_BUFFER);
+ * *kind says what the bytes are. */
+int32_t hydra_trace_route(uint64_t client, const uint8_t *label, size_t label_len, uint32_t flags,
+	int64_t headroom, const uint8_t *cmd, size_t cmd_len, const uint8_t *req, size_t req_len,
+	const int32_t *cancel, int64_t *progress, uint8_t *out, size_t out_cap, size_t *out_len,
+	int32_t *kind);
+
+/* A connection is ending / has ended: its writer leases count as orphaned. */
+void hydra_trace_client_leaving(uint64_t client);
+void hydra_trace_client_gone(uint64_t client);
+/* Sessions with a writer lease record in memory. */
+int64_t hydra_trace_lease_count(void);
+
 #endif

@@ -76,7 +76,7 @@ impl Key {
 }
 
 #[cfg(windows)]
-fn random_fill(buf: &mut [u8]) -> Result<()> {
+pub(crate) fn random_fill(buf: &mut [u8]) -> Result<()> {
     use windows_sys::Win32::Security::Cryptography::{
         BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom,
     };
@@ -100,7 +100,7 @@ fn random_fill(buf: &mut [u8]) -> Result<()> {
 }
 
 #[cfg(not(windows))]
-fn random_fill(buf: &mut [u8]) -> Result<()> {
+pub(crate) fn random_fill(buf: &mut [u8]) -> Result<()> {
     use std::io::Read;
     std::fs::File::open("/dev/urandom")?.read_exact(buf)?;
     Ok(())
