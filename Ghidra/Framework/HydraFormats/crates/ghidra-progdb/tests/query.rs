@@ -9,6 +9,10 @@ use ghidra_progdb::query::Program;
 use ghidra_progdb::{AddressSpaces, SpaceDef};
 
 fn fixture(dir: &str) -> PathBuf {
+    if dir == "synth-33" {
+        return Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../testdata/synth/progdb-synth-33.gbf");
+    }
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../../../Features/HeadlessSession/examples/fixtures")
         .join(dir)
@@ -133,6 +137,32 @@ fn check(dir: &str) {
         assert_eq!(ids.join(","), field(l, "ids"));
     }
 
+    // data types: id -> name / path / size, and defined data resolved to its type
+    for l in lines.iter().filter(|l| l.starts_with(" dt id=")) {
+        let id: i64 = field(l, "id").parse().unwrap();
+        let t = p.data_type(id).unwrap().unwrap();
+        // names such as `char[2]` hold the closing bracket, so compare the whole span
+        let want = format!(
+            " name=[{}] path=[{}] len={}",
+            t.name,
+            t.path,
+            t.size.unwrap()
+        );
+        assert!(l.contains(&want), "{l} vs {want}");
+        assert_eq!(p.data_type_by_path(&t.path).unwrap().unwrap().path, t.path);
+    }
+    let mut resolved = 0;
+    for l in lines.iter().filter(|l| l.starts_with(" data addr=")) {
+        let a = p.parse_address(field(l, "addr")).unwrap();
+        let t = p.data_type_at(&a).unwrap().unwrap();
+        assert!(l.ends_with(&format!(" dt=[{}]", t.path)), "{l}");
+        resolved += 1;
+    }
+    assert!(resolved > 0);
+    assert!(p.data_type(-12345).unwrap().is_none());
+
+    annotations_and_more(&p, &text, &lines);
+
     // bytes
     for l in lines.iter().filter(|l| l.starts_with(" memread ")) {
         let a = p.parse_address(field(l, "addr")).unwrap();
@@ -145,6 +175,180 @@ fn check(dir: &str) {
             Err(_) => assert!(l.ends_with(" error"), "{l}"),
         }
     }
+}
+
+fn count(text: &str, key: &str) -> usize {
+    text.lines()
+        .find_map(|l| l.strip_prefix(key))
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// Equates, bookmarks, relocations, register values, options, property maps, externals and
+/// namespaces through the facade, against the oracle lines.
+fn annotations_and_more(p: &Program<ghidra_fmt_gbf::BufferFile>, text: &str, lines: &[String]) {
+    // equates: name, value, reference count, and the equates at each reference address
+    let mut equate_lines = 0;
+    for l in lines.iter().filter(|l| l.starts_with(" equate name=")) {
+        let e = p.equate_by_name(field(l, "name")).unwrap().unwrap();
+        assert_eq!(e.value.to_string(), field(l, "value"));
+        assert_eq!(e.references.len().to_string(), field(l, "refs"));
+        for r in &e.references {
+            assert!(
+                p.equates_at(&r.address)
+                    .unwrap()
+                    .iter()
+                    .any(|(x, op)| x.id == e.id && *op == r.op_index)
+            );
+        }
+        equate_lines += 1;
+    }
+    assert_eq!(p.equates().unwrap().len(), equate_lines);
+
+    // bookmarks
+    assert_eq!(p.bookmarks().unwrap().len(), count(text, "bookmarks="));
+    for l in lines.iter().filter(|l| l.starts_with(" bookmark id=")) {
+        let id: i64 = field(l, "id").parse().unwrap();
+        let a = p.parse_address(field(l, "addr")).unwrap();
+        assert!(p.bookmarks_at(&a).unwrap().iter().any(|b| b.id == id));
+    }
+
+    // relocations: count and the original bytes of every relocation
+    assert_eq!(p.relocations().unwrap().len(), count(text, "relocations="));
+    let reloc_lines: Vec<&String> = lines
+        .iter()
+        .filter(|l| l.starts_with(" reloc addr="))
+        .collect();
+    for (r, l) in p.relocations().unwrap().iter().zip(reloc_lines) {
+        assert_eq!(r.address.to_string(), field(l, "addr"));
+        assert_eq!(r.status.name(), field(l, "status"));
+        let want = field(l, "bytes");
+        match p.relocation_bytes(r).unwrap() {
+            Some(b) => assert_eq!(hex(&b), want),
+            None => assert_eq!(want, "null"),
+        }
+        assert!(p.relocations_at(&r.address).unwrap().contains(&r));
+    }
+
+    // register values
+    assert_eq!(
+        p.register_values().unwrap().len(),
+        count(text, "register_values=")
+    );
+    for l in lines.iter().filter(|l| l.starts_with(" regvalue reg=")) {
+        let a = p.parse_address(field(l, "min")).unwrap();
+        let found = p.register_values_at(field(l, "reg"), &a).unwrap();
+        assert!(
+            found.iter().any(|v| hex(&v.bytes) == field(l, "bytes")),
+            "{l}"
+        );
+    }
+
+    // options and property maps
+    assert_eq!(p.options().unwrap().len(), count(text, "options="));
+    for l in lines.iter().filter(|l| l.starts_with(" option key=")) {
+        let o = p.option(field(l, "key")).unwrap().unwrap();
+        assert_eq!(o.type_id.to_string(), field(l, "type"));
+    }
+    for l in lines.iter().filter(|l| l.starts_with(" propmap name=")) {
+        let m = p.property_map(field(l, "name")).unwrap().unwrap();
+        assert_eq!(m.kind.name(), field(l, "kind"));
+        assert_eq!(m.entries.len().to_string(), field(l, "size"));
+    }
+
+    // externals and namespaces
+    let mut locations = 0;
+    for lib in p.external_libraries().unwrap() {
+        locations += p.external_locations(&lib.name).unwrap().len();
+    }
+    let want_locs = lines
+        .iter()
+        .filter(|l| l.starts_with(" extloc id="))
+        .count();
+    assert_eq!(locations, want_locs);
+    for l in lines.iter().filter(|l| l.starts_with(" sympath id=")) {
+        let id: i64 = field(l, "id").parse().unwrap();
+        assert_eq!(p.symbol_path(id).unwrap(), field(l, "path"));
+    }
+    for l in lines.iter().filter(|l| l.starts_with(" namespace id=")) {
+        let id: i64 = field(l, "id").parse().unwrap();
+        let n = p.namespaces().unwrap().iter().find(|n| n.id == id).unwrap();
+        assert_eq!(n.path, field(l, "path"));
+        assert_eq!(n.parent_id.to_string(), field(l, "parent"));
+    }
+}
+
+/// A lazily opened program answers like an eagerly opened one, and builds only what is asked.
+fn lazy_matches_eager(dir: &str) {
+    let text = oracle(dir);
+    let eager = open(dir, &text);
+    let mut defs = Vec::new();
+    let mut default = String::new();
+    for l in text.lines() {
+        if let Some(d) = l.strip_prefix("default_space=") {
+            default = d.to_owned();
+        }
+        if l.starts_with("space ") {
+            let l = format!(" {l}");
+            defs.push(SpaceDef {
+                name: field(&l, "name").to_owned(),
+                id: field(&l, "id").parse().unwrap(),
+                bits: field(&l, "bits").parse().unwrap(),
+            });
+        }
+    }
+    let lazy = Program::open_file_lazy(fixture(dir), AddressSpaces::new(defs, &default)).unwrap();
+    // bytes need no index
+    let first = eager.functions().first().map(|f| f.entry.clone());
+    if let Some(entry) = &first {
+        assert_eq!(
+            lazy.read_bytes(entry, 16).unwrap(),
+            eager.read_bytes(entry, 16).unwrap()
+        );
+    }
+    // everything else builds on first use and agrees
+    let ids = |p: &Program<ghidra_fmt_gbf::BufferFile>| -> Vec<i64> {
+        p.functions().iter().map(|f| f.function.id).collect()
+    };
+    assert_eq!(ids(&lazy), ids(&eager));
+    for f in eager.functions().iter().take(50) {
+        assert_eq!(
+            lazy.function_at(&f.entry).map(|x| x.function.id),
+            Some(f.function.id)
+        );
+        assert_eq!(lazy.xrefs_to(&f.entry), eager.xrefs_to(&f.entry));
+        assert_eq!(lazy.xrefs_from(&f.entry), eager.xrefs_from(&f.entry));
+        let a: Vec<i64> = lazy.symbols_at(&f.entry).iter().map(|s| s.id).collect();
+        let b: Vec<i64> = eager.symbols_at(&f.entry).iter().map(|s| s.id).collect();
+        assert_eq!(a, b);
+        assert_eq!(
+            lazy.function_at(&f.entry).unwrap().parameters.len(),
+            f.parameters.len()
+        );
+        assert_eq!(
+            lazy.function_at(&f.entry).unwrap().locals.len(),
+            f.locals.len()
+        );
+    }
+    assert!(lazy.deferred_error().is_none());
+    lazy.prepare().unwrap();
+}
+
+#[test]
+fn lazy_open_agrees_with_eager_open() {
+    lazy_matches_eager("legacy-12.1.4");
+    lazy_matches_eager("legacy-12.1.4-analysed");
+    lazy_matches_eager("synth-33");
+}
+
+#[test]
+fn synthetic_v33_fixture() {
+    check("synth-33");
 }
 
 #[test]

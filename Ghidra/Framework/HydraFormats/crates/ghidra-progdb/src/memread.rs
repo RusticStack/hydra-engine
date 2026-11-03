@@ -100,6 +100,84 @@ impl<'a, S: BufferStore> Memory<'a, S> {
         self.get_bytes(addr, len, 0)
     }
 
+    /// The original (loader) bytes of `count` addresses starting at `addr`: what
+    /// `RelocationManager.getOriginalBytes` collects from `AddressSourceInfo.getOriginalValue`.
+    /// An address outside memory ends the walk (the rest stays 0); addresses backed by anything
+    /// but file bytes (buffers, uninitialized or mapped blocks) read as 0, as in Java for
+    /// everything that is not file backed (mapped blocks are not followed here).
+    ///
+    /// # Errors
+    ///
+    /// A damaged "File Bytes" table.
+    pub fn original_bytes(&self, addr: &Address, count: usize) -> Result<Vec<u8>> {
+        let mut out = vec![0u8; count];
+        let mut cur = addr.clone();
+        for (i, slot) in out.iter_mut().enumerate() {
+            if i != 0 {
+                match self.add_no_wrap(&cur, 1) {
+                    Some(next) => cur = next,
+                    None => break,
+                }
+            }
+            let Some(block) = self.block_at(&cur) else {
+                break;
+            };
+            let off = self.block_offset(block, &cur)?;
+            let Some(sub) = block
+                .sub_blocks
+                .iter()
+                .find(|s| off >= s.start_offset && off < s.start_offset + s.length)
+            else {
+                continue;
+            };
+            if sub.kind == SubBlockKind::FileBytes {
+                *slot = self.file_bytes_original(
+                    i64::from(sub.source_id),
+                    sub.source_offset + (off - sub.start_offset),
+                )?;
+            }
+        }
+        Ok(out)
+    }
+
+    /// `FileBytes.getOriginalByte(offset)`.
+    fn file_bytes_original(&self, id: i64, offset: i64) -> Result<u8> {
+        let table = self
+            .db
+            .table("File Bytes")
+            .map_err(|_| ProgError::Corrupt(format!("No File Bytes found for ID: {id}")))?;
+        let rec = table
+            .get(&Field::Long(id))?
+            .ok_or_else(|| ProgError::Corrupt(format!("No File Bytes found for ID: {id}")))?;
+        let c = Cols::new(table.schema());
+        let size = c.long(&rec, "Size")?.unwrap_or(0);
+        if offset < 0 || offset >= size {
+            return Err(ProgError::Corrupt(format!(
+                "file bytes {id}: offset {offset} outside 0..{size}"
+            )));
+        }
+        let original = int_array(c.field(&rec, "Chain Buffer IDs")?)?;
+        let store = self.db.store();
+        let first = ChainedBuffer::open(
+            store,
+            *original
+                .first()
+                .ok_or_else(|| ProgError::Corrupt("file bytes without buffers".into()))?,
+        )?;
+        let max = i64::from(first.len());
+        if max <= 0 {
+            return Err(ProgError::Corrupt("file bytes buffer size".into()));
+        }
+        let index = (offset / max) as usize;
+        let buf = ChainedBuffer::open(
+            store,
+            *original
+                .get(index)
+                .ok_or_else(|| ProgError::Corrupt("file bytes buffer index".into()))?,
+        )?;
+        Ok(buf.get(store, (offset % max) as i32, 1)?[0])
+    }
+
     /// `Memory.getByte(addr)`.
     ///
     /// # Errors
