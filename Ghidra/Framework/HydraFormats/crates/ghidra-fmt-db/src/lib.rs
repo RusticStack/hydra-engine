@@ -8,7 +8,10 @@
 use std::fmt;
 
 use ghidra_fmt_btree::{
-    BtreeError, NodeType, fieldkey::FieldKeyTree, longkey::LongKeyTree, longwrite::LongKeyWriter,
+    BtreeError, NodeType,
+    fieldkey::FieldKeyTree,
+    keywrite::{FixedKeyWriter, LongKeyWriter},
+    longkey::LongKeyTree,
 };
 use ghidra_fmt_chain::{ChainError, DbParms};
 use ghidra_fmt_field::{Field, FieldError, FieldType, IndexValue, JString, Record, Schema};
@@ -217,6 +220,35 @@ fn force_var_key_nodes_if_needed(
     Ok(())
 }
 
+/// Writer of one table tree, by node family.
+enum Tree {
+    Long(LongKeyWriter),
+    Fixed(FixedKeyWriter),
+}
+
+impl Tree {
+    fn put<S: BufferStoreMut>(&mut self, s: &mut S, key: &Field, data: &[u8]) -> Result<bool> {
+        Ok(match self {
+            Self::Long(w) => w.put(s, key.long_value().ok_or(FieldError::TypeMismatch)?, data)?,
+            Self::Fixed(w) => w.put(s, key, data)?,
+        })
+    }
+
+    fn delete<S: BufferStoreMut>(&mut self, s: &mut S, key: &Field) -> Result<bool> {
+        Ok(match self {
+            Self::Long(w) => w.delete(s, key.long_value().ok_or(FieldError::TypeMismatch)?)?,
+            Self::Fixed(w) => w.delete(s, key)?,
+        })
+    }
+
+    fn root(&self) -> i32 {
+        match self {
+            Self::Long(w) => w.root(),
+            Self::Fixed(w) => w.root(),
+        }
+    }
+}
+
 /// An open database.
 pub struct Database<S: BufferStore> {
     store: S,
@@ -348,8 +380,20 @@ impl<S: BufferStoreMut> Database<S> {
         Ok(())
     }
 
-    /// Define a new primary table (`DBHandle.createTable`). Only long-key tables can be written.
+    /// Define a new primary table without indexes (`DBHandle.createTable(name, schema)`).
     pub fn create_table(&mut self, name: &str, schema: Schema) -> Result<()> {
+        self.create_indexed_table(name, schema, &[])
+    }
+
+    /// Define a new primary table and one index table per entry of `indexed_columns`
+    /// (`DBHandle.createTable(name, schema, indexedColumns)`): the primary table's master row is
+    /// written first, then the index tables' rows in column order.
+    pub fn create_indexed_table(
+        &mut self,
+        name: &str,
+        schema: Schema,
+        indexed_columns: &[usize],
+    ) -> Result<()> {
         if self
             .tables
             .iter()
@@ -357,15 +401,38 @@ impl<S: BufferStoreMut> Database<S> {
         {
             return Err(DbError::TableExists(name.to_owned()));
         }
-        if !schema.use_long_key_nodes() {
-            return Err(DbError::Unsupported("writing tables with field keys"));
+        if schema.use_variable_key_nodes() {
+            return Err(DbError::Unsupported(
+                "writing tables with variable-length keys",
+            ));
         }
+        let mut index_schemas = Vec::new();
+        for &col in indexed_columns {
+            let indexed = schema
+                .fields()
+                .get(col)
+                .ok_or(DbError::Unsupported("indexed column out of range"))?
+                .clone();
+            let key = FieldType::Index {
+                indexed: Box::new(indexed),
+                primary: Box::new(schema.key_type().clone()),
+            };
+            index_schemas.push((col, Schema::new(0, key, "IndexKey", vec![], vec![], &[])?));
+        }
+        self.push_table(name, schema, -1)?;
+        for (col, s) in index_schemas {
+            self.push_table(name, s, col as i32)?;
+        }
+        Ok(())
+    }
+
+    fn push_table(&mut self, name: &str, schema: Schema, indexed_column: i32) -> Result<()> {
         self.tables.push(TableRecord {
             table_num: self.next_table_num,
             name: name.to_owned(),
             schema,
             root_buffer_id: -1,
-            indexed_column: -1,
+            indexed_column,
             max_key: i64::MIN,
             record_count: 0,
         });
@@ -382,52 +449,69 @@ impl<S: BufferStoreMut> Database<S> {
             .iter()
             .position(|t| t.indexed_column == -1 && t.name == name)
             .ok_or_else(|| DbError::TableNotFound(name.to_owned()))?;
-        if !self.tables[i].schema.use_long_key_nodes() {
-            return Err(DbError::Unsupported("writing tables with field keys"));
-        }
-        if self
-            .tables
-            .iter()
-            .any(|t| t.indexed_column >= 0 && t.name == name)
-        {
-            return Err(DbError::Unsupported("writing indexed tables"));
+        if self.tables[i].schema.use_variable_key_nodes() {
+            return Err(DbError::Unsupported(
+                "writing tables with variable-length keys",
+            ));
         }
         Ok(i)
     }
 
-    fn writer_for(&self, i: usize) -> LongKeyWriter {
-        let t = &self.tables[i];
-        let fixed = (!t.schema.is_variable_length()).then(|| t.schema.fixed_length());
-        LongKeyWriter::new(t.root_buffer_id, fixed)
+    /// Positions of the index tables of table `i`, in the order `Table.indexedColumns` visits
+    /// them (`IntObjectHashtable.getKeys`: by hash list, `column % 13`, then insertion order).
+    fn index_positions(&self, i: usize) -> Vec<usize> {
+        let name = &self.tables[i].name;
+        let mut v: Vec<(i32, usize)> = self
+            .tables
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.indexed_column >= 0 && &t.name == name)
+            .map(|(p, t)| (t.indexed_column, p))
+            .collect();
+        v.sort_by_key(|(col, p)| (col % 13, *p));
+        v.into_iter().map(|(_, p)| p).collect()
     }
 
-    /// Insert or replace a record (`Table.putRecord`). Index tables are not maintained, so
-    /// indexed tables are refused.
-    pub fn put_record(&mut self, table: &str, record: &Record) -> Result<()> {
-        let i = self.table_index(table)?;
-        let key = match record.key {
-            Field::Long(k) => k,
-            _ => return Err(FieldError::TypeMismatch.into()),
-        };
+    fn tree_for(&self, i: usize) -> Result<Tree> {
+        let t = &self.tables[i];
+        let fixed = (!t.schema.is_variable_length()).then(|| t.schema.fixed_length());
+        Ok(if t.schema.use_long_key_nodes() {
+            Tree::Long(LongKeyWriter::new(t.root_buffer_id, fixed))
+        } else if t.schema.use_fixed_key_nodes() {
+            Tree::Fixed(FixedKeyWriter::new(
+                t.root_buffer_id,
+                t.schema.key_type(),
+                fixed,
+            )?)
+        } else {
+            return Err(DbError::Unsupported(
+                "writing tables with variable-length keys",
+            ));
+        })
+    }
+
+    /// Put one record into table `i` and track root, count and (long keys) maximum key.
+    fn put_raw(&mut self, i: usize, record: &Record) -> Result<bool> {
         let mut data = Vec::new();
         self.tables[i].schema.write_record(record, &mut data)?;
-        let mut w = self.writer_for(i);
-        let inserted = w.put(&mut self.store, key, &data)?;
+        let mut w = self.tree_for(i)?;
+        let inserted = w.put(&mut self.store, &record.key, &data)?;
         let t = &mut self.tables[i];
         t.root_buffer_id = w.root();
-        if t.max_key < key {
-            t.max_key = key;
+        if let Field::Long(k) = record.key
+            && t.schema.use_long_key_nodes()
+            && t.max_key < k
+        {
+            t.max_key = k;
         }
         if inserted {
             t.record_count += 1;
         }
-        Ok(())
+        Ok(inserted)
     }
 
-    /// Delete the record with `key` (`Table.deleteRecord`); returns whether it existed.
-    pub fn delete_record(&mut self, table: &str, key: i64) -> Result<bool> {
-        let i = self.table_index(table)?;
-        let mut w = self.writer_for(i);
+    fn delete_raw(&mut self, i: usize, key: &Field) -> Result<bool> {
+        let mut w = self.tree_for(i)?;
         let existed = w.delete(&mut self.store, key)?;
         let t = &mut self.tables[i];
         t.root_buffer_id = w.root();
@@ -435,6 +519,115 @@ impl<S: BufferStoreMut> Database<S> {
             t.record_count -= 1;
         }
         Ok(existed)
+    }
+
+    /// The index entry key for `record` in the index table at `idx` (`None` for a null value in
+    /// a sparse column, which `FieldIndexTable` does not index).
+    fn index_key(&self, primary: usize, idx: usize, record: &Record) -> Result<Option<Field>> {
+        let col = self.tables[idx].indexed_column as usize;
+        let schema = &self.tables[primary].schema;
+        let value = record.values.get(col).and_then(Option::as_ref);
+        if schema.is_sparse_column(col) && value.is_none_or(Field::is_null) {
+            return Ok(None);
+        }
+        let value = value
+            .cloned()
+            .ok_or(DbError::Corrupt("record lacks an indexed column".into()))?;
+        Ok(Some(Field::new_index(value, record.key.clone(), false)?))
+    }
+
+    fn index_add(&mut self, primary: usize, record: &Record) -> Result<()> {
+        for idx in self.index_positions(primary) {
+            if let Some(k) = self.index_key(primary, idx, record)? {
+                self.put_raw(
+                    idx,
+                    &Record {
+                        key: k,
+                        values: vec![],
+                    },
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn index_delete(&mut self, primary: usize, record: &Record) -> Result<()> {
+        for idx in self.index_positions(primary) {
+            if let Some(k) = self.index_key(primary, idx, record)? {
+                self.delete_raw(idx, &k)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// `Table.updatedRecord`: for each index whose column changed, delete the old entry and add
+    /// the new one.
+    fn index_update(&mut self, primary: usize, old: &Record, new: &Record) -> Result<()> {
+        for idx in self.index_positions(primary) {
+            let col = self.tables[idx].indexed_column as usize;
+            let a = old.values.get(col).and_then(Option::as_ref);
+            let b = new.values.get(col).and_then(Option::as_ref);
+            if a != b {
+                if let Some(k) = self.index_key(primary, idx, old)? {
+                    self.delete_raw(idx, &k)?;
+                }
+                if let Some(k) = self.index_key(primary, idx, new)? {
+                    self.put_raw(
+                        idx,
+                        &Record {
+                            key: k,
+                            values: vec![],
+                        },
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn current_record(&self, i: usize, key: &Field) -> Result<Option<Record>> {
+        Table {
+            db: self,
+            record: &self.tables[i],
+        }
+        .get(key)
+    }
+
+    /// Insert or replace a record (`Table.putRecord`), maintaining the index tables in the order
+    /// Java does: an update changes the index entries first, an insert adds them afterwards.
+    pub fn put_record(&mut self, table: &str, record: &Record) -> Result<()> {
+        let i = self.table_index(table)?;
+        let indexed = !self.index_positions(i).is_empty();
+        let old = if indexed {
+            self.current_record(i, &record.key)?
+        } else {
+            None
+        };
+        if let Some(old) = &old {
+            self.index_update(i, old, record)?;
+        }
+        let inserted = self.put_raw(i, record)?;
+        if inserted && indexed {
+            self.index_add(i, record)?;
+        }
+        Ok(())
+    }
+
+    /// Delete the record with long `key` (`Table.deleteRecord`); returns whether it existed.
+    pub fn delete_record(&mut self, table: &str, key: i64) -> Result<bool> {
+        self.delete_record_field(table, &Field::Long(key))
+    }
+
+    /// Delete the record with `key` (`Table.deleteRecord(Field)`); index entries go first.
+    pub fn delete_record_field(&mut self, table: &str, key: &Field) -> Result<bool> {
+        let i = self.table_index(table)?;
+        if !self.index_positions(i).is_empty() {
+            let Some(old) = self.current_record(i, key)? else {
+                return Ok(false);
+            };
+            self.index_delete(i, &old)?;
+        }
+        self.delete_raw(i, key)
     }
 
     /// End of a transaction (`MasterTable.flush`): store every table root, maximum key and

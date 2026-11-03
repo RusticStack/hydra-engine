@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use ghidra_fmt_gbf::{BufferStore, MemoryBufferStore};
 
 use super::*;
+use crate::BtreeError;
 use crate::longkey::LongKeyTree;
 
 struct Rng(u64);
