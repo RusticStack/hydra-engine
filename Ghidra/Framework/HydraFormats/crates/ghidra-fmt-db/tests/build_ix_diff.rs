@@ -46,31 +46,64 @@ fn key(k: &str, v: &str) -> Field {
     }
 }
 
-fn schema(key: &str, fixed: bool) -> Schema {
-    let (fields, names) = if fixed {
-        (
+fn schema(key: &str, layout: &str) -> Schema {
+    let (fields, names): (Vec<FieldType>, Vec<String>) = match layout {
+        "fixed" => (
             vec![FieldType::Long, FieldType::Int, FieldType::Short],
-            ["A", "B", "C"],
-        )
-    } else {
-        (
+            ["A", "B", "C"].map(str::to_owned).to_vec(),
+        ),
+        "var" => (
             vec![FieldType::Int, FieldType::Binary, FieldType::String],
-            ["A", "B", "C"],
-        )
+            ["A", "B", "C"].map(str::to_owned).to_vec(),
+        ),
+        "sparse" => (
+            vec![FieldType::Int, FieldType::String, FieldType::Int],
+            ["A", "B", "C"].map(str::to_owned).to_vec(),
+        ),
+        "wide" => (
+            vec![FieldType::Int; 40],
+            (0..40).map(|i| format!("C{i}")).collect(),
+        ),
+        other => panic!("layout {other}"),
     };
-    Schema::new(
-        1,
-        key_type(key),
-        "Key",
-        fields,
-        names.map(str::to_owned).to_vec(),
-        &[],
-    )
-    .unwrap()
+    let sparse: &[usize] = if layout == "sparse" { &[1, 2] } else { &[] };
+    Schema::new(1, key_type(key), "Key", fields, names, sparse).unwrap()
+}
+
+/// The column values of a `put` line (the arguments from the fourth on).
+fn values(layout: &str, t: &[&str]) -> Vec<Option<Field>> {
+    match layout {
+        "fixed" => vec![
+            Some(Field::Long(t[3].parse().unwrap())),
+            Some(Field::Int(t[4].parse().unwrap())),
+            Some(Field::Short(t[5].parse().unwrap())),
+        ],
+        "var" => vec![
+            Some(Field::Int(t[3].parse().unwrap())),
+            Some(Field::Binary(Some(hex(t[4])))),
+            Some(Field::String(Some(JString::new(if t[5] == "-" {
+                ""
+            } else {
+                t[5]
+            })))),
+        ],
+        "sparse" => vec![
+            Some(Field::Int(t[3].parse().unwrap())),
+            (t[4] != "-").then(|| Field::String(Some(JString::new(t[4])))),
+            (t[5] != "-").then(|| Field::Int(t[5].parse().unwrap())),
+        ],
+        "wide" => {
+            let seed: i32 = t[3].parse().unwrap();
+            (0..40)
+                .map(|i| Some(Field::Int((seed * 31 + i * 7) % 1000)))
+                .collect()
+        }
+        other => panic!("layout {other}"),
+    }
 }
 
 struct Meta {
-    fixed: bool,
+    layout: String,
     key: String,
 }
 
@@ -85,7 +118,6 @@ fn replay(script: &str, dbid: i64) -> Database<MemoryBufferStore> {
                 db = Some(Database::create(store, dbid).unwrap());
             }
             "table" => {
-                let fixed = t[3] == "fixed";
                 let cols: Vec<usize> = if t[4] == "-" {
                     vec![]
                 } else {
@@ -93,38 +125,21 @@ fn replay(script: &str, dbid: i64) -> Database<MemoryBufferStore> {
                 };
                 db.as_mut()
                     .unwrap()
-                    .create_indexed_table(t[1], schema(t[2], fixed), &cols)
+                    .create_indexed_table(t[1], schema(t[2], t[3]), &cols)
                     .unwrap();
                 meta.insert(
                     t[1].to_owned(),
                     Meta {
-                        fixed,
+                        layout: t[3].to_owned(),
                         key: t[2].to_owned(),
                     },
                 );
             }
             "put" => {
                 let m = &meta[t[1]];
-                let values = if m.fixed {
-                    vec![
-                        Some(Field::Long(t[3].parse().unwrap())),
-                        Some(Field::Int(t[4].parse().unwrap())),
-                        Some(Field::Short(t[5].parse().unwrap())),
-                    ]
-                } else {
-                    vec![
-                        Some(Field::Int(t[3].parse().unwrap())),
-                        Some(Field::Binary(Some(hex(t[4])))),
-                        Some(Field::String(Some(JString::new(if t[5] == "-" {
-                            ""
-                        } else {
-                            t[5]
-                        })))),
-                    ]
-                };
                 let rec = Record {
                     key: key(&m.key, t[2]),
-                    values,
+                    values: values(&m.layout, &t),
                 };
                 db.as_mut().unwrap().put_record(t[1], &rec).unwrap();
             }
@@ -197,12 +212,13 @@ fn check(name: &str) {
         .collect();
     assert!(
         bad.is_empty(),
-        "{name}: {} of {} buffer lines differ, first at {:?}: rust {:?} java {:?}",
+        "{name}: {} of {} buffer lines differ: {:#?}",
         bad.len(),
         got.len(),
-        &bad[..bad.len().min(20)],
-        bad.first().map(|&i| &got[i]),
-        bad.first().map(|&i| want[i])
+        bad.iter()
+            .take(12)
+            .map(|&i| format!("line {i}: rust {} java {}", got[i], want[i]))
+            .collect::<Vec<_>>()
     );
 
     let mut tables: Vec<(String, i32, i64)> = db
@@ -264,6 +280,12 @@ fn check(name: &str) {
         assert_eq!(rows.len(), t.record_count() as usize);
         for idx in reopened.index_tables(t.name()) {
             let col = idx.indexed_column() as usize;
+            if t.schema().is_sparse_column(col) {
+                // Java's `Field.equals` finds an absent integer equal to an explicit zero, so an
+                // update between the two leaves a stale (or missing) entry: the index of a sparse
+                // column is only compared with Java above, not with the table
+                continue;
+            }
             let entries = idx.index_entries().unwrap();
             assert_eq!(entries.len(), rows.len(), "{name}: index {col} size");
             let mut want: Vec<(Field, Field)> = rows
@@ -336,6 +358,22 @@ fn index_on_a_string_column() {
 #[test]
 fn index_on_every_column() {
     check("ix-all-columns");
+}
+
+#[test]
+fn index_tables_of_a_wide_table_follow_the_hash_order() {
+    check("ix-wide-order");
+    check("ix-wide-two-tables");
+}
+
+#[test]
+fn indexes_on_sparse_columns_skip_null_values() {
+    check("ix-sparse");
+}
+
+#[test]
+fn index_on_a_binary_column() {
+    check("ix-binary-column");
 }
 
 #[test]

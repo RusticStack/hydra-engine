@@ -85,3 +85,14 @@ run `java -cp <out>;<jars> db.buffers.Oracle <copy> > testdata/oracle-<name>.txt
 * `deleteChild` on a non-root interior node with only two entries throws `AssertException` in
   Java (`deleteEntry` needs 3); the port returns `Assertion`. It cannot occur in a balanced tree.
 * `Table` bookkeeping (root id, max key, record count) is in `ghidra-fmt-db`.
+
+## Table deletion and release order (transactions round)
+
+* `delete_all` (`LongKeyWriter`, `FixedKeyWriter`, `VarKeyWriter`) is the `deleteAll` of the long-key, fixed-key and
+  var-key record nodes: children in key order, then the node; a variable-length leaf frees the chained buffers of its
+  indirect records first and writes -1 at the record's data offset before the buffer is freed.
+* A page written by a writer is "held" until the end of the table operation (`NodeMgr.releaseNodes`), so it is stored
+  with `put_held` and the operation is bracketed by `begin_group` / `end_group` in `ghidra-fmt-db`. A page that is freed
+  (`delete_buffer`) or a chained buffer is released at once, as in Java. Loads and creations call `note_node`. The
+  var-key writer's node cache now writes back only nodes whose bytes changed (Java marks a node dirty only when it
+  modifies it), so an operation that only read a node does not create a checkpoint version for it.

@@ -1,0 +1,781 @@
+dbid=3761699208937603264
+end added=true
+end added=true
+status undo=2 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[]
+end added=true
+status undo=3 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[]
+end added=true
+status undo=4 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[]
+end added=true
+status undo=5 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[]
+end added=true
+status undo=6 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[16, 17, 13]
+end added=true
+status undo=7 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[16, 17]
+end added=true
+== c6
+bufferSize=507 indexCount=23 free=[]
+buf 0 id=0 empty=false sha256=9094e25c72ad1ac64de16adf7573dab5008a8b5d65146eda647bcaf1d149ce88
+buf 1 id=1 empty=false sha256=39bd9bd331be94ff32a5224e7ca22ef3d5dfcdbbe9c6add0ae5f318b32e9bce2
+buf 2 id=2 empty=false sha256=811a96654dafca4ee4f9217d6a73d69db411a853554901df78d6793c1237717b
+buf 3 id=3 empty=false sha256=fbf7a3ba6ef3cb000f5513d0a1f6fded298b513b4259df8f5545d9f032856eb1
+buf 4 id=4 empty=false sha256=882913976ceceb850e313759f5560fa9110b72089dc3669ded23f97cd2f8c232
+buf 5 id=5 empty=false sha256=510d10d19ad1b831accb3a9b88625ebffa8696c9aee7eb03d35726318920a132
+buf 6 id=6 empty=false sha256=6d4101caaa8c6cdaa035906ad7e3bb9e177442bb54a1ce19aca9078911b4c4c0
+buf 7 id=7 empty=false sha256=d7cd5cb251078fdf1c5d83377d8e0da41f8829f916da543c6987368ae3ef41e2
+buf 8 id=8 empty=false sha256=41b32130c1a9dd82b4d232ab4121a3ac85619acac76126f024b0d91d4e8a248d
+buf 9 id=9 empty=false sha256=551147afc414871d59cae173a27481e626b08349a6bc8279df6dc3c3faf530e0
+buf 10 id=10 empty=false sha256=ebdec8f90d6bce7a9d225aedf33bb164cf950df3a86e5ff5d4521b069335c180
+buf 11 id=11 empty=false sha256=48f6561f454529ade958de9edbac06858e87135a8921d6898db0502235438cac
+buf 12 id=12 empty=false sha256=2726a477cba79166bfd70d53ddf8992da49660bebdbb3abb2d17a97d7d2e6336
+buf 13 id=13 empty=false sha256=786e28822c6b5b3506f40c94d493c0ca333b93ed0c723e7cfd2b61323bff4f58
+buf 14 id=14 empty=false sha256=d08dc778ed049be8592230ab50d2f0a14e190ca40ce1e9441948b4c69d6b5429
+buf 15 id=15 empty=false sha256=5da3638513964e0b75431d275850b2ac94c3b342e9b91cb1f6e3969f490b7560
+buf 16 id=16 empty=false sha256=599237e408243bf71aeeffa0c80e4f948c511d3c9192f06b6ce505d1db182e38
+buf 17 id=17 empty=false sha256=8083688cab810c536f0c39841e0095047858f1ac2f19d97768113f09fce80f85
+buf 18 id=18 empty=false sha256=37e920550f1429b1205700e870610753570c05d435a9e8833475bc477c3f44bb
+buf 19 id=19 empty=false sha256=75e816cf7c730cab5adf8389973651104db202da0ad9ff8594e78b31641f0db7
+buf 20 id=20 empty=false sha256=68c5627199bcff87cf7d1ed3f8e9e9c639233968c4e86955f453c0e586889d35
+buf 21 id=21 empty=false sha256=965a908744a5e784af9c6dbc13a3c9fad7199bbdf9d528c2560d0fc5cce513c6
+buf 22 id=22 empty=false sha256=adc463e11ed92042730825f1546fd8854815271b573c769f7f60bcc87337b3a5
+table T0 count=21 max=39
+table T1 count=23 max=39
+dbid=3761699208937603264
+dbid=3761699208937603264
+tr num=0 name=T1 idx=-1 root=15 keytype=3 version=1 max=39 count=23 variable=true long=true varnodes=false fixednodes=false
+tr num=1 name=T1 idx=0 root=5 keytype=50 version=0 max=-9223372036854775808 count=23 variable=false long=false varnodes=false fixednodes=true
+tr num=2 name=T1 idx=2 root=6 keytype=52 version=0 max=-9223372036854775808 count=23 variable=false long=false varnodes=true fixednodes=false
+tr num=3 name=T0 idx=-1 root=2 keytype=3 version=1 max=39 count=21 variable=false long=true varnodes=false fixednodes=false
+tr num=4 name=T0 idx=1 root=3 keytype=50 version=0 max=-9223372036854775808 count=21 variable=false long=false varnodes=false fixednodes=true
+tbl num=0 name=T1 idx=-1 n=23 sha256=80a75d26aa6be19fef8838cc40fb7485661040f9842926a28c6635e6c7ee0774
+tbl num=1 name=T1 idx=0 n=23 sha256=3abb4ecaeafe671eaf3b7ce34eb26c75cbbeb43e250509e2da93e1157ed6dba3
+tbl num=2 name=T1 idx=2 n=23 sha256=86b58fb089f087ea23a2f4429bf8e62d4d58a7cc06f821aaff71ae23a5279a0e
+tbl num=3 name=T0 idx=-1 n=21 sha256=e45de68672ae2846249dfab745a35287dce428e4def059d82fd19861ff6e9a46
+tbl num=4 name=T0 idx=1 n=21 sha256=8bb4d53a1ec3058fe21ee51190eac2fab505c497b6f78cb93d289d2ea7a3e6b8
+consistent name=T1 true
+consistent name=T0 true
+status undo=8 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[]
+end added=true
+status undo=9 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[18, 19, 20]
+end added=true
+status undo=10 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[]
+end added=true
+status undo=11 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[]
+end added=true
+status undo=11 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[]
+end added=true
+status undo=11 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[]
+end added=true
+status undo=11 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[27]
+end added=true
+== c13
+bufferSize=507 indexCount=35 free=[]
+buf 0 id=0 empty=false sha256=9094e25c72ad1ac64de16adf7573dab5008a8b5d65146eda647bcaf1d149ce88
+buf 1 id=1 empty=false sha256=6a0f816ab5416b9b126925189d86f2c49adb67297be520c44719ded663eb4393
+buf 2 id=2 empty=false sha256=91ec07413065241a206c2dfb84912c92c65f4b09362696089b4c2ac3f3e2b113
+buf 3 id=3 empty=false sha256=5b1800bdb6d74d684deb05fe60367475549c29d793298b59aa1027bd23d89efc
+buf 4 id=4 empty=false sha256=77b14f7d9f37b931674b45af51cbc0d81e1800c5e681a2fc3a1c07ec025d9617
+buf 5 id=5 empty=false sha256=c7a824cae19bc09058d662167c7fdf777278d3c4fdeb0c4ad5002f19ffb9cba7
+buf 6 id=6 empty=false sha256=72dafdc92e83cdedd049f2cbcbd2fc5a4dc7ca84eee78a20fd92ebb491fe7c65
+buf 7 id=7 empty=false sha256=b61560747ec518083202cf671917e4a1eeb3646e9368891aa383df459836b833
+buf 8 id=8 empty=false sha256=41e663015a3d4c1aa4df6f8ea1a54c069ef13c1f8daba749caeca0faf5102416
+buf 9 id=9 empty=false sha256=9f6159da09fe53bf03ec442709a48d04396eee91bd9462b567e497854cee6dbb
+buf 10 id=10 empty=false sha256=ebdec8f90d6bce7a9d225aedf33bb164cf950df3a86e5ff5d4521b069335c180
+buf 11 id=11 empty=false sha256=48f6561f454529ade958de9edbac06858e87135a8921d6898db0502235438cac
+buf 12 id=12 empty=false sha256=2726a477cba79166bfd70d53ddf8992da49660bebdbb3abb2d17a97d7d2e6336
+buf 13 id=13 empty=false sha256=80ffc01b10ed9af14a1b5bf62f523a8d20f4b4f4103c950a252ca1cb964d4d41
+buf 14 id=14 empty=false sha256=0258fb280367a1c1f30d3cf86490b1d00954643a9b01d364c3148cb29042f020
+buf 15 id=15 empty=false sha256=b5e06a0ffec9cf969b24bd32f07386226d2ec6ecfb71311f48c942cb059b0435
+buf 16 id=16 empty=false sha256=bd233bc1177e4b36e432ef4a060b30e109b4c1ee436b0a0e6b090252187e6fe6
+buf 17 id=17 empty=false sha256=03a38e9476bdec6dac67b8cfbb4c5fdc38f41b8d78b233a30468ddaeb142fba5
+buf 18 id=18 empty=false sha256=649ae712e3d3e236973c0540a728b5f79d125d049be22b5815a3c46f1ac5fb1c
+buf 19 id=19 empty=false sha256=25c554535134c57e9982880083d2f177500ea2cd3174edae0538be6b81afe7a6
+buf 20 id=20 empty=false sha256=15aa33ee665f1283503c3c3cf1814eb9c179eb018ec25c8e04ceebf73f9ffa2f
+buf 21 id=21 empty=false sha256=965a908744a5e784af9c6dbc13a3c9fad7199bbdf9d528c2560d0fc5cce513c6
+buf 22 id=22 empty=false sha256=810476585f2a6f1932827bc539fa6af289c409c2e7753e16a82eba950e30e7dd
+buf 23 id=23 empty=false sha256=df06542cf0ff761c426bb5ddf4f3a31227e911c1b5a42681a609ccb2dfae0489
+buf 24 id=24 empty=false sha256=9209f9c40aea445bb4e68ab360092f8fa07973a0d6939d059bf7c97c5d8935c4
+buf 25 id=25 empty=false sha256=d5cee1ae12400cb13b5767eac9ca2de6236de655b8f6bc87e1e9d25ed71064dd
+buf 26 id=26 empty=false sha256=02c92e588a0cc93c5ef800d22c7d5279a077427f011f2c310bfd7989513ce9c5
+buf 27 id=27 empty=false sha256=314084cac497f0bb70cbf2a5da7ed3bb00a3d0f88ce18c8ba14718bc84e14c42
+buf 28 id=28 empty=false sha256=49e423162c4409a6e9167677e8e90df568a6ba318cb57ac0bce84c773ca992c6
+buf 29 id=29 empty=false sha256=9bd9a442a3699336af7f8bab7958b32903f7cd32c3efa4c8508cc01dd021e61d
+buf 30 id=30 empty=false sha256=a705bd0e1d0f79a0ed5aa77b7f64d266294574b74ed10706fe1cc250a686a6ac
+buf 31 id=31 empty=false sha256=d9663df585bb8e1d4813db920058f792170454f2819474640a72f3b0a68bfc04
+buf 32 id=32 empty=false sha256=93ed85648fba0aa25090931d5d71eb8705e12d965818ee820825f6930708f16e
+buf 33 id=33 empty=false sha256=6f6f3ee23517064a7db03c1d8930aece427a41b404b8622113169b180f661e58
+buf 34 id=34 empty=false sha256=8fe6954dadcbaf8ed98b45d7c15859bbcd2d3660205476e9ab8e78ccb690b143
+table T0 count=29 max=39
+table T1 count=34 max=39
+dbid=3761699208937603264
+dbid=3761699208937603264
+tr num=0 name=T1 idx=-1 root=15 keytype=3 version=1 max=39 count=34 variable=true long=true varnodes=false fixednodes=false
+tr num=1 name=T1 idx=0 root=5 keytype=50 version=0 max=-9223372036854775808 count=34 variable=false long=false varnodes=false fixednodes=true
+tr num=2 name=T1 idx=2 root=19 keytype=52 version=0 max=-9223372036854775808 count=34 variable=false long=false varnodes=true fixednodes=false
+tr num=3 name=T0 idx=-1 root=26 keytype=3 version=1 max=39 count=29 variable=false long=true varnodes=false fixednodes=false
+tr num=4 name=T0 idx=1 root=3 keytype=50 version=0 max=-9223372036854775808 count=29 variable=false long=false varnodes=false fixednodes=true
+tbl num=0 name=T1 idx=-1 n=34 sha256=794e8475a01fbf39fe93c96e0a71ce87dcc6719d2bcb3561dbbed39eed8177fc
+tbl num=1 name=T1 idx=0 n=34 sha256=b0f32ae7d84158b600cf8c699bb98157ff74a3ce3ca87f13de8ad8dbf635bda4
+tbl num=2 name=T1 idx=2 n=34 sha256=60150457fe98a1d6b7eacf6e87b42e7acd8a562db0fe4121bd80740ef3c6cb25
+tbl num=3 name=T0 idx=-1 n=29 sha256=e255939368dcbbaa60d745b6306a685407e5a700aa3f6c3e36acced0360129c6
+tbl num=4 name=T0 idx=1 n=29 sha256=e4bdb925c0c7860bbb49e950968aba863f6357b43d11479349e2eec1ca150d87
+consistent name=T1 true
+consistent name=T0 true
+status undo=11 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[]
+end added=true
+status undo=11 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[16, 33]
+end added=true
+status undo=11 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[11, 12, 10]
+end added=true
+status undo=11 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[]
+end added=true
+status undo=11 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[11]
+end added=true
+status undo=11 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[]
+end added=true
+status undo=11 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[]
+end added=true
+== c20
+bufferSize=507 indexCount=54 free=[16, 35]
+buf 0 id=0 empty=false sha256=9094e25c72ad1ac64de16adf7573dab5008a8b5d65146eda647bcaf1d149ce88
+buf 1 id=1 empty=false sha256=a5d9b477774ec90a78eb696c0208f370b4f2e40df728c17db1da13dfe5323b87
+buf 2 id=2 empty=false sha256=6d7f4e24b35716dbf1b8818a1f12138c51b7ab5cc77164ff01a5f04429f7dbc5
+buf 3 id=3 empty=false sha256=16837b17ac44b4d7b5cdaeb9b06d8d0e11e09f59451b17a2626437e1027c0c52
+buf 4 id=4 empty=false sha256=0029028f7abbcd82ccb3426a2e9b15eb90a55acad7229d5fc68a5ba7c6882cdc
+buf 5 id=5 empty=false sha256=ec56c2a5639db7aed65917bf756715b1671ba6d1c31182f6e9182a24b5b25fe1
+buf 6 id=6 empty=false sha256=d1fd6104e9cd8c17b9dd0833081e9c2e8e28d30e0715775e3d17df0d46ac40ff
+buf 7 id=7 empty=false sha256=5cd0487308f71b616d5f466bd2dce7a60c43f3155dadc1b3ec9881cc1c6e35f5
+buf 8 id=8 empty=false sha256=41e663015a3d4c1aa4df6f8ea1a54c069ef13c1f8daba749caeca0faf5102416
+buf 9 id=9 empty=false sha256=9f6159da09fe53bf03ec442709a48d04396eee91bd9462b567e497854cee6dbb
+buf 10 id=10 empty=false sha256=5bb979397b3ed10fac07c47a47fe81ef21ae49d9964ffcbdebe45cd95fb8a55d
+buf 11 id=11 empty=false sha256=83d51a58513508ec6d53be891cadb2b40536fc2e0f3b7c812f34c67f92ec28c9
+buf 12 id=12 empty=false sha256=3b5f0b77afd6f12f714237bfda9ff609c320698b10a9babf8925d33b47cafcac
+buf 13 id=13 empty=false sha256=58090c42e3e3e6a144a5730039c5fa4a0bf4e7e149f32d7b8a738ee39d00a77e
+buf 14 id=14 empty=false sha256=feb4c3ebc16f0039ac7c836c7cd5b875a88775843f5549e62ab70671f3afc04f
+buf 15 id=15 empty=false sha256=b5e06a0ffec9cf969b24bd32f07386226d2ec6ecfb71311f48c942cb059b0435
+buf 16 id=-1 empty=true sha256=-
+buf 17 id=17 empty=false sha256=03a38e9476bdec6dac67b8cfbb4c5fdc38f41b8d78b233a30468ddaeb142fba5
+buf 18 id=18 empty=false sha256=649ae712e3d3e236973c0540a728b5f79d125d049be22b5815a3c46f1ac5fb1c
+buf 19 id=19 empty=false sha256=a47c36b8641fd8478a8a1dd8df88092227aa22339df538b743820c65cc9d02ea
+buf 20 id=20 empty=false sha256=0680e75a3d8b3825bf3c80cae9e35eab939ed7af63a182e43501b17010970561
+buf 21 id=21 empty=false sha256=965a908744a5e784af9c6dbc13a3c9fad7199bbdf9d528c2560d0fc5cce513c6
+buf 22 id=22 empty=false sha256=810476585f2a6f1932827bc539fa6af289c409c2e7753e16a82eba950e30e7dd
+buf 23 id=23 empty=false sha256=df06542cf0ff761c426bb5ddf4f3a31227e911c1b5a42681a609ccb2dfae0489
+buf 24 id=24 empty=false sha256=9209f9c40aea445bb4e68ab360092f8fa07973a0d6939d059bf7c97c5d8935c4
+buf 25 id=25 empty=false sha256=998633dd9102887216f9b560d94ece3e94fd0437028265866853cb9f11a372e3
+buf 26 id=26 empty=false sha256=02c92e588a0cc93c5ef800d22c7d5279a077427f011f2c310bfd7989513ce9c5
+buf 27 id=27 empty=false sha256=314084cac497f0bb70cbf2a5da7ed3bb00a3d0f88ce18c8ba14718bc84e14c42
+buf 28 id=28 empty=false sha256=49e423162c4409a6e9167677e8e90df568a6ba318cb57ac0bce84c773ca992c6
+buf 29 id=29 empty=false sha256=f4c7cb0e056b2690b2726dfaf83351584b9dc65fd57a39fd023fb02652be50de
+buf 30 id=30 empty=false sha256=0d1c36d6d83632169d1ed52afb5b7f82fc9a9c677bff4f0a21986c5ec7c6f8f3
+buf 31 id=31 empty=false sha256=2c7e5d7fd31b21a292c8f077d5e1623de265b1f636a4de5caa2f07e8bb0531f7
+buf 32 id=32 empty=false sha256=00d93a3698f8a61dfad9de735b28289c2a1955eaaa33efc59be75c9191855116
+buf 33 id=33 empty=false sha256=0e4e9f1e09c8c868008b47324adb095dfb019c2c709706a195a4734f88c246d4
+buf 34 id=34 empty=false sha256=e0cd148a8e57d7d2c2ee0a24a3ede122c71fedf75e8011f545143c895e4772f0
+buf 35 id=-1 empty=true sha256=-
+buf 36 id=36 empty=false sha256=358b55aa28e71981303c8ca1f047372246b6bc6651e9d9a3c0020fcb26722b2e
+buf 37 id=37 empty=false sha256=20341cd2cceb0d1aa5c0e41e37fb4b1f47290b5021ad35104ffcc22044493bbe
+buf 38 id=38 empty=false sha256=854d0b8b19e6f726b72d0f17c1fd9be7b834efe9d1e9e2006c63b8432167895b
+buf 39 id=39 empty=false sha256=8662bfc999a570d468bc57484887e46d5ce848937a968e78c588a7c7120b40f4
+buf 40 id=40 empty=false sha256=70d199a561b72bfcb563ab03d309c4efb906c3f55557c6d60e47dba19c95b76e
+buf 41 id=41 empty=false sha256=4e4c45076946f080fc9a83dd3f4607e6058575120fe468777fcec12e4fa725ca
+buf 42 id=42 empty=false sha256=567fff71454b1cb213722980e4ebba6202bbf577fc3bf8eaf3b27dce0cf48f80
+buf 43 id=43 empty=false sha256=fb3b7551e507a33a0184fab410052cd5123a3fd60eba515fecf03c055e8d1ff6
+buf 44 id=44 empty=false sha256=4437d61a68c11a6fddcb6776b436551236c71bcd30b9557f9ff77ab48d950417
+buf 45 id=45 empty=false sha256=1f75d650bad4b29e90cd4806588a06c1800544200db5e2a0e411c37d8809618d
+buf 46 id=46 empty=false sha256=9ae614e7084142e3c986379aa8c253734b6031fa4702a8ff0237940705906a48
+buf 47 id=47 empty=false sha256=548546a4e40e13455ec75e70ecaeae214502d24c5aeca0996e98fb999467c9eb
+buf 48 id=48 empty=false sha256=defc023d83c05945a0889bdde5574a7acaa5633a39503c9e8eea345820116f8d
+buf 49 id=49 empty=false sha256=09300c8034a02fcd09a39e4218d96f4341cff1aaadce793d325b64fa7d28bafb
+buf 50 id=50 empty=false sha256=a29fd51c76b6916e90f82c5f3c9d8e0dada1e2d8e30e4dfbdc4512250925c236
+buf 51 id=51 empty=false sha256=9133003d81c0ec78abdb4950616922d1cf763fa1ffcef008c4e43152cc8a217b
+buf 52 id=52 empty=false sha256=33197f172ee60ed28dca06be1da3c1c2a0f159d951daeeddd10688dfe4cd2673
+buf 53 id=53 empty=false sha256=13f89fd810a98b68e5ba358739f3c661ca9026439cb5421610162f998f1c3e03
+table T0 count=35 max=39
+table T1 count=38 max=39
+dbid=3761699208937603264
+dbid=3761699208937603264
+tr num=0 name=T1 idx=-1 root=15 keytype=3 version=1 max=39 count=38 variable=true long=true varnodes=false fixednodes=false
+tr num=1 name=T1 idx=0 root=5 keytype=50 version=0 max=-9223372036854775808 count=38 variable=false long=false varnodes=false fixednodes=true
+tr num=2 name=T1 idx=2 root=19 keytype=52 version=0 max=-9223372036854775808 count=38 variable=false long=false varnodes=true fixednodes=false
+tr num=3 name=T0 idx=-1 root=26 keytype=3 version=1 max=39 count=35 variable=false long=true varnodes=false fixednodes=false
+tr num=4 name=T0 idx=1 root=3 keytype=50 version=0 max=-9223372036854775808 count=35 variable=false long=false varnodes=false fixednodes=true
+tbl num=0 name=T1 idx=-1 n=38 sha256=8b4c88e5b6d8d4617ae6bb7dc5c9f2adbb0a4035cf51c052e8aea3e173b373e6
+tbl num=1 name=T1 idx=0 n=38 sha256=6a72232baeff212ce1d7f8a7b08934b41a4435d2db0dee705d28e0efcd1b8bf7
+tbl num=2 name=T1 idx=2 n=38 sha256=f3242f275728905c8b6e018a4c9dd6c837a7c822e3ca6a670ef2fcd56db89d9f
+tbl num=3 name=T0 idx=-1 n=35 sha256=0b68c1dfd0a416e99cce4c80526de6f8a14d421b24d4936a67a0b910fced6d9c
+tbl num=4 name=T0 idx=1 n=35 sha256=a653ca04a14bf63895610d22918c8826258bbf75dbeafdc94139e07f6d0fe002
+consistent name=T1 true
+consistent name=T0 true
+status undo=11 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[16, 35]
+end added=true
+status undo=11 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[16, 35, 9, 8, 17, 52, 53, 51]
+end added=true
+status undo=11 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[16, 35, 9, 8, 17, 52, 53, 51, 21]
+end added=true
+status undo=11 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[16, 35, 9, 8, 17, 52, 53, 51, 21, 44, 45, 37, 38, 36]
+end added=true
+status undo=11 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[16, 35, 9, 8, 17, 52, 53, 51, 21, 44, 45, 37, 38, 36, 40, 23, 24, 49, 50, 48, 33, 43, 29]
+end added=true
+status undo=11 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[16, 35, 9, 8, 17, 52, 53, 51, 21, 44, 45, 37, 38, 36, 40, 23, 24, 49, 50, 48, 33, 43, 29, 46, 47, 39]
+end added=true
+status undo=11 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[16, 35, 9, 8, 17, 52, 53, 51, 21, 44, 45, 37, 38, 36, 40, 23, 24, 49, 50, 48, 33, 43, 29]
+end added=true
+== c27
+bufferSize=507 indexCount=54 free=[8, 9, 12, 16, 17, 21, 23, 24, 33, 35, 36, 37, 38, 40, 44, 45, 48, 49, 50, 51, 52, 53]
+buf 0 id=0 empty=false sha256=9094e25c72ad1ac64de16adf7573dab5008a8b5d65146eda647bcaf1d149ce88
+buf 1 id=1 empty=false sha256=e7dbc6484d8e551544fd9721e810704d5c37f1e12099483dbb5d11e33465363f
+buf 2 id=2 empty=false sha256=fa722507e6523ccc660f287bd3cbb923ef34f66f02404313e46684bcb7616062
+buf 3 id=3 empty=false sha256=ef23bbb377bdebf6be8295f3280a00bb1fa12b3cd51aa3f317dac0c240387722
+buf 4 id=4 empty=false sha256=cc819f67f64db9b9bc2c49858d82ae9296551a36de48fe1b77b166c24eb00350
+buf 5 id=5 empty=false sha256=ebeeea7a3ebb66e72490e60c5fa92d44ebe093db78dcd20cec16d99da8dfac6e
+buf 6 id=6 empty=false sha256=c67702d64f45b84f42257e26e269095a85d72ace582b9777f6c6994b1b725969
+buf 7 id=7 empty=false sha256=7bf893871428394d3dd28e5802df03f074be96eeafec6e961e4a6cbf373f7555
+buf 8 id=-1 empty=true sha256=-
+buf 9 id=-1 empty=true sha256=-
+buf 10 id=10 empty=false sha256=fff40d1e02d73ff1e5434f6544f72805a57d9383630c371fc1a8f03d62fa0640
+buf 11 id=11 empty=false sha256=83d51a58513508ec6d53be891cadb2b40536fc2e0f3b7c812f34c67f92ec28c9
+buf 12 id=-1 empty=true sha256=-
+buf 13 id=13 empty=false sha256=941a7f93826faa347ee256184db2f9f51e8269c92ab4789636440f8a95feb54f
+buf 14 id=14 empty=false sha256=aee4108a6e7e613ce087d640e5fd7cf3522b256b2ddc8d265f1513941a9c789b
+buf 15 id=15 empty=false sha256=2eab1b52a907914a3a7d40f48caff1d4794cb73d480dcdc0baa4fdc9cfd843ba
+buf 16 id=-1 empty=true sha256=-
+buf 17 id=-1 empty=true sha256=-
+buf 18 id=18 empty=false sha256=c7a38ee6d7e9cd760dc6b9ed386f202d508ca4b3afe47e7ea602c89ae86fbc1c
+buf 19 id=19 empty=false sha256=860dce184a9a5e95a74f5353889db7e264d1b997634a0576870ea1c663256197
+buf 20 id=20 empty=false sha256=baa01e204b426e4841e151645adb801e7ae5c3b93569605b6efc3677af03244a
+buf 21 id=-1 empty=true sha256=-
+buf 22 id=22 empty=false sha256=810476585f2a6f1932827bc539fa6af289c409c2e7753e16a82eba950e30e7dd
+buf 23 id=-1 empty=true sha256=-
+buf 24 id=-1 empty=true sha256=-
+buf 25 id=25 empty=false sha256=0ef6ca3e37e949be5cf30ed5f38bcd6701c639abf16cb33b0ebc530066fedb78
+buf 26 id=26 empty=false sha256=02c92e588a0cc93c5ef800d22c7d5279a077427f011f2c310bfd7989513ce9c5
+buf 27 id=27 empty=false sha256=314084cac497f0bb70cbf2a5da7ed3bb00a3d0f88ce18c8ba14718bc84e14c42
+buf 28 id=28 empty=false sha256=49e423162c4409a6e9167677e8e90df568a6ba318cb57ac0bce84c773ca992c6
+buf 29 id=29 empty=false sha256=7cd544b5f619e1f585d658da4eb8806a0f592af45cb8cfcb547852f77d630a3b
+buf 30 id=30 empty=false sha256=0d1c36d6d83632169d1ed52afb5b7f82fc9a9c677bff4f0a21986c5ec7c6f8f3
+buf 31 id=31 empty=false sha256=2c7e5d7fd31b21a292c8f077d5e1623de265b1f636a4de5caa2f07e8bb0531f7
+buf 32 id=32 empty=false sha256=00d93a3698f8a61dfad9de735b28289c2a1955eaaa33efc59be75c9191855116
+buf 33 id=-1 empty=true sha256=-
+buf 34 id=34 empty=false sha256=e0cd148a8e57d7d2c2ee0a24a3ede122c71fedf75e8011f545143c895e4772f0
+buf 35 id=-1 empty=true sha256=-
+buf 36 id=-1 empty=true sha256=-
+buf 37 id=-1 empty=true sha256=-
+buf 38 id=-1 empty=true sha256=-
+buf 39 id=39 empty=false sha256=3547dad5186aac6f3ef6d7ea6a253dfc817748c3a9aca3c6b05066e347563a05
+buf 40 id=-1 empty=true sha256=-
+buf 41 id=41 empty=false sha256=4e4c45076946f080fc9a83dd3f4607e6058575120fe468777fcec12e4fa725ca
+buf 42 id=42 empty=false sha256=567fff71454b1cb213722980e4ebba6202bbf577fc3bf8eaf3b27dce0cf48f80
+buf 43 id=43 empty=false sha256=17b0d03c804c480057852855d9a83a17dda0252b2f3e6dae65539f43f84816ac
+buf 44 id=-1 empty=true sha256=-
+buf 45 id=-1 empty=true sha256=-
+buf 46 id=46 empty=false sha256=1f013fd27574a1c4fe0cd6c500e102defe2fa07d8421a8d5a19ed48b903fea76
+buf 47 id=47 empty=false sha256=d57a056351804013b5ad9023cdf7629588bf6fb89fa9afe748de4945eaac64fc
+buf 48 id=-1 empty=true sha256=-
+buf 49 id=-1 empty=true sha256=-
+buf 50 id=-1 empty=true sha256=-
+buf 51 id=-1 empty=true sha256=-
+buf 52 id=-1 empty=true sha256=-
+buf 53 id=-1 empty=true sha256=-
+table T0 count=38 max=39
+table T1 count=40 max=39
+dbid=3761699208937603264
+dbid=3761699208937603264
+tr num=0 name=T1 idx=-1 root=15 keytype=3 version=1 max=39 count=40 variable=true long=true varnodes=false fixednodes=false
+tr num=1 name=T1 idx=0 root=5 keytype=50 version=0 max=-9223372036854775808 count=40 variable=false long=false varnodes=false fixednodes=true
+tr num=2 name=T1 idx=2 root=19 keytype=52 version=0 max=-9223372036854775808 count=40 variable=false long=false varnodes=true fixednodes=false
+tr num=3 name=T0 idx=-1 root=26 keytype=3 version=1 max=39 count=38 variable=false long=true varnodes=false fixednodes=false
+tr num=4 name=T0 idx=1 root=3 keytype=50 version=0 max=-9223372036854775808 count=38 variable=false long=false varnodes=false fixednodes=true
+tbl num=0 name=T1 idx=-1 n=40 sha256=6aca6d5377085a02726a7f5fddb3dc2c74f6ccc114183eaae085512f3c9ef0fb
+tbl num=1 name=T1 idx=0 n=40 sha256=e8b6cd33dcda8faee20267302ec7cc37f9c1f17d1996c236a557951b567513a1
+tbl num=2 name=T1 idx=2 n=40 sha256=5e88b7e22d205466ec4f61ea4b6708379bd18ca2770a7051e39fe4d29052ec97
+tbl num=3 name=T0 idx=-1 n=38 sha256=555bc599ce1d0cb708f371805e60ed931d5ed2b8acc4f913df07bef090358759
+tbl num=4 name=T0 idx=1 n=38 sha256=451045d564837843ccae97ff1db4b82be85a4fa1eed14eb8e039316267077510
+consistent name=T1 true
+consistent name=T0 true
+status undo=11 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[16, 35, 9, 8, 17, 52, 53, 51, 21, 44, 45, 37, 38, 36, 40, 23, 24, 49, 50, 48, 33, 12]
+end added=true
+status undo=11 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[16, 35, 9, 8, 17, 52, 53, 51, 21, 44, 45, 37, 38, 36, 40, 23, 24, 49, 50, 48, 27, 28, 22]
+end added=true
+status undo=11 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[16, 35, 9, 8, 17, 52, 53, 51, 21, 44, 45, 37, 38, 36, 40, 23, 24, 49, 50, 48, 27, 28, 22]
+end added=true
+status undo=11 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[16, 35, 9, 8, 17, 52, 53, 51, 21, 44, 45, 37, 38, 36, 40, 23, 24, 49, 50, 48, 27, 28, 22, 30, 34, 32]
+end added=true
+status undo=11 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[16, 35, 9, 8, 17, 52, 53, 51, 21, 44, 45, 37, 38, 36, 40, 23, 24, 49, 50]
+end added=true
+status undo=11 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[16, 35, 9, 8, 17, 52, 53, 51, 21, 44, 45, 37, 38, 36, 40, 23, 24, 49, 34, 39, 46, 18]
+end added=true
+status undo=11 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[16, 35, 9, 8, 17, 52, 53, 51, 21, 44, 45, 37, 38, 36, 40, 23, 24, 49, 18, 46, 29]
+end added=true
+== c34
+bufferSize=507 indexCount=54 free=[8, 9, 16, 17, 21, 23, 24, 35, 36, 37, 38, 40, 44, 45, 51, 52, 53]
+buf 0 id=0 empty=false sha256=9094e25c72ad1ac64de16adf7573dab5008a8b5d65146eda647bcaf1d149ce88
+buf 1 id=1 empty=false sha256=e2855f3d0d884667501a109d18b6d983c735658b65929f8243dc2e8f5f39441a
+buf 2 id=2 empty=false sha256=b37786e766baf554a8724fedd738192bd9211484c551064977fa8d4547f97c6f
+buf 3 id=3 empty=false sha256=ef8d22f6199494a8a37b86212e9bad8716006bc8065b46abdac5201d4e974918
+buf 4 id=4 empty=false sha256=5a74bdcb6731f18dc8a13d61038a85ad7545ccc5d6ab02cf8b3d8dc24acaa515
+buf 5 id=5 empty=false sha256=a405d5ef7d077d93ed0eb8b2db7a30ef53ca843c2285291a7367ceeaabab41c7
+buf 6 id=6 empty=false sha256=708ec6ace81d4cbb6913cd7d171a5d5a3332dd3cad877f15e695a99116075f46
+buf 7 id=7 empty=false sha256=75efca5fa5a087355106d9ab13fd553583fccc97d7cb7192ab4182e1f66f4215
+buf 8 id=-1 empty=true sha256=-
+buf 9 id=-1 empty=true sha256=-
+buf 10 id=10 empty=false sha256=30e336ded3012f4f93d0703455b8ca620f537aeff0823ebd3975401889130cd5
+buf 11 id=11 empty=false sha256=83d51a58513508ec6d53be891cadb2b40536fc2e0f3b7c812f34c67f92ec28c9
+buf 12 id=12 empty=false sha256=17f1c31d915a2797afdd7ce1391873def11a01f5a40a86cbc6b6305185443eb6
+buf 13 id=13 empty=false sha256=807096b19961b0ae9894ea2390d5c3a290f56e91e2f67a5f8a8a1dc40978ef28
+buf 14 id=14 empty=false sha256=63568e31bc777d263ccb1fc4de94c8e591da4a4570e708cb4e90c88916f98c98
+buf 15 id=15 empty=false sha256=45ae744d631f8e75a274649cab65b2e27ae10e2abde0ed0e5d60f39b9a997843
+buf 16 id=-1 empty=true sha256=-
+buf 17 id=-1 empty=true sha256=-
+buf 18 id=18 empty=false sha256=f21b3a0c57c56b90b99f48efd4a6ade49a10b0ec8d09b406a80322d4f26906f5
+buf 19 id=19 empty=false sha256=cc7e10d7d355fdeac4afb0e4488ec1a1d078e467965503d34b640a7df1193071
+buf 20 id=20 empty=false sha256=f1c518945bd0e50717e66d14679adb6177956d6cfd0c30c680eef38d43841545
+buf 21 id=-1 empty=true sha256=-
+buf 22 id=22 empty=false sha256=2268e4258e8d05b731dcad740c2c2a9600588aab43adbe61c396f144e83f4332
+buf 23 id=-1 empty=true sha256=-
+buf 24 id=-1 empty=true sha256=-
+buf 25 id=25 empty=false sha256=45077c0f1dd5292f9bcd76e18e630cdbb3b48b25baff545d9182a8f5084502a2
+buf 26 id=26 empty=false sha256=02c92e588a0cc93c5ef800d22c7d5279a077427f011f2c310bfd7989513ce9c5
+buf 27 id=27 empty=false sha256=6125a37f839ded0c86c95771f42fcdb7cdddccccfe333e3d9abf81d34ba75543
+buf 28 id=28 empty=false sha256=edba892483e86f6773d9a6f7acb771cde94152539f0e2af776830d1cacce5435
+buf 29 id=29 empty=false sha256=15075bb21c53e3d183b2eb3ca01ac989a18adbb8d67d18f247611abb24ef0aaa
+buf 30 id=30 empty=false sha256=76988e070559a07e647806a1dc7506cbd1bafed492d374bd435e1fb02bea8ddb
+buf 31 id=31 empty=false sha256=d53d99ecc7a853e57aa5e93bbaf008c508748903df5abbd7d8247f97e81690e1
+buf 32 id=32 empty=false sha256=0856bebc9d3b0687a891668ea4a0c60f741d317e2b9de6efc32fa93caee05f9b
+buf 33 id=33 empty=false sha256=f180a47f454d969514905286a6ad7f6da22669ce09890a93c1d71133d52f1809
+buf 34 id=34 empty=false sha256=8abc2dfbfb3117ad00ec931e16558d5ea04f0c322230f824c553f270aee16031
+buf 35 id=-1 empty=true sha256=-
+buf 36 id=-1 empty=true sha256=-
+buf 37 id=-1 empty=true sha256=-
+buf 38 id=-1 empty=true sha256=-
+buf 39 id=39 empty=false sha256=aba620ffd68b09b73449775f3b28cd0bf7c054077f166350743f6603dceb2f26
+buf 40 id=-1 empty=true sha256=-
+buf 41 id=41 empty=false sha256=4e4c45076946f080fc9a83dd3f4607e6058575120fe468777fcec12e4fa725ca
+buf 42 id=42 empty=false sha256=567fff71454b1cb213722980e4ebba6202bbf577fc3bf8eaf3b27dce0cf48f80
+buf 43 id=43 empty=false sha256=fd575c67934ac4a00dfeabe7e427bfb64fd1ee59de6d22fc2323ab04604e3aab
+buf 44 id=-1 empty=true sha256=-
+buf 45 id=-1 empty=true sha256=-
+buf 46 id=46 empty=false sha256=ee9fdfdec15eae00c69e3a96dd0d72915f2246a3c9cb77379e021d951e4c9aaa
+buf 47 id=47 empty=false sha256=5fdb79981b2702c90435157f4e77c80a3d4e6dceec38f6342e28dd70b97234ef
+buf 48 id=48 empty=false sha256=b6c9244f211502664909a41a20c69ee09344ced3e004c4a66555b015fd86ac88
+buf 49 id=49 empty=false sha256=9ca83ebb4f13b1590de237ad591b2546aa0e48ddd8c53521f876a9d6181a22c2
+buf 50 id=50 empty=false sha256=07891d85a889ce241a656605daf2647c380ef0d6b399c48bbddfcac0f12d7cb4
+buf 51 id=-1 empty=true sha256=-
+buf 52 id=-1 empty=true sha256=-
+buf 53 id=-1 empty=true sha256=-
+table T0 count=39 max=39
+table T1 count=40 max=39
+dbid=3761699208937603264
+dbid=3761699208937603264
+tr num=0 name=T1 idx=-1 root=15 keytype=3 version=1 max=39 count=40 variable=true long=true varnodes=false fixednodes=false
+tr num=1 name=T1 idx=0 root=5 keytype=50 version=0 max=-9223372036854775808 count=40 variable=false long=false varnodes=false fixednodes=true
+tr num=2 name=T1 idx=2 root=19 keytype=52 version=0 max=-9223372036854775808 count=40 variable=false long=false varnodes=true fixednodes=false
+tr num=3 name=T0 idx=-1 root=26 keytype=3 version=1 max=39 count=39 variable=false long=true varnodes=false fixednodes=false
+tr num=4 name=T0 idx=1 root=3 keytype=50 version=0 max=-9223372036854775808 count=39 variable=false long=false varnodes=false fixednodes=true
+tbl num=0 name=T1 idx=-1 n=40 sha256=6128cf850f98a25777d38e225115f46f1154263bb88a6c66e55a408976ca187c
+tbl num=1 name=T1 idx=0 n=40 sha256=6d929b9fd60c1436eb68380d227a34a46fa2f1663bfff1964a188b3e4c2b5571
+tbl num=2 name=T1 idx=2 n=40 sha256=f7587b04c377cfc6ea1f67a677a01559def9ecbced8742e925f6813ba1390f1d
+tbl num=3 name=T0 idx=-1 n=39 sha256=1967039d9bbc1a3fc15648c1bc39dfb2ee126977c354ecc30181d5d141ec6b8f
+tbl num=4 name=T0 idx=1 n=39 sha256=de08c82eb93c3e946c480431fe61ce20c43bb4b2b213767be20dffb194079c54
+consistent name=T1 true
+consistent name=T0 true
+status undo=11 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[16, 35, 9, 8, 17, 52, 53, 51, 21, 44, 45, 37, 38, 36, 40, 23, 24]
+end added=true
+status undo=11 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[16, 35, 9, 8, 17, 52, 53, 51, 21, 44, 45, 37, 38, 36, 40, 27, 48, 28]
+end added=true
+status undo=11 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[16, 35, 9, 8, 17, 52, 53, 51, 21, 44, 45, 37, 38, 36, 40, 27, 48]
+end added=true
+status undo=11 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[16, 35, 9, 8, 17, 52, 53, 51, 21, 44, 45, 11]
+end added=true
+status undo=11 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[16, 35, 9, 8, 17, 52, 53, 51, 21, 44, 45, 27, 41, 28, 42, 47, 49, 31]
+end added=true
+status undo=11 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[16, 35, 9, 8, 17, 52, 53, 51, 21]
+undo ok=true
+undo ok=true
+undo ok=true
+undo ok=true
+undo ok=true
+undo ok=true
+undo ok=true
+undo ok=true
+undo ok=true
+undo ok=true
+undo ok=true
+undo ok=false
+undo ok=false
+undo ok=false
+status undo=0 redo=11 canUndo=false canRedo=true uncommitted=false changed=true tx=false stack=[16, 35, 9, 8, 17, 52, 53, 51, 21, 44, 45, 37, 38, 36, 40, 23, 24, 49, 50, 48, 27, 28, 22]
+== deep-undo
+bufferSize=507 indexCount=54 free=[8, 9, 16, 17, 21, 22, 23, 24, 27, 28, 35, 36, 37, 38, 40, 44, 45, 48, 49, 50, 51, 52, 53]
+buf 0 id=0 empty=false sha256=9094e25c72ad1ac64de16adf7573dab5008a8b5d65146eda647bcaf1d149ce88
+buf 1 id=1 empty=false sha256=e2855f3d0d884667501a109d18b6d983c735658b65929f8243dc2e8f5f39441a
+buf 2 id=2 empty=false sha256=9cc46900c1793124a1da199c5ef3c145bb8036b1ae40b3b9fea25c115ae1e274
+buf 3 id=3 empty=false sha256=0879e155505e5026b962a1473817c02f55278c3035786fa0dd09c3f99bc47b96
+buf 4 id=4 empty=false sha256=b79d24c9a4c5e73a871732c75f2c31d0a54c10201a36e06393109c031751dcf1
+buf 5 id=5 empty=false sha256=c17b87c38471a6540b6975c6562ae2e8a99f888af2ff0cfe42994fe60cf04aaa
+buf 6 id=6 empty=false sha256=fe3f24d7a0f02d98f137759918ff5354baa4d1dc8b2af1bc1bf863317c54149e
+buf 7 id=7 empty=false sha256=7bf893871428394d3dd28e5802df03f074be96eeafec6e961e4a6cbf373f7555
+buf 8 id=-1 empty=true sha256=-
+buf 9 id=-1 empty=true sha256=-
+buf 10 id=10 empty=false sha256=fff40d1e02d73ff1e5434f6544f72805a57d9383630c371fc1a8f03d62fa0640
+buf 11 id=11 empty=false sha256=83d51a58513508ec6d53be891cadb2b40536fc2e0f3b7c812f34c67f92ec28c9
+buf 12 id=12 empty=false sha256=681e13dd60fecb91879a67ca2f0b5dfcdaddae66c5cb32259c4a34e4be2dc759
+buf 13 id=13 empty=false sha256=3e68668c2b22d742d1e6e7bfdb6113f91e849f66939a90a8a579b38549f2437d
+buf 14 id=14 empty=false sha256=03bc47e2d94a74fe5055ad6a018b2b29b7107a51b5897f3d4428d7f53d688bb2
+buf 15 id=15 empty=false sha256=2eab1b52a907914a3a7d40f48caff1d4794cb73d480dcdc0baa4fdc9cfd843ba
+buf 16 id=-1 empty=true sha256=-
+buf 17 id=-1 empty=true sha256=-
+buf 18 id=18 empty=false sha256=c7a38ee6d7e9cd760dc6b9ed386f202d508ca4b3afe47e7ea602c89ae86fbc1c
+buf 19 id=19 empty=false sha256=860dce184a9a5e95a74f5353889db7e264d1b997634a0576870ea1c663256197
+buf 20 id=20 empty=false sha256=9e72f5075ba7d1f30ffae962175a987de33edb99d48f8af233cda42f4ba83d04
+buf 21 id=-1 empty=true sha256=-
+buf 22 id=-1 empty=true sha256=-
+buf 23 id=-1 empty=true sha256=-
+buf 24 id=-1 empty=true sha256=-
+buf 25 id=25 empty=false sha256=3cce31bb56f7eceeaab51bde875c4a930a1039b8ab3cb5474abf174bcf5b8300
+buf 26 id=26 empty=false sha256=02c92e588a0cc93c5ef800d22c7d5279a077427f011f2c310bfd7989513ce9c5
+buf 27 id=-1 empty=true sha256=-
+buf 28 id=-1 empty=true sha256=-
+buf 29 id=29 empty=false sha256=7cd544b5f619e1f585d658da4eb8806a0f592af45cb8cfcb547852f77d630a3b
+buf 30 id=30 empty=false sha256=0d1c36d6d83632169d1ed52afb5b7f82fc9a9c677bff4f0a21986c5ec7c6f8f3
+buf 31 id=31 empty=false sha256=2c7e5d7fd31b21a292c8f077d5e1623de265b1f636a4de5caa2f07e8bb0531f7
+buf 32 id=32 empty=false sha256=00d93a3698f8a61dfad9de735b28289c2a1955eaaa33efc59be75c9191855116
+buf 33 id=33 empty=false sha256=f180a47f454d969514905286a6ad7f6da22669ce09890a93c1d71133d52f1809
+buf 34 id=34 empty=false sha256=e0cd148a8e57d7d2c2ee0a24a3ede122c71fedf75e8011f545143c895e4772f0
+buf 35 id=-1 empty=true sha256=-
+buf 36 id=-1 empty=true sha256=-
+buf 37 id=-1 empty=true sha256=-
+buf 38 id=-1 empty=true sha256=-
+buf 39 id=39 empty=false sha256=3547dad5186aac6f3ef6d7ea6a253dfc817748c3a9aca3c6b05066e347563a05
+buf 40 id=-1 empty=true sha256=-
+buf 41 id=41 empty=false sha256=4e4c45076946f080fc9a83dd3f4607e6058575120fe468777fcec12e4fa725ca
+buf 42 id=42 empty=false sha256=567fff71454b1cb213722980e4ebba6202bbf577fc3bf8eaf3b27dce0cf48f80
+buf 43 id=43 empty=false sha256=dcc07e75300c1eea75e04e50019dfce8c068a5b6f5cb344bc456a39e9237a01c
+buf 44 id=-1 empty=true sha256=-
+buf 45 id=-1 empty=true sha256=-
+buf 46 id=46 empty=false sha256=1f013fd27574a1c4fe0cd6c500e102defe2fa07d8421a8d5a19ed48b903fea76
+buf 47 id=47 empty=false sha256=d57a056351804013b5ad9023cdf7629588bf6fb89fa9afe748de4945eaac64fc
+buf 48 id=-1 empty=true sha256=-
+buf 49 id=-1 empty=true sha256=-
+buf 50 id=-1 empty=true sha256=-
+buf 51 id=-1 empty=true sha256=-
+buf 52 id=-1 empty=true sha256=-
+buf 53 id=-1 empty=true sha256=-
+table T0 count=39 max=39
+table T1 count=40 max=39
+dbid=3761699208937603264
+dbid=3761699208937603264
+tr num=0 name=T1 idx=-1 root=15 keytype=3 version=1 max=39 count=40 variable=true long=true varnodes=false fixednodes=false
+tr num=1 name=T1 idx=0 root=5 keytype=50 version=0 max=-9223372036854775808 count=40 variable=false long=false varnodes=false fixednodes=true
+tr num=2 name=T1 idx=2 root=19 keytype=52 version=0 max=-9223372036854775808 count=40 variable=false long=false varnodes=true fixednodes=false
+tr num=3 name=T0 idx=-1 root=26 keytype=3 version=1 max=39 count=39 variable=false long=true varnodes=false fixednodes=false
+tr num=4 name=T0 idx=1 root=3 keytype=50 version=0 max=-9223372036854775808 count=39 variable=false long=false varnodes=false fixednodes=true
+tbl num=0 name=T1 idx=-1 n=40 sha256=637f35e414fa329d5ed5e0aff18acd33bb9ad069d5ed7990694ebde3687225c4
+tbl num=1 name=T1 idx=0 n=40 sha256=819d2fec5e8a2191d8ad9e5d57c43e617cfe3c19fed6d02de7d347c06dddbd7d
+tbl num=2 name=T1 idx=2 n=40 sha256=9e11cce9d99dddaee3643f6cad3d1afd5b7e3711c89c254f39fdcbf2d91e69c3
+tbl num=3 name=T0 idx=-1 n=39 sha256=b4d5ef48f6118e17e6b42d36c8f74988d40532c69650ae4abee07aafccc14048
+tbl num=4 name=T0 idx=1 n=39 sha256=2dacf952db878b501ce8f1118210ed0aa11404f16d7d0b458d4f9e16f942b515
+consistent name=T1 true
+consistent name=T0 true
+redo ok=true
+redo ok=true
+redo ok=true
+redo ok=true
+redo ok=true
+status undo=5 redo=6 canUndo=true canRedo=true uncommitted=false changed=true tx=false stack=[16, 35, 9, 8, 17, 52, 53, 51, 21, 44, 45, 37, 38, 36, 40, 23, 24, 49, 18, 46, 29]
+== redo5
+bufferSize=507 indexCount=54 free=[8, 9, 16, 17, 18, 21, 23, 24, 29, 35, 36, 37, 38, 40, 44, 45, 46, 49, 51, 52, 53]
+buf 0 id=0 empty=false sha256=9094e25c72ad1ac64de16adf7573dab5008a8b5d65146eda647bcaf1d149ce88
+buf 1 id=1 empty=false sha256=e2855f3d0d884667501a109d18b6d983c735658b65929f8243dc2e8f5f39441a
+buf 2 id=2 empty=false sha256=b37786e766baf554a8724fedd738192bd9211484c551064977fa8d4547f97c6f
+buf 3 id=3 empty=false sha256=865f9ef9a7d95a41ac652782e74755bd07fe58fbea96276294bfbc3a646158b8
+buf 4 id=4 empty=false sha256=56fa53ffeeac92c30a7b66b867af4fe8784aa20b14a9a9c11d453a027898fbf0
+buf 5 id=5 empty=false sha256=da125712b445633f2c26a56047bd877a644b71180421b196252c16b5d38e391d
+buf 6 id=6 empty=false sha256=0875e45c79ab38ee71d8eb6fb77a92995f18d742b1f25ec10d0e984177d42129
+buf 7 id=7 empty=false sha256=75efca5fa5a087355106d9ab13fd553583fccc97d7cb7192ab4182e1f66f4215
+buf 8 id=-1 empty=true sha256=-
+buf 9 id=-1 empty=true sha256=-
+buf 10 id=10 empty=false sha256=c7cdd7b522f811cb3658de432eb0e226f458943908bb2c3afe38d1a885ad376c
+buf 11 id=11 empty=false sha256=83d51a58513508ec6d53be891cadb2b40536fc2e0f3b7c812f34c67f92ec28c9
+buf 12 id=12 empty=false sha256=17f1c31d915a2797afdd7ce1391873def11a01f5a40a86cbc6b6305185443eb6
+buf 13 id=13 empty=false sha256=f8852725a07b2ea80ba50417bacb6f3a4b0c79ff31d29713605af8b1955f3c4d
+buf 14 id=14 empty=false sha256=63568e31bc777d263ccb1fc4de94c8e591da4a4570e708cb4e90c88916f98c98
+buf 15 id=15 empty=false sha256=45ae744d631f8e75a274649cab65b2e27ae10e2abde0ed0e5d60f39b9a997843
+buf 16 id=-1 empty=true sha256=-
+buf 17 id=-1 empty=true sha256=-
+buf 18 id=-1 empty=true sha256=-
+buf 19 id=19 empty=false sha256=de724d759def93ef2cb1b59225c2066ca5bf52dd8374605df9953933ea15218a
+buf 20 id=20 empty=false sha256=4c028725694e75e0fcd1e1baff1fb41c9872451aa8219dc7c0b458c70a933c92
+buf 21 id=-1 empty=true sha256=-
+buf 22 id=22 empty=false sha256=2268e4258e8d05b731dcad740c2c2a9600588aab43adbe61c396f144e83f4332
+buf 23 id=-1 empty=true sha256=-
+buf 24 id=-1 empty=true sha256=-
+buf 25 id=25 empty=false sha256=aca134f6c63566d2b319ece7ccb74713e55c12f2248f1f5911032122ed1893fc
+buf 26 id=26 empty=false sha256=02c92e588a0cc93c5ef800d22c7d5279a077427f011f2c310bfd7989513ce9c5
+buf 27 id=27 empty=false sha256=6125a37f839ded0c86c95771f42fcdb7cdddccccfe333e3d9abf81d34ba75543
+buf 28 id=28 empty=false sha256=edba892483e86f6773d9a6f7acb771cde94152539f0e2af776830d1cacce5435
+buf 29 id=-1 empty=true sha256=-
+buf 30 id=30 empty=false sha256=76988e070559a07e647806a1dc7506cbd1bafed492d374bd435e1fb02bea8ddb
+buf 31 id=31 empty=false sha256=27b5cb48caf94a07a3d5015975f2ab127f68fa3dba7491f1fc700c43183b10ae
+buf 32 id=32 empty=false sha256=0856bebc9d3b0687a891668ea4a0c60f741d317e2b9de6efc32fa93caee05f9b
+buf 33 id=33 empty=false sha256=f180a47f454d969514905286a6ad7f6da22669ce09890a93c1d71133d52f1809
+buf 34 id=34 empty=false sha256=8abc2dfbfb3117ad00ec931e16558d5ea04f0c322230f824c553f270aee16031
+buf 35 id=-1 empty=true sha256=-
+buf 36 id=-1 empty=true sha256=-
+buf 37 id=-1 empty=true sha256=-
+buf 38 id=-1 empty=true sha256=-
+buf 39 id=39 empty=false sha256=aba620ffd68b09b73449775f3b28cd0bf7c054077f166350743f6603dceb2f26
+buf 40 id=-1 empty=true sha256=-
+buf 41 id=41 empty=false sha256=4e4c45076946f080fc9a83dd3f4607e6058575120fe468777fcec12e4fa725ca
+buf 42 id=42 empty=false sha256=567fff71454b1cb213722980e4ebba6202bbf577fc3bf8eaf3b27dce0cf48f80
+buf 43 id=43 empty=false sha256=0487231ff402c3ef35b160f5907f600c59745d49c9b39fc6d11815b43f15a866
+buf 44 id=-1 empty=true sha256=-
+buf 45 id=-1 empty=true sha256=-
+buf 46 id=-1 empty=true sha256=-
+buf 47 id=47 empty=false sha256=09b9f822406a2d53571a1ef69129b719e2302839632cbf8a19b32dec970542ed
+buf 48 id=48 empty=false sha256=b6c9244f211502664909a41a20c69ee09344ced3e004c4a66555b015fd86ac88
+buf 49 id=-1 empty=true sha256=-
+buf 50 id=50 empty=false sha256=07891d85a889ce241a656605daf2647c380ef0d6b399c48bbddfcac0f12d7cb4
+buf 51 id=-1 empty=true sha256=-
+buf 52 id=-1 empty=true sha256=-
+buf 53 id=-1 empty=true sha256=-
+table T0 count=39 max=39
+table T1 count=40 max=39
+dbid=3761699208937603264
+dbid=3761699208937603264
+tr num=0 name=T1 idx=-1 root=15 keytype=3 version=1 max=39 count=40 variable=true long=true varnodes=false fixednodes=false
+tr num=1 name=T1 idx=0 root=5 keytype=50 version=0 max=-9223372036854775808 count=40 variable=false long=false varnodes=false fixednodes=true
+tr num=2 name=T1 idx=2 root=19 keytype=52 version=0 max=-9223372036854775808 count=40 variable=false long=false varnodes=true fixednodes=false
+tr num=3 name=T0 idx=-1 root=26 keytype=3 version=1 max=39 count=39 variable=false long=true varnodes=false fixednodes=false
+tr num=4 name=T0 idx=1 root=3 keytype=50 version=0 max=-9223372036854775808 count=39 variable=false long=false varnodes=false fixednodes=true
+tbl num=0 name=T1 idx=-1 n=40 sha256=0121d46c54ff877985ea2eacd7d2d66451704745ba10a24fd6d7c6404ab1ce62
+tbl num=1 name=T1 idx=0 n=40 sha256=ff7cf0788ebd3eaab65d7c0283b133dad586d739df4e8308d5eca29728bf27db
+tbl num=2 name=T1 idx=2 n=40 sha256=b40c400eb12eca956e7f874e5b1a9eb900dca89f7062ce1572d85c3c69dd091b
+tbl num=3 name=T0 idx=-1 n=39 sha256=3f74e52b8e2ca29ffdfe6971b786ec270b31e739e082b21300164341ce90f953
+tbl num=4 name=T0 idx=1 n=39 sha256=94ee362ba439eaea581d0045b7d82edc5c0a25d1d223e8026572c70a08d00319
+consistent name=T1 true
+consistent name=T0 true
+end added=true
+status undo=6 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[16, 35, 9, 8, 17, 52, 53, 51, 21, 44, 45, 37, 38, 36, 40, 23, 24, 49, 18, 46, 29, 31]
+== redo-dropped
+bufferSize=507 indexCount=54 free=[8, 9, 16, 17, 18, 21, 23, 24, 29, 31, 35, 36, 37, 38, 40, 44, 45, 46, 49, 51, 52, 53]
+buf 0 id=0 empty=false sha256=9094e25c72ad1ac64de16adf7573dab5008a8b5d65146eda647bcaf1d149ce88
+buf 1 id=1 empty=false sha256=e2855f3d0d884667501a109d18b6d983c735658b65929f8243dc2e8f5f39441a
+buf 2 id=2 empty=false sha256=b37786e766baf554a8724fedd738192bd9211484c551064977fa8d4547f97c6f
+buf 3 id=3 empty=false sha256=865f9ef9a7d95a41ac652782e74755bd07fe58fbea96276294bfbc3a646158b8
+buf 4 id=4 empty=false sha256=56fa53ffeeac92c30a7b66b867af4fe8784aa20b14a9a9c11d453a027898fbf0
+buf 5 id=5 empty=false sha256=e1fdeebdde32a98606e6053f678ed205c4a5b359e5e44db21dc207e995332f5b
+buf 6 id=6 empty=false sha256=0875e45c79ab38ee71d8eb6fb77a92995f18d742b1f25ec10d0e984177d42129
+buf 7 id=7 empty=false sha256=75efca5fa5a087355106d9ab13fd553583fccc97d7cb7192ab4182e1f66f4215
+buf 8 id=-1 empty=true sha256=-
+buf 9 id=-1 empty=true sha256=-
+buf 10 id=10 empty=false sha256=9af085d2b0734e623fee6adabfcfef0fcb99fb3da022c59e0b27c35e8010bb87
+buf 11 id=11 empty=false sha256=83d51a58513508ec6d53be891cadb2b40536fc2e0f3b7c812f34c67f92ec28c9
+buf 12 id=12 empty=false sha256=17f1c31d915a2797afdd7ce1391873def11a01f5a40a86cbc6b6305185443eb6
+buf 13 id=13 empty=false sha256=f8852725a07b2ea80ba50417bacb6f3a4b0c79ff31d29713605af8b1955f3c4d
+buf 14 id=14 empty=false sha256=63568e31bc777d263ccb1fc4de94c8e591da4a4570e708cb4e90c88916f98c98
+buf 15 id=15 empty=false sha256=45ae744d631f8e75a274649cab65b2e27ae10e2abde0ed0e5d60f39b9a997843
+buf 16 id=-1 empty=true sha256=-
+buf 17 id=-1 empty=true sha256=-
+buf 18 id=-1 empty=true sha256=-
+buf 19 id=19 empty=false sha256=de724d759def93ef2cb1b59225c2066ca5bf52dd8374605df9953933ea15218a
+buf 20 id=20 empty=false sha256=4c028725694e75e0fcd1e1baff1fb41c9872451aa8219dc7c0b458c70a933c92
+buf 21 id=-1 empty=true sha256=-
+buf 22 id=22 empty=false sha256=2268e4258e8d05b731dcad740c2c2a9600588aab43adbe61c396f144e83f4332
+buf 23 id=-1 empty=true sha256=-
+buf 24 id=-1 empty=true sha256=-
+buf 25 id=25 empty=false sha256=aca134f6c63566d2b319ece7ccb74713e55c12f2248f1f5911032122ed1893fc
+buf 26 id=26 empty=false sha256=02c92e588a0cc93c5ef800d22c7d5279a077427f011f2c310bfd7989513ce9c5
+buf 27 id=27 empty=false sha256=6125a37f839ded0c86c95771f42fcdb7cdddccccfe333e3d9abf81d34ba75543
+buf 28 id=28 empty=false sha256=edba892483e86f6773d9a6f7acb771cde94152539f0e2af776830d1cacce5435
+buf 29 id=-1 empty=true sha256=-
+buf 30 id=30 empty=false sha256=76988e070559a07e647806a1dc7506cbd1bafed492d374bd435e1fb02bea8ddb
+buf 31 id=-1 empty=true sha256=-
+buf 32 id=32 empty=false sha256=0856bebc9d3b0687a891668ea4a0c60f741d317e2b9de6efc32fa93caee05f9b
+buf 33 id=33 empty=false sha256=f180a47f454d969514905286a6ad7f6da22669ce09890a93c1d71133d52f1809
+buf 34 id=34 empty=false sha256=8abc2dfbfb3117ad00ec931e16558d5ea04f0c322230f824c553f270aee16031
+buf 35 id=-1 empty=true sha256=-
+buf 36 id=-1 empty=true sha256=-
+buf 37 id=-1 empty=true sha256=-
+buf 38 id=-1 empty=true sha256=-
+buf 39 id=39 empty=false sha256=aba620ffd68b09b73449775f3b28cd0bf7c054077f166350743f6603dceb2f26
+buf 40 id=-1 empty=true sha256=-
+buf 41 id=41 empty=false sha256=4e4c45076946f080fc9a83dd3f4607e6058575120fe468777fcec12e4fa725ca
+buf 42 id=42 empty=false sha256=567fff71454b1cb213722980e4ebba6202bbf577fc3bf8eaf3b27dce0cf48f80
+buf 43 id=43 empty=false sha256=0487231ff402c3ef35b160f5907f600c59745d49c9b39fc6d11815b43f15a866
+buf 44 id=-1 empty=true sha256=-
+buf 45 id=-1 empty=true sha256=-
+buf 46 id=-1 empty=true sha256=-
+buf 47 id=47 empty=false sha256=09b9f822406a2d53571a1ef69129b719e2302839632cbf8a19b32dec970542ed
+buf 48 id=48 empty=false sha256=b6c9244f211502664909a41a20c69ee09344ced3e004c4a66555b015fd86ac88
+buf 49 id=-1 empty=true sha256=-
+buf 50 id=50 empty=false sha256=07891d85a889ce241a656605daf2647c380ef0d6b399c48bbddfcac0f12d7cb4
+buf 51 id=-1 empty=true sha256=-
+buf 52 id=-1 empty=true sha256=-
+buf 53 id=-1 empty=true sha256=-
+table T0 count=39 max=39
+table T1 count=40 max=39
+dbid=3761699208937603264
+dbid=3761699208937603264
+tr num=0 name=T1 idx=-1 root=15 keytype=3 version=1 max=39 count=40 variable=true long=true varnodes=false fixednodes=false
+tr num=1 name=T1 idx=0 root=5 keytype=50 version=0 max=-9223372036854775808 count=40 variable=false long=false varnodes=false fixednodes=true
+tr num=2 name=T1 idx=2 root=19 keytype=52 version=0 max=-9223372036854775808 count=40 variable=false long=false varnodes=true fixednodes=false
+tr num=3 name=T0 idx=-1 root=26 keytype=3 version=1 max=39 count=39 variable=false long=true varnodes=false fixednodes=false
+tr num=4 name=T0 idx=1 root=3 keytype=50 version=0 max=-9223372036854775808 count=39 variable=false long=false varnodes=false fixednodes=true
+tbl num=0 name=T1 idx=-1 n=40 sha256=b10df67c51a8367508701fe70a5c3d4699ffee1016c9ed5d75574278cd86b39c
+tbl num=1 name=T1 idx=0 n=40 sha256=dbdf14b0acff9111840e98f385c7fc580d005f6f13e45487f9c91bdaf2e13880
+tbl num=2 name=T1 idx=2 n=40 sha256=b40c400eb12eca956e7f874e5b1a9eb900dca89f7062ce1572d85c3c69dd091b
+tbl num=3 name=T0 idx=-1 n=39 sha256=3f74e52b8e2ca29ffdfe6971b786ec270b31e739e082b21300164341ce90f953
+tbl num=4 name=T0 idx=1 n=39 sha256=94ee362ba439eaea581d0045b7d82edc5c0a25d1d223e8026572c70a08d00319
+consistent name=T1 true
+consistent name=T0 true
+end added=true
+status undo=2 redo=0 canUndo=true canRedo=false uncommitted=false changed=true tx=false stack=[16, 35, 9, 8, 17, 52, 53, 51, 21, 44, 45, 37, 38, 36, 40, 23, 24, 49, 18, 46, 29, 31]
+== max2
+bufferSize=507 indexCount=54 free=[8, 9, 16, 17, 18, 21, 23, 24, 29, 31, 35, 36, 37, 38, 40, 44, 45, 46, 49, 51, 52, 53]
+buf 0 id=0 empty=false sha256=9094e25c72ad1ac64de16adf7573dab5008a8b5d65146eda647bcaf1d149ce88
+buf 1 id=1 empty=false sha256=e2855f3d0d884667501a109d18b6d983c735658b65929f8243dc2e8f5f39441a
+buf 2 id=2 empty=false sha256=e49c31e85ad5d54588689dd3e966e9cc76e73c03c426ddd2c6330fc05c45c493
+buf 3 id=3 empty=false sha256=865f9ef9a7d95a41ac652782e74755bd07fe58fbea96276294bfbc3a646158b8
+buf 4 id=4 empty=false sha256=56fa53ffeeac92c30a7b66b867af4fe8784aa20b14a9a9c11d453a027898fbf0
+buf 5 id=5 empty=false sha256=e1fdeebdde32a98606e6053f678ed205c4a5b359e5e44db21dc207e995332f5b
+buf 6 id=6 empty=false sha256=0875e45c79ab38ee71d8eb6fb77a92995f18d742b1f25ec10d0e984177d42129
+buf 7 id=7 empty=false sha256=75efca5fa5a087355106d9ab13fd553583fccc97d7cb7192ab4182e1f66f4215
+buf 8 id=-1 empty=true sha256=-
+buf 9 id=-1 empty=true sha256=-
+buf 10 id=10 empty=false sha256=9af085d2b0734e623fee6adabfcfef0fcb99fb3da022c59e0b27c35e8010bb87
+buf 11 id=11 empty=false sha256=83d51a58513508ec6d53be891cadb2b40536fc2e0f3b7c812f34c67f92ec28c9
+buf 12 id=12 empty=false sha256=17f1c31d915a2797afdd7ce1391873def11a01f5a40a86cbc6b6305185443eb6
+buf 13 id=13 empty=false sha256=f8852725a07b2ea80ba50417bacb6f3a4b0c79ff31d29713605af8b1955f3c4d
+buf 14 id=14 empty=false sha256=63568e31bc777d263ccb1fc4de94c8e591da4a4570e708cb4e90c88916f98c98
+buf 15 id=15 empty=false sha256=45ae744d631f8e75a274649cab65b2e27ae10e2abde0ed0e5d60f39b9a997843
+buf 16 id=-1 empty=true sha256=-
+buf 17 id=-1 empty=true sha256=-
+buf 18 id=-1 empty=true sha256=-
+buf 19 id=19 empty=false sha256=de724d759def93ef2cb1b59225c2066ca5bf52dd8374605df9953933ea15218a
+buf 20 id=20 empty=false sha256=4c028725694e75e0fcd1e1baff1fb41c9872451aa8219dc7c0b458c70a933c92
+buf 21 id=-1 empty=true sha256=-
+buf 22 id=22 empty=false sha256=2268e4258e8d05b731dcad740c2c2a9600588aab43adbe61c396f144e83f4332
+buf 23 id=-1 empty=true sha256=-
+buf 24 id=-1 empty=true sha256=-
+buf 25 id=25 empty=false sha256=aca134f6c63566d2b319ece7ccb74713e55c12f2248f1f5911032122ed1893fc
+buf 26 id=26 empty=false sha256=02c92e588a0cc93c5ef800d22c7d5279a077427f011f2c310bfd7989513ce9c5
+buf 27 id=27 empty=false sha256=6125a37f839ded0c86c95771f42fcdb7cdddccccfe333e3d9abf81d34ba75543
+buf 28 id=28 empty=false sha256=edba892483e86f6773d9a6f7acb771cde94152539f0e2af776830d1cacce5435
+buf 29 id=-1 empty=true sha256=-
+buf 30 id=30 empty=false sha256=76988e070559a07e647806a1dc7506cbd1bafed492d374bd435e1fb02bea8ddb
+buf 31 id=-1 empty=true sha256=-
+buf 32 id=32 empty=false sha256=0856bebc9d3b0687a891668ea4a0c60f741d317e2b9de6efc32fa93caee05f9b
+buf 33 id=33 empty=false sha256=f180a47f454d969514905286a6ad7f6da22669ce09890a93c1d71133d52f1809
+buf 34 id=34 empty=false sha256=8abc2dfbfb3117ad00ec931e16558d5ea04f0c322230f824c553f270aee16031
+buf 35 id=-1 empty=true sha256=-
+buf 36 id=-1 empty=true sha256=-
+buf 37 id=-1 empty=true sha256=-
+buf 38 id=-1 empty=true sha256=-
+buf 39 id=39 empty=false sha256=aba620ffd68b09b73449775f3b28cd0bf7c054077f166350743f6603dceb2f26
+buf 40 id=-1 empty=true sha256=-
+buf 41 id=41 empty=false sha256=4e4c45076946f080fc9a83dd3f4607e6058575120fe468777fcec12e4fa725ca
+buf 42 id=42 empty=false sha256=567fff71454b1cb213722980e4ebba6202bbf577fc3bf8eaf3b27dce0cf48f80
+buf 43 id=43 empty=false sha256=0487231ff402c3ef35b160f5907f600c59745d49c9b39fc6d11815b43f15a866
+buf 44 id=-1 empty=true sha256=-
+buf 45 id=-1 empty=true sha256=-
+buf 46 id=-1 empty=true sha256=-
+buf 47 id=47 empty=false sha256=09b9f822406a2d53571a1ef69129b719e2302839632cbf8a19b32dec970542ed
+buf 48 id=48 empty=false sha256=b6c9244f211502664909a41a20c69ee09344ced3e004c4a66555b015fd86ac88
+buf 49 id=-1 empty=true sha256=-
+buf 50 id=50 empty=false sha256=07891d85a889ce241a656605daf2647c380ef0d6b399c48bbddfcac0f12d7cb4
+buf 51 id=-1 empty=true sha256=-
+buf 52 id=-1 empty=true sha256=-
+buf 53 id=-1 empty=true sha256=-
+table T0 count=39 max=39
+table T1 count=40 max=39
+dbid=3761699208937603264
+dbid=3761699208937603264
+tr num=0 name=T1 idx=-1 root=15 keytype=3 version=1 max=39 count=40 variable=true long=true varnodes=false fixednodes=false
+tr num=1 name=T1 idx=0 root=5 keytype=50 version=0 max=-9223372036854775808 count=40 variable=false long=false varnodes=false fixednodes=true
+tr num=2 name=T1 idx=2 root=19 keytype=52 version=0 max=-9223372036854775808 count=40 variable=false long=false varnodes=true fixednodes=false
+tr num=3 name=T0 idx=-1 root=26 keytype=3 version=1 max=39 count=39 variable=false long=true varnodes=false fixednodes=false
+tr num=4 name=T0 idx=1 root=3 keytype=50 version=0 max=-9223372036854775808 count=39 variable=false long=false varnodes=false fixednodes=true
+tbl num=0 name=T1 idx=-1 n=40 sha256=b10df67c51a8367508701fe70a5c3d4699ffee1016c9ed5d75574278cd86b39c
+tbl num=1 name=T1 idx=0 n=40 sha256=dbdf14b0acff9111840e98f385c7fc580d005f6f13e45487f9c91bdaf2e13880
+tbl num=2 name=T1 idx=2 n=40 sha256=b40c400eb12eca956e7f874e5b1a9eb900dca89f7062ce1572d85c3c69dd091b
+tbl num=3 name=T0 idx=-1 n=39 sha256=758bbc221d7d75475d4ff87defb8953938298aa0a0257626dacb3e47e407bc3a
+tbl num=4 name=T0 idx=1 n=39 sha256=94ee362ba439eaea581d0045b7d82edc5c0a25d1d223e8026572c70a08d00319
+consistent name=T1 true
+consistent name=T0 true
+undo ok=true
+undo ok=true
+undo ok=false
+status undo=0 redo=2 canUndo=false canRedo=true uncommitted=false changed=true tx=false stack=[16, 35, 9, 8, 17, 52, 53, 51, 21, 44, 45, 37, 38, 36, 40, 23, 24, 49, 18, 46, 29]
+== final
+bufferSize=507 indexCount=54 free=[8, 9, 16, 17, 18, 21, 23, 24, 29, 35, 36, 37, 38, 40, 44, 45, 46, 49, 51, 52, 53]
+buf 0 id=0 empty=false sha256=9094e25c72ad1ac64de16adf7573dab5008a8b5d65146eda647bcaf1d149ce88
+buf 1 id=1 empty=false sha256=e2855f3d0d884667501a109d18b6d983c735658b65929f8243dc2e8f5f39441a
+buf 2 id=2 empty=false sha256=b37786e766baf554a8724fedd738192bd9211484c551064977fa8d4547f97c6f
+buf 3 id=3 empty=false sha256=865f9ef9a7d95a41ac652782e74755bd07fe58fbea96276294bfbc3a646158b8
+buf 4 id=4 empty=false sha256=56fa53ffeeac92c30a7b66b867af4fe8784aa20b14a9a9c11d453a027898fbf0
+buf 5 id=5 empty=false sha256=da125712b445633f2c26a56047bd877a644b71180421b196252c16b5d38e391d
+buf 6 id=6 empty=false sha256=0875e45c79ab38ee71d8eb6fb77a92995f18d742b1f25ec10d0e984177d42129
+buf 7 id=7 empty=false sha256=75efca5fa5a087355106d9ab13fd553583fccc97d7cb7192ab4182e1f66f4215
+buf 8 id=-1 empty=true sha256=-
+buf 9 id=-1 empty=true sha256=-
+buf 10 id=10 empty=false sha256=c7cdd7b522f811cb3658de432eb0e226f458943908bb2c3afe38d1a885ad376c
+buf 11 id=11 empty=false sha256=83d51a58513508ec6d53be891cadb2b40536fc2e0f3b7c812f34c67f92ec28c9
+buf 12 id=12 empty=false sha256=17f1c31d915a2797afdd7ce1391873def11a01f5a40a86cbc6b6305185443eb6
+buf 13 id=13 empty=false sha256=f8852725a07b2ea80ba50417bacb6f3a4b0c79ff31d29713605af8b1955f3c4d
+buf 14 id=14 empty=false sha256=63568e31bc777d263ccb1fc4de94c8e591da4a4570e708cb4e90c88916f98c98
+buf 15 id=15 empty=false sha256=45ae744d631f8e75a274649cab65b2e27ae10e2abde0ed0e5d60f39b9a997843
+buf 16 id=-1 empty=true sha256=-
+buf 17 id=-1 empty=true sha256=-
+buf 18 id=-1 empty=true sha256=-
+buf 19 id=19 empty=false sha256=de724d759def93ef2cb1b59225c2066ca5bf52dd8374605df9953933ea15218a
+buf 20 id=20 empty=false sha256=4c028725694e75e0fcd1e1baff1fb41c9872451aa8219dc7c0b458c70a933c92
+buf 21 id=-1 empty=true sha256=-
+buf 22 id=22 empty=false sha256=2268e4258e8d05b731dcad740c2c2a9600588aab43adbe61c396f144e83f4332
+buf 23 id=-1 empty=true sha256=-
+buf 24 id=-1 empty=true sha256=-
+buf 25 id=25 empty=false sha256=aca134f6c63566d2b319ece7ccb74713e55c12f2248f1f5911032122ed1893fc
+buf 26 id=26 empty=false sha256=02c92e588a0cc93c5ef800d22c7d5279a077427f011f2c310bfd7989513ce9c5
+buf 27 id=27 empty=false sha256=6125a37f839ded0c86c95771f42fcdb7cdddccccfe333e3d9abf81d34ba75543
+buf 28 id=28 empty=false sha256=edba892483e86f6773d9a6f7acb771cde94152539f0e2af776830d1cacce5435
+buf 29 id=-1 empty=true sha256=-
+buf 30 id=30 empty=false sha256=76988e070559a07e647806a1dc7506cbd1bafed492d374bd435e1fb02bea8ddb
+buf 31 id=31 empty=false sha256=27b5cb48caf94a07a3d5015975f2ab127f68fa3dba7491f1fc700c43183b10ae
+buf 32 id=32 empty=false sha256=0856bebc9d3b0687a891668ea4a0c60f741d317e2b9de6efc32fa93caee05f9b
+buf 33 id=33 empty=false sha256=f180a47f454d969514905286a6ad7f6da22669ce09890a93c1d71133d52f1809
+buf 34 id=34 empty=false sha256=8abc2dfbfb3117ad00ec931e16558d5ea04f0c322230f824c553f270aee16031
+buf 35 id=-1 empty=true sha256=-
+buf 36 id=-1 empty=true sha256=-
+buf 37 id=-1 empty=true sha256=-
+buf 38 id=-1 empty=true sha256=-
+buf 39 id=39 empty=false sha256=aba620ffd68b09b73449775f3b28cd0bf7c054077f166350743f6603dceb2f26
+buf 40 id=-1 empty=true sha256=-
+buf 41 id=41 empty=false sha256=4e4c45076946f080fc9a83dd3f4607e6058575120fe468777fcec12e4fa725ca
+buf 42 id=42 empty=false sha256=567fff71454b1cb213722980e4ebba6202bbf577fc3bf8eaf3b27dce0cf48f80
+buf 43 id=43 empty=false sha256=0487231ff402c3ef35b160f5907f600c59745d49c9b39fc6d11815b43f15a866
+buf 44 id=-1 empty=true sha256=-
+buf 45 id=-1 empty=true sha256=-
+buf 46 id=-1 empty=true sha256=-
+buf 47 id=47 empty=false sha256=09b9f822406a2d53571a1ef69129b719e2302839632cbf8a19b32dec970542ed
+buf 48 id=48 empty=false sha256=b6c9244f211502664909a41a20c69ee09344ced3e004c4a66555b015fd86ac88
+buf 49 id=-1 empty=true sha256=-
+buf 50 id=50 empty=false sha256=07891d85a889ce241a656605daf2647c380ef0d6b399c48bbddfcac0f12d7cb4
+buf 51 id=-1 empty=true sha256=-
+buf 52 id=-1 empty=true sha256=-
+buf 53 id=-1 empty=true sha256=-
+table T0 count=39 max=39
+table T1 count=40 max=39
+dbid=3761699208937603264
+dbid=3761699208937603264
+tr num=0 name=T1 idx=-1 root=15 keytype=3 version=1 max=39 count=40 variable=true long=true varnodes=false fixednodes=false
+tr num=1 name=T1 idx=0 root=5 keytype=50 version=0 max=-9223372036854775808 count=40 variable=false long=false varnodes=false fixednodes=true
+tr num=2 name=T1 idx=2 root=19 keytype=52 version=0 max=-9223372036854775808 count=40 variable=false long=false varnodes=true fixednodes=false
+tr num=3 name=T0 idx=-1 root=26 keytype=3 version=1 max=39 count=39 variable=false long=true varnodes=false fixednodes=false
+tr num=4 name=T0 idx=1 root=3 keytype=50 version=0 max=-9223372036854775808 count=39 variable=false long=false varnodes=false fixednodes=true
+tbl num=0 name=T1 idx=-1 n=40 sha256=0121d46c54ff877985ea2eacd7d2d66451704745ba10a24fd6d7c6404ab1ce62
+tbl num=1 name=T1 idx=0 n=40 sha256=ff7cf0788ebd3eaab65d7c0283b133dad586d739df4e8308d5eca29728bf27db
+tbl num=2 name=T1 idx=2 n=40 sha256=b40c400eb12eca956e7f874e5b1a9eb900dca89f7062ce1572d85c3c69dd091b
+tbl num=3 name=T0 idx=-1 n=39 sha256=3f74e52b8e2ca29ffdfe6971b786ec270b31e739e082b21300164341ce90f953
+tbl num=4 name=T0 idx=1 n=39 sha256=94ee362ba439eaea581d0045b7d82edc5c0a25d1d223e8026572c70a08d00319
+consistent name=T1 true
+consistent name=T0 true
